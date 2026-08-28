@@ -126,6 +126,36 @@ describe("web client", () => {
     });
   });
 
+  it("blames the address, not the deploy, when the auth service rejects an email", async () => {
+    // `<input type="email">` passes `nobody@localdomain` - the HTML grammar
+    // wants an `@` and not a dot - and Neon Auth answers 400 INVALID_EMAIL.
+    // Sharing the API's classifier put "This page and the server may be
+    // running different versions. Reload, and tell an admin" on the sign-in
+    // card for a typo the reader could see and fix.
+    const { client } = clientWith(async () => jsonResponse({ code: "INVALID_EMAIL" }, 400));
+
+    await expect(client.signIn({ email: "nobody@localdomain", password: "long-enough-password" }))
+      .rejects.toMatchObject({ kind: "validation", message: "That does not look like an email address. Check it and try again." });
+  });
+
+  it("never tells a reader at the sign-in form that the page and the server disagree", async () => {
+    // Every status the auth host can refuse with, none of which is this app's
+    // contract with its own API and so none of which is a version skew.
+    for (const status of [400, 401, 403, 422, 429, 500, 503]) {
+      const { client } = clientWith(async () => jsonResponse({}, status));
+
+      await expect(client.signIn({ email: "alex@example.com", password: "long-enough-password" }))
+        .rejects.toMatchObject({ message: expect.not.stringContaining("different versions") });
+    }
+  });
+
+  it("names a rate-limited sign-in as something waiting fixes", async () => {
+    const { client } = clientWith(async () => jsonResponse({}, 429));
+
+    await expect(client.signIn({ email: "alex@example.com", password: "long-enough-password" }))
+      .rejects.toMatchObject({ kind: "transient", message: expect.stringContaining("Wait a minute") });
+  });
+
   it("names the sign-up failures a person can act on", async () => {
     const { client } = clientWith(async () => jsonResponse({ code: "USER_ALREADY_EXISTS" }, 422));
 

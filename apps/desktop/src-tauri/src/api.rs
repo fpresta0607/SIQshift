@@ -82,10 +82,16 @@ async fn classify_api_error(response: reqwest::Response) -> BridgeError {
     }
 }
 
-/// Sign-up failures are worth naming precisely: "already registered" and "too
-/// short" are both things the user can act on, unlike a generic rejection. The
-/// code is matched from a known set rather than echoing the server's own text.
-pub fn classify_signup(status: u16, code: Option<&str>) -> BridgeError {
+/// Neon Auth's own refusals, which are not this app's contract with its API.
+///
+/// `classify` answers for the API, where a 400 means the request shape was
+/// wrong and no reader composed it. The auth host is the opposite case: its
+/// 400 is the address typed into the box, so falling through to `classify`
+/// answered a mistyped email with "The server rejected the request as
+/// invalid." - a sentence about the server for a fault in the form.
+///
+/// The code is matched from a known set rather than echoing the server's text.
+pub fn classify_auth(status: u16, code: Option<&str>) -> BridgeError {
     match code {
         Some("USER_ALREADY_EXISTS") => BridgeError::new(
             ErrorKind::Validation,
@@ -98,7 +104,18 @@ pub fn classify_signup(status: u16, code: Option<&str>) -> BridgeError {
         Some("INVALID_EMAIL") => {
             BridgeError::new(ErrorKind::Validation, "Enter a valid email address.")
         }
-        _ => classify(status),
+        _ => match status {
+            401 | 403 => BridgeError::auth("Incorrect email or password."),
+            400 | 422 => BridgeError::new(
+                ErrorKind::Validation,
+                "The sign-in service would not accept those details. Check them and try again.",
+            ),
+            408 | 429 => BridgeError::transient("Too many attempts. Wait a minute and try again."),
+            500..=599 => {
+                BridgeError::transient("The sign-in service is unavailable. Try again shortly.")
+            }
+            _ => BridgeError::unknown("The request did not complete."),
+        },
     }
 }
 
@@ -678,7 +695,7 @@ impl ApiClient {
                 .await
                 .ok()
                 .and_then(|body| body.code);
-            return Err(classify_signup(status, code.as_deref()));
+            return Err(classify_auth(status, code.as_deref()));
         }
 
         session_cookie_value(response.headers())
@@ -696,11 +713,15 @@ impl ApiClient {
             .map_err(|error| classify_transport(&error))?;
 
         if !response.status().is_success() {
-            // Neon Auth answers a bad password with 401; say so without echoing it back.
-            return Err(match response.status().as_u16() {
-                401 | 403 => BridgeError::auth("Incorrect email or password."),
-                status => classify(status),
-            });
+            // Neon Auth answers a bad password with 401 and a malformed address
+            // with 400 INVALID_EMAIL; say which without echoing its text back.
+            let status = response.status().as_u16();
+            let code = response
+                .json::<AuthErrorBody>()
+                .await
+                .ok()
+                .and_then(|body| body.code);
+            return Err(classify_auth(status, code.as_deref()));
         }
 
         session_cookie_value(response.headers())
@@ -1261,6 +1282,36 @@ mod tests {
     }
 
     #[test]
+    fn the_auth_host_answers_for_the_form_rather_than_for_the_deploy() {
+        // `<input type="email">` passes `nobody@localdomain` and Neon Auth
+        // answers 400 INVALID_EMAIL. Sharing the API's classifier reported the
+        // server as broken for a typo the reader could see.
+        assert_eq!(
+            classify_auth(400, Some("INVALID_EMAIL")).message,
+            "Enter a valid email address."
+        );
+        assert_eq!(
+            classify_auth(401, None).message,
+            "Incorrect email or password."
+        );
+        assert_eq!(classify_auth(400, None).kind, ErrorKind::Validation);
+        assert_eq!(classify_auth(429, None).kind, ErrorKind::Transient);
+        assert_eq!(classify_auth(503, None).kind, ErrorKind::Transient);
+    }
+
+    #[test]
+    fn no_sign_in_failure_is_ever_reported_as_a_stale_session() {
+        // "Your session expired. Sign in again." is `classify`'s answer for a
+        // 401, and it is nonsense on the form that creates the session.
+        for status in [400, 401, 403, 422, 429, 500, 503, 418] {
+            let message = classify_auth(status, None).message;
+            assert!(!message.contains("session"), "status {status}: {message}");
+            assert!(!message.contains("timer"), "status {status}: {message}");
+            assert!(!message.is_empty());
+        }
+    }
+
+    #[test]
     fn error_messages_never_leak_a_token_url_or_server_body() {
         let secret = "eyJhbGciOiJFZERTQSJ9.payload.signature";
         for status in [400, 401, 403, 409, 422, 429, 500, 503, 418] {
@@ -1372,28 +1423,28 @@ mod tests {
 
     #[test]
     fn names_the_sign_up_failures_a_user_can_act_on() {
-        assert!(classify_signup(422, Some("USER_ALREADY_EXISTS"))
+        assert!(classify_auth(422, Some("USER_ALREADY_EXISTS"))
             .message
             .contains("Sign in instead"));
-        assert!(classify_signup(400, Some("PASSWORD_TOO_SHORT"))
+        assert!(classify_auth(400, Some("PASSWORD_TOO_SHORT"))
             .message
             .contains("8 characters"));
-        assert!(classify_signup(400, Some("INVALID_EMAIL"))
+        assert!(classify_auth(400, Some("INVALID_EMAIL"))
             .message
             .contains("valid email"));
         for error in [
-            classify_signup(422, Some("USER_ALREADY_EXISTS")),
-            classify_signup(400, Some("PASSWORD_TOO_SHORT")),
-            classify_signup(400, Some("INVALID_EMAIL")),
+            classify_auth(422, Some("USER_ALREADY_EXISTS")),
+            classify_auth(400, Some("PASSWORD_TOO_SHORT")),
+            classify_auth(400, Some("INVALID_EMAIL")),
         ] {
             assert_eq!(error.kind, ErrorKind::Validation);
         }
         // An unrecognized code falls back to the status mapping.
         assert_eq!(
-            classify_signup(503, Some("SOMETHING_NEW")).kind,
+            classify_auth(503, Some("SOMETHING_NEW")).kind,
             ErrorKind::Transient
         );
-        assert_eq!(classify_signup(500, None).kind, ErrorKind::Transient);
+        assert_eq!(classify_auth(500, None).kind, ErrorKind::Transient);
     }
 
     #[test]
