@@ -98,6 +98,35 @@ async function apiErrorMessage(response: Response): Promise<string | undefined> 
   return undefined;
 }
 
+/**
+ * Neon Auth's own refusals, which are not this app's contract with its API.
+ * `classify` reads a 400 as a version skew because the API's filters are
+ * `.strict()` and nobody composes those requests by hand, so a refused one
+ * really is the two halves disagreeing. The sign-in form is the opposite case:
+ * its 400 is the auth service reading the address typed into the box. Sharing
+ * `classify` here told a reader who dropped the `.com` off their email to
+ * reload the page and go find an admin, and left the real fault - a typo they
+ * could see - unsaid.
+ */
+function classifyAuth(status: number, code?: string): ClientError {
+  if (status === 401 || status === 403) return new ClientError("auth", "Incorrect email or password.");
+  if (status === 400 || status === 422) {
+    if (code === "USER_ALREADY_EXISTS") {
+      return new ClientError("validation", "That email already has an account. Sign in instead.");
+    }
+    if (code === "PASSWORD_TOO_SHORT") {
+      return new ClientError("validation", "Choose a password of at least 8 characters.");
+    }
+    if (code === "INVALID_EMAIL") {
+      return new ClientError("validation", "That does not look like an email address. Check it and try again.");
+    }
+    return new ClientError("validation", "The sign-in service would not accept those details. Check them and try again.");
+  }
+  if (status === 429) return new ClientError("transient", "Too many attempts. Wait a minute and try again.");
+  if (status >= 500) return new ClientError("transient", "The sign-in service is unavailable. Try again shortly.");
+  return new ClientError("unknown", "That request did not complete.");
+}
+
 async function authErrorCode(response: Response): Promise<string | undefined> {
   try {
     const body: unknown = await response.json();
@@ -192,11 +221,7 @@ export function createClient(config: ClientConfig) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       });
-      if (!response.ok) {
-        throw response.status === 401 || response.status === 403
-          ? new ClientError("auth", "Incorrect email or password.")
-          : classify(response.status);
-      }
+      if (!response.ok) throw classifyAuth(response.status, await authErrorCode(response));
       await refreshAccessToken();
     },
 
@@ -206,16 +231,7 @@ export function createClient(config: ClientConfig) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: input.email, password: input.password, name: input.name }),
       });
-      if (!response.ok) {
-        const code = await authErrorCode(response);
-        if (code === "USER_ALREADY_EXISTS") {
-          throw new ClientError("validation", "That email already has an account. Sign in instead.");
-        }
-        if (code === "PASSWORD_TOO_SHORT") {
-          throw new ClientError("validation", "Choose a password of at least 8 characters.");
-        }
-        throw classify(response.status);
-      }
+      if (!response.ok) throw classifyAuth(response.status, await authErrorCode(response));
       await refreshAccessToken();
 
       // Provision explicitly and first, so the invite code decides the workspace
