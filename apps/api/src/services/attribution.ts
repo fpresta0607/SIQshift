@@ -177,10 +177,10 @@ export function normalizeRemote(remote: string): string | null {
  *    carried through verbatim: this lane must reproduce exactly the identity
  *    the repo-root key already gave, or `0016_agent_identity_by_remote`'s
  *    backfill would fold two live rows onto one key and abort on the unique
- *    index it then builds. Git emits one spelling of a root
- *    (`rev-parse --show-toplevel`), so there is nothing to normalize away.
- *    Since the desktop resolves the main repository root rather than the
- *    worktree toplevel, worktrees of one repository share that root too.
+ *    index it then builds. Git emits one spelling of a root, so there is
+ *    nothing to normalize away, and since the desktop resolves the main
+ *    repository root rather than the worktree toplevel it once sent,
+ *    worktrees of one repository share that root too.
  * 3. **Nothing.** Work that happened outside any repository at all, which is
  *    the honest unassigned case: the operator's bucket, shared by every such
  *    shift rather than minting a row each.

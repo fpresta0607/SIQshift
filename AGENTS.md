@@ -193,13 +193,18 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   `resolveProjectForRemote` - so a worktree stored outside every mapped root still lands
   on its repository's project. Never key any of it off the session name or worktree
   directory name.
-- Attribution history was rewritten once by migration `0018_backfill_worktree_attribution`
-  (with `agent_sessions.original_project_id`, added by 0017, recording what each moved row
-  held). The `backfill_agent_session_worktree_attribution(p_dry_run)` function stays in the
-  database and is the deliberate re-run path after mappings change; the revert is the one
-  UPDATE documented in the migration header. A migration whose statements hand-added to the
-  folder also needs its `meta/_journal.json` entry hand-added, or `drizzle-kit generate`
-  sees it and the migrator silently skips it.
+- Attribution history was rewritten once by migration `0018_backfill_worktree_attribution`,
+  and the audit trail of that rewrite is two columns, not one: `original_project_id` (0017)
+  holds what a moved row held before, and `attribution_backfilled_at` (0019) marks that a
+  pass moved it at all - because a row moved out of *unattributed* has a null old value, and
+  a null is a value. Key the revert on the marker, never on `original_project_id` alone; the
+  one UPDATE that reverts every moved row is in 0019's header. `0020` re-stamped the rows
+  0019's timestamp heuristic had guessed wrong, and `0021` holds the live
+  `backfill_agent_session_worktree_attribution(p_dry_run)` - re-entrant within one
+  transaction, matching mapped path prefixes literally rather than through `LIKE` - which
+  stays in the database as the deliberate re-run path after mappings change. A migration
+  hand-added to the folder also needs its `meta/_journal.json` entry hand-added, or the
+  migrator never sees it and silently skips it.
 - The migration folder is not a description of production. Production's
   `drizzle.__drizzle_migrations` holds entries whose hashes match no file on `main`,
   because phase 3 applied migrations that were later rewritten here. Drizzle selects

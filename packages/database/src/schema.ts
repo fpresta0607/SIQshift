@@ -372,11 +372,11 @@ export const agentSessions = pgTable(
     projectId: uuid("project_id"),
     // The project this row's attribution held before the worktree backfill
     // (0018) re-resolved it against the main repository root. Written once,
-    // on the first move, and never overwritten by a later pass - so the
-    // change stays inspectable and reversible
-    // (`update agent_sessions set project_id = original_project_id where
-    // original_project_id is not null`) however many times the backfill
-    // re-runs. Null means the row never moved, or had no project to begin with.
+    // on the first move, and never overwritten by a later pass, however many
+    // times the backfill re-runs. Null does NOT mean the row never moved: a
+    // row moved out of unattributed had no old value to record, which is why
+    // `attribution_backfilled_at` (added by 0019, not declared here) is the
+    // column a revert keys on - see 0019's header for that one UPDATE.
     originalProjectId: uuid("original_project_id"),
     // Null for browser spans, which carry no working directory; the matched
     // url-rule mapping id below attributes them instead.
