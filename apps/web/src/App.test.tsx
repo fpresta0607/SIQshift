@@ -229,6 +229,46 @@ describe("dashboard", () => {
     );
   });
 
+  it("reports a board that fails to reload after a join beside the join form", async () => {
+    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const person = await signIn(clientFor({ leaderboard }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+
+    leaderboard.mockRejectedValueOnce(new ClientError("transient", "The board is taking a break."));
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+
+    expect(await settings.findByText("The board is taking a break.")).toBeInTheDocument();
+  });
+
+  it("lets the download menu keep an Escape press to itself inside the settings panel", async () => {
+    const person = await signIn(clientFor());
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+    await person.click(settings.getByRole("button", { name: /download/i }));
+    expect(settings.getByRole("link", { name: "Download for Windows" })).toBeInTheDocument();
+
+    await person.keyboard("{Escape}");
+
+    expect(settings.queryByRole("link", { name: "Download for Windows" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("waits for today's hours before saying there are none", async () => {
+    let releaseStats = (_stats: unknown): void => {};
+    const meStats = vi.fn().mockReturnValue(new Promise((resolve) => { releaseStats = resolve; }));
+    await signIn(clientFor({ meStats }));
+    await screen.findByRole("heading", { name: "Today" });
+
+    // Nothing has been loaded yet, so nothing can be claimed about it.
+    expect(screen.queryByTestId("today-panel-empty")).not.toBeInTheDocument();
+
+    releaseStats({ ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [], hourly: [] });
+
+    expect(await screen.findByTestId("today-panel-empty")).toBeInTheDocument();
+  });
+
   it("explains how the app works from the dashboard help button", async () => {
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });

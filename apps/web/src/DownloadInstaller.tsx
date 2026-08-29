@@ -70,7 +70,11 @@ const HeaderMenu = () => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      // The menu opens inside the settings overlay, which listens on window.
+      // Whoever is innermost consumes the press.
+      event.stopPropagation();
+      setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);

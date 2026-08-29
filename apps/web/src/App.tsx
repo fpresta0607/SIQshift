@@ -246,22 +246,27 @@ export const App = ({ client }: AppProps) => {
     };
   }, [client, signedIn, expireSession]);
 
-  // The board, refetched whenever scope or range move.
-  const reloadBoard = useCallback(async () => {
+  // The board, refetched whenever scope or range move. It reports its own
+  // failure to the page banner and hands the message back, so a caller behind
+  // an overlay that covers the banner can repeat it where it can be read.
+  const reloadBoard = useCallback(async (): Promise<string | undefined> => {
     setLoading(true);
     setBoardFailed(false);
     try {
       const board = await client.leaderboard(scopeParams(rangeQuery(range)));
       setEntries(board.entries);
       setDataError(undefined);
+      return undefined;
     } catch (error: unknown) {
       if (error instanceof ClientError && error.kind === "auth") {
         expireSession();
-        return;
+        return undefined;
       }
       setBoardFailed(true);
       setEntries([]);
-      setDataError(messageFor(error));
+      const message = messageFor(error);
+      setDataError(message);
+      return message;
     } finally {
       setLoading(false);
     }
@@ -482,7 +487,7 @@ export const App = ({ client }: AppProps) => {
       setJoinCode("");
       const refreshed = await client.organization();
       setOrganization(refreshed.organization);
-      await reloadBoard();
+      setJoinError(await reloadBoard());
     } catch (error: unknown) {
       setJoinError(messageFor(error));
     } finally {
@@ -769,7 +774,7 @@ export const App = ({ client }: AppProps) => {
             <p className="error" role="alert">Could not load today's hours.</p>
           )}
           {todayMeterRows.length === 0 && todayProjectRows.length === 0 ? (
-            !todayFailed && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
+            !todayFailed && todayStats !== undefined && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
           ) : (
             <>
               {todayProjectRows.length > 0 && (
@@ -1100,7 +1105,7 @@ export const App = ({ client }: AppProps) => {
             <ProjectsGroup client={client} projects={projects} onChanged={() => {
               void refreshProjects()
                 .then(() => reloadBoard())
-                .then(() => setSettingsError(undefined))
+                .then((failure) => setSettingsError(failure))
                 .catch((error: unknown) => setSettingsError(messageFor(error)));
             }} />
 
