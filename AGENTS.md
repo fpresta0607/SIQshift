@@ -198,6 +198,17 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   `#[serde(skip_serializing)]` is not the escape hatch because the same impl writes the
   spool file. A new `SpoolEvent` field stays on the machine unless it is added to the
   projection deliberately; the uploader's exact-wire-bytes test pins the field set.
+- A drain must never put more on the wire than the endpoint can acknowledge
+  inside `ApiClient`'s 20-second timeout. `/agent-sessions` writes one row per
+  event, roughly 43 ms each, so the shared 500-row batch needed about 22 seconds
+  and timed out; a timed-out pass acknowledges nothing, so the moment a backlog
+  reached one full batch the spool could only grow and no agent event reached the
+  server again. Agent time read `0s` for days while sessions and segments kept
+  uploading and hid it, and the `agent_spool_drained && browser_spool_drained`
+  gate stopped shift commits and usage with it. `AGENT_UPLOAD_BATCH_SIZE` keeps a
+  batch inside that budget, and the agent drain acknowledges each batch before
+  reading the next (`spool::read_pending_batch`), so a pass that fails part-way
+  keeps what the server already took instead of replaying the whole backlog.
 - Spool-derived evidence (`shift_commits`, and anything modeled on it) is captured
   from the uploader's `upload_once` pass on every platform - not the
   `#[cfg(windows)]`-gated spool replay - and uploads only after the agent-spool

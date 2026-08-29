@@ -27,6 +27,19 @@ use crate::spool::{self, AgentEventKind, SpoolEvent};
 /// The server's batch bound for both upload routes.
 const UPLOAD_BATCH_SIZE: usize = 500;
 
+/// Agent events cost the API about 43 ms each, one sequential write per event,
+/// so `UPLOAD_BATCH_SIZE` of them needs roughly 22 s, past `ApiClient`'s 20 s
+/// request timeout. A timed-out pass acknowledges nothing, so once a backlog
+/// reached one full batch the drain could never finish one again and the spool
+/// only grew: agent time stopped reaching the server entirely, while sessions
+/// and segments kept uploading and hid it. Keep a batch inside the timeout with
+/// room for a slow day (measured against production on 2026-08-29).
+const AGENT_UPLOAD_BATCH_SIZE: usize = 100;
+
+/// How many agent batches one pass drains. A backlog clears over a few passes
+/// instead of holding the uploader for minutes.
+const AGENT_BATCHES_PER_PASS: usize = 20;
+
 /// Five minutes: frequent enough to keep the server current without making
 /// the monitor noisy. Local agent events are replayed on every monitor poll.
 const UPLOAD_INTERVAL_SECONDS: u64 = 300;
@@ -190,25 +203,32 @@ async fn upload_sessions(client: &ApiClient, token: &str, path: &Path) -> bool {
     spool::truncate_acked(path, acked_bytes).is_ok()
 }
 
+/// Drains the spool a batch at a time, acknowledging each batch before reading
+/// the next, so a pass that fails part-way keeps what the server already took
+/// instead of replaying, and re-failing, the whole backlog.
+///
+/// Bounded per pass rather than looped to empty, because `truncate_acked`
+/// deliberately leaves a spool that rotated between the read and the ack alone:
+/// a fixed number of batches cannot spin on one, and the next pass carries on.
 async fn upload_agent_spool(client: &ApiClient, token: &str, path: &Path) -> bool {
-    let pending = match spool::read_pending(path) {
-        Ok(pending) => pending,
-        Err(_) => return false,
-    };
-    if pending.events.is_empty() {
-        return true;
-    }
+    for _ in 0..AGENT_BATCHES_PER_PASS {
+        let pending = match spool::read_pending_batch(path, AGENT_UPLOAD_BATCH_SIZE) {
+            Ok(pending) => pending,
+            Err(_) => return false,
+        };
+        if pending.events.is_empty() {
+            return true;
+        }
 
-    // `startHead` is a spool-local field the shift-capture sidecar reads; the
-    // server's agent-session contract has no such field, so it never leaves
-    // the machine.
-    let mut events = pending.events;
-    for event in &mut events {
-        event.start_head = None;
-    }
+        // `startHead` is a spool-local field the shift-capture sidecar reads;
+        // the server's agent-session contract has no such field, so it never
+        // leaves the machine.
+        let mut events = pending.events;
+        for event in &mut events {
+            event.start_head = None;
+        }
 
-    for chunk in events.chunks(UPLOAD_BATCH_SIZE) {
-        match client.upload_agent_events(token, chunk).await {
+        match client.upload_agent_events(token, &events).await {
             Ok(results) => {
                 let rejected = results.iter().filter(|result| !result.accepted).count();
                 if rejected > 0 {
@@ -217,8 +237,11 @@ async fn upload_agent_spool(client: &ApiClient, token: &str, path: &Path) -> boo
             }
             Err(_) => return false,
         }
+        if spool::truncate_acked(path, pending.acked_bytes).is_err() {
+            return false;
+        }
     }
-    spool::truncate_acked(path, pending.acked_bytes).is_ok()
+    true
 }
 
 /// Uploads every unsynced shift commit in batches. Accepted rows (including
@@ -1112,6 +1135,152 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A loopback stub that answers a fixed number of requests in turn.
+    /// `answer` sees each request's index and how many events it carried, and
+    /// returns the reply, or `None` to drop the connection without answering,
+    /// which is what a request the server cannot finish in time looks like to
+    /// the client. The handle yields the event count of every request served.
+    async fn stub_batches(
+        requests: usize,
+        answer: impl Fn(usize, usize) -> Option<(u16, String)> + Send + 'static,
+    ) -> (u16, tokio::task::JoinHandle<Vec<usize>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the loopback stub binds");
+        let port = listener
+            .local_addr()
+            .expect("the stub has an address")
+            .port();
+        let handle = tokio::spawn(async move {
+            let mut sizes = Vec::new();
+            for index in 0..requests {
+                let (mut stream, _) = listener.accept().await.expect("the stub accepts");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4_096];
+                loop {
+                    let read = stream.read(&mut buffer).await.expect("the stub reads");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if let Some(head_end) = find_head_end(&request) {
+                        let length = content_length(&request[..head_end]);
+                        if request.len() >= head_end + length {
+                            break;
+                        }
+                    }
+                }
+                let head_end = find_head_end(&request).expect("the request has a head");
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request[head_end..]).expect("the body parses");
+                let events = body["events"].as_array().expect("an events array").len();
+                sizes.push(events);
+                let Some((status, payload)) = answer(index, events) else {
+                    drop(stream);
+                    continue;
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} STUB\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("the stub answers");
+                stream.flush().await.expect("the stub flushes");
+            }
+            sizes
+        });
+        (port, handle)
+    }
+
+    /// Spools `count` agent events, alternating started/ended so the lines are
+    /// the shape a real hook writes.
+    fn spool_agent_events(path: &Path, count: usize) {
+        for index in 0..count {
+            let event = SpoolEvent {
+                source: source("claude_code"),
+                external_session_id: format!("session-{index}"),
+                event: if index % 2 == 0 {
+                    AgentEventKind::Started
+                } else {
+                    AgentEventKind::Ended
+                },
+                occurred_at: "2026-08-29T13:36:06Z".to_string(),
+                cwd: Some("C:/dev/SIQshift".to_string()),
+                start_head: None,
+                repo_root: Some("C:/dev/SIQshift".to_string()),
+                repo_remote: Some("git@github.com:fpresta0607/siqshift.git".to_string()),
+                model: None,
+                rule_id: None,
+                transcript_path: None,
+                tokens: None,
+            };
+            spool::append(path, &event).expect("the spool accepts a line");
+        }
+    }
+
+    /// The regression this whole change exists for: a backlog the endpoint
+    /// cannot answer in one request. `/agent-sessions` writes each event on its
+    /// own, so a batch of 500 outruns the client's 20 s timeout, the pass
+    /// acknowledges nothing, and the spool that only grows can never be drained
+    /// again, which is what left agent time reading zero for days while
+    /// sessions and segments uploaded normally. The stub stands in for that
+    /// ceiling: it answers a batch it can handle and drops one it cannot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_backlog_drains_in_batches_the_endpoint_can_answer() {
+        let dir = temp_dir("agent-backlog");
+        let path = dir.join("agent-spool.jsonl");
+        spool_agent_events(&path, 250);
+
+        let (port, server) = stub_batches(3, |_, events| {
+            (events <= 150).then(|| (200, r#"{"results":[]}"#.to_string()))
+        })
+        .await;
+        assert!(
+            upload_agent_spool(&stub_client(port), "token", &path).await,
+            "a backlog the endpoint can answer in batches drains"
+        );
+
+        let sizes = server.await.expect("the stub finishes");
+        assert_eq!(sizes, vec![100, 100, 50], "batches the endpoint can answer");
+        assert!(
+            spool::read_pending(&path)
+                .expect("the spool reads")
+                .events
+                .is_empty(),
+            "the whole backlog left the spool"
+        );
+    }
+
+    /// Forward progress, so one bad batch cannot hold a backlog hostage: what
+    /// the server took stays taken, and only the rest replays next pass.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_batch_keeps_the_batches_already_acknowledged() {
+        let dir = temp_dir("agent-partial");
+        let path = dir.join("agent-spool.jsonl");
+        spool_agent_events(&path, 250);
+
+        let (port, server) = stub_batches(3, |index, _| {
+            (index < 2).then(|| (200, r#"{"results":[]}"#.to_string()))
+        })
+        .await;
+        assert!(
+            !upload_agent_spool(&stub_client(port), "token", &path).await,
+            "a batch the server never answered fails the pass"
+        );
+
+        server.await.expect("the stub finishes");
+        assert_eq!(
+            spool::read_pending(&path)
+                .expect("the spool reads")
+                .events
+                .len(),
+            50,
+            "the two accepted batches left the spool; only the rest replays"
+        );
     }
 
     /// The wire trap the projection exists for: the spool line now carries

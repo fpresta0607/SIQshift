@@ -1035,7 +1035,15 @@ pub fn append_if(
 /// line (crash mid-append) is moved aside to `<spool>.partial`, and lines that
 /// fail to parse go to `<spool>.corrupt`; neither fails the drain.
 pub fn read_pending(path: &Path) -> SpoolResult<PendingEvents> {
-    let (events, acked_bytes) = read_pending_lines(path)?;
+    read_pending_batch(path, usize::MAX)
+}
+
+/// The same read bounded to the first `max_events` events, with `acked_bytes`
+/// covering exactly that prefix. A drain acknowledges one batch at a time
+/// through it: a request carrying the whole backlog is a request the server
+/// may not answer in time, and an unanswered request acknowledges nothing.
+pub fn read_pending_batch(path: &Path, max_events: usize) -> SpoolResult<PendingEvents> {
+    let (events, acked_bytes) = read_pending_lines_batch(path, max_events)?;
     Ok(PendingEvents {
         events,
         acked_bytes,
@@ -1068,6 +1076,16 @@ pub fn seal_pending_spool_paths(path: &Path) -> SpoolResult<Vec<PathBuf>> {
 pub(crate) fn read_pending_lines<T: serde::de::DeserializeOwned>(
     path: &Path,
 ) -> SpoolResult<(Vec<T>, u64)> {
+    read_pending_lines_batch(path, usize::MAX)
+}
+
+/// `read_pending_lines` bounded to the first `max_records` rows. The byte count
+/// covers only the lines it read - quarantined ones included, since they leave
+/// on the same truncate - so acknowledging it drops exactly that prefix.
+pub(crate) fn read_pending_lines_batch<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    max_records: usize,
+) -> SpoolResult<(Vec<T>, u64)> {
     with_lock(path, || {
         let content = match std::fs::read(path) {
             Ok(content) => content,
@@ -1088,7 +1106,13 @@ pub(crate) fn read_pending_lines<T: serde::de::DeserializeOwned>(
         }
 
         let mut events = Vec::new();
-        for line in content[..complete_len].split(|byte| *byte == b'\n') {
+        let mut read_bytes = 0_u64;
+        for line in content[..complete_len].split_inclusive(|byte| *byte == b'\n') {
+            if events.len() == max_records {
+                break;
+            }
+            read_bytes += line.len() as u64;
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
             if line.is_empty() {
                 continue;
             }
@@ -1099,7 +1123,7 @@ pub(crate) fn read_pending_lines<T: serde::de::DeserializeOwned>(
                 Err(_) => quarantine(path, ".corrupt", line)?,
             }
         }
-        Ok((events, complete_len as u64))
+        Ok((events, read_bytes))
     })
 }
 
