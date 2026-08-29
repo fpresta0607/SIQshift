@@ -459,6 +459,8 @@ export const App = ({ client }: AppProps) => {
   /// picked from a board would go on being sent as filters the API refuses.
   /// Signing out and joining a workspace both leave the workspace behind.
   const clearWorkspaceView = (): void => {
+    setEntries([]);
+    setBoardFailed(false);
     setMember(undefined);
     setMemberStats(undefined);
     setMemberFailed(false);
@@ -478,8 +480,6 @@ export const App = ({ client }: AppProps) => {
     setSelfId(undefined);
     setSelfName(undefined);
     setProjects([]);
-    setEntries([]);
-    setBoardFailed(false);
     setTodayStats(undefined);
     setTodayFailed(false);
     clearWorkspaceView();

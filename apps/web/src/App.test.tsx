@@ -372,6 +372,28 @@ describe("dashboard", () => {
     expect(message.closest("details")).toBeNull();
   });
 
+  it("takes the old workspace's board down when the join's project refresh fails", async () => {
+    const projects = vi.fn()
+      .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
+      .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
+    const person = await signIn(clientFor({ projects }));
+    const board = await openAllStats(person);
+    expect(await board.findByRole("button", { name: /Sam/ })).toBeInTheDocument();
+    await person.click(screen.getByRole("button", { name: "Close all stats" }));
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+    await settings.findByText("The project list is taking a break.");
+    await person.click(settings.getByRole("button", { name: "Close settings" }));
+
+    // Sam keeps time with the workspace just left; the masthead already names
+    // the new one, so its board may not still list the old one's people.
+    const reopened = await openAllStats(person);
+    expect(reopened.queryByTestId("board-list")).toBeNull();
+    expect(reopened.queryByRole("button", { name: /Sam/ })).toBeNull();
+  });
+
   it("shows a board that fails on the retired scope after a join inside the panel", async () => {
     const newWorkspaceProjects = [
       { id: "p9", name: "Migration", createdAt: "2026-08-20T12:00:00.000Z", isArchived: false, isDefault: true },
