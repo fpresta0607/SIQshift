@@ -162,9 +162,18 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   snapshots under `migrations/meta` had drifted ahead of the SQL files, so a database
   built only from `migrations/*.sql` did not match `schema.ts` and `generate` - which
   diffs against the newest snapshot, never against a real database - could not see it.
-  `0012_path_mapping_kind` closed the last of that drift, and CI now replays the whole
-  chain against a PostgreSQL service container, which is what keeps it closed. Still read
-  the emitted SQL before assuming it is only your change.
+  `0012_path_mapping_kind` closed the last of that drift among generated migrations, and
+  CI replays the whole chain against a PostgreSQL service container, which is what keeps
+  the SQL honest. Still read the emitted SQL before assuming it is only your change.
+  The exception to "generated" is a data migration that rewrites existing rows - `0018`
+  through `0021` are hand-written on purpose, because `generate` cannot express one. A
+  hand-added file needs its `meta/_journal.json` entry hand-added too, or the migrator
+  never sees it and silently skips it. Hand-written DDL also reopens the snapshot drift,
+  and one case is open now: `attribution_backfilled_at` is added by `0019`'s SQL but
+  declared in neither `schema.ts` nor any `meta` snapshot, so the first `generate` after
+  someone declares it emits an `ADD COLUMN` that fails on every database `0019` already
+  reached. The chain replay cannot catch this - it only proves the SQL applies, never
+  that the snapshots describe it - so hand-written DDL owes a matching snapshot.
 - The held rate is client-attested by design: `POST /shift-commits` records the desktop
   app's `verification` and `verified_at` as given and nothing corroborates them
   server-side (GitHub App/webhook corroboration was considered and rejected as a dead
@@ -202,9 +211,8 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   0019's timestamp heuristic had guessed wrong, and `0021` holds the live
   `backfill_agent_session_worktree_attribution(p_dry_run)` - re-entrant within one
   transaction, matching mapped path prefixes literally rather than through `LIKE` - which
-  stays in the database as the deliberate re-run path after mappings change. A migration
-  hand-added to the folder also needs its `meta/_journal.json` entry hand-added, or the
-  migrator never sees it and silently skips it.
+  stays in the database as the deliberate re-run path after mappings change. `DEPLOY.md`
+  owns the production apply order and the re-run command.
 - The migration folder is not a description of production. Production's
   `drizzle.__drizzle_migrations` holds entries whose hashes match no file on `main`,
   because phase 3 applied migrations that were later rewritten here. Drizzle selects

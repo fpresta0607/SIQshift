@@ -242,6 +242,53 @@ working indefinitely - their shifts key on the repo root, and a shift with no
 root at all moves onto a codebase alone when that shift's own commit names one,
 which is the designed degradation path.
 
+### The worktree attribution backfill rewrites history, and re-runs on demand
+
+`0018_backfill_worktree_attribution` is the first migration that rewrites
+attribution on rows production already holds, and `0019`, `0020` and `0021` are
+its fix-forwards. It opens no window of the `0015`/`0016` kind - it drops no
+index the running API names as an `ON CONFLICT` arbiter, so nothing fails while
+it runs. The ordinary "migrate first, then deploy" rule still governs it, and
+here for a second reason on top of the usual one: the new API's project delete
+clears
+`agent_sessions.original_project_id` and `attribution_backfilled_at`, so a build
+of this branch talking to a database that has not applied `0017` and `0019`
+answers `500` on `DELETE /projects/:id`.
+
+Its sequence:
+
+1. Apply the migrations, `0017` through `0021`, in one run:
+   `DATABASE_URL='<the same direct URL>' pnpm --filter @siqshift/database migrate`.
+   Do not split it. `0018` performs the backfill inside the migration, and the
+   `0019`/`0020` audit-stamp repairs identify the rows that pass moved by
+   fingerprinting the database `0018` has just run against; they are no-ops
+   anywhere else, including on a fresh database replaying the chain.
+2. Deploy the API. From here every new shift resolves through the three lanes -
+   repo root path, cwd path, then the repository's remote against a mapping's
+   `repo_url` - so a worktree kept outside every mapped root lands on its
+   project even from an installer that predates step 3, because `repo_remote`
+   is a probe old installers already send.
+3. Ship the desktop, whenever. It is what makes `repo_root` the main repository
+   root rather than the worktree toplevel; until it ships, a worktree nested
+   under some *other* mapped root still resolves to that root's project.
+4. Re-run the backfill deliberately after adding or changing a path mapping, or
+   after the desktop ships, to fold in the rows the window left behind - nothing
+   re-runs a migration by itself. Dry run first:
+
+   ```sql
+   SELECT backfill_agent_session_worktree_attribution(true);   -- reports, moves nothing
+   SELECT backfill_agent_session_worktree_attribution(false);  -- applies
+   ```
+
+   Since `0021` both calls are safe inside one `BEGIN`. A pass that changes
+   nothing reports `moved: 0`, and a row whose lane matches two different
+   projects is counted as ambiguous and left alone rather than guessed at.
+
+To revert every row any pass ever moved, use the single `UPDATE` in `0019`'s
+header. It keys on `attribution_backfilled_at`, not on `original_project_id`:
+a row moved out of *unattributed* has a null original value and is otherwise
+indistinguishable from a row no pass ever touched.
+
 ---
 
 ## 1. API on Railway
