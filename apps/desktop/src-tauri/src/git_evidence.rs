@@ -78,7 +78,7 @@ pub async fn discover_repo(cwd: &Path) -> Option<RepoLocation> {
     // The main root comes from the common-directory probe; when that probe
     // cannot answer (old git), the toplevel is the working tree itself and
     // the two names agree, as they always did for a plain checkout.
-    let root = probe_repo_root("git", cwd).unwrap_or_else(|| toplevel.clone());
+    let root = main_repo_root_from("git", cwd).unwrap_or_else(|| toplevel.clone());
     Some(RepoLocation {
         root,
         toplevel,
