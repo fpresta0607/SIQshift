@@ -247,6 +247,17 @@ export class DrizzleProjectRepository implements ProjectRepository {
           .delete(agentSessions)
           .where(and(eq(agentSessions.organizationId, subject.organizationId), eq(agentSessions.projectId, projectId)));
       }
+      // agent_sessions_organization_original_project_fk is ON DELETE restrict
+      // too: the backfill's audit trail points at whatever project a shift
+      // held before it moved, and a project nobody works any more is exactly
+      // the one an admin deletes. The trail cannot outlive its subject, so the
+      // record of a move whose origin is gone is dropped with it rather than
+      // left naming a row that no longer exists.
+      await tx.execute(sql`
+        update agent_sessions
+        set original_project_id = null, attribution_backfilled_at = null
+        where organization_id = ${subject.organizationId}::uuid and original_project_id = ${projectId}::uuid
+      `);
       // agents_organization_project_fk is ON DELETE restrict, so every roster
       // identity has to leave the project before it can go. Since v2 the
       // project is a re-derivable attribute rather than part of the identity

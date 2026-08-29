@@ -23,6 +23,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// never block the uploader indefinitely over it.
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The probe both `discover_repo` and `repo_root` resolve the main repository
+/// root with; see `main_root_of_common_dir` for why the common directory and
+/// not `--show-toplevel` is the question being asked.
+const GIT_COMMON_DIR_ARGS: &[&str] = &["rev-parse", "--path-format=absolute", "--git-common-dir"];
+
 /// Runs one read-only git command, discarding stderr (never worth surfacing
 /// to a user) and returning trimmed stdout on success. Any failure — git not
 /// installed, not a repo, a bad ref, a timeout — collapses to `None`; the
@@ -78,7 +83,10 @@ pub async fn discover_repo(cwd: &Path) -> Option<RepoLocation> {
     // The main root comes from the common-directory probe; when that probe
     // cannot answer (old git), the toplevel is the working tree itself and
     // the two names agree, as they always did for a plain checkout.
-    let root = main_repo_root_from("git", cwd).unwrap_or_else(|| toplevel.clone());
+    let root = run_git(cwd, GIT_COMMON_DIR_ARGS)
+        .await
+        .and_then(main_root_of_common_dir)
+        .unwrap_or_else(|| toplevel.clone());
     Some(RepoLocation {
         root,
         toplevel,
@@ -179,14 +187,12 @@ fn probe_repo_root(git: &str, cwd: &Path) -> Option<PathBuf> {
 /// probe degrades to the pre-worktree-attribution behavior, never to a
 /// wrong answer.
 fn main_repo_root_from(git: &str, cwd: &Path) -> Option<PathBuf> {
-    let common = run_git_sync(
-        git,
-        cwd,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    if common.is_empty() {
-        return None;
-    }
+    main_root_of_common_dir(run_git_sync(git, cwd, GIT_COMMON_DIR_ARGS)?)
+}
+
+/// Reads one `--git-common-dir` answer, shared by the async and synchronous
+/// probes so both decide the same way about the same string.
+fn main_root_of_common_dir(common: String) -> Option<PathBuf> {
     let common = PathBuf::from(common);
     if !common.file_name().is_some_and(|name| name == ".git") {
         return None;

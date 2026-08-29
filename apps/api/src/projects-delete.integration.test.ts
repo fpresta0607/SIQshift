@@ -124,6 +124,41 @@ integration("deleting a project that hosts roster agents", () => {
     await expect(statusOf(orphaning.id)).resolves.toEqual({ projectId: null, status: "anonymous" });
   });
 
+  // agent_sessions_organization_original_project_fk is ON DELETE restrict as
+  // well, and the worktree backfill writes the project a shift moved off into
+  // original_project_id. That project is the bogus per-worktree codebase the
+  // backfill exists to empty, so it is precisely the one an admin deletes
+  // next - and the audit trail must not be what keeps it alive.
+  it("deletes a project a moved shift still names as its pre-backfill origin", async () => {
+    const doomed = await project("Backfilled away from");
+    const survivor = await project("Backfilled onto");
+    const sessionId = randomUUID();
+    const startedAt = "2026-08-06T14:00:00.000Z";
+    const endedAt = "2026-08-06T15:00:00.000Z";
+    await database.client`
+      insert into agent_sessions (
+        id, organization_id, user_id, source, external_session_id, project_id, original_project_id,
+        attribution_backfilled_at, cwd, status, started_at, ended_at, last_event_at
+      )
+      values (
+        ${sessionId}, ${organizationId}, ${ownerUserId}, 'claude_code', ${sessionId}, ${survivor}, ${doomed},
+        ${endedAt}, 'C:/dev/repo/.worktrees/gb-1', 'ended', ${startedAt}, ${endedAt}, ${endedAt}
+      )
+    `;
+
+    await projects.deleteForOrganization(subject, doomed, survivor);
+
+    const [shift] = await database.client`
+      select project_id, original_project_id, attribution_backfilled_at
+      from agent_sessions where id = ${sessionId}
+    `;
+    // The shift stays where the backfill put it; only the reference to the
+    // project that no longer exists goes.
+    expect(shift).toEqual({ project_id: survivor, original_project_id: null, attribution_backfilled_at: null });
+    const remaining = await database.client`select id from projects where id = ${doomed}`;
+    expect(remaining).toEqual([]);
+  });
+
   // Before v2 the project was part of the identity key, so moving two agents
   // onto one destination collided and the loser had to be retired to release
   // its key. The project is a plain attribute now, so both simply move and
