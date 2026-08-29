@@ -156,6 +156,17 @@ rows are the agent-assisted share — still the person's hours, split by how man
 beside them at once. An agent still working while the person is away feeds agent time only,
 never the person's hours.
 
+**Recorded** is none of those three: it is the whole of a person's sessions, so it also counts
+the quiet inside them - the gaps too short to close a session, and the stretches an agent held
+open while nobody was at the machine.
+Recorded is therefore always at least active time, and the difference is time away from the
+keyboard rather than agent time; how much of that difference an agent was actually running for
+is the `away` bucket of the concurrency split, and the All-stats card says so only when that
+bucket was measured.
+The two lists under that card are read against the same recorded total: projects sum to it
+directly, and the app list - which measures foreground presence - closes on it with a **Quiet
+time** row, the same way the Today card does.
+
 A person's breakdown stops at what is the person's: their active time and those concurrency
 rows. Everything the agents themselves did lives on the **Agents tab**, as a map of shifts
 grouped by the codebase they worked: the recorded total on top, then one group per repo with

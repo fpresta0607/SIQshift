@@ -36,6 +36,7 @@ import {
   buildAppRows,
   buildMeterRows,
   hourlyFromShifts,
+  recordedBasis,
 } from "@siqshift/shared/ui";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
@@ -1117,7 +1118,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const boardTotalSeconds = showingLiveDay ? todayTotalSeconds : boardStats?.totalDurationSeconds ?? 0;
   const boardUnattributedSeconds = (showingLiveDay ? stats : boardStats)?.unattributedSeconds ?? 0;
   const boardMeasurement = showingLiveDay ? stats : boardStats;
-  const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? []);
+  const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? [], boardTotalSeconds);
   const boardProjectRows = showingLiveDay
     ? projectRows.map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }))
     : (boardStats?.projects ?? [])
@@ -1438,13 +1439,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
               !boardError && <p className="subtle">Loading…</p>
             ) : (
               <>
-                {/* Recorded is whole sessions, so unattended agent stretches sit
-                    inside it; the active-time split below is the person's own. */}
+                {/* Recorded is whole sessions; the split below is presence
+                    alone. `recordedBasis` names the gap between them from
+                    measured numbers - the old wording called all of it agent
+                    time on no evidence at all. */}
                 <p className="today-total">
                   <strong>{formatHuman(boardTotalSeconds)}</strong> recorded
-                  {boardMeasurement !== undefined && boardTotalSeconds > boardMeasurement.activeSeconds && (
-                    <span className="metric-hint"> · unattended agent time included</span>
-                  )}
+                  {boardMeasurement !== undefined && (() => {
+                    const basis = recordedBasis(
+                      boardTotalSeconds,
+                      boardMeasurement.activeSeconds,
+                      boardMeasurement.concurrency.awaySeconds,
+                    );
+                    return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
+                  })()}
                 </p>
                 {boardMeasurement !== undefined && (
                   <>

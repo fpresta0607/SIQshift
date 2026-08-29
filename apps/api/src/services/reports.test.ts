@@ -613,6 +613,57 @@ describe("leaderboard", () => {
     expect(alex?.byAgent).toEqual([]);
   });
 
+  // The Overlord's report: a day whose header said unattended agent time was
+  // included while the board's Agent column read 0s. The two numbers come from
+  // different tables - `recorded` is whole `time_sessions`, agent seconds are
+  // measured `agent_sessions` - and the header asserted the gap between
+  // recorded and active *was* agent time without ever consulting the
+  // measurement. Whenever a member really does have both in one window, the
+  // board must carry the agent seconds and the split must reconcile against
+  // them; there is nothing else for the header to read.
+  it("reports agent seconds on the board when a member has human and agent time in one window", async () => {
+    const hour = (h: number): Date => new Date(Date.UTC(2026, 7, 5, h));
+    const reports = new Reports();
+    // Recorded is 3h of whole sessions; the person was at the keyboard for 1h
+    // of it, which is exactly the shape that produced the report.
+    reports.leaderboardRows = [entry(ids.user, "Alex", 10_800, 1, 10_800)];
+    reports.presenceIntervals = [
+      { user: { id: ids.user, name: "Alex" }, startedAt: hour(9), endedAt: hour(10) },
+    ];
+    reports.sessionIntervals = [
+      { user: { id: ids.user, name: "Alex" }, projectId: ids.project, attribution: "agent", startedAt: hour(9), stoppedAt: hour(12) },
+    ];
+    reports.agentIntervals = [
+      // One shift through the person's hour, one entirely after they left.
+      { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, startedAt: hour(9), endedAt: hour(10) },
+      { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, startedAt: hour(10), endedAt: hour(12) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper, agents });
+
+    const result = await service.leaderboard(subject, { fromAt: hour(9).toISOString(), toExclusiveAt: hour(12).toISOString() });
+
+    const [alex] = result.entries;
+    // Not zero, and not folded into the hours: 3h of runtime beside 1h at the desk.
+    expect(alex?.activeSeconds).toBe(3_600);
+    expect(alex?.agentSeconds).toBe(10_800);
+    const split = alex!.concurrency;
+    // active = t0 + t1 + t2 + t3plus, the split's own contract.
+    expect(split.t0Seconds + split.t1Seconds + split.t2Seconds + split.t3PlusSeconds).toBe(alex!.activeSeconds);
+    // agent = Sum(n x tn) + away: the hour they overlapped plus the two they did not.
+    expect(split.t1Seconds + 2 * split.t2Seconds + 3 * split.t3PlusSeconds + split.awaySeconds).toBe(alex!.agentSeconds);
+    expect(split.awaySeconds).toBe(7_200);
+    // The 2h gap between recorded and active is what the header explains, and
+    // the measured away runtime is what it may claim of that gap - never the
+    // gap itself, and never anything when no agent was measured.
+    expect(alex!.durationSeconds - alex!.activeSeconds).toBe(7_200);
+    // /me/stats measures the same window from the same reads, so a member's
+    // own card can never disagree with their row on the board.
+    const own = await service.meStats(subject, { fromAt: hour(9).toISOString(), toExclusiveAt: hour(12).toISOString() });
+    expect(own.agentSeconds).toBe(alex?.agentSeconds);
+    expect(own.activeSeconds).toBe(alex?.activeSeconds);
+    expect(own.concurrency).toEqual(split);
+  });
+
   it("shares a rank between members with identical totals", async () => {
     const reports = new Reports();
     reports.leaderboardRows = [

@@ -17,7 +17,12 @@ Reporting measures **active time** (the union of a person's working intervals โ€
 leaderboard headline, never exceeding wall clock), **agent time** (the summed agent
 runtime, so parallel agents legitimately exceed active time), and **leverage**
 (agent รท active); concurrency splits active time into t0/t1/t2/t3+ plus the agent
-runtime that fell outside the person's presence. A session is still attributed whole
+runtime that fell outside the person's presence. **Recorded** is a fourth thing and not a
+measurement of either: it is whole `time_sessions`, quiet inside them included, so
+`recorded - active` is time away from the keyboard and never agent time. The All-stats card
+had claimed that difference *was* unattended agent time from `recorded > active` alone, on
+days whose measured agent time was zero; `recordedBasis` states the gap and names the agent
+share of it only from `concurrency.awaySeconds`. A session is still attributed whole
 or not at all by `time_sessions.attribution`. The README's "How session tracking works"
 section is the authoritative prose; keep it true when you change the model.
 

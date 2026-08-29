@@ -272,9 +272,10 @@ export const RecordingPanel = ({
         </ul>
 
         <h3>How time is counted</h3>
-      {/* The same four sentences the web dashboard's help speaks - one set
+      {/* The same sentences the web dashboard's help speaks - one set
           of rules, told once, so no surface can contradict another. */}
       <ul className="record-list">
+          <li>Recorded is the whole of your sessions, quiet inside them included - a break too short to end one, or an agent left running while you were away. It is always at least your hours, and the difference is time away from the keyboard, not agent time.</li>
           <li>Your hours are wall-clock time you were actually at the machine. They can never exceed real elapsed time.</li>
           <li>Human work is the time you worked with no agent running - the share you verified yourself.</li>
           <li>The 1, 2, and 3+ agent splits are your agent-assisted share - still your hours, split by how many agents ran beside you at once.</li>

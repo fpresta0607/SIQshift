@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openAgentsGroup, openClockCard, openTodayCard } from "./harness.js";
+import { openAgentsGroup, openClockCard, openMemberStats, openTodayCard } from "./harness.js";
 
 /** Every `.meter-row`'s box, plus the boxes of the four cells inside it. */
 const rowBoxes = (page: import("@playwright/test").Page) =>
@@ -233,6 +233,61 @@ for (const app of ["desktop", "web"] as const) {
       // Both heads stay measured whatever the drawer is doing, so the scan
       // line the test above pins is not a property of being open.
       expect(await rowBoxes(page)).toHaveLength(2);
+    });
+  });
+}
+
+for (const app of ["desktop", "web"] as const) {
+  test.describe(`the All-stats card in ${app}`, () => {
+    // The card's own arithmetic, drawn: the recorded total, the sentence
+    // saying what the rest of it was, and two lists that both close on it.
+    // The sentence replaced a four-word hint, so it is the first line on
+    // either card long enough to need somewhere to wrap - and it wraps inside
+    // the overlay, which is narrower than the page it used to be measured in.
+    test("wraps the recorded sentence inside the overlay at phone width", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openMemberStats(page, app);
+
+      const measured = await page.evaluate(() => {
+        const modal = document.querySelector<HTMLElement>(".modal")!;
+        const total = document.querySelector<HTMLElement>(".member-total, .today-total")!;
+        return {
+          viewport: document.documentElement.clientWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          modalClientWidth: modal.clientWidth,
+          modalScrollWidth: modal.scrollWidth,
+          totalRight: Math.round(total.getBoundingClientRect().right),
+          // A one-line sentence at this width would mean it did not wrap,
+          // which at 390px means it went somewhere off screen instead.
+          totalLines: Math.round(total.getBoundingClientRect().height
+            / Number.parseFloat(getComputedStyle(total).lineHeight)),
+          durationRights: [...document.querySelectorAll<HTMLElement>(".app-row .app-duration")]
+            .map((cell) => Math.round(cell.getBoundingClientRect().right)),
+        };
+      });
+
+      expect(measured.documentScrollWidth).toBeLessThanOrEqual(measured.viewport);
+      expect(measured.modalScrollWidth).toBe(measured.modalClientWidth);
+      expect(measured.totalRight).toBeLessThanOrEqual(measured.viewport);
+      expect(measured.totalLines).toBeGreaterThan(1);
+      // Quiet time is a row like any other, so its duration stays on screen
+      // with the rest of them.
+      expect(measured.durationRights).toHaveLength(5);
+      for (const right of measured.durationRights) {
+        expect(right).toBeLessThanOrEqual(measured.viewport);
+      }
+    });
+
+    test("keeps both lists' durations on one scan line at desktop width", async ({ page }) => {
+      await page.setViewportSize({ width: 1000, height: 900 });
+      await openMemberStats(page, app);
+
+      const rights = await page.locator(".app-row .app-duration")
+        .evaluateAll((cells) => cells.map((cell) => Math.round(cell.getBoundingClientRect().right)));
+      // The project list and the app list are read against one another, so
+      // their durations end on the same x - a project total and an app total
+      // that do not line up read as two different measurements.
+      expect(new Set(rights).size).toBe(1);
     });
   });
 }
