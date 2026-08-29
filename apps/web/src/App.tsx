@@ -24,6 +24,7 @@ import {
   buildAppRows,
   buildMeterRows,
   hourlyFromShifts,
+  recordedBasis,
 } from "@siqshift/shared/ui";
 
 import { ClientError, type Client } from "./client.js";
@@ -675,7 +676,7 @@ export const App = ({ client }: AppProps) => {
   const sortedEntries = [...entries]
     .sort(boardSorters[boardSort])
     .map((entry, index) => ({ ...entry, rank: boardSort === "active" ? entry.rank : index + 1 }));
-  const memberAppRows = memberStats === undefined ? [] : buildAppRows(memberStats.apps);
+  const memberAppRows = memberStats === undefined ? [] : buildAppRows(memberStats.apps, memberStats.totalDurationSeconds);
   const viewedName = member?.name ?? selfName ?? "You";
 
   // Where the dashboard is pointed. The desktop's header names the project its
@@ -1021,14 +1022,21 @@ export const App = ({ client }: AppProps) => {
                       <p className="subtle" role="status">Loading…</p>
                     ) : (
                       <>
-                        {/* Recorded is whole sessions, so unattended agent
-                            stretches sit inside it; the active-time split
-                            below is the person's own. */}
+                        {/* Recorded is whole sessions; the split below is
+                            presence alone. `recordedBasis` names the gap
+                            between them from measured numbers - the old
+                            wording called all of it agent time on no evidence
+                            at all. */}
                         <p className="member-total">
                           <strong>{formatHumanDuration(memberStats.totalDurationSeconds)}</strong> recorded
-                          {memberStats.totalDurationSeconds > memberStats.activeSeconds && (
-                            <span className="metric-hint"> · unattended agent time included</span>
-                          )}
+                          {(() => {
+                            const basis = recordedBasis(
+                              memberStats.totalDurationSeconds,
+                              memberStats.activeSeconds,
+                              memberStats.concurrency.awaySeconds,
+                            );
+                            return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
+                          })()}
                         </p>
                         <MemberBreakdown
                           activeSeconds={memberStats.activeSeconds}

@@ -190,3 +190,41 @@ export async function openAgentsGroup(page: Page, app: "desktop" | "web"): Promi
     ${close}`);
   await applyStylesheet(page, app, ".modal-overlay");
 }
+
+/**
+ * The All-stats card for one person, in either app's markup for it: the
+ * recorded total with the sentence that says what it is made of, then the
+ * project list and the app list that both close on that total.
+ *
+ * The sentence is the longest line either card draws and it lives in the
+ * narrowest container the apps have - the overlay - so a phone is where it
+ * runs out of room first. The apps spell the total's class differently
+ * (`member-total` on the web, `today-total` on the desktop) and style it in
+ * their own sheets, so each is rendered under its own.
+ */
+export async function openMemberStats(page: Page, app: "desktop" | "web"): Promise<void> {
+  const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
+  const totalClass = app === "desktop" ? "today-total" : "member-total";
+  const appRow = (label: string, duration: string): string =>
+    `<li class="app-row"><span class="app-name">${label}</span><span class="app-duration">${duration}</span></li>`;
+  await page.setContent(`
+    ${shell}<div class="modal-overlay"><section class="today-card card modal">
+        <section class="member-stats" data-testid="member-stats">
+          <div class="member-stats-head"><h3>Francesco Presta · Today</h3></div>
+          <p class="${totalClass}">
+            <strong>1h 56m</strong> recorded
+            <span class="metric-hint"> · 1h 19m of it away from the keyboard, 57m of that with an agent running</span>
+          </p>
+          <ul class="app-list" data-testid="member-project-list">
+            ${appRow("peakCraftsman", "1h 34m")}
+            ${appRow("General", "22m")}
+          </ul>
+          <ul class="app-list" data-testid="member-app-list">
+            ${appRow("Windows Terminal", "20m")}
+            ${appRow("Google Chrome", "12m")}
+            ${appRow("Quiet time", "1h 24m")}
+          </ul>
+        </section>
+    </section></div></main>`);
+  await applyStylesheet(page, app, ".modal-overlay");
+}

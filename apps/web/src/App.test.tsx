@@ -3,7 +3,7 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { type MeStatsResponse } from "@siqshift/shared";
-import { buildAppRows } from "@siqshift/shared/ui";
+import { buildAppRows, recordedBasis } from "@siqshift/shared/ui";
 import { App, rangeQuery } from "./App.js";
 import { ClientError, type Client } from "./client.js";
 import { windowsInstallerUrl } from "./DownloadInstaller.js";
@@ -191,6 +191,45 @@ describe("app row folding", () => {
     // The fold keeps only the non-agent tail.
     expect(fold?.durationSeconds).toBe(9_000 - 8);
     expect(rows.filter((row) => row.agent)).toHaveLength(1);
+  });
+
+  // The Overlord's report: All stats printed a project list summing to the
+  // recorded total beside an app list summing to presence, with nothing saying
+  // they were measured on different bases, so an hour read as vanished.
+  it("closes the app list against the total it is read under", () => {
+    const rows = buildAppRows([
+      { processName: "WindowsTerminal.exe", durationSeconds: 1_200 },
+      { processName: "chrome.exe", durationSeconds: 720 },
+    ], 6_960);
+
+    expect(rows.map((row) => row.label)).toContain("Quiet time");
+    expect(rows.reduce((sum, row) => sum + row.durationSeconds, 0)).toBe(6_960);
+  });
+
+  it("leaves a list with nothing in front of it to its empty state", () => {
+    // A remainder needs something to be the remainder of; a lone "Quiet time"
+    // row is not a breakdown, and the surface has an empty state for this.
+    expect(buildAppRows([], 6_960)).toEqual([]);
+    // Under a minute is rounding, not a gap.
+    expect(buildAppRows([{ processName: "chrome.exe", durationSeconds: 1_200 }], 1_230))
+      .toEqual([{ key: "chrome.exe", label: "Google Chrome", durationSeconds: 1_200, agent: false }]);
+  });
+});
+
+describe("recorded basis", () => {
+  // The contradiction this fixes: the sentence fired on `recorded > active`
+  // alone and named the whole gap agent time, on days whose measured agent
+  // time was zero.
+  it("names the gap as time away, and claims an agent only where one was measured", () => {
+    expect(recordedBasis(6_960, 2_220, 0)).toBe("1h 19m of it away from the keyboard");
+    expect(recordedBasis(6_960, 2_220, 3_420))
+      .toBe("1h 19m of it away from the keyboard, 57m of that with an agent running");
+    // Agent time is summed, so parallel agents can out-run the wall clock they
+    // ran in; the claim is clamped to the gap rather than exceeding it.
+    expect(recordedBasis(6_960, 2_220, 99_999))
+      .toBe("1h 19m of it away from the keyboard, 1h 19m of that with an agent running");
+    // Nothing to explain: recorded is presence.
+    expect(recordedBasis(2_220, 2_220, 0)).toBeNull();
   });
 });
 
@@ -976,6 +1015,51 @@ describe("dashboard", () => {
     expect(breakdown).not.toHaveTextContent("With 2 agents");
     expect(breakdown).not.toHaveTextContent("With 1 agent");
     expect(breakdown).not.toHaveTextContent("while away");
+  });
+
+  // The Overlord's card, to the minute: 1h56m recorded, 37m active, no agent
+  // time measured anywhere in the window. The header used to call the 1h19m
+  // difference "unattended agent time" while the board beside it read
+  // "Agent 0s", and the app list under it summed to 37m against a project list
+  // summing to 1h56m.
+  it("explains the gap between recorded and active without inventing agent time", async () => {
+    const person = await signIn(clientFor({
+      meStats: vi.fn().mockResolvedValue({
+        ...memberStats,
+        totalDurationSeconds: 6_960,
+        activeSeconds: 2_220,
+        agentSeconds: 0,
+        concurrency: { t0Seconds: 2_220, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
+        byAgent: [],
+        projects: [
+          { project: { id: "p2", name: "peakCraftsman" }, durationSeconds: 5_640, attributedSeconds: 5_640, unattributedSeconds: 0, sessionCount: 2 },
+          { project: { id: "p1", name: "General" }, durationSeconds: 1_320, attributedSeconds: 0, unattributedSeconds: 1_320, sessionCount: 1 },
+        ],
+        apps: [
+          { processName: "WindowsTerminal.exe", durationSeconds: 1_200 },
+          { processName: "chrome.exe", durationSeconds: 720 },
+          { processName: "explorer.exe", durationSeconds: 300 },
+        ],
+      }),
+    }));
+
+    await openAllStats(person);
+    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+
+    // No agent claim on a window whose measured agent time is zero.
+    const total = stats.getByText(/recorded/).closest("p");
+    expect(total).not.toHaveTextContent(/agent/i);
+    expect(total).toHaveTextContent("1h 56m");
+    expect(total).toHaveTextContent("1h 19m of it away from the keyboard");
+
+    // Both lists now close on the same total: 1h 34m + 22m of projects, and
+    // 20m + 12m + 5m of apps with the 1h 19m nobody was in front of anything.
+    const projects = stats.getByTestId("member-project-list");
+    expect(projects).toHaveTextContent("1h 34m");
+    expect(projects).toHaveTextContent("22m");
+    const apps = stats.getByTestId("member-app-list");
+    expect(apps).toHaveTextContent("Quiet time");
+    expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
   });
 
   it("keeps the breakdown quiet when there is nothing recorded", async () => {

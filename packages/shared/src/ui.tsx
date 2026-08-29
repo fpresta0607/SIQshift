@@ -32,7 +32,9 @@ export type ConcurrencySplit = {
 /// A person's active time laid out as labeled rows: the hours up top, then
 /// how many agents were running through them. What those agents added up to
 /// belongs to the agent, not the person, so it lives on the Agents tab's
-/// shifts-by-codebase map.
+/// shifts-by-codebase map. The four buckets sum to active time and say nothing
+/// about runtime that fell outside it; that number belongs to `recordedBasis`,
+/// beside the recorded total it explains.
 export const MemberBreakdown = ({
   activeSeconds,
   concurrency,
@@ -76,6 +78,30 @@ export const MemberBreakdown = ({
     )}
   </div>
 );
+
+/// What "recorded" is made of, in one sentence, from numbers this payload
+/// actually carries.
+///
+/// Recorded is whole sessions, so it counts stretches the person was not at
+/// the keyboard; active time is presence alone. The surfaces used to name that
+/// gap "unattended agent time" on the strength of `recorded > active` and
+/// nothing else - a claim about agents made from a measurement that contains
+/// no agents, and printed just as readily on a day whose measured agent time
+/// was zero. The gap is stated as what it is, and the agent share of it only
+/// when it was measured. `awayAgentSeconds` is summed runtime, so parallel
+/// agents can exceed the wall clock they ran in; it is clamped to the gap
+/// rather than allowed to out-run it.
+export const recordedBasis = (
+  recordedSeconds: number,
+  activeSeconds: number,
+  awayAgentSeconds: number,
+): string | null => {
+  const away = recordedSeconds - activeSeconds;
+  if (away < 60) return null;
+  const withAgent = Math.min(away, awayAgentSeconds);
+  const gap = `${formatHumanDuration(away)} of it away from the keyboard`;
+  return withAgent < 60 ? gap : `${gap}, ${formatHumanDuration(withAgent)} of that with an agent running`;
+};
 
 /// A compact count for token axes and readouts: 950, 12k, 3.4M. Token counts
 /// dwarf durations, so the charts format them on their own scale.
@@ -444,7 +470,16 @@ export type AppRow = {
 /// "Everything else". Which executables count as an agent comes from the
 /// shared runtime roster, so a newly declared CLI folds in without a second
 /// list to remember.
-export const buildAppRows = (apps: readonly AppDuration[]): AppRow[] => {
+///
+/// `recordedSeconds` is the total the list is being read under. These rows
+/// measure time in front of something, and that total is whole sessions, which
+/// also counts the stretches nothing was in front - so the two were never
+/// going to be equal, and the difference gets a row of its own rather than an
+/// hour appearing to vanish between a project list that sums to the total and
+/// an app list that sums to presence. The Today card has always closed the gap
+/// this way; All stats printed both denominators side by side and named
+/// neither.
+export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: number): AppRow[] => {
   let agentSeconds = 0;
   const agentSources = new Set<string>();
   const rows: AppRow[] = [];
@@ -467,14 +502,26 @@ export const buildAppRows = (apps: readonly AppDuration[]): AppRow[] => {
     });
   }
   rows.sort((a, b) => b.durationSeconds - a.durationSeconds || a.label.localeCompare(b.label));
-  if (rows.length <= TOP_APP_ROWS) return rows;
+  // Quiet time reads last, after the fold, because it is the remainder rather
+  // than an app. Under a minute is rounding, not a gap worth a row, and a
+  // remainder with nothing to be the remainder of is not a breakdown - the
+  // Today card gates its own quiet row on a non-empty list the same way, and
+  // an empty list still has an empty state to render instead.
+  const measured = rows.reduce((sum, row) => sum + row.durationSeconds, 0);
+  const quietSeconds = recordedSeconds === undefined || rows.length === 0
+    ? 0
+    : Math.max(0, recordedSeconds - measured);
+  const quiet: AppRow[] = quietSeconds < 60
+    ? []
+    : [{ key: "quiet-time", label: "Quiet time", durationSeconds: quietSeconds, agent: false }];
+  if (rows.length <= TOP_APP_ROWS) return [...rows, ...quiet];
   // The agent row never folds into the tail: the fold would hide the agent
   // runtimes inside "Everything else".
   const kept = [...rows.slice(0, TOP_APP_ROWS), ...rows.slice(TOP_APP_ROWS).filter((row) => row.agent)];
   const rest = rows.slice(TOP_APP_ROWS).filter((row) => !row.agent)
     .reduce((sum, row) => sum + row.durationSeconds, 0);
-  if (rest === 0) return kept;
-  return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false }];
+  if (rest === 0) return [...kept, ...quiet];
+  return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false }, ...quiet];
 };
 
 /// One app's share of the day, as the Today surface renders it.

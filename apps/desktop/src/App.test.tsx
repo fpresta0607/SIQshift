@@ -1107,6 +1107,56 @@ describe("the team board", () => {
     expect(breakdown).not.toHaveTextContent("Total agent time");
   });
 
+  // The same card as the web's, and the same report: 1h56m recorded against
+  // 37m active with no agent time measured anywhere in the window. The header
+  // called the difference "unattended agent time" from `recorded > active`
+  // alone, and the app list under it summed to presence while the project list
+  // above it summed to the total.
+  it("explains the gap between recorded and active without inventing agent time", async () => {
+    const samStats = {
+      ...meStats,
+      totalDurationSeconds: 6_960,
+      activeSeconds: 2_220,
+      agentSeconds: 0,
+      concurrency: { t0Seconds: 2_220, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
+      byAgent: [],
+      projects: [{
+        project: { id: project.id, name: project.name },
+        durationSeconds: 6_960,
+        attributedSeconds: 6_960,
+        unattributedSeconds: 0,
+        sessionCount: 2,
+      }],
+      apps: [
+        { processName: "WindowsTerminal.exe", durationSeconds: 1_200 },
+        { processName: "chrome.exe", durationSeconds: 1_020 },
+      ],
+    };
+    const bridge = bridgeFor({
+      meStats: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, userId?: string) =>
+        Promise.resolve(userId === undefined ? meStats : samStats)),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+
+    // A teammate's card, so the numbers are the server's rather than this
+    // machine's live day.
+    const panel = await openAllStats(person);
+    await person.click(within(panel).getByRole("button", { name: /Sam/ }));
+    const stats = within(panel).getByTestId("member-stats");
+    await within(stats).findByRole("heading", { name: /Sam · Today/ });
+
+    const total = within(stats).getByText(/recorded/).closest("p");
+    expect(total).not.toHaveTextContent(/agent/i);
+    expect(total).toHaveTextContent("1h 56m");
+    expect(total).toHaveTextContent("1h 19m of it away from the keyboard");
+
+    // The app list closes on the same total the project list does.
+    const apps = within(stats).getByTestId("member-app-list");
+    expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
+    expect(within(stats).getByTestId("member-project-list")).toHaveTextContent("1h 56m");
+  });
+
   it("keeps the breakdown quiet when there is nothing recorded", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
