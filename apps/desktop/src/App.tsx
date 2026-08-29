@@ -1523,7 +1523,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
               !settingsError && <p className="subtle">Loading…</p>
             ) : (
               <>
-                {/* One group open at a time keeps the panel scannable; native
+                {/* Collapsible groups keep the panel scannable; native
                     details/summary so there is no tab machinery to maintain. */}
                 <details className="settings-group" open>
                   <summary>Recording</summary>

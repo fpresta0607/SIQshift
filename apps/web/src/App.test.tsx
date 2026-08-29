@@ -13,6 +13,12 @@ vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
 const organization = { id: "00000000-0000-4000-8000-000000000001", name: "SIQstack", inviteCode: "ACDEF-GHJKM" };
 
+/// Two projects, so the filing header has something to change to.
+const pickableProjects = [
+  { id: "p1", name: "General", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false, isDefault: true },
+  { id: "p2", name: "Client", createdAt: "2026-08-11T12:00:00.000Z", isArchived: false, isDefault: false },
+];
+
 const noMeasurement = {
   concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
   byAgent: [] as never[],
@@ -229,7 +235,7 @@ describe("dashboard", () => {
     );
   });
 
-  it("reports a board that fails to reload after a join beside the join form", async () => {
+  it("keeps a board that fails after a successful join clear of the join form", async () => {
     const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
     const person = await signIn(clientFor({ leaderboard }));
     await screen.findByRole("heading", { name: "SIQstack" });
@@ -239,7 +245,10 @@ describe("dashboard", () => {
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
     await person.click(settings.getByRole("button", { name: "Join this team" }));
 
-    expect(await settings.findByText("The board is taking a break.")).toBeInTheDocument();
+    // The join itself succeeded, so the message belongs to the panel, not to
+    // the Team group where a refused code is reported.
+    const message = await settings.findByText("The board is taking a break.");
+    expect(message.closest("details")).toBeNull();
   });
 
   it("lets the download menu keep an Escape press to itself inside the settings panel", async () => {
@@ -267,6 +276,40 @@ describe("dashboard", () => {
     releaseStats({ ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [], hourly: [] });
 
     expect(await screen.findByTestId("today-panel-empty")).toBeInTheDocument();
+  });
+
+  it("says the refresh failed rather than emptying the Today card down to its heading", async () => {
+    const meStats = vi.fn().mockResolvedValue({
+      ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [], hourly: [],
+    });
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null }),
+      meStats,
+    }));
+    expect(await screen.findByTestId("today-panel-empty")).toBeInTheDocument();
+
+    meStats.mockRejectedValueOnce(new ClientError("transient", "Today is taking a break."));
+    await person.click(screen.getByTestId("filing-change"));
+    await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
+
+    expect(await screen.findByText("Could not load today's hours.")).toBeInTheDocument();
+  });
+
+  it("keeps the last good rows on screen when a refresh over them fails", async () => {
+    const meStats = vi.fn().mockResolvedValue(memberStats);
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null }),
+      meStats,
+    }));
+    await screen.findByTestId("session-app-list");
+
+    meStats.mockRejectedValueOnce(new ClientError("transient", "Today is taking a break."));
+    await person.click(screen.getByTestId("filing-change"));
+    await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
+
+    await waitFor(() => expect(meStats.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+    expect(screen.getByTestId("session-app-list")).toBeInTheDocument();
+    expect(screen.queryByText("Could not load today's hours.")).not.toBeInTheDocument();
   });
 
   it("explains how the app works from the dashboard help button", async () => {
@@ -760,7 +803,10 @@ describe("dashboard", () => {
     await person.type(settings.getByLabelText("Their invite code"), "ACDEF-GHJKM");
     await person.click(settings.getByRole("button", { name: "Join this team" }));
 
-    expect(await settings.findByText(/cannot move/)).toBeInTheDocument();
+    // A refused code is the Team group's own business, beside the form that
+    // sent it.
+    const refusal = await settings.findByText(/cannot move/);
+    expect(refusal.closest("details")).not.toBeNull();
   });
 });
 

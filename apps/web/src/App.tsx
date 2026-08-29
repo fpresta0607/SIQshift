@@ -487,7 +487,7 @@ export const App = ({ client }: AppProps) => {
       setJoinCode("");
       const refreshed = await client.organization();
       setOrganization(refreshed.organization);
-      setJoinError(await reloadBoard());
+      setSettingsError(await reloadBoard());
     } catch (error: unknown) {
       setJoinError(messageFor(error));
     } finally {
@@ -770,11 +770,11 @@ export const App = ({ client }: AppProps) => {
           <div className="panel-head">
             <h2 id="today-panel-title">Today</h2>
           </div>
-          {todayFailed && todayStats === undefined && (
+          {todayFailed && todayMeterRows.length === 0 && todayProjectRows.length === 0 && (
             <p className="error" role="alert">Could not load today's hours.</p>
           )}
           {todayMeterRows.length === 0 && todayProjectRows.length === 0 ? (
-            !todayFailed && todayStats !== undefined && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
+            todayStats !== undefined && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
           ) : (
             <>
               {todayProjectRows.length > 0 && (
@@ -1083,7 +1083,7 @@ export const App = ({ client }: AppProps) => {
 
             {settingsError && <p className="error" role="alert">{settingsError}</p>}
 
-            {/* One group open at a time keeps the panel scannable; native
+            {/* Collapsible groups keep the panel scannable; native
                 details/summary so there is no tab machinery to maintain. */}
             <details className="settings-group" open>
               <summary>Recording</summary>
