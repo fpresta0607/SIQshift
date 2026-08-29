@@ -216,6 +216,19 @@ describe("dashboard", () => {
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
+  it("reports a denied clipboard inside the settings panel that covers the page", async () => {
+    const person = await signIn(clientFor());
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
+    await person.click(settings.getByRole("button", { name: "Copy code" }));
+
+    expect(await settings.findByRole("alert")).toHaveTextContent(
+      "Could not copy. Select the code and copy it manually.",
+    );
+  });
+
   it("explains how the app works from the dashboard help button", async () => {
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });

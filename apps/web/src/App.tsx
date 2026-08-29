@@ -165,6 +165,7 @@ export const App = ({ client }: AppProps) => {
   const [sessionPage, setSessionPage] = useState(1);
   const [allStatsOpen, setAllStatsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | undefined>();
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
@@ -493,11 +494,13 @@ export const App = ({ client }: AppProps) => {
     if (organization === undefined) return;
     try {
       await navigator.clipboard.writeText(organization.inviteCode);
+      setSettingsError(undefined);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2_000);
     } catch {
       // Clipboard access can be denied; the code is on screen to copy by hand.
-      setDataError("Could not copy. Select the code and copy it manually.");
+      // The page banner sits under this overlay, so report it in the panel.
+      setSettingsError("Could not copy. Select the code and copy it manually.");
     }
   };
 
@@ -663,7 +666,7 @@ export const App = ({ client }: AppProps) => {
             type="button"
             aria-label="Settings"
             title="Settings"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => { setSettingsError(undefined); setSettingsOpen(true); }}
           >
             ⚙
           </button>
@@ -1073,6 +1076,8 @@ export const App = ({ client }: AppProps) => {
               <button className="ghost modal-close" type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}>✕</button>
             </div>
 
+            {settingsError && <p className="error" role="alert">{settingsError}</p>}
+
             {/* One group open at a time keeps the panel scannable; native
                 details/summary so there is no tab machinery to maintain. */}
             <details className="settings-group" open>
@@ -1095,7 +1100,8 @@ export const App = ({ client }: AppProps) => {
             <ProjectsGroup client={client} projects={projects} onChanged={() => {
               void refreshProjects()
                 .then(() => reloadBoard())
-                .catch((error: unknown) => setDataError(messageFor(error)));
+                .then(() => setSettingsError(undefined))
+                .catch((error: unknown) => setSettingsError(messageFor(error)));
             }} />
 
             {organization && (
