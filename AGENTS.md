@@ -249,7 +249,8 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   emitted by both projects with identical JS, since `lib` decides what type-checks
   and never what is written. Every one of those components shipped as hand-synced
   copies first, and a fix landed in one app and not the other twice before the
-  background became one file; the same applies to anything else drawn twice. Its wave normalises each axis by its own
+  background became one file; the same applies to anything else drawn twice.
+  The background's wave normalises each axis by its own
   extent and scales x by `WAVE_ASPECT`, the landscape hero it was drawn at -
   `min(resolution.x, resolution.y)` picks the *width* in this app's portrait window
   and stretches every band into a straight streak.
