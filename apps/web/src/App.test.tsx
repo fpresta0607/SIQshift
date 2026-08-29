@@ -311,6 +311,28 @@ describe("dashboard", () => {
     expect(within(screen.getByTestId("project-list")).queryByText("General")).toBeNull();
   });
 
+  it("leaves the old workspace's people behind when the viewer joins another", async () => {
+    const meStats = vi.fn().mockResolvedValue(memberStats);
+    const person = await signIn(clientFor({ meStats }));
+
+    const board = await openAllStats(person);
+    await person.click(await board.findByRole("button", { name: /Sam/ }));
+    await screen.findByRole("region", { name: /Sam · Last 30 days/ });
+    await person.click(screen.getByRole("button", { name: "Close all stats" }));
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+    await person.click(settings.getByRole("button", { name: "Close settings" }));
+
+    // Sam belongs to the workspace just left, so the id must not go on being
+    // sent as a filter the new workspace's API refuses.
+    const reopened = await openAllStats(person);
+    expect(await reopened.findByRole("region", { name: /Alex · Last 30 days/ })).toBeInTheDocument();
+    const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
+    expect(query.get("userId")).toBe("u2");
+  });
+
   it("keeps a project list that fails after a successful join clear of the join form", async () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })

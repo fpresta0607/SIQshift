@@ -454,6 +454,22 @@ export const App = ({ client }: AppProps) => {
     }
   };
 
+  /// The view state that belongs to one workspace and cannot follow the viewer
+  /// out of it: another team's people are not this team's people, and the ids
+  /// picked from a board would go on being sent as filters the API refuses.
+  /// Signing out and joining a workspace both leave the workspace behind.
+  const clearWorkspaceView = (): void => {
+    setMember(undefined);
+    setMemberStats(undefined);
+    setMemberFailed(false);
+    setBoardTab("humans");
+    setShiftsMember(undefined);
+    setAgentShifts(undefined);
+    setAgentShiftsFailed(false);
+    setSessionsOpen(false);
+    setSessionRows([]);
+  };
+
   const signOut = async (): Promise<void> => {
     await client.signOut();
     setSignedIn(false);
@@ -463,21 +479,10 @@ export const App = ({ client }: AppProps) => {
     setSelfName(undefined);
     setProjects([]);
     setEntries([]);
-    setMember(undefined);
-    setMemberStats(undefined);
-    setMemberFailed(false);
     setBoardFailed(false);
     setTodayStats(undefined);
     setTodayFailed(false);
-    // The Agents tab holds another workspace's shifts and another workspace's
-    // person id, and the id would go on being sent as a filter. Cleared with
-    // the rest of the board, so the next account opens on its own data.
-    setBoardTab("humans");
-    setShiftsMember(undefined);
-    setAgentShifts(undefined);
-    setAgentShiftsFailed(false);
-    setSessionsOpen(false);
-    setSessionRows([]);
+    clearWorkspaceView();
     setAllStatsOpen(false);
     setSettingsOpen(false);
     setScopePickerOpen(false);
@@ -498,6 +503,7 @@ export const App = ({ client }: AppProps) => {
       const refreshed = await client.organization();
       setOrganization(refreshed.organization);
       setTodayTick((tick) => tick + 1);
+      clearWorkspaceView();
       // The new workspace has its own projects; the filing header, the picker
       // and every scoped request would otherwise still name the old one's.
       const scopeSurvives = await refreshProjects();
