@@ -9,8 +9,16 @@
 -- plan is rebuilt from scratch on every call anyway, so dropping a leftover
 -- one first is the whole fix.
 --
+-- The path lane's boundary test changes with it. 0018 and 0019 spell it as
+-- `cwd LIKE prefix || '/%'`, which makes an `_` or a `%` inside a mapped path
+-- a wildcard: a mapping for `C:/dev/my_app` matches a session in
+-- `C:/dev/myXapp/src` and the backfill moves that row onto a project live
+-- ingest would never put it in. The rule these migrations are written to
+-- mirror (`matchesBoundary` in apps/api/src/services/attribution.ts) compares
+-- literally, so `starts_with` is that rule and LIKE never was.
+--
 -- Fix-forward as its own migration because 0019 is applied history. The
--- function is otherwise byte-identical to 0019's: same plan, same lanes, same
+-- function is otherwise unchanged from 0019's: same plan, same lanes, same
 -- ambiguity refusals, same audit stamping, idempotent.
 
 CREATE OR REPLACE FUNCTION backfill_agent_session_worktree_attribution(p_dry_run boolean DEFAULT false)
@@ -57,7 +65,7 @@ BEGIN
             AND m.kind = 'path_prefix'
             AND (
                 lower(rtrim(replace(m.path_prefix, v_backslash, '/'), '/')) = lower(rtrim(r.main_root, '/'))
-                OR lower(rtrim(r.main_root, '/')) LIKE lower(rtrim(replace(m.path_prefix, v_backslash, '/'), '/')) || '/%'
+                OR starts_with(lower(rtrim(r.main_root, '/')), lower(rtrim(replace(m.path_prefix, v_backslash, '/'), '/')) || '/')
             )
     ),
     -- Longest prefix wins; winners of equal length must name one project or

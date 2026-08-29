@@ -431,3 +431,80 @@ integration(
     });
   },
 );
+
+/**
+ * The worktree backfill resolves a session's cwd by the same rule live ingest
+ * does - `matchesBoundary` in apps/api/src/services/attribution.ts, a literal
+ * prefix that only matches on a path-segment boundary. A mapped path holding
+ * an `_` or a `%` is where a SQL `LIKE` stops being that rule and starts being
+ * a pattern, and a backfill that moves a row live ingest would leave alone is
+ * a wrong answer written to production.
+ */
+integration(
+  databaseUrl
+    ? "the worktree backfill matches mapped paths literally"
+    : "the worktree backfill matches mapped paths literally (skipped: TEST_DATABASE_URL is not set)",
+  () => {
+    let disposable: DisposableTestDatabase | undefined;
+    let database = undefined as unknown as DatabaseConnection;
+    const organizationId = randomUUID();
+    const ownerId = randomUUID();
+    const mappedProjectId = randomUUID();
+    const insideMapping = randomUUID();
+    const wildcardNeighbour = randomUUID();
+
+    beforeAll(async () => {
+      if (!databaseUrl) return;
+      disposable = await createDisposableTestDatabase(databaseUrl, "migrations_backfill_prefix");
+      database = disposable.database;
+      await runMigrations(database);
+      await database.client`
+        insert into organizations (id, name, invite_code)
+        values (${organizationId}, 'Prefix backfill', ${randomUUID().replaceAll("-", "").slice(0, 11)})
+      `;
+      await database.client`
+        insert into users (id, organization_id, email, name)
+        values (${ownerId}, ${organizationId}, 'prefix@example.test', 'Owner')
+      `;
+      await database.client`
+        insert into projects (id, organization_id, name)
+        values (${mappedProjectId}, ${organizationId}, 'My App')
+      `;
+      // The mapped root carries an underscore, which LIKE reads as "any one
+      // character" and a literal prefix reads as an underscore.
+      await database.client`
+        insert into project_path_mappings (organization_id, user_id, kind, path_prefix, project_id)
+        values (${organizationId}, ${ownerId}, 'path_prefix', 'C:/dev/my_app', ${mappedProjectId})
+      `;
+      const startedAt = "2026-08-06T14:00:00.000Z";
+      await database.client`
+        insert into agent_sessions (id, organization_id, user_id, source, external_session_id, cwd, started_at, last_event_at)
+        values
+          (${insideMapping}, ${organizationId}, ${ownerId}, 'claude_code', ${insideMapping}, 'C:/dev/my_app/src', ${startedAt}, ${startedAt}),
+          (${wildcardNeighbour}, ${organizationId}, ${ownerId}, 'claude_code', ${wildcardNeighbour}, 'C:/dev/myXapp/src', ${startedAt}, ${startedAt})
+      `;
+    }, 60_000);
+
+    afterAll(async () => {
+      if (disposable !== undefined) await disposable.cleanup();
+    });
+
+    it("attributes a session under the mapped root and leaves its wildcard-adjacent neighbour alone", async () => {
+      if (!database) return;
+      const [report] = await database.client`
+        select backfill_agent_session_worktree_attribution(false) as report
+      `;
+      expect(report.report.moved).toBe(1);
+
+      const rows = await database.client`
+        select cwd, project_id from agent_sessions where organization_id = ${organizationId}
+      `;
+      const attributed = new Map(rows.map((row) => [row.cwd as string, row.project_id as string | null]));
+      expect(attributed.get("C:/dev/my_app/src")).toBe(mappedProjectId);
+      // `C:/dev/myXapp` is not inside `C:/dev/my_app`; only a LIKE pattern
+      // thinks otherwise, and this row stays unattributed as live ingest
+      // would leave it.
+      expect(attributed.get("C:/dev/myXapp/src")).toBeNull();
+    });
+  },
+);
