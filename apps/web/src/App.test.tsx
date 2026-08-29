@@ -251,6 +251,38 @@ describe("dashboard", () => {
     expect(message.closest("details")).toBeNull();
   });
 
+  it("repoints the page at the new workspace's projects after a join", async () => {
+    const newWorkspaceProjects = [
+      { id: "p9", name: "Migration", createdAt: "2026-08-20T12:00:00.000Z", isArchived: false, isDefault: true },
+    ];
+    const projects = vi.fn()
+      .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
+      .mockResolvedValue({ projects: newWorkspaceProjects, selectedProjectId: null });
+    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const person = await signIn(clientFor({
+      projects,
+      leaderboard,
+      preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
+    }));
+    await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("Client"));
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+
+    // The old workspace's project is gone, so the page reads everything rather
+    // than sending a scope the new workspace will refuse.
+    await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects"));
+    expect(leaderboard.mock.calls.at(-1)?.[0]).not.toContain("scope=p2");
+    expect(settings.queryByRole("alert")).toBeNull();
+
+    await person.click(settings.getByRole("button", { name: "Close settings" }));
+    await person.click(screen.getByTestId("filing-change"));
+    const picker = within(screen.getByTestId("project-picker"));
+    expect(picker.getByRole("radio", { name: /Migration/ })).toBeInTheDocument();
+    expect(picker.queryByRole("radio", { name: /Client/ })).toBeNull();
+  });
+
   it("lets the download menu keep an Escape press to itself inside the settings panel", async () => {
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });

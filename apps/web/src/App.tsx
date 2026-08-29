@@ -487,7 +487,10 @@ export const App = ({ client }: AppProps) => {
       setJoinCode("");
       const refreshed = await client.organization();
       setOrganization(refreshed.organization);
-      setSettingsError(await reloadBoard());
+      // The new workspace has its own projects; the filing header, the picker
+      // and every scoped request would otherwise still name the old one's.
+      const scopeSurvives = await refreshProjects();
+      setSettingsError(scopeSurvives ? await reloadBoard() : undefined);
     } catch (error: unknown) {
       setJoinError(messageFor(error));
     } finally {
@@ -509,13 +512,16 @@ export const App = ({ client }: AppProps) => {
     }
   };
 
-  const refreshProjects = async (): Promise<void> => {
+  /// Reports whether the scope on screen survived the refresh. A scope naming
+  /// a project the list no longer carries falls back to everything, and the
+  /// effects that follow `scope` reload the board and the day themselves, so a
+  /// caller must not fire its own reload against the scope it just retired.
+  const refreshProjects = async (): Promise<boolean> => {
     const listed = await client.projects();
     setProjects(listed.projects);
-    // A scope naming a project that no longer exists falls back to everything.
-    if (scope !== "all" && !listed.projects.some((project) => project.id === scope)) {
-      setScope("all");
-    }
+    const scopeSurvives = scope === "all" || listed.projects.some((project) => project.id === scope);
+    if (!scopeSurvives) setScope("all");
+    return scopeSurvives;
   };
 
   /// Creates a project and points the dashboard at it, which is the only
@@ -1104,7 +1110,7 @@ export const App = ({ client }: AppProps) => {
 
             <ProjectsGroup client={client} projects={projects} onChanged={() => {
               void refreshProjects()
-                .then(() => reloadBoard())
+                .then((scopeSurvives) => (scopeSurvives ? reloadBoard() : undefined))
                 .then((failure) => setSettingsError(failure))
                 .catch((error: unknown) => setSettingsError(messageFor(error)));
             }} />
