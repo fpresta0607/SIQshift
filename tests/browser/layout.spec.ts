@@ -176,6 +176,49 @@ for (const app of ["desktop", "web"] as const) {
       expect(heads.map((head) => head.name.includes("· 50% held"))).toEqual([true, false]);
     });
 
+    // A phone is where this row runs out of room first, and an open drawer is
+    // the only way to see one. The tab used to live in the dashboard's own
+    // column and now lives in the All-stats overlay, which is narrower: the
+    // `.shift-list` grid track floored at the row's min-content - its runtime,
+    // owner, model and commit count laid end to end - and pushed every row
+    // past the overlay's right edge, taking the duration off screen. jsdom
+    // cannot see it: there is no layout engine to overflow.
+    test("keeps an open drawer's shift durations on screen at phone width", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openAgentsGroup(page, app);
+      // Set `open` rather than clicking each summary: the fixture ships one
+      // drawer already open, so a blanket click would close it again.
+      await page.locator(".shift-group").evaluateAll((groups) => {
+        for (const group of groups) (group as HTMLDetailsElement).open = true;
+      });
+
+      const measured = await page.evaluate(() => {
+        const modal = document.querySelector<HTMLElement>(".modal")!;
+        return {
+          viewport: document.documentElement.clientWidth,
+          modalClientWidth: modal.clientWidth,
+          modalScrollWidth: modal.scrollWidth,
+          durationRights: [...document.querySelectorAll<HTMLElement>(".shift-row .shift-duration")]
+            .map((cell) => Math.round(cell.getBoundingClientRect().right)),
+          factsClipped: [...document.querySelectorAll<HTMLElement>(".shift-row .shift-facts")]
+            .every((cell) => getComputedStyle(cell).textOverflow === "ellipsis"),
+        };
+      });
+
+      // Every drawer really is open, so the rows below are the ones measured.
+      expect(await page.locator(".shift-group[open]").count()).toBe(2);
+      // The overlay scrolls vertically by design and horizontally never: a
+      // scrollWidth past its client width is the row overflowing it.
+      expect(measured.modalScrollWidth).toBe(measured.modalClientWidth);
+      // The measure is what may not be lost. The facts beside it are allowed
+      // to ellipsize, which is how the row gives way instead.
+      expect(measured.durationRights.length).toBeGreaterThan(0);
+      for (const right of measured.durationRights) {
+        expect(right).toBeLessThanOrEqual(measured.viewport);
+      }
+      expect(measured.factsClipped).toBe(true);
+    });
+
     // The whole point of the drawer: a busy range runs to hundreds of shift
     // rows, and a closed group must actually hide its own. jsdom cannot check
     // this - it has no rule hiding a closed `details` - so this is the only
