@@ -118,6 +118,36 @@ test.describe("the WebGL background", () => {
     }
   });
 
+  test("keeps the wave's phase bounded however long the window stays open", async ({ page }) => {
+    // The fragment program adds `time` to each fragment's own x before taking
+    // the sine, in float32. `time` therefore sets the resolution of that sum:
+    // its ulp is 2^-23 of its magnitude, and once that exceeds the ~0.0016
+    // between two neighbouring pixels a run of pixels rounds to one argument
+    // and the wave staircases into vertical slabs. At `time` = 2^18 the slabs
+    // are 19.5px wide on a 1998px window, which is the desktop bug report.
+    //
+    // This asserts the uniform rather than the pixels because the pixels take
+    // 26 million frames to get there, and one wrap is a phase this suite can
+    // reach: 700 frames is one full period of a clock that used to keep every
+    // one of them. Each of those frames is a real draw, so the canvas gets the
+    // app's own minimum window rather than the default viewport.
+    await page.addInitScript(FREEZE_FRAMES);
+    await page.setViewportSize({ width: 400, height: 600 });
+    await page.goto("/");
+    await page.waitForSelector("canvas.shader-bg");
+    await page.evaluate(() => (window as unknown as { __advance: (n: number) => void }).__advance(700));
+
+    const time = await page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.shader-bg")!;
+      const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl")!;
+      const program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
+      return gl.getUniform(program, gl.getUniformLocation(program, "time")!) as number;
+    });
+
+    expect(time).toBeGreaterThan(0);
+    expect(time).toBeLessThan(Math.PI * 2);
+  });
+
   test("keeps no per-app copy of the shader", () => {
     // The wave used to be byte-identical hand-synced copies in each app, and a
     // background fix landed in one and not the other twice. It lives in
