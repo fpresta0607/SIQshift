@@ -4,6 +4,14 @@ export interface PathMappingCandidate {
   id: string;
   kind: PathMappingKind;
   pathPrefix: string;
+  /**
+   * The git remote a path-prefix mapping may optionally name. Present on the
+   * mappings that carry one, it lets a working directory resolve to this
+   * project even where no path prefix can reach it - a worktree stored
+   * outside the project root, a second checkout under another name. Compared
+   * through `normalizeRemote`, never verbatim.
+   */
+  repoUrl: string | null;
   projectId: string;
 }
 
@@ -171,6 +179,8 @@ export function normalizeRemote(remote: string): string | null {
  *    backfill would fold two live rows onto one key and abort on the unique
  *    index it then builds. Git emits one spelling of a root
  *    (`rev-parse --show-toplevel`), so there is nothing to normalize away.
+ *    Since the desktop resolves the main repository root rather than the
+ *    worktree toplevel, worktrees of one repository share that root too.
  * 3. **Nothing.** Work that happened outside any repository at all, which is
  *    the honest unassigned case: the operator's bucket, shared by every such
  *    shift rather than minting a row each.
@@ -255,6 +265,35 @@ export function resolveProjectForCwd(cwd: string, mappings: readonly PathMapping
   if (best.length === 0) return null;
   const projectIds = new Set(best.map((mapping) => mapping.projectId));
   return projectIds.size === 1 ? best[0]!.projectId : null;
+}
+
+/**
+ * Resolves a working directory's repository to a project by its git remote,
+ * the fallback for the directories no path prefix can reach: a worktree the
+ * operator keeps outside the project root (`~/.treehouse/...`, a relocated
+ * `.worktrees`), a second checkout under another name. Two checkouts of one
+ * repository are one project, and the remote is the only identifier that
+ * says so across every directory it might live in.
+ *
+ * Only `path_prefix` mappings carrying a `repoUrl` participate. Both sides
+ * go through `normalizeRemote`, so `git@github.com:owner/repo.git` in the
+ * mapping and `https://github.com/owner/repo` on the event are one remote.
+ * A remote matching mappings that name different projects is ambiguous and
+ * resolves to nothing - never a guess.
+ */
+export function resolveProjectForRemote(remote: string | null, mappings: readonly PathMappingCandidate[]): string | null {
+  if (remote === null) return null;
+  const normalized = normalizeRemote(remote);
+  if (normalized === null) return null;
+  const projectIds = new Set<string>();
+  for (const mapping of mappings) {
+    if (mapping.kind !== "path_prefix" || mapping.repoUrl === null) continue;
+    if (normalizeRemote(mapping.repoUrl) !== normalized) continue;
+    projectIds.add(mapping.projectId);
+  }
+  if (projectIds.size !== 1) return null;
+  const [projectId] = projectIds;
+  return projectId ?? null;
 }
 
 /**

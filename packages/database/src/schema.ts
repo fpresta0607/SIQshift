@@ -370,6 +370,14 @@ export const agentSessions = pgTable(
     // Nullable until the attribution service resolves cwd to a project. The composite
     // FK uses MATCH SIMPLE, so a null projectId skips the tenant check entirely.
     projectId: uuid("project_id"),
+    // The project this row's attribution held before the worktree backfill
+    // (0018) re-resolved it against the main repository root. Written once,
+    // on the first move, and never overwritten by a later pass - so the
+    // change stays inspectable and reversible
+    // (`update agent_sessions set project_id = original_project_id where
+    // original_project_id is not null`) however many times the backfill
+    // re-runs. Null means the row never moved, or had no project to begin with.
+    originalProjectId: uuid("original_project_id"),
     // Null for browser spans, which carry no working directory; the matched
     // url-rule mapping id below attributes them instead.
     cwd: text("cwd"),
@@ -403,6 +411,11 @@ export const agentSessions = pgTable(
       columns: [table.organizationId, table.projectId],
       foreignColumns: [projects.organizationId, projects.id],
       name: "agent_sessions_organization_project_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.originalProjectId],
+      foreignColumns: [projects.organizationId, projects.id],
+      name: "agent_sessions_organization_original_project_fk",
     }).onDelete("restrict"),
     foreignKey({
       columns: [table.organizationId, table.agentId],

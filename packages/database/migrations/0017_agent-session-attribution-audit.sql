@@ -1,0 +1,2 @@
+ALTER TABLE "agent_sessions" ADD COLUMN "original_project_id" uuid;--> statement-breakpoint
+ALTER TABLE "agent_sessions" ADD CONSTRAINT "agent_sessions_organization_original_project_fk" FOREIGN KEY ("organization_id","original_project_id") REFERENCES "public"."projects"("organization_id","id") ON DELETE restrict ON UPDATE no action;

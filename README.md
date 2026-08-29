@@ -267,6 +267,7 @@ refusals never fail a batch.
 
 An agent's identity is durable across sessions, keyed by **(operator, runtime, repository)** per organization - the same person's Claude Code working the same repository is one roster entry, not a new row per shift, and two people running the same runtime on the same repository are two workers rather than one.
 The repository is named by its git remote, normalized (`github.com/owner/repo`), and never by the directory it happens to sit in: a worktree, a second worktree, and a second checkout under a different folder name are all one repository and so one roster entry, on this machine and on the next one.
+The repository's **root** is likewise resolved to the main checkout - the parent of the git common directory - rather than the worktree path, so a shift in `<repo>/.worktrees/gb-<id>` attributes to the same project as a shift in `<repo>` itself; when no path mapping can reach the directory, the repository's remote is matched against the mappings' own `repo_url` before the shift gives up on a project.
 A repository with no remote is identified by its own directory, which keeps local-only work from pooling into a single row.
 Each `agent_sessions` row is that identity's shift.
 The operator is whoever's desktop uploaded the shift, so every runtime gets the distinction the day its hooks are wired.

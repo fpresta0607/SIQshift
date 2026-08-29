@@ -179,6 +179,27 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   and README's "What is never collected"; the three word it differently, but they must
   all describe the same thing that actually leaves the machine, so change what is sent
   and all three change with it.
+- A repo root is a working directory, and since the worktree-attribution fix it is the
+  **main repository root** - the parent of `git rev-parse --path-format=absolute
+  --git-common-dir` - never the `--show-toplevel` answer, which names a linked worktree.
+  `git_evidence.rs` owns this: the hook's `repo_root` and `discover_repo`'s `RepoLocation.root`
+  resolve the main root, `RepoLocation.toplevel` keeps the worktree itself because HEAD and
+  the shift's commit range live there (`commits_in_window` must run at the toplevel - a
+  worktree's commits are invisible to the main checkout's HEAD), and verification runs at
+  the main root so a captured commit outlives worktree cleanup. A common directory not
+  named `.git` (submodule, bare repo, custom `GIT_DIR`) falls back to the toplevel answer.
+  Attribution resolves in a fixed chain - repoRoot path, then cwd path, then the
+  repository's remote against `project_path_mappings.repo_url` through
+  `resolveProjectForRemote` - so a worktree stored outside every mapped root still lands
+  on its repository's project. Never key any of it off the session name or worktree
+  directory name.
+- Attribution history was rewritten once by migration `0018_backfill_worktree_attribution`
+  (with `agent_sessions.original_project_id`, added by 0017, recording what each moved row
+  held). The `backfill_agent_session_worktree_attribution(p_dry_run)` function stays in the
+  database and is the deliberate re-run path after mappings change; the revert is the one
+  UPDATE documented in the migration header. A migration whose statements hand-added to the
+  folder also needs its `meta/_journal.json` entry hand-added, or `drizzle-kit generate`
+  sees it and the migrator silently skips it.
 - The migration folder is not a description of production. Production's
   `drizzle.__drizzle_migrations` holds entries whose hashes match no file on `main`,
   because phase 3 applied migrations that were later rewritten here. Drizzle selects

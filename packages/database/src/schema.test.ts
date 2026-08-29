@@ -304,9 +304,14 @@ describe("database schema", () => {
     expect(agentSessions.updatedAt.notNull).toBe(true);
 
     const config = getTableConfig(agentSessions);
-    expect(config.foreignKeys).toHaveLength(4);
+    expect(config.foreignKeys).toHaveLength(5);
     expect(
       config.foreignKeys.some((key) => key.getName() === "agent_sessions_organization_agent_fk"),
+    ).toBe(true);
+    // The audit column 0017 added: org-scoped like project_id itself, so a
+    // recorded original attribution can never point outside the tenant.
+    expect(
+      config.foreignKeys.some((key) => key.getName() === "agent_sessions_organization_original_project_fk"),
     ).toBe(true);
     // Composite-FK target for shift_commits rows.
     expect(config.uniqueConstraints.map((constraint) => constraint.name)).toContain(

@@ -7,7 +7,7 @@ import type {
   PathMappingRepository,
   SessionRepository,
 } from "../repositories.js";
-import { identityRepoKey, resolveProjectForCwd, resolveProjectForRule, type PathMappingCandidate } from "./attribution.js";
+import { identityRepoKey, resolveProjectForCwd, resolveProjectForRemote, resolveProjectForRule, type PathMappingCandidate } from "./attribution.js";
 
 const futureEventToleranceMs = 30_000;
 /**
@@ -169,16 +169,28 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
       };
 
       const results: AgentSessionEventBatchResponse["results"] = [];
-      // The repository is the better evidence of where work happened, so it
-      // is matched first and the working directory is the fallback; the
-      // mechanism is the same longest-prefix match either way.
+      // Resolution runs the same chain on every non-browser event, each lane
+      // answering only when the one before it found nothing:
+      // 1. The repository root's path - the better evidence of where work
+      //    happened, and since the desktop resolves the main repository root
+      //    rather than the worktree toplevel, this covers a worktree nested
+      //    under the project's mapped root as its own prefix match.
+      // 2. The working directory's path - the fallback for a session the
+      //    hook could not probe a repository for.
+      // 3. The repository's remote - the only signal left for a worktree the
+      //    operator keeps outside every mapped root (`~/.treehouse/...`, a
+      //    relocated `.worktrees`): two checkouts of one repoRemote are one
+      //    project, matched through the mappings' own repoUrl.
+      // Ambiguity resolves to nothing at every lane rather than to a guess.
       const resolveProject = (event: AgentSessionEventInput, mappings: PathMappingCandidate[]): string | null => {
         if (event.source === "browser") return event.ruleId === null ? null : resolveProjectForRule(event.ruleId, mappings);
         if (event.repoRoot !== null) {
           const fromRepo = resolveProjectForCwd(event.repoRoot, mappings);
           if (fromRepo !== null) return fromRepo;
         }
-        return resolveProjectForCwd(event.cwd ?? "", mappings);
+        const fromCwd = resolveProjectForCwd(event.cwd ?? "", mappings);
+        if (fromCwd !== null) return fromCwd;
+        return resolveProjectForRemote(event.repoRemote, mappings);
       };
       for (const event of events) {
         const occurredAt = event.occurredAt.getTime();

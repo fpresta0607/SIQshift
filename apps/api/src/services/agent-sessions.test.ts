@@ -263,6 +263,63 @@ describe("agent-session service", () => {
     expect(otherProject.agentSessions.records[0]).toMatchObject({ projectId: ids.project, linkedSessionId: null });
   });
 
+  // The Overlord's shape, end to end: a goblin in `<repo>/.worktrees/gb-<id>`
+  // is working the repository the mapping already names, because the desktop
+  // resolves the main repository root and the prefix rule matches the
+  // worktree beneath it.
+  it("attributes a worktree nested under the mapped repo root through the main root", async () => {
+    const { agentSessions, service } = createService({ mappings: [mapped] });
+    await service.ingest(subject, [
+      event({
+        cwd: "C:\\dev\\siqshift\\.worktrees\\gb-the-shift",
+        repoRoot: "C:\\dev\\siqshift\\.worktrees\\gb-the-shift",
+        repoRemote: "git@github.com:acme/siqshift.git",
+      }),
+    ]);
+    expect(agentSessions.records[0]).toMatchObject({ projectId: ids.project });
+  });
+
+  // The gap the nested case leaves: a worktree outside every mapped root
+  // cannot match by prefix, so the repository's remote is the only signal
+  // left, read from the mapping's own repoUrl.
+  it("falls back to the repository remote for a worktree no path prefix can reach", async () => {
+    const byRemote: PathMappingRecord = {
+      ...mapped,
+      id: "0b9d1e9e-4d4c-4ae5-a552-1790ae019a40",
+      pathPrefix: "C:/dev/anything",
+      repoUrl: "git@github.com:acme/siqshift.git",
+    };
+    const { agentSessions, service } = createService({ mappings: [byRemote] });
+    await service.ingest(subject, [
+      event({
+        cwd: "C:\\Users\\fpres\\.treehouse\\siqshift-4b3191\\siqshift",
+        repoRoot: "C:\\Users\\fpres\\.treehouse\\siqshift-4b3191\\siqshift",
+        repoRemote: "https://github.com/acme/siqshift.git",
+      }),
+    ]);
+    expect(agentSessions.records[0]).toMatchObject({ projectId: ids.project });
+  });
+
+  // Two different remotes are two codebases. A mapping naming one of them
+  // must never catch the other, whatever the paths look like.
+  it("does not let a remote mapping capture a different repository's session", async () => {
+    const byRemote: PathMappingRecord = {
+      ...mapped,
+      id: "0b9d1e9e-4d4c-4ae5-a552-1790ae019a41",
+      pathPrefix: "C:/dev/anything",
+      repoUrl: "git@github.com:acme/siqshift.git",
+    };
+    const { agentSessions, service } = createService({ mappings: [byRemote] });
+    await service.ingest(subject, [
+      event({
+        cwd: "C:\\Users\\fpres\\.treehouse\\unrelated-4b3191\\unrelated",
+        repoRoot: "C:\\Users\\fpres\\.treehouse\\unrelated-4b3191\\unrelated",
+        repoRemote: "git@github.com:acme/unrelated.git",
+      }),
+    ]);
+    expect(agentSessions.records[0]).toMatchObject({ projectId: null });
+  });
+
   it("treats a repeated start as a lastEventAt refresh", async () => {
     const { agentSessions, service } = createService();
     await service.ingest(subject, [event()]);
