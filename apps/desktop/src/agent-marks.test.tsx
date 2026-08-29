@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { agentRuntimes } from "@siqshift/shared";
-import { AgentRuntimeIcon } from "./agent-icons.js";
+import { AgentRuntimeIcon } from "@siqshift/shared/ui";
 
 describe("AgentRuntimeIcon", () => {
   // The roster is the declaration of every runtime SIQshift knows by name, so

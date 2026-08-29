@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { AgentRuntimeIcon } from "./agent-icons.js";
+import { AgentRuntimeIcon } from "@siqshift/shared/ui";
 import { sourceLabel } from "./agent-sources.js";
 import type { BrowserHealth, MonitorStatus } from "./bridge.js";
 

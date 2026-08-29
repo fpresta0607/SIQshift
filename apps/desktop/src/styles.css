@@ -106,7 +106,11 @@ select:disabled { opacity: .55; }
 .today-line { margin: 10px 0 0; color: var(--text-secondary); font-size: .82rem; font-variant-numeric: tabular-nums; }
 .today-line strong { color: var(--mint); font-weight: 650; }
 .hero-note { margin: 10px 0 0; font-size: .8rem; }
-/* The day's total is the page: green, so it reads as time being kept. */
+/* The day's total is the page: green, so it reads as time being kept. The
+   size used to hang off `.running-panel`, a panel this app retired, so the
+   card's largest element rendered at body size for as long as that selector
+   outlived its markup. */
+.elapsed { display: block; margin: 10px 0 4px; font-size: clamp(3rem, 16vw, 5.4rem); font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: -.05em; line-height: .95; text-shadow: 0 0 22px rgba(0, 229, 155, .25); }
 .recording-card .elapsed { color: var(--accent-green); }
 
 /* Where time files: the account's projects as a list you pick exactly one of.
@@ -152,7 +156,7 @@ select:disabled { opacity: .55; }
 .link-button { width: 100%; margin-top: 15px; border: 0; background: transparent; color: var(--text-secondary); font-size: .81rem; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .link-button:hover, .link-button:focus-visible { color: #ffffff; }
 
-.running-panel .elapsed { display: block; margin: 10px 0 4px; font-size: clamp(3rem, 16vw, 5.4rem); font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: -.05em; line-height: .95; text-shadow: 0 0 22px rgba(0, 229, 155, .25); }
+
 .started-at { margin: 0; color: var(--text-secondary); font-size: .81rem; }
 
 .conflict-panel { text-align: left; }
@@ -566,7 +570,14 @@ select:disabled { opacity: .55; }
 .shift-group-head:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .shift-group[open] > .shift-group-head .project-dot { background: var(--mint); }
 .held-tag { color: var(--mint); font-size: .78rem; font-weight: 400; }
-.shift-list { display: grid; gap: 2px; margin: 2px 0 0; padding: 0 0 0 14px; list-style: none; }
+/* A single shrinkable track, for the same reason `.breakdown` needs one: an
+   `auto` grid track floors at its widest item's min-content, and a shift row's
+   is its runtime, owner, model and commit count laid end to end. Without
+   `minmax(0, ...)` that floor drags every row past the overlay's right edge on
+   a phone, taking the duration off screen with it - the row shrinks and
+   ellipsizes its facts only once the track is allowed to be narrower than they
+   are. */
+.shift-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 2px 0 0; padding: 0 0 0 14px; list-style: none; }
 .shift-row { display: flex; align-items: baseline; gap: 10px; padding: 3px 2px; border-bottom: 1px solid rgba(163, 179, 194, .08); font-size: .8rem; }
 .shift-row:last-child { border-bottom: 0; }
 .shift-when { flex: none; color: var(--text-secondary); font-variant-numeric: tabular-nums; }

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openAgentsGroup, openTodayCard } from "./harness.js";
+import { openAgentsGroup, openClockCard, openTodayCard } from "./harness.js";
 
 /** Every `.meter-row`'s box, plus the boxes of the four cells inside it. */
 const rowBoxes = (page: import("@playwright/test").Page) =>
@@ -26,90 +26,113 @@ const rowBoxes = (page: import("@playwright/test").Page) =>
       };
     }));
 
-test.describe("Today's session rows", () => {
-  test("stay one column in the window the app opens at", async ({ page }) => {
-    await page.setViewportSize({ width: 520, height: 920 });
-    await openTodayCard(page);
+// Both apps lay the Today card out in the same `.screen` column, so the same
+// three claims are made about each of them.
+for (const app of ["desktop", "web"] as const) {
+  test.describe(`Today's session rows in ${app}`, () => {
+    test("stay one column in the window the app opens at", async ({ page }) => {
+      await page.setViewportSize({ width: 520, height: 920 });
+      await openTodayCard(page, app);
 
-    const rows = await rowBoxes(page);
-    expect(rows).toHaveLength(6);
-    expect(new Set(rows.map((row) => row.left)).size).toBe(1);
-  });
-
-  test("go two-up once the window has room, and read down the first column", async ({ page }) => {
-    await page.setViewportSize({ width: 1000, height: 920 });
-    await openTodayCard(page);
-
-    const lefts = (await rowBoxes(page)).map((row) => row.left);
-    expect(new Set(lefts).size).toBe(2);
-    // Down-then-across: the heaviest-first sort still reads top to bottom, so
-    // the first half of the rows is the whole of the left column.
-    expect(new Set(lefts.slice(0, 3)).size).toBe(1);
-    expect(new Set(lefts.slice(3)).size).toBe(1);
-    expect(Math.min(...lefts.slice(0, 3))).toBeLessThan(Math.min(...lefts.slice(3)));
-  });
-
-  test("keep the bar drawable and the duration on one line in both columns", async ({ page }) => {
-    await page.setViewportSize({ width: 1000, height: 920 });
-    await openTodayCard(page);
-
-    const rows = await rowBoxes(page);
-    // What one line of the duration's own type actually measures, rather than
-    // whichever row happened to come out shortest: a wrapped duration is
-    // taller than this, and every row being equally wrong would still fail.
-    const oneLine = await page.locator(".meter-duration").first().evaluate((cell) => {
-      const style = getComputedStyle(cell);
-      const height = style.lineHeight === "normal"
-        ? Number.parseFloat(style.fontSize) * 1.2
-        : Number.parseFloat(style.lineHeight);
-      return Math.ceil(height);
+      const rows = await rowBoxes(page);
+      expect(rows).toHaveLength(6);
+      expect(new Set(rows.map((row) => row.left)).size).toBe(1);
     });
-    for (const row of rows) {
-      // 48px is the narrowest this design draws a share in; below it the fill
-      // of a small row is a dot rather than a measure, and the quota dial's
-      // plan name has nowhere to sit.
-      expect(row.share.width, row.name).toBeGreaterThanOrEqual(48);
-      expect(row.duration.height, row.name).toBeLessThanOrEqual(oneLine);
-      expect(row.nameCell.right, row.name).toBeLessThanOrEqual(row.share.left);
-      // Neither a bar nor a dial may spill into the duration's column.
-      expect(row.share.right, row.name).toBeLessThanOrEqual(row.duration.left);
-    }
-    // One of them is an agent's row, so the dial really was exercised.
-    expect(rows.filter((row) => row.fill === null)).toHaveLength(1);
 
-    // One scan line down each column: every row in a column starts its bar and
-    // ends its duration at the same x. Every .meter-row is its own grid, so
-    // this only holds while the name track computes to the same length in all
-    // of them - an `fr` there divides free space the `auto` duration column
-    // has already made row-specific, and the bars stop lining up.
-    const columns = [...new Set(rows.map((row) => row.left))].sort((a, b) => a - b);
-    for (const column of columns) {
-      const inColumn = rows.filter((row) => row.left === column);
-      expect(new Set(inColumn.map((row) => row.share.left)).size, `column ${column} bar starts`).toBe(1);
-      expect(new Set(inColumn.map((row) => row.duration.right)).size, `column ${column} duration ends`).toBe(1);
-    }
+    test("go two-up once the window has room, and read down the first column", async ({ page }) => {
+      await page.setViewportSize({ width: 1000, height: 920 });
+      await openTodayCard(page, app);
 
-    // A second column may cost the name room - `.meter-name` carries an
-    // ellipsis by design and a 335px column is not going to fit every app's
-    // full name - but it may never cost a measure: the duration, and the
-    // dial's plan and reset window, all have to stay readable.
-    const clipped = await page.locator(".meter-row").evaluateAll((meterRows) =>
-      meterRows.flatMap((row) => [...row.querySelectorAll<HTMLElement>(".meter-duration, .quota-plan, .quota-window")]
-        .filter((cell) => {
-          // A cell with `text-overflow: ellipsis` reports the clipped width as
-          // its scrollWidth, so the natural width comes off a loose clone.
-          const probe = cell.cloneNode(true) as HTMLElement;
-          probe.style.cssText = "position:absolute;visibility:hidden;width:auto;white-space:nowrap;overflow:visible";
-          cell.parentElement?.appendChild(probe);
-          const natural = probe.getBoundingClientRect().width;
-          probe.remove();
-          return natural > cell.clientWidth + 0.5;
-        })
-        .map((cell) => `${row.querySelector(".meter-name")?.textContent ?? ""}: ${cell.className}`)));
-    // A truncated name is allowed; a truncated measure is not.
-    expect(clipped).toEqual([]);
+      const lefts = (await rowBoxes(page)).map((row) => row.left);
+      expect(new Set(lefts).size).toBe(2);
+      // Down-then-across: the heaviest-first sort still reads top to bottom, so
+      // the first half of the rows is the whole of the left column.
+      expect(new Set(lefts.slice(0, 3)).size).toBe(1);
+      expect(new Set(lefts.slice(3)).size).toBe(1);
+      expect(Math.min(...lefts.slice(0, 3))).toBeLessThan(Math.min(...lefts.slice(3)));
+    });
+
+    test("keep the bar drawable and the duration on one line in both columns", async ({ page }) => {
+      await page.setViewportSize({ width: 1000, height: 920 });
+      await openTodayCard(page, app);
+
+      const rows = await rowBoxes(page);
+      // What one line of the duration's own type actually measures, rather than
+      // whichever row happened to come out shortest: a wrapped duration is
+      // taller than this, and every row being equally wrong would still fail.
+      const oneLine = await page.locator(".meter-duration").first().evaluate((cell) => {
+        const style = getComputedStyle(cell);
+        const height = style.lineHeight === "normal"
+          ? Number.parseFloat(style.fontSize) * 1.2
+          : Number.parseFloat(style.lineHeight);
+        return Math.ceil(height);
+      });
+      for (const row of rows) {
+        // 48px is the narrowest this design draws a share in; below it the fill
+        // of a small row is a dot rather than a measure, and the quota dial's
+        // plan name has nowhere to sit.
+        expect(row.share.width, row.name).toBeGreaterThanOrEqual(48);
+        expect(row.duration.height, row.name).toBeLessThanOrEqual(oneLine);
+        expect(row.nameCell.right, row.name).toBeLessThanOrEqual(row.share.left);
+        // Neither a bar nor a dial may spill into the duration's column.
+        expect(row.share.right, row.name).toBeLessThanOrEqual(row.duration.left);
+      }
+      // The desktop spends one row's third cell on a plan dial, so the dial
+      // really was exercised there; the web has no plan reading to draw and
+      // every row carries a bar.
+      expect(rows.filter((row) => row.fill === null)).toHaveLength(app === "desktop" ? 1 : 0);
+
+      // One scan line down each column: every row in a column starts its bar and
+      // ends its duration at the same x. Every .meter-row is its own grid, so
+      // this only holds while the name track computes to the same length in all
+      // of them - an `fr` there divides free space the `auto` duration column
+      // has already made row-specific, and the bars stop lining up.
+      const columns = [...new Set(rows.map((row) => row.left))].sort((a, b) => a - b);
+      for (const column of columns) {
+        const inColumn = rows.filter((row) => row.left === column);
+        expect(new Set(inColumn.map((row) => row.share.left)).size, `column ${column} bar starts`).toBe(1);
+        expect(new Set(inColumn.map((row) => row.duration.right)).size, `column ${column} duration ends`).toBe(1);
+      }
+
+      // A second column may cost the name room - `.meter-name` carries an
+      // ellipsis by design and a 335px column is not going to fit every app's
+      // full name - but it may never cost a measure: the duration, and the
+      // dial's plan and reset window, all have to stay readable.
+      const clipped = await page.locator(".meter-row").evaluateAll((meterRows) =>
+        meterRows.flatMap((row) => [...row.querySelectorAll<HTMLElement>(".meter-duration, .quota-plan, .quota-window")]
+          .filter((cell) => {
+            // A cell with `text-overflow: ellipsis` reports the clipped width as
+            // its scrollWidth, so the natural width comes off a loose clone.
+            const probe = cell.cloneNode(true) as HTMLElement;
+            probe.style.cssText = "position:absolute;visibility:hidden;width:auto;white-space:nowrap;overflow:visible";
+            cell.parentElement?.appendChild(probe);
+            const natural = probe.getBoundingClientRect().width;
+            probe.remove();
+            return natural > cell.clientWidth + 0.5;
+          })
+          .map((cell) => `${row.querySelector(".meter-name")?.textContent ?? ""}: ${cell.className}`)));
+      // A truncated name is allowed; a truncated measure is not.
+      expect(clipped).toEqual([]);
+    });
+
+    // The card's own comment calls the day's total "the page's largest
+    // element", and for as long as its size hung off a panel the app had
+    // retired it rendered at body size instead. Only a real browser resolves
+    // which selectors actually matched.
+    test("draws the day's total as the largest thing on the clock card", async ({ page }) => {
+      await page.setViewportSize({ width: 520, height: 920 });
+      await openClockCard(page, app);
+
+      const sizes = await page.evaluate(() => ({
+        elapsed: Number.parseFloat(getComputedStyle(document.querySelector(".elapsed")!).fontSize),
+        label: Number.parseFloat(getComputedStyle(document.querySelector(".hero-title")!).fontSize),
+        body: Number.parseFloat(getComputedStyle(document.body).fontSize),
+      }));
+      expect(sizes.elapsed).toBeGreaterThan(sizes.label * 3);
+      expect(sizes.elapsed).toBeGreaterThan(sizes.body * 3);
+    });
   });
-});
+}
 
 test("a wide window spends its room on the name, not only on the bar", async ({ page }) => {
   // A fixed 10rem name cap ellipsized repo labels on a maximised dashboard
@@ -151,6 +174,49 @@ for (const app of ["desktop", "web"] as const) {
       // The held tag rides in the name's `·` subtitle, and only the group that
       // has a decided commit carries one.
       expect(heads.map((head) => head.name.includes("· 50% held"))).toEqual([true, false]);
+    });
+
+    // A phone is where this row runs out of room first, and an open drawer is
+    // the only way to see one. The tab used to live in the dashboard's own
+    // column and now lives in the All-stats overlay, which is narrower: the
+    // `.shift-list` grid track floored at the row's min-content - its runtime,
+    // owner, model and commit count laid end to end - and pushed every row
+    // past the overlay's right edge, taking the duration off screen. jsdom
+    // cannot see it: there is no layout engine to overflow.
+    test("keeps an open drawer's shift durations on screen at phone width", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openAgentsGroup(page, app);
+      // Set `open` rather than clicking each summary: the fixture ships one
+      // drawer already open, so a blanket click would close it again.
+      await page.locator(".shift-group").evaluateAll((groups) => {
+        for (const group of groups) (group as HTMLDetailsElement).open = true;
+      });
+
+      const measured = await page.evaluate(() => {
+        const modal = document.querySelector<HTMLElement>(".modal")!;
+        return {
+          viewport: document.documentElement.clientWidth,
+          modalClientWidth: modal.clientWidth,
+          modalScrollWidth: modal.scrollWidth,
+          durationRights: [...document.querySelectorAll<HTMLElement>(".shift-row .shift-duration")]
+            .map((cell) => Math.round(cell.getBoundingClientRect().right)),
+          factsClipped: [...document.querySelectorAll<HTMLElement>(".shift-row .shift-facts")]
+            .every((cell) => getComputedStyle(cell).textOverflow === "ellipsis"),
+        };
+      });
+
+      // Every drawer really is open, so the rows below are the ones measured.
+      expect(await page.locator(".shift-group[open]").count()).toBe(2);
+      // The overlay scrolls vertically by design and horizontally never: a
+      // scrollWidth past its client width is the row overflowing it.
+      expect(measured.modalScrollWidth).toBe(measured.modalClientWidth);
+      // The measure is what may not be lost. The facts beside it are allowed
+      // to ellipsize, which is how the row gives way instead.
+      expect(measured.durationRights.length).toBeGreaterThan(0);
+      for (const right of measured.durationRights) {
+        expect(right).toBeLessThanOrEqual(measured.viewport);
+      }
+      expect(measured.factsClipped).toBe(true);
     });
 
     // The whole point of the drawer: a busy range runs to hundreds of shift

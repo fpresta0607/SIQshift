@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 
-import { findAgentRuntime } from "@siqshift/shared";
+import { findAgentRuntime } from "./agent-runtimes.js";
 
 /**
  * Runtime marks for the "what's switched on" list and the live session stats.

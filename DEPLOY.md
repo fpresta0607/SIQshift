@@ -639,7 +639,8 @@ curl -i -X OPTIONS https://api.siqshift.siqstack.com/me \
 ```
 
 Then open `https://siqshift.siqstack.com`, create an account, and confirm the
-workspace and invite code appear.
+workspace name appears in the filing header above the clock, and its invite
+code under the gear's **Team** group.
 
 ## Rolling back
 
