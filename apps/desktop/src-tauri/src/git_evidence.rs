@@ -137,9 +137,12 @@ pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Runs one read-only git command synchronously, collapsing every failure —
-/// git absent, not a repo, a refused flag, a timeout-shaped hang — to `None`,
-/// the same contract the async `run_git` gives its callers. Synchronous
-/// because the hook is a synchronous binary with no runtime.
+/// git absent, not a repo, a refused flag — to `None`, so the caller always
+/// has an honest "unknown" to fall back to. Synchronous because the hook is a
+/// synchronous binary with no runtime, which is also why there is no
+/// `GIT_TIMEOUT` here: a hang blocks the caller rather than collapsing, so
+/// this stays reserved for the `rev-parse` probes, which take no locks and
+/// read what git has already opened.
 fn run_git_sync(git: &str, cwd: &Path, args: &[&str]) -> Option<String> {
     let mut command = std::process::Command::new(git);
     command

@@ -506,5 +506,29 @@ integration(
       // would leave it.
       expect(attributed.get("C:/dev/myXapp/src")).toBeNull();
     });
+
+    // The plan the function builds is a TEMP TABLE ON COMMIT DROP, so it
+    // outlives the call but not the transaction. 0018's header tells the
+    // operator to dry-run and then apply, and an operator who wraps that pair
+    // in one BEGIN is entitled to have it work rather than fail on the second
+    // call. The third call is the same header's other claim: a pass that
+    // changes nothing moves nothing.
+    it("takes a dry run and repeated applies inside one transaction, moving nothing the second time", async () => {
+      if (!database) return;
+      const reports = await database.client.begin(async (tx) => {
+        const [planned] = await tx`select backfill_agent_session_worktree_attribution(true) as report`;
+        const [applied] = await tx`select backfill_agent_session_worktree_attribution(false) as report`;
+        const [reapplied] = await tx`select backfill_agent_session_worktree_attribution(false) as report`;
+        return { planned: planned.report, applied: applied.report, reapplied: reapplied.report };
+      });
+
+      expect(reports.planned.dry_run).toBe(true);
+      expect(reports.applied.dry_run).toBe(false);
+      expect(reports.reapplied.moved).toBe(0);
+      // Whatever the pass decided, it decided once: nothing is left to move
+      // and nothing was double-counted on the way.
+      expect(reports.reapplied.scanned).toBe(reports.planned.scanned);
+      expect(reports.reapplied.ambiguous).toBe(0);
+    });
   },
 );
