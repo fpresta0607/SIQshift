@@ -482,8 +482,10 @@ export const App = ({ client }: AppProps) => {
     event.preventDefault();
     setJoinBusy(true);
     setJoinError(undefined);
+    let joined = false;
     try {
       await client.joinOrganization(joinCode.trim());
+      joined = true;
       setJoinCode("");
       const refreshed = await client.organization();
       setOrganization(refreshed.organization);
@@ -492,7 +494,10 @@ export const App = ({ client }: AppProps) => {
       const scopeSurvives = await refreshProjects();
       setSettingsError(scopeSurvives ? await reloadBoard() : undefined);
     } catch (error: unknown) {
-      setJoinError(messageFor(error));
+      // Past the join itself the code was accepted, so the panel reports what
+      // went wrong; under the form it would read as a refused code.
+      if (joined) setSettingsError(messageFor(error));
+      else setJoinError(messageFor(error));
     } finally {
       setJoinBusy(false);
     }
@@ -1087,7 +1092,11 @@ export const App = ({ client }: AppProps) => {
               <button className="ghost modal-close" type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}>✕</button>
             </div>
 
-            {settingsError && <p className="error" role="alert">{settingsError}</p>}
+            {/* This overlay covers the page banner, so whatever the page has
+                to report is repeated here while it is open. */}
+            {(settingsError ?? dataError) && (
+              <p className="error" role="alert">{settingsError ?? dataError}</p>
+            )}
 
             {/* Collapsible groups keep the panel scannable; native
                 details/summary so there is no tab machinery to maintain. */}

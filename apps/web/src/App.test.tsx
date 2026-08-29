@@ -283,6 +283,48 @@ describe("dashboard", () => {
     expect(picker.queryByRole("radio", { name: /Client/ })).toBeNull();
   });
 
+  it("keeps a project list that fails after a successful join clear of the join form", async () => {
+    const projects = vi.fn()
+      .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
+      .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
+    const person = await signIn(clientFor({ projects }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+
+    // The code was accepted, so nothing under the form may read as a refusal.
+    const message = await settings.findByText("The project list is taking a break.");
+    expect(message.closest("details")).toBeNull();
+  });
+
+  it("shows a board that fails on the retired scope after a join inside the panel", async () => {
+    const newWorkspaceProjects = [
+      { id: "p9", name: "Migration", createdAt: "2026-08-20T12:00:00.000Z", isArchived: false, isDefault: true },
+    ];
+    const projects = vi.fn()
+      .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
+      .mockResolvedValue({ projects: newWorkspaceProjects, selectedProjectId: null });
+    const leaderboard = vi.fn()
+      .mockResolvedValueOnce({ entries, totalDurationSeconds: 10_800, filters: {} })
+      .mockRejectedValue(new ClientError("transient", "The board is taking a break."));
+    const person = await signIn(clientFor({
+      projects,
+      leaderboard,
+      preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
+    }));
+    await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("Client"));
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+
+    // The scope was retired, so the reload runs from the scope effect - and its
+    // failure still has to reach the panel that covers the page banner.
+    expect(await settings.findByText("The board is taking a break.")).toBeInTheDocument();
+  });
+
   it("lets the download menu keep an Escape press to itself inside the settings panel", async () => {
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });
