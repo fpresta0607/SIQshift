@@ -743,8 +743,10 @@ export const App = ({ client }: AppProps) => {
           <h2 id="recording-heading" className="hero-title">
             {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
           </h2>
+          {/* A day nothing has answered for yet reads as a dash: 00:00:00 is a
+              claim about the hours, and no one has made it. */}
           <output className="elapsed" data-testid="elapsed-time" aria-label="Time recorded today">
-            {formatDuration(todayTotalSeconds)}
+            {todayStats === undefined ? "-" : formatDuration(todayStats.totalDurationSeconds)}
           </output>
           <p className="subtle hero-note">
             Recorded for you by the SIQshift app on your computers. There is nothing to start here.
@@ -805,7 +807,9 @@ export const App = ({ client }: AppProps) => {
             <p className="error" role="alert">Could not load today's hours.</p>
           )}
           {todayMeterRows.length === 0 && todayProjectRows.length === 0 ? (
-            !todayFailed && todayStats !== undefined && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
+            todayFailed ? undefined : todayStats === undefined
+              ? <p className="subtle" role="status">Loading hours…</p>
+              : <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
           ) : (
             <>
               {todayProjectRows.length > 0 && (

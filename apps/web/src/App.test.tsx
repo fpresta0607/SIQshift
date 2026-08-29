@@ -417,12 +417,18 @@ describe("dashboard", () => {
     await signIn(clientFor({ meStats }));
     await screen.findByRole("heading", { name: "Today" });
 
-    // Nothing has been loaded yet, so nothing can be claimed about it.
+    // Nothing has been loaded yet, so nothing can be claimed about it - the
+    // clock included, where 00:00:00 would be a claim about the hours.
     expect(screen.queryByTestId("today-panel-empty")).not.toBeInTheDocument();
+    expect(screen.getByTestId("elapsed-time")).toHaveTextContent("-");
+    expect(screen.getByTestId("elapsed-time")).not.toHaveTextContent("00:00:00");
+    expect(screen.getByText("Loading hours…")).toBeInTheDocument();
 
     releaseStats({ ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [], hourly: [] });
 
+    // A day that loaded and holds nothing is a real zero, and reads as one.
     expect(await screen.findByTestId("today-panel-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("elapsed-time")).toHaveTextContent("00:00:00");
   });
 
   it("says the refresh failed rather than emptying the Today card down to its heading", async () => {
@@ -477,6 +483,9 @@ describe("dashboard", () => {
     expect(await screen.findByText("Could not load today's hours.")).toBeInTheDocument();
     expect(screen.queryByTestId("session-app-list")).toBeNull();
     expect(screen.queryByTestId("project-list")).toBeNull();
+    // The card calls the day unknown, so the biggest thing on the page cannot
+    // call it zero in the same breath.
+    expect(screen.getByTestId("elapsed-time")).not.toHaveTextContent("00:00:00");
   });
 
   it("says the day failed without also claiming it was empty", async () => {
