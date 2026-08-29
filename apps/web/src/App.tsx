@@ -289,6 +289,14 @@ export const App = ({ client }: AppProps) => {
     void client.updatePreferences({ scope, range }).catch(() => undefined);
   }, [client, signedIn, preferencesReady, scope, range]);
 
+  // Picking a different project asks a different question, so the answer on
+  // screen stops being an answer. Only the refresh tick below keeps last-good
+  // rows, because there the label above them has not moved.
+  useEffect(() => {
+    setTodayStats(undefined);
+    setTodayFailed(false);
+  }, [scope]);
+
   // The home screen's day. It follows the filing header's project and nothing
   // else: the All-stats range picker used to move it, which quietly turned the
   // heading's own date into a month's total.
@@ -785,7 +793,7 @@ export const App = ({ client }: AppProps) => {
             <p className="error" role="alert">Could not load today's hours.</p>
           )}
           {todayMeterRows.length === 0 && todayProjectRows.length === 0 ? (
-            todayStats !== undefined && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
+            !todayFailed && todayStats !== undefined && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
           ) : (
             <>
               {todayProjectRows.length > 0 && (
@@ -1118,6 +1126,9 @@ export const App = ({ client }: AppProps) => {
             </details>
 
             <ProjectsGroup client={client} projects={projects} onChanged={() => {
+              // The day names its projects from its own response, so it has to
+              // be reread or the card keeps calling a renamed project the old name.
+              setTodayTick((tick) => tick + 1);
               void refreshProjects()
                 .then((scopeSurvives) => (scopeSurvives ? reloadBoard() : undefined))
                 .then((failure) => setSettingsError(failure))

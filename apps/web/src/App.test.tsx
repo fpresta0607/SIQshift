@@ -13,6 +13,9 @@ vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
 const organization = { id: "00000000-0000-4000-8000-000000000001", name: "SIQstack", inviteCode: "ACDEF-GHJKM" };
 
+/// The App's own Today-card tick, which these tests drive by hand.
+const TODAY_REFRESH_MS = 60_000;
+
 /// Two projects, so the filing header has something to change to.
 const pickableProjects = [
   { id: "p1", name: "General", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false, isDefault: true },
@@ -369,7 +372,26 @@ describe("dashboard", () => {
     expect(await screen.findByText("Could not load today's hours.")).toBeInTheDocument();
   });
 
-  it("keeps the last good rows on screen when a refresh over them fails", async () => {
+  it("keeps the last good rows when the refresh tick fails over an unchanged project", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const meStats = vi.fn().mockResolvedValue(memberStats);
+      await signIn(clientFor({ meStats }));
+      await screen.findByTestId("session-app-list");
+
+      meStats.mockRejectedValueOnce(new ClientError("transient", "Today is taking a break."));
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS);
+      await waitFor(() => expect(meStats).toHaveBeenCalledTimes(2));
+
+      // The question did not change, so the answer on screen is still an answer.
+      expect(screen.getByTestId("session-app-list")).toBeInTheDocument();
+      expect(screen.queryByText("Could not load today's hours.")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the old project's rows when the day fails to load for a newly picked one", async () => {
     const meStats = vi.fn().mockResolvedValue(memberStats);
     const person = await signIn(clientFor({
       projects: vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null }),
@@ -381,9 +403,30 @@ describe("dashboard", () => {
     await person.click(screen.getByTestId("filing-change"));
     await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
 
-    await waitFor(() => expect(meStats.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
-    expect(screen.getByTestId("session-app-list")).toBeInTheDocument();
-    expect(screen.queryByText("Could not load today's hours.")).not.toBeInTheDocument();
+    // The header now says Client, so General's hours may not sit under it.
+    expect(await screen.findByText("Could not load today's hours.")).toBeInTheDocument();
+    expect(screen.queryByTestId("session-app-list")).toBeNull();
+    expect(screen.queryByTestId("project-list")).toBeNull();
+  });
+
+  it("says the day failed without also claiming it was empty", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const meStats = vi.fn().mockResolvedValue({
+        ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [], hourly: [],
+      });
+      await signIn(clientFor({ meStats }));
+      expect(await screen.findByTestId("today-panel-empty")).toBeInTheDocument();
+
+      meStats.mockRejectedValueOnce(new ClientError("transient", "Today is taking a break."));
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS);
+
+      // One card cannot call the number unknown and zero in the same breath.
+      await waitFor(() => expect(screen.getByText("Could not load today's hours.")).toBeInTheDocument());
+      expect(screen.queryByTestId("today-panel-empty")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explains how the app works from the dashboard help button", async () => {
@@ -1066,6 +1109,33 @@ describe("project management", () => {
     await person.click(settings.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(updateProject).toHaveBeenCalledWith("p2", { name: "Client work" }));
+  });
+
+  it("rereads the day so a renamed project is not called two names at once", async () => {
+    const meStats = vi.fn()
+      .mockResolvedValueOnce(memberStats)
+      .mockResolvedValue({
+        ...memberStats,
+        projects: [{ project: { id: "p1", name: "Ops" }, durationSeconds: 7_200, attributedSeconds: 5_400, unattributedSeconds: 1_800, sessionCount: 3 }],
+      });
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+      updateProject: vi.fn().mockResolvedValue({ ...webProjects[0], name: "Ops" }),
+      meStats,
+    }));
+    expect(await within(await screen.findByTestId("project-list")).findByText("General")).toBeInTheDocument();
+    const settings = await openSettings(person);
+
+    const row = settings.getByText("General").closest("li");
+    await person.click(within(row as HTMLElement).getByRole("button", { name: "Rename" }));
+    const field = settings.getByLabelText("New name for General");
+    await person.clear(field);
+    await person.type(field, "Ops");
+    await person.click(settings.getByRole("button", { name: "Save" }));
+
+    // The meter row names the project from the day's own response, so the day
+    // has to be reread at the same moment the header is.
+    expect(await within(screen.getByTestId("project-list")).findByText("Ops")).toBeInTheDocument();
   });
 
   it("tags the default project and hides its delete button", async () => {
