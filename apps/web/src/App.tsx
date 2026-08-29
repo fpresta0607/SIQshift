@@ -289,13 +289,13 @@ export const App = ({ client }: AppProps) => {
     void client.updatePreferences({ scope, range }).catch(() => undefined);
   }, [client, signedIn, preferencesReady, scope, range]);
 
-  // Picking a different project asks a different question, so the answer on
-  // screen stops being an answer. Only the refresh tick below keeps last-good
-  // rows, because there the label above them has not moved.
+  // The day is asked of one workspace about one project, so moving either asks
+  // a different question and the answer on screen stops being an answer. Only
+  // the refresh tick below keeps last-good rows, because there nothing moved.
   useEffect(() => {
     setTodayStats(undefined);
     setTodayFailed(false);
-  }, [scope]);
+  }, [scope, organization?.id]);
 
   // The home screen's day. It follows the filing header's project and nothing
   // else: the All-stats range picker used to move it, which quietly turned the
@@ -497,6 +497,7 @@ export const App = ({ client }: AppProps) => {
       setJoinCode("");
       const refreshed = await client.organization();
       setOrganization(refreshed.organization);
+      setTodayTick((tick) => tick + 1);
       // The new workspace has its own projects; the filing header, the picker
       // and every scoped request would otherwise still name the old one's.
       const scopeSurvives = await refreshProjects();

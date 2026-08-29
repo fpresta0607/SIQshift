@@ -286,6 +286,31 @@ describe("dashboard", () => {
     expect(picker.queryByRole("radio", { name: /Client/ })).toBeNull();
   });
 
+  it("rereads the day for the workspace just joined", async () => {
+    const meStats = vi.fn()
+      .mockResolvedValueOnce(memberStats)
+      .mockResolvedValue({
+        ...memberStats,
+        projects: [{ project: { id: "b1", name: "Onboarding" }, durationSeconds: 3_600, attributedSeconds: 3_600, unattributedSeconds: 0, sessionCount: 1 }],
+      });
+    const person = await signIn(clientFor({
+      meStats,
+      organization: vi.fn()
+        .mockResolvedValueOnce({ organization })
+        .mockResolvedValue({ organization: { ...organization, id: "00000000-0000-4000-8000-0000000000b2", name: "Nightshift" } }),
+    }));
+    expect(await within(await screen.findByTestId("project-list")).findByText("General")).toBeInTheDocument();
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+
+    // /me/stats answers for whichever workspace the viewer is in, so the old
+    // one's hours may not sit under the new one's name.
+    expect(await within(screen.getByTestId("project-list")).findByText("Onboarding")).toBeInTheDocument();
+    expect(within(screen.getByTestId("project-list")).queryByText("General")).toBeNull();
+  });
+
   it("keeps a project list that fails after a successful join clear of the join form", async () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
