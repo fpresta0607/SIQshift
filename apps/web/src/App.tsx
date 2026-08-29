@@ -510,9 +510,23 @@ export const App = ({ client }: AppProps) => {
       // workspace about a project belonging to the old one.
       setScope("all");
       // The new workspace has its own projects; the filing header, the picker
-      // and every scoped request would otherwise still name the old one's.
-      const scopeSurvives = await refreshProjects();
-      setSettingsError(scopeSurvives ? await reloadBoard() : undefined);
+      // and every scoped request would otherwise still name the old one's. Its
+      // failure is reported but not fatal: the board was just emptied of the
+      // old workspace's people and has to be asked for the new one's either
+      // way, or it would claim an emptiness nothing ever measured.
+      let failure: string | undefined;
+      let scopeSurvives = true;
+      try {
+        scopeSurvives = await refreshProjects();
+      } catch (error: unknown) {
+        failure = messageFor(error);
+      }
+      // A retired scope reloads the board through the effect that follows it.
+      if (scopeSurvives) {
+        const boardFailure = await reloadBoard();
+        failure ??= boardFailure;
+      }
+      setSettingsError(failure);
     } catch (error: unknown) {
       // Past the join itself the code was accepted, so the panel reports what
       // went wrong; under the form it would read as a refused code.

@@ -372,11 +372,41 @@ describe("dashboard", () => {
     expect(message.closest("details")).toBeNull();
   });
 
+  it("asks the new workspace for a board rather than calling it empty", async () => {
+    const projects = vi.fn()
+      .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
+      .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
+    const leaderboard = vi.fn()
+      .mockResolvedValueOnce({ entries, totalDurationSeconds: 10_800, filters: {} })
+      .mockRejectedValue(new ClientError("transient", "The board is taking a break."));
+    const person = await signIn(clientFor({ projects, leaderboard }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+    await settings.findByText("The project list is taking a break.");
+    await person.click(settings.getByRole("button", { name: "Close settings" }));
+
+    // The old workspace's people are gone, but nothing has measured the new
+    // workspace, so the board may not claim it recorded nothing.
+    const board = await openAllStats(person);
+    expect(await board.findByText("Could not load hours for this range.")).toBeInTheDocument();
+    expect(board.queryByText(/No recorded time in this range yet/)).toBeNull();
+  });
+
   it("takes the old workspace's board down when the join's project refresh fails", async () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
-    const person = await signIn(clientFor({ projects }));
+    const leaderboard = vi.fn()
+      .mockResolvedValueOnce({ entries, totalDurationSeconds: 10_800, filters: {} })
+      .mockResolvedValue({
+        entries: [{ rank: 1, user: { id: "u9", name: "Robin" }, durationSeconds: 1_800, sessionCount: 1, attributedSeconds: 1_800, unattributedSeconds: 0, activeSeconds: 1_800, agentSeconds: 0, ...noMeasurement }],
+        totalDurationSeconds: 1_800,
+        filters: {},
+      });
+    const person = await signIn(clientFor({ projects, leaderboard }));
     const board = await openAllStats(person);
     expect(await board.findByRole("button", { name: /Sam/ })).toBeInTheDocument();
     await person.click(screen.getByRole("button", { name: "Close all stats" }));
@@ -388,9 +418,9 @@ describe("dashboard", () => {
     await person.click(settings.getByRole("button", { name: "Close settings" }));
 
     // Sam keeps time with the workspace just left; the masthead already names
-    // the new one, so its board may not still list the old one's people.
+    // the new one, so its board lists the new one's people instead.
     const reopened = await openAllStats(person);
-    expect(reopened.queryByTestId("board-list")).toBeNull();
+    expect(await reopened.findByRole("button", { name: /Robin/ })).toBeInTheDocument();
     expect(reopened.queryByRole("button", { name: /Sam/ })).toBeNull();
   });
 
