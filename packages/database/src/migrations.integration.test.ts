@@ -452,6 +452,8 @@ integration(
     const mappedProjectId = randomUUID();
     const insideMapping = randomUUID();
     const wildcardNeighbour = randomUUID();
+    const worktreeProjectId = randomUUID();
+    const misattributed = randomUUID();
 
     beforeAll(async () => {
       if (!databaseUrl) return;
@@ -466,9 +468,13 @@ integration(
         insert into users (id, organization_id, email, name)
         values (${ownerId}, ${organizationId}, 'prefix@example.test', 'Owner')
       `;
+      // The second project is the bogus per-worktree codebase the backfill
+      // exists to empty; a row sitting on it is what a move-and-record pass
+      // has to get right, and get right only once.
       await database.client`
         insert into projects (id, organization_id, name)
-        values (${mappedProjectId}, ${organizationId}, 'My App')
+        values (${mappedProjectId}, ${organizationId}, 'My App'),
+               (${worktreeProjectId}, ${organizationId}, 'my_app worktree')
       `;
       // The mapped root carries an underscore, which LIKE reads as "any one
       // character" and a literal prefix reads as an underscore.
@@ -511,11 +517,18 @@ integration(
     // outlives the call but not the transaction. 0018's header tells the
     // operator to dry-run and then apply, and an operator who wraps that pair
     // in one BEGIN is entitled to have it work rather than fail on the second
-    // call. The third call is the same header's other claim: a pass that
-    // changes nothing moves nothing.
-    it("takes a dry run and repeated applies inside one transaction, moving nothing the second time", async () => {
+    // call. The row this seeds is the pass's whole subject: it starts on the
+    // worktree project, so a move has somewhere to move it from and the
+    // recorded origin has a value that a second pass could overwrite.
+    it("dry-runs then applies inside one transaction, and a second apply moves nothing", async () => {
       if (!database) return;
+      const startedAt = "2026-08-06T14:00:00.000Z";
       const reports = await database.client.begin(async (tx) => {
+        await tx`
+          insert into agent_sessions (id, organization_id, user_id, source, external_session_id, project_id, cwd, started_at, last_event_at)
+          values (${misattributed}, ${organizationId}, ${ownerId}, 'claude_code', ${misattributed},
+                  ${worktreeProjectId}, 'C:/dev/my_app/.worktrees/gb-1/api', ${startedAt}, ${startedAt})
+        `;
         const [planned] = await tx`select backfill_agent_session_worktree_attribution(true) as report`;
         const [applied] = await tx`select backfill_agent_session_worktree_attribution(false) as report`;
         const [reapplied] = await tx`select backfill_agent_session_worktree_attribution(false) as report`;
@@ -523,12 +536,23 @@ integration(
       });
 
       expect(reports.planned.dry_run).toBe(true);
-      expect(reports.applied.dry_run).toBe(false);
+      // The dry run planned the row's move and left it unmade, so the apply
+      // that follows still has exactly that work to do - and once it has done
+      // it, a further pass has none.
+      expect(reports.planned.moved).toBeGreaterThanOrEqual(1);
+      expect(reports.applied.moved).toBe(reports.planned.moved);
       expect(reports.reapplied.moved).toBe(0);
-      // Whatever the pass decided, it decided once: nothing is left to move
-      // and nothing was double-counted on the way.
-      expect(reports.reapplied.scanned).toBe(reports.planned.scanned);
-      expect(reports.reapplied.ambiguous).toBe(0);
+
+      const [row] = await database.client`
+        select project_id, original_project_id, attribution_backfilled_at
+        from agent_sessions where id = ${misattributed}
+      `;
+      // The worktree's session now belongs to its parent repository's project,
+      // and the record of where it came from names the project it actually
+      // left - not the one the second pass found it on.
+      expect(row.project_id).toBe(mappedProjectId);
+      expect(row.original_project_id).toBe(worktreeProjectId);
+      expect(row.attribution_backfilled_at).not.toBeNull();
     });
   },
 );
