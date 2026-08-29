@@ -344,6 +344,7 @@ describe("dashboard", () => {
       preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
     }));
     await waitFor(() => expect(leaderboard.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+    const callsBeforeJoin = leaderboard.mock.calls.length;
 
     const settings = await openSettings(person);
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
@@ -351,9 +352,11 @@ describe("dashboard", () => {
     await settings.findByText("The project list is taking a break.");
 
     // The join went through, so p2 is a project of the workspace just left and
-    // the new one's API would refuse it on every request from here on.
+    // the new one's API refuses it. Not one request may still carry it.
     await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects"));
-    await waitFor(() => expect(leaderboard.mock.calls.at(-1)?.[0]).not.toContain("scope=p2"));
+    await waitFor(() => expect(leaderboard.mock.calls.length).toBeGreaterThan(callsBeforeJoin));
+    const queriesAfterJoin = leaderboard.mock.calls.slice(callsBeforeJoin).map((call) => call[0] as string);
+    expect(queriesAfterJoin.filter((query) => query.includes("scope=p2"))).toEqual([]);
   });
 
   it("keeps a project list that fails after a successful join clear of the join form", async () => {

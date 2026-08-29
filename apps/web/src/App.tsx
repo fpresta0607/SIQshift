@@ -507,7 +507,11 @@ export const App = ({ client }: AppProps) => {
       // A project id never crosses workspaces, so the scope goes back to
       // everything here rather than as a side effect of the refresh below:
       // whatever fails after this point, the page stops asking the new
-      // workspace about a project belonging to the old one.
+      // workspace about a project belonging to the old one. Moving the scope
+      // is also what makes the effect that follows it reload the board, so
+      // only a page already reading everything has to ask for itself - and
+      // there the reload below closes over the same "all" it needs.
+      const readingEverything = scope === "all";
       setScope("all");
       // The new workspace has its own projects; the filing header, the picker
       // and every scoped request would otherwise still name the old one's. Its
@@ -515,14 +519,12 @@ export const App = ({ client }: AppProps) => {
       // old workspace's people and has to be asked for the new one's either
       // way, or it would claim an emptiness nothing ever measured.
       let failure: string | undefined;
-      let scopeSurvives = true;
       try {
-        scopeSurvives = await refreshProjects();
+        await refreshProjects();
       } catch (error: unknown) {
         failure = messageFor(error);
       }
-      // A retired scope reloads the board through the effect that follows it.
-      if (scopeSurvives) {
+      if (readingEverything) {
         const boardFailure = await reloadBoard();
         failure ??= boardFailure;
       }
