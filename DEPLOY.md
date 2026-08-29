@@ -54,8 +54,9 @@ hooks still point at the old `clock-in-hook` path until each is re-registered
 from the new app. The extension reconnects only once its native-messaging host
 manifest names `com.siqshift.browser_host`.
 
-`tauri.conf.json` is therefore **0.2.0**, not a 0.1.x bump: this is an install
-people replace their old copy with, not a silent update.
+The rename therefore went out as **0.2.0** in `tauri.conf.json`, not a 0.1.x
+bump: this is an install people replace their old copy with, not a silent
+update. That file has been bumped since; read it for the current version.
 
 ## Deploy the API and the web dashboard together
 

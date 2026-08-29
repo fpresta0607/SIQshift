@@ -28,6 +28,26 @@ const FREEZE_FRAMES = `
 const PHASE_FRAMES = 313;
 
 /**
+ * Frames to advance the wrap test by, and the step the shader takes per frame.
+ * 700 steps of 0.01 is more than the 2*PI the phase wraps at, so a clock that
+ * kept every one of them lands outside the period and a wrapped one lands at a
+ * phase this file can name.
+ */
+const WRAP_FRAMES = 700;
+const TIME_STEP = 0.01;
+
+/**
+ * The wave's phase as the GPU has it. Throws rather than reporting a phase if
+ * the shader has not drawn yet, since no program is bound to read it from.
+ */
+function readTimeUniform(): number {
+  const canvas = document.querySelector<HTMLCanvasElement>("canvas.shader-bg")!;
+  const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl")!;
+  const program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
+  return gl.getUniform(program, gl.getUniformLocation(program, "time")!) as number;
+}
+
+/**
  * The wave's lit band, as a share of the canvas height.
  *
  * A WebGL canvas without `preserveDrawingBuffer` reads back as cleared, so the
@@ -116,6 +136,42 @@ test.describe("the WebGL background", () => {
       expect(measured.viewport.slice(2), `GL viewport at dpr ${deviceScaleFactor}`).toEqual(expected);
       await context.close();
     }
+  });
+
+  test("keeps the wave's phase bounded however long the window stays open", async ({ page }) => {
+    // The fragment program adds `time` to each fragment's own x before taking
+    // the sine, in float32. `time` therefore sets the resolution of that sum:
+    // its ulp is 2^-23 of its magnitude, and once that exceeds the ~0.0016
+    // between two neighbouring pixels a run of pixels rounds to one argument
+    // and the wave staircases into vertical slabs. At `time` = 2^18 the slabs
+    // are 19.5px wide on a 1998px window, which is the desktop bug report.
+    //
+    // This asserts the uniform rather than the pixels because the pixels take
+    // 26 million frames to get there, and one wrap is a phase this suite can
+    // reach. Each advanced frame is a real draw, so the canvas gets the app's
+    // own minimum window rather than the default viewport.
+    //
+    // The phase is measured before and after rather than only after, and the
+    // expectation is the exact wrapped value rather than a range: a queue the
+    // shader has not joined yet drains into nothing, and "inside one period"
+    // is also true of the 0.01 a shader that never advanced is left at. The
+    // settled sign-in card is a commit after the canvas mounted, so the
+    // component's effect - and with it the loop these frames feed - has run.
+    await page.addInitScript(FREEZE_FRAMES);
+    await page.setViewportSize({ width: 400, height: 600 });
+    await page.goto("/");
+    await page.getByRole("heading", { name: "Sign in" }).waitFor();
+    await page.waitForSelector("canvas.shader-bg");
+
+    const before = await page.evaluate(readTimeUniform);
+    await page.evaluate(
+      (frames) => (window as unknown as { __advance: (n: number) => void }).__advance(frames),
+      WRAP_FRAMES,
+    );
+    const after = await page.evaluate(readTimeUniform);
+
+    expect(before).toBeGreaterThan(0);
+    expect(after).toBeCloseTo((before + WRAP_FRAMES * TIME_STEP) % (Math.PI * 2), 4);
   });
 
   test("keeps no per-app copy of the shader", () => {

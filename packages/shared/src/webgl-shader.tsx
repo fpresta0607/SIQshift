@@ -68,6 +68,27 @@ export function WebGLShader({ className }: WebGLShaderProps) {
     const BASE_TIME_STEP = 0.01;
     const BASE_Y_SCALE = 0.4;
     const BASE_DISTORTION = 0.45;
+    const BASE_X_SCALE = 1.0;
+
+    // The clock the wave is drawn from, and the period it wraps at.
+    //
+    // The fragment program adds `time` to each fragment's own x before taking
+    // the sine, in float32, so the magnitude of `time` sets the resolution of
+    // that sum: its ulp is 2^-23 of that magnitude, and once the ulp is wider
+    // than the ~0.0016 separating two neighbouring pixels, a run of pixels
+    // rounds to a single argument. The wave then holds one y across the whole
+    // run and jumps at its edge, which is the banding reported on the desktop:
+    // at `time` = 2^18 the ulp is 2^-5 and the slabs are 19.5px wide on a
+    // 1998px window, exactly what the screenshot measures. A browser tab is
+    // reloaded, backgrounded or occluded long before a clock stepping 0.01 a
+    // frame reaches that; the desktop window animates for days without a
+    // reload, which is why only it broke.
+    //
+    // sin has period 2*PI/xScale, so wrapping there is the same animation with
+    // a phase that never grows. The electric jitter's noise is not periodic in
+    // it and re-scrambles at each wrap - noise resampled inside noise, and only
+    // while the cursor is on a wave.
+    const WAVE_PERIOD = (Math.PI * 2) / BASE_X_SCALE;
 
     let timeStep = BASE_TIME_STEP;
 
@@ -216,7 +237,7 @@ export function WebGLShader({ className }: WebGLShaderProps) {
         // the placeholder is 1x1 rather than 0x0.
         resolution: { value: [1, 1] },
         time: { value: 0.0 },
-        xScale: { value: 1.0 },
+        xScale: { value: BASE_X_SCALE },
         yScale: { value: BASE_Y_SCALE },
         distortion: { value: BASE_DISTORTION },
         mouse: { value: [0.5, 0.5] },
@@ -264,7 +285,7 @@ export function WebGLShader({ className }: WebGLShaderProps) {
       timeStep = BASE_TIME_STEP;
 
       if (refs.uniforms) {
-        refs.uniforms.time.value += timeStep;
+        refs.uniforms.time.value = (refs.uniforms.time.value + timeStep) % WAVE_PERIOD;
         refs.uniforms.mouse.value = [m.x, m.y];
         refs.uniforms.influence.value = m.influence;
         refs.uniforms.onCanvas.value = m.onCanvas;
