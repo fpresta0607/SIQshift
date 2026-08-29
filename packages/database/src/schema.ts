@@ -372,12 +372,25 @@ export const agentSessions = pgTable(
     projectId: uuid("project_id"),
     // The project this row's attribution held before the worktree backfill
     // (0018) re-resolved it against the main repository root. Written once,
-    // on the first move, and never overwritten by a later pass, however many
-    // times the backfill re-runs. Null does NOT mean the row never moved: a
-    // row moved out of unattributed had no old value to record, which is why
-    // `attribution_backfilled_at` (added by 0019, not declared here) is the
-    // column a revert keys on - see 0019's header for that one UPDATE.
+    // on the first move, and never overwritten by a later pass. Null does NOT
+    // mean the row never moved: a row moved out of unattributed had no old
+    // value to record, which is why the companion marker below - not this
+    // column - is what a revert keys on.
     originalProjectId: uuid("original_project_id"),
+    // Set the first time a backfill pass moved this row, and never
+    // overwritten. Null means no backfill pass ever decided this row's
+    // attribution. The revert that 0018-0020 document is keyed on this
+    // marker, not on original_project_id alone:
+    //
+    //   UPDATE agent_sessions
+    //   SET project_id = original_project_id, original_project_id = NULL,
+    //       attribution_backfilled_at = NULL
+    //   WHERE attribution_backfilled_at IS NOT NULL;
+    //
+    // Declared here (not only in 0019's SQL) so a later `drizzle-kit
+    // generate` sees the column the databases already have; the matching
+    // snapshot entry was repaired by hand for the same reason.
+    attributionBackfilledAt: timestamp("attribution_backfilled_at", { mode: "date", withTimezone: true }),
     // Null for browser spans, which carry no working directory; the matched
     // url-rule mapping id below attributes them instead.
     cwd: text("cwd"),

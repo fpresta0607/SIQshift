@@ -280,6 +280,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "attribution_backfilled_at": {
+          "name": "attribution_backfilled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
