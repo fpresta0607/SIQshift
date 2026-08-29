@@ -333,6 +333,29 @@ describe("dashboard", () => {
     expect(query.get("userId")).toBe("u2");
   });
 
+  it("drops the old workspace's project scope even when the new list fails to load", async () => {
+    const projects = vi.fn()
+      .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
+      .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
+    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const person = await signIn(clientFor({
+      projects,
+      leaderboard,
+      preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
+    }));
+    await waitFor(() => expect(leaderboard.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+
+    const settings = await openSettings(person);
+    await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
+    await person.click(settings.getByRole("button", { name: "Join this team" }));
+    await settings.findByText("The project list is taking a break.");
+
+    // The join went through, so p2 is a project of the workspace just left and
+    // the new one's API would refuse it on every request from here on.
+    await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects"));
+    await waitFor(() => expect(leaderboard.mock.calls.at(-1)?.[0]).not.toContain("scope=p2"));
+  });
+
   it("keeps a project list that fails after a successful join clear of the join form", async () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })

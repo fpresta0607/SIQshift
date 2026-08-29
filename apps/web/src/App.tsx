@@ -504,6 +504,11 @@ export const App = ({ client }: AppProps) => {
       setOrganization(refreshed.organization);
       setTodayTick((tick) => tick + 1);
       clearWorkspaceView();
+      // A project id never crosses workspaces, so the scope goes back to
+      // everything here rather than as a side effect of the refresh below:
+      // whatever fails after this point, the page stops asking the new
+      // workspace about a project belonging to the old one.
+      setScope("all");
       // The new workspace has its own projects; the filing header, the picker
       // and every scoped request would otherwise still name the old one's.
       const scopeSurvives = await refreshProjects();
