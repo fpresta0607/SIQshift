@@ -160,8 +160,11 @@ A person's breakdown stops at what is the person's: their active time and those 
 rows. Everything the agents themselves did lives on the **Agents tab**, as a map of shifts
 grouped by the codebase they worked: the recorded total on top, then one group per repo with
 its shifts underneath - each shift naming its runtime, its operator, the model it drove, and
-the commits it recorded. There is no leaderboard to filter and nothing to pick; a group's held
-share appears only once a commit is decided. The concurrency split sums to active time and the
+the commits it recorded.
+The web tab opens on a board of the people whose agents ran, ranked by agent time, and picking
+one narrows the map to their shifts; the desktop gets the map alone, since its Humans tab
+already lists every member.
+A group's held share appears only once a commit is decided. The concurrency split sums to active time and the
 agent split sums to agent time; one shared module, `packages/shared/src/intervals.ts`, computes
 all of it so the invariants (`active = t0+t1+t2+t3+`, `agent = Σ n·tn + away`) hold everywhere.
 
@@ -172,8 +175,8 @@ the token side. An hour with no token data breaks the token line rather than dra
 that never happened. Hours are bucketed to the viewer's local midnight-to-midnight calendar,
 never UTC. The web dashboard reuses its existing today/7d/30d/90d range filter for the graph;
 **All time** is unbounded and has no graph, on either tab in either app — its full history
-lives in the CSV export. The desktop app charts the course of the day on its main screen, and
-its All-stats overlay charts both tabs. The Agents tab's line is folded from the very shifts
+lives in the CSV export. Both apps chart the course of the day on their main screen, and both
+All-stats overlays chart both tabs. The Agents tab's line is folded from the very shifts
 on screen, so the line and the list can never disagree, and it plots agent runtime alone with
 no person line beside it.
 
@@ -208,10 +211,12 @@ The web dashboard's project scope — **All Projects** or one project — filter
 the leaderboard, member stats, the Agents tab's shifts, the session list, and the CSV export
 at the query layer. The **Unassigned** scope is retired from the picker, so a stored one reads
 as **All Projects**.
+The scope is picked from the **Change** link in the web dashboard's filing header, and it
+narrows that page's own Today card as well as everything in All stats.
 The scope and the time range live per member in `user_view_preferences`, read and written
 through `GET/PUT /me/preferences` by the web dashboard alone; the desktop All stats overlay
-is always unscoped, and the main screen's per-project stat list carries the project detail a
-picker once did. Each surface keeps its own time range, because the desktop's calendar "this
+is always unscoped, and its filing header pins which project *recording* files under, which is
+a machine-local setting the browser has no equivalent of. Each surface keeps its own time range, because the desktop's calendar "this
 week" and the web's rolling "7d" are different questions.
 
 **Legacy rows are untouched.** Every session recorded by the old manual timer
@@ -356,11 +361,11 @@ A pnpm workspace. Contracts flow down; nothing flows back up.
 
 | Package | What lives there |
 |---|---|
-| **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the WebGL background behind the `./webgl-shader` entry (react and three are that entry's optional peers, so the API pulls neither). |
+| **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the two React entries the frontends share — `./webgl-shader` (the WebGL background) and `./ui` (the hourly chart, the member breakdown, the Today meter rows, the runtime marks, the Agents-tab drawers). React and three are those entries' optional peers, so the API pulls neither. |
 | **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, and the migration runner. |
 | **`apps/api`** | Hono API: env validation, Neon Auth JWT verification, services (sessions, activity, agent sessions, attribution, reports), Drizzle repositories, CSV export. |
 | **`apps/desktop`** | The tray app. React UI over a Tauri 2 Rust host: `monitor.rs` (activity), `spool.rs` (shared with the helper binaries), `uploader.rs`, `recovery.rs`, the All stats overlay, and the `siqshift-hook` and `siqshift-browser-host` bin targets. |
-| **`apps/web`** | The dashboard: sign-up/sign-in, clickable team leaderboard with per-member breakdowns, project management, installer downloads. |
+| **`apps/web`** | The dashboard, laid out as the desktop app's own screen: sign-up/sign-in, the filing header, today's clock and Today card, the All-stats overlay (Humans board with per-member breakdowns, Agents map, session history), settings (projects, team, sign out), installer downloads. |
 | **`apps/browser-extension`** | The Manifest V3 browser extension: matches the active tab against the user's URL rules locally and reports only the verdict to the desktop's native-messaging host. |
 
 Routes stay thin, services own the rules, repositories own SQL. Every service is tested

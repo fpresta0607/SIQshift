@@ -307,6 +307,14 @@ export function createClient(config: ClientConfig) {
       });
       return response.json() as Promise<ProjectListItem>;
     },
+    async updateProject(id: string, patch: { name: string }): Promise<ProjectListItem> {
+      const response = await apiRequest(`/projects/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      return response.json() as Promise<ProjectListItem>;
+    },
     projectUsage: (id: string) => json<ProjectUsageResponse>(`/projects/${id}/usage`),
     async deleteProject(id: string, body: ProjectDeleteRequest): Promise<void> {
       await apiRequest(`/projects/${id}`, {

@@ -93,36 +93,65 @@ const TODAY_ROWS: readonly (readonly [string, string, number | "quota", string])
   ["Everything else", "", 9, "23m"],
 ];
 
-/** The Today card as the desktop app lays it out, inside the real app shell. */
-export async function openTodayCard(page: Page): Promise<void> {
+/**
+ * The Today card, in either app's markup for it.
+ *
+ * Both lay it out in a `.screen` column of the same width ladder, so the card
+ * is the same card - the shells around that column differ, and the desktop
+ * alone can put a plan dial in a row's third cell, because a plan reading
+ * never leaves the machine that read it.
+ */
+export async function openTodayCard(page: Page, app: "desktop" | "web" = "desktop"): Promise<void> {
+  const rows = app === "desktop"
+    ? TODAY_ROWS
+    : TODAY_ROWS.map(([name, detail, share, duration]) =>
+        [name, detail, share === "quota" ? 74 : share, duration] as const);
+  const open = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
   await page.setContent(`
-    <main class="app-shell">
+    ${open}
       <div class="screen">
         <section class="session-stats card" aria-labelledby="today-panel-title">
           <div class="panel-head"><h2 id="today-panel-title">Today</h2></div>
           <ul class="meter-list meter-apps" data-testid="session-app-list">
-            ${TODAY_ROWS.map(([name, detail, share, duration]) => meterRow(name, detail, share, duration)).join("")}
+            ${rows.map(([name, detail, share, duration]) => meterRow(name, detail, share, duration)).join("")}
           </ul>
         </section>
       </div>
     </main>`);
-  await applyStylesheet(page, "desktop", ".screen");
+  await applyStylesheet(page, app, ".screen");
+}
+
+/**
+ * The clock card both apps lead with: a quiet date label, then the day's
+ * total as the page's largest element.
+ */
+export async function openClockCard(page: Page, app: "desktop" | "web"): Promise<void> {
+  const open = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
+  await page.setContent(`
+    ${open}
+      <div class="screen">
+        <section class="hero card recording-card" aria-labelledby="recording-heading">
+          <h2 id="recording-heading" class="hero-title">Thursday, August 27</h2>
+          <output class="elapsed" data-testid="elapsed-time">04:12:00</output>
+          <p class="subtle hero-note">Recorded for you.</p>
+        </section>
+      </div>
+    </main>`);
+  await applyStylesheet(page, app, ".screen");
 }
 
 /**
  * One Agents-tab codebase group, in either app's markup for it.
  *
- * The containers differ, and the row's width comes from them: the desktop tab
- * lives in the All-stats overlay (`.modal-overlay` > `.today-card.card.modal`),
- * the web tab in the dashboard's leaderboard card (`.shell` > `.card`). Both
- * end in a `.card`, whose 18px padding and 1px border are 38px the row does
- * not get: rendering either group without its own container would measure it
- * at a width it is never shown at.
+ * Both tabs live in the All-stats overlay (`.modal-overlay` >
+ * `.today-card.card.modal`), and the row's width comes from that container -
+ * whose padding and border are room the row does not get, so rendering either
+ * group without it would measure the row at a width it is never shown at.
+ * Only the shell around the overlay differs.
  */
 export async function openAgentsGroup(page: Page, app: "desktop" | "web"): Promise<void> {
-  const open = app === "desktop"
-    ? `<main class="app-shell"><div class="modal-overlay"><section class="today-card card modal">`
-    : `<main class="page"><div class="shell"><section class="card">`;
+  const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
+  const open = `${shell}<div class="modal-overlay"><section class="today-card card modal">`;
   const close = `</section></div></main>`;
   await page.setContent(`
     ${open}
@@ -159,5 +188,5 @@ export async function openAgentsGroup(page: Page, app: "desktop" | "web"): Promi
           </details>
         </section>
     ${close}`);
-  await applyStylesheet(page, app, app === "desktop" ? ".modal-overlay" : ".shell");
+  await applyStylesheet(page, app, ".modal-overlay");
 }

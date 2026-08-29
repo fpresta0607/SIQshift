@@ -1,9 +1,9 @@
 {
-  "//": "The browser half of the package: the `./webgl-shader` entry alone. It is a separate project so the DOM lib and the JSX factory it needs stay off `src/index.ts`, which is what apps/api compiles - a DOM type that reached the contracts would type-check here and fail in node.",
+  "//": "The browser half of the package: the `./webgl-shader` and `./ui` entries. It is a separate project so the DOM lib and the JSX factory they need stay off `src/index.ts`, which is what apps/api compiles - a DOM type that reached the contracts would type-check here and fail in node. The modules `./ui` imports from `src` are emitted by both projects; the JS is identical either way, since `lib` decides what type-checks and never what is written.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/webgl-shader.tsx"]
+  "include": ["src/webgl-shader.tsx", "src/ui.tsx"]
 }

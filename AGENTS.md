@@ -52,6 +52,16 @@ answered rather than forgotten:
 The desktop gets the drawers, not the board: its All-stats modal is 440px wide and its Humans tab
 already lists every member with their agent time one click away.
 
+**The web page is the desktop app's screen, not a second design.** It opens on the same filing
+header, clock card and Today card, and files the board, the breakdowns, the Agents map and the
+session history behind the same **All stats** button; projects, the invite code and signing out
+live in a settings panel with the desktop's groups. Three things the desktop draws have no
+synced data behind them and so are absent rather than faked on the web: the plan quota dial
+(`quota.rs` shells out to the local CLI and uploads nothing), this machine's live recording
+state and open stretch, and the OS icon for a plain app. What the web *can* say from
+`GET /me/stats` it says in the desktop's own components. The web's filing header picks the
+project the page is *read* for, because a browser records nothing to file.
+
 A codebase reaches every member as a **label** - the last segment of a repo root or working
 directory (`repoLabel`), when that segment names a codebase - while the path itself stays under the
 `repoRoot` rule.
@@ -230,11 +240,16 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   with no light one to match, so use the tokens rather than literals; it also holds
   `.meter-row`, the four-column scan line (mark, name with a `·` subtitle, share bar
   or quota dial, duration) that the Today card and the Agents tab both read a
-  breakdown in. The WebGL background is a React component reached through the
-  `./webgl-shader` entry **alone**: react and three are that entry's optional peers,
-  so re-exporting it from `src/index.ts` would start pulling both into the API. It
-  was two hand-synced copies and a background fix landed in one app and not the
-  other twice; there is one file now. Its wave normalises each axis by its own
+  breakdown in. Shared React lives behind two entries and **never** `src/index.ts`:
+  `./webgl-shader` (the background) and `./ui` (the hourly chart, the member
+  breakdown, `MeterRowItem` and the row builders, the runtime marks, the Agents-tab
+  drawers). React and three are those entries' optional peers, so re-exporting either
+  from `src/index.ts` would start pulling them into the API; `tsconfig.browser.json`
+  is the project that compiles them, and the modules they import from `src` are
+  emitted by both projects with identical JS, since `lib` decides what type-checks
+  and never what is written. Every one of those components shipped as hand-synced
+  copies first, and a fix landed in one app and not the other twice before the
+  background became one file; the same applies to anything else drawn twice. Its wave normalises each axis by its own
   extent and scales x by `WAVE_ASPECT`, the landscape hero it was drawn at -
   `min(resolution.x, resolution.y)` picks the *width* in this app's portrait window
   and stretches every band into a straight streak.

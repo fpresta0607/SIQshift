@@ -14,6 +14,10 @@
     "./webgl-shader": {
       "types": "./dist/webgl-shader.d.ts",
       "import": "./dist/webgl-shader.js"
+    },
+    "./ui": {
+      "types": "./dist/ui.d.ts",
+      "import": "./dist/ui.js"
     }
   },
   "files": [

@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  agentRuntimeForBinary,
   agentRuntimeLabel,
+  formatDuration,
   formatHumanDuration,
-  friendlyAppName,
   leverage,
   type AgentShiftsResponse,
   type LeaderboardEntry,
@@ -17,6 +16,15 @@ import {
   type ReportRow,
   type ViewPreferences,
 } from "@siqshift/shared";
+import {
+  HourlyGraph,
+  MemberBreakdown,
+  MeterRowItem,
+  ShiftGroups,
+  buildAppRows,
+  buildMeterRows,
+  hourlyFromShifts,
+} from "@siqshift/shared/ui";
 
 import { ClientError, type Client } from "./client.js";
 import { DownloadInstaller } from "./DownloadInstaller.js";
@@ -76,484 +84,7 @@ const withParams = (base: string, params: Record<string, string>): string => {
   return text === "" ? "" : `?${text}`;
 };
 
-type AppRowItem = { key: string; label: string; agent: boolean; durationSeconds: number };
-
-const TOP_APP_ROWS = 8;
-
-/// The Agents tab's hourly series, folded client-side from the very shifts on
-/// screen so the line and the list can never disagree. Per-hour resolution
-/// over an unbounded range is meaningless and the fold would grow with the
-/// workspace's whole history, so an unbounded range - the Humans tab's
-/// server-computed series declines the same way - yields no graph at all.
-/// Token counters read null because this series measures time alone.
-const hourlyFromShifts = (shifts: AgentShiftsResponse, range: Range): readonly ChartHourlyBucket[] => {
-  const bounds = rangeBounds(range);
-  if (bounds === undefined) return [];
-  const seconds = new Map<number, number>();
-  for (const group of shifts.groups) {
-    for (const shift of group.shifts) {
-      const start = Date.parse(shift.startedAt);
-      const end = Date.parse(shift.endedAt);
-      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-      for (let hour = Math.floor(start / 3_600_000) * 3_600_000; hour < end; hour += 3_600_000) {
-        const overlap = Math.min(end, hour + 3_600_000) - Math.max(start, hour);
-        if (overlap > 0) seconds.set(hour, (seconds.get(hour) ?? 0) + Math.round(overlap / 1_000));
-      }
-    }
-  }
-  if (seconds.size === 0) return [];
-  // A contiguous axis from the range's start onward, zeros included, so quiet
-  // hours read as quiet rather than vanishing.
-  const first = Math.floor(Date.parse(bounds.fromAt) / 3_600_000) * 3_600_000;
-  const last = Math.max(...seconds.keys());
-  const buckets: ChartHourlyBucket[] = [];
-  for (let hour = first; hour <= last; hour += 3_600_000) {
-    buckets.push({
-      hourStart: new Date(hour).toISOString(),
-      activeSeconds: 0,
-      agentSeconds: seconds.get(hour) ?? 0,
-      inputTokens: null,
-      outputTokens: null,
-      cacheCreationInputTokens: null,
-      cacheReadInputTokens: null,
-    });
-  }
-  return buckets;
-};
-
-/// A shift's start, short enough for a row: a same-day shift shows only its
-/// time, anything older leads with its date.
-const shiftClock = (startedAt: string): string => {
-  const at = new Date(startedAt);
-  const now = new Date();
-  const sameDay = at.getFullYear() === now.getFullYear()
-    && at.getMonth() === now.getMonth()
-    && at.getDate() === now.getDate();
-  return sameDay
-    ? at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-};
-
-/// One row per agent runtime (so "how much Claude Code" is a single line),
-/// friendly names for everything else, heaviest first, non-agent tail folded.
-export const buildAppRows = (apps: MeStatsResponse["apps"]): AppRowItem[] => {
-  const totals = new Map<string, AppRowItem>();
-  for (const app of apps) {
-    if (app.durationSeconds <= 0) continue;
-    const source = agentRuntimeForBinary(app.processName);
-    const key = source ?? app.processName;
-    const row = totals.get(key) ?? {
-      key,
-      label: source === undefined ? friendlyAppName(app.processName) : agentRuntimeLabel(source),
-      agent: source !== undefined,
-      durationSeconds: 0,
-    };
-    totals.set(key, { ...row, durationSeconds: row.durationSeconds + app.durationSeconds });
-  }
-  const rows = [...totals.values()]
-    .sort((a, b) => b.durationSeconds - a.durationSeconds || a.label.localeCompare(b.label));
-  if (rows.length <= TOP_APP_ROWS) return rows;
-  // Agent runtimes never fold into the tail: the fold would hide them inside
-  // "Everything else".
-  const kept = [...rows.slice(0, TOP_APP_ROWS), ...rows.slice(TOP_APP_ROWS).filter((row) => row.agent)];
-  const rest = rows.slice(TOP_APP_ROWS).filter((row) => !row.agent)
-    .reduce((sum, row) => sum + row.durationSeconds, 0);
-  if (rest === 0) return kept;
-  return [...kept, { key: "everything-else", label: "Everything else", agent: false, durationSeconds: rest }];
-};
-
 type BoardSort = "active" | "agent" | "leverage";
-
-/// A person's active time laid out as labeled rows: the hours up top, then
-/// how many agents were running through them. What those agents added up to
-/// belongs to the agent, not the person, so it lives on the Agents tab's
-/// shifts-by-codebase map.
-const MemberBreakdown = ({ stats, self }: { stats: MeStatsResponse; self: boolean }) => {
-  const { activeSeconds, concurrency } = stats;
-  return (
-    <div className="breakdown" data-testid="breakdown">
-      <p className="group-label">{self ? "Your active time — the hours you were at this computer" : "Active time — the hours they were at this computer"}</p>
-      <div className="metric-row is-headline">
-        <span className="metric-name">Active time</span>
-        <span className="metric-value">{formatHumanDuration(activeSeconds)}</span>
-      </div>
-      <div className="metric-row">
-        <span className="metric-swatch swatch-human" aria-hidden="true" />
-        <span className="metric-name">Human work <span className="metric-hint">(no agent running)</span></span>
-        <span className="metric-value">{formatHumanDuration(concurrency.t0Seconds)}</span>
-      </div>
-      {concurrency.t1Seconds > 0 && (
-        <div className="metric-row">
-          <span className="metric-swatch swatch-agent1" aria-hidden="true" />
-          <span className="metric-name">With 1 agent</span>
-          <span className="metric-value">{formatHumanDuration(concurrency.t1Seconds)}</span>
-        </div>
-      )}
-      {concurrency.t2Seconds > 0 && (
-        <div className="metric-row">
-          <span className="metric-swatch swatch-agent2" aria-hidden="true" />
-          <span className="metric-name">With 2 agents</span>
-          <span className="metric-value">{formatHumanDuration(concurrency.t2Seconds)}</span>
-        </div>
-      )}
-      {concurrency.t3PlusSeconds > 0 && (
-        <div className="metric-row">
-          <span className="metric-swatch swatch-agent3" aria-hidden="true" />
-          <span className="metric-name">With 3+ agents</span>
-          <span className="metric-value">{formatHumanDuration(concurrency.t3PlusSeconds)}</span>
-        </div>
-      )}
-    </div>
-  );
-};
-
-/// A compact count for token axes and readouts: 950, 12k, 3.4M. Token counts
-/// dwarf durations, so the charts format them on their own scale.
-const formatTokenCount = (value: number): string => {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  return String(value);
-};
-
-/// The structural slice of an hourly bucket the charts read. Each app's own
-/// bucket type satisfies it, which is what lets the two copies of these
-/// components stay byte-identical.
-type ChartHourlyBucket = {
-  hourStart: string;
-  activeSeconds: number;
-  agentSeconds: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cacheCreationInputTokens: number | null;
-  cacheReadInputTokens: number | null;
-};
-
-type ChartSeries = {
-  /// The data-series hook tests pin to; one per plotted measure, never a path count.
-  id: string;
-  label: string;
-  /// The brand.css chart token the stroke, points, and gradient read.
-  color: string;
-  values: readonly (number | null)[];
-};
-
-/// The tooltip both charts share: the hovered or keyboard-focused moment, and
-/// each series' value there. Positioned as a percentage of the plot width so
-/// the SVG's viewBox scaling never desyncs it.
-const ChartTooltip = ({
-  left,
-  title,
-  rows,
-}: {
-  left: number;
-  title: string;
-  rows: readonly { color: string; label: string; value: string }[];
-}) => (
-  <div className="graph-tooltip" style={{ left: `${left}%` }}>
-    <p className="graph-tooltip-title">{title}</p>
-    {rows.map((row) => (
-      <p key={row.label} className="graph-tooltip-row">
-        <span className="legend-line" style={{ background: row.color }} aria-hidden="true" />
-        {row.label} {row.value}
-      </p>
-    ))}
-  </div>
-);
-
-/// The smallest 1/2/2.5/5 multiple of a power of ten at or above `raw`.
-const niceStep = (raw: number): number => {
-  const magnitude = 10 ** Math.floor(Math.log10(raw));
-  for (const multiplier of [1, 2, 2.5, 5, 10]) {
-    if (multiplier * magnitude >= raw) return multiplier * magnitude;
-  }
-  return 10 * magnitude;
-};
-
-/// SVG line chart - agents in the brand green, the person in gray, tokens in
-/// blue and purple. No chart library: a fixed viewBox, one path per series,
-/// and a gradient area under each. The server buckets to the caller's local
-/// hours, so the x-axis reads midnight-to-midnight on the viewer's clock.
-/// Token fields are null when nothing in the hour reported; the path breaks
-/// there rather than dropping to a zero that never happened.
-const HourlyGraph = ({
-  buckets,
-  personLabel,
-  formatDuration,
-  tokenBlind = [],
-}: {
-  buckets: readonly ChartHourlyBucket[];
-  /// Names the presence line. Absent, no person series draws at all - the
-  /// Agents tab plots runtime alone, where a flat "You" at zero would only
-  /// claim somebody was measured and absent.
-  personLabel?: string;
-  formatDuration: (seconds: number) => string;
-  /// Runtimes that ran in range but reported no tokens, named beneath the plot.
-  tokenBlind?: readonly string[];
-}) => {
-  const [measure, setMeasure] = useState<"time" | "tokens">("time");
-  const [readout, setReadout] = useState<number | null>(null);
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  if (buckets.length === 0) return null;
-
-  const hasTokens = buckets.some((bucket) => bucket.inputTokens !== null || bucket.outputTokens !== null);
-  // "In" is everything the model consumed: fresh input plus both cache sides.
-  const tokensIn = (bucket: ChartHourlyBucket): number | null =>
-    bucket.inputTokens === null
-      ? null
-      : bucket.inputTokens + (bucket.cacheCreationInputTokens ?? 0) + (bucket.cacheReadInputTokens ?? 0);
-  const series: readonly ChartSeries[] = measure === "tokens"
-    ? [
-        { id: "tokens-in", label: "Tokens in", color: "var(--chart-token-in)", values: buckets.map(tokensIn) },
-        { id: "tokens-out", label: "Tokens out", color: "var(--chart-token-out)", values: buckets.map((bucket) => bucket.outputTokens) },
-      ]
-    : [
-        { id: "agent", label: "Agents", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) },
-        ...(personLabel === undefined
-          ? []
-          : [{ id: "human", label: personLabel, color: "var(--chart-human)", values: buckets.map((bucket) => bucket.activeSeconds) }]),
-      ];
-  const formatValue = measure === "tokens" ? formatTokenCount : formatDuration;
-
-  const width = 640;
-  const height = 190;
-  const margin = { left: 44, right: 12, top: 14, bottom: 24 };
-  const plotW = width - margin.left - margin.right;
-  const plotH = height - margin.top - margin.bottom;
-  const rawMax = Math.max(
-    measure === "tokens" ? 3 : 60,
-    ...series.flatMap((entry) => entry.values.filter((value): value is number => value !== null)),
-  );
-  // Gridlines land on thirds of yMax, so the quantum stays divisible by three
-  // and every labeled line reads a round number.
-  const yMax = measure === "tokens"
-    ? 3 * niceStep(Math.ceil(rawMax / 3))
-    : Math.max(900, Math.ceil(rawMax / 900) * 900);
-  const x = (index: number): number =>
-    buckets.length === 1 ? margin.left + plotW / 2 : margin.left + (index / (buckets.length - 1)) * plotW;
-  const y = (value: number): number => margin.top + plotH - (value / yMax) * plotH;
-
-  /// One path per series; a null lifts the pen, so a gap reads as a gap
-  /// instead of a plunge to the baseline.
-  const linePath = (values: readonly (number | null)[]): string => {
-    let d = "";
-    let pen = false;
-    values.forEach((value, index) => {
-      if (value === null) {
-        pen = false;
-        return;
-      }
-      d += `${pen ? "L" : "M"}${x(index).toFixed(1)},${y(value).toFixed(1)}`;
-      pen = true;
-    });
-    return d;
-  };
-
-  type Run = { start: number; end: number };
-  /// The contiguous non-null spans of a series; the gradient area fills one
-  /// run at a time so it too breaks over gaps.
-  const runs = (values: readonly (number | null)[]): Run[] => {
-    const spans: Run[] = [];
-    let start: number | null = null;
-    values.forEach((value, index) => {
-      if (value === null) {
-        if (start !== null) spans.push({ start, end: index - 1 });
-        start = null;
-      } else if (start === null) {
-        start = index;
-      }
-    });
-    if (start !== null) spans.push({ start, end: values.length - 1 });
-    return spans;
-  };
-  const areaPath = (values: readonly (number | null)[], run: Run): string => {
-    let d = `M${x(run.start).toFixed(1)},${y(0).toFixed(1)}`;
-    for (let index = run.start; index <= run.end; index += 1) {
-      d += `L${x(index).toFixed(1)},${y(values[index] ?? 0).toFixed(1)}`;
-    }
-    return `${d}L${x(run.end).toFixed(1)},${y(0).toFixed(1)}Z`;
-  };
-
-  // Day ranges show every point; longer ranges thin to each series' local
-  // extrema, plus wherever the read-out sits.
-  const showEveryPoint = buckets.length <= 48;
-  const isExtremum = (values: readonly (number | null)[], index: number): boolean => {
-    const value = values[index];
-    if (value === null || value === undefined) return false;
-    const previous = values[index - 1];
-    const next = values[index + 1];
-    if (previous === null || previous === undefined || next === null || next === undefined) return true;
-    return (value > previous && value > next) || (value < previous && value < next);
-  };
-
-  const tickCount = Math.min(7, buckets.length);
-  const xTicks = Array.from({ length: tickCount }, (_, tick) => {
-    const index = tickCount === 1 ? 0 : Math.round((tick / (tickCount - 1)) * (buckets.length - 1));
-    const date = new Date(buckets[index]!.hourStart);
-    const label = buckets.length <= 48
-      ? String(date.getHours()).padStart(2, "0")
-      : date.toLocaleDateString([], { month: "short", day: "numeric" });
-    return { index, label };
-  });
-
-  const indexFromPointer = (clientX: number): number | null => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (rect === undefined || rect.width === 0) return null;
-    const viewX = ((clientX - rect.left) / rect.width) * width;
-    if (viewX < margin.left || viewX > width - margin.right) return null;
-    if (buckets.length === 1) return 0;
-    return Math.max(0, Math.min(buckets.length - 1, Math.round(((viewX - margin.left) / plotW) * (buckets.length - 1))));
-  };
-
-  /// Arrow keys walk the read-out point; Home/End jump to the edges. Returns
-  /// false for keys the chart does not consume.
-  const moveReadout = (key: string): boolean => {
-    if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return false;
-    setReadout((current) => {
-      if (key === "Home") return 0;
-      if (key === "End") return buckets.length - 1;
-      const base = current ?? (key === "ArrowLeft" ? buckets.length : -1);
-      return Math.max(0, Math.min(buckets.length - 1, base + (key === "ArrowRight" ? 1 : -1)));
-    });
-    return true;
-  };
-
-  const active = readout !== null && readout < buckets.length ? readout : null;
-  const hourLabel = (index: number): string =>
-    new Date(buckets[index]!.hourStart).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const summary = (index: number): string =>
-    `${hourLabel(index)}: ${series
-      .map((entry) => {
-        const value = entry.values[index];
-        return `${entry.label} ${value === null || value === undefined ? "no data" : formatValue(value)}`;
-      })
-      .join(", ")}`;
-
-  return (
-    <div className="graph" data-testid="hourly-graph">
-      {hasTokens && (
-        <div className="range-toggle graph-mode" role="group" aria-label="Chart measure">
-          {(["time", "tokens"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              className={measure === value ? "is-active" : undefined}
-              onClick={() => setMeasure(value)}
-            >
-              {value === "time" ? "Time" : "Tokens"}
-            </button>
-          ))}
-        </div>
-      )}
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        aria-label={measure === "tokens" ? "Hourly token usage" : "Hourly active and agent time"}
-        tabIndex={0}
-        onMouseMove={(event) => {
-          const index = indexFromPointer(event.clientX);
-          if (index !== null) setReadout(index);
-        }}
-        onMouseLeave={() => setReadout(null)}
-        onKeyDown={(event) => {
-          if (moveReadout(event.key)) event.preventDefault();
-        }}
-      >
-        <defs>
-          {series.map((entry) => (
-            <linearGradient key={entry.id} id={`hourly-graph-fill-${entry.id}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stopColor={entry.color} stopOpacity="0.16" />
-              <stop offset="1" stopColor={entry.color} stopOpacity="0" />
-            </linearGradient>
-          ))}
-        </defs>
-        {[0, 1, 2, 3].map((third) => {
-          const value = (yMax / 3) * third;
-          return (
-            <g key={third}>
-              <line
-                x1={margin.left}
-                y1={y(value)}
-                x2={width - margin.right}
-                y2={y(value)}
-                stroke={third === 0 ? "var(--chart-grid)" : "var(--chart-grid-soft)"}
-              />
-              <text x={margin.left - 6} y={y(value) + 3} fill="var(--chart-axis)" fontSize="9" textAnchor="end">
-                {formatValue(value)}
-              </text>
-            </g>
-          );
-        })}
-        {xTicks.map(({ index, label }) => (
-          <text key={index} x={x(index)} y={height - 6} fill="var(--chart-axis)" fontSize="9" textAnchor="middle">{label}</text>
-        ))}
-        {series.map((entry) =>
-          runs(entry.values)
-            .filter((run) => run.end > run.start)
-            .map((run) => (
-              <path key={`${entry.id}-${run.start}`} d={areaPath(entry.values, run)} fill={`url(#hourly-graph-fill-${entry.id})`} stroke="none" />
-            )),
-        )}
-        {active !== null && (
-          <line x1={x(active)} y1={margin.top} x2={x(active)} y2={margin.top + plotH} stroke="var(--chart-grid)" />
-        )}
-        {series.map((entry) => (
-          <path
-            key={entry.id}
-            data-series={entry.id}
-            d={linePath(entry.values)}
-            fill="none"
-            stroke={entry.color}
-            strokeWidth="2"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        ))}
-        {series.map((entry) =>
-          entry.values.map((value, index) => {
-            if (value === null) return null;
-            if (!showEveryPoint && !isExtremum(entry.values, index) && index !== active) return null;
-            return (
-              <circle
-                key={`${entry.id}-${index}`}
-                data-point={entry.id}
-                cx={x(index)}
-                cy={y(value)}
-                r={index === active ? 3.5 : 2}
-                fill="var(--chart-point)"
-                stroke={entry.color}
-                strokeWidth="1.5"
-              />
-            );
-          }),
-        )}
-      </svg>
-      {active !== null && (
-        <ChartTooltip
-          left={(x(active) / width) * 100}
-          title={hourLabel(active)}
-          rows={series.map((entry) => {
-            const value = entry.values[active];
-            return { color: entry.color, label: entry.label, value: value === null || value === undefined ? "-" : formatValue(value) };
-          })}
-        />
-      )}
-      <p className="visually-hidden" role="status">{active === null ? "" : summary(active)}</p>
-      <ul className="legend">
-        {series.map((entry) => (
-          <li key={entry.id}><span className="legend-line" style={{ background: entry.color }} aria-hidden="true" />{entry.label}</li>
-        ))}
-      </ul>
-      {/* Named only while the token series is on screen: ambient, the note
-          repeated under every graph on the page and read as a standing
-          warning about nothing the viewer was looking at. */}
-      {measure === "tokens" && tokenBlind.length > 0 && (
-        <p className="graph-note">No token data from {tokenBlind.join(", ")}.</p>
-      )}
-    </div>
-  );
-};
 
 const boardSorters: Record<BoardSort, (a: LeaderboardEntry, b: LeaderboardEntry) => number> = {
   active: (a, b) => b.activeSeconds - a.activeSeconds,
@@ -574,6 +105,16 @@ const tokenBlindRuntimes = (agents: readonly MeStatsAgent[] | undefined): string
   ),
 ];
 
+/**
+ * What the Today panel says when it has nothing to add up. The desktop can
+ * name this machine's recording state; a browser records nothing at all, so it
+ * names the one thing that would change the answer.
+ */
+const TODAY_EMPTY = "Nothing has been added up yet. Your hours appear here as the SIQshift app on your computers sends them in.";
+
+/// Keeps the Today panel close to live, the way the desktop's own slow tick does.
+const TODAY_REFRESH_MS = 60_000;
+
 export const App = ({ client }: AppProps) => {
   const [booting, setBooting] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
@@ -592,12 +133,13 @@ export const App = ({ client }: AppProps) => {
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [organization, setOrganization] = useState<Organization | undefined>();
   const [selfId, setSelfId] = useState<string | undefined>();
+  const [selfName, setSelfName] = useState<string | undefined>();
   const [projects, setProjects] = useState<readonly ProjectListItem[]>([]);
   const [entries, setEntries] = useState<readonly LeaderboardEntry[]>([]);
   const [boardSort, setBoardSort] = useState<BoardSort>("active");
-  /// People is the existing leaderboard; Agents is what ran and where, every
-  /// shift grouped by the codebase it worked - no roster to pick from.
-  const [boardTab, setBoardTab] = useState<"people" | "agents">("people");
+  /// Humans is the leaderboard; Agents is what ran and where, every shift
+  /// grouped by the codebase it worked.
+  const [boardTab, setBoardTab] = useState<"humans" | "agents">("humans");
   const [agentShifts, setAgentShifts] = useState<AgentShiftsResponse | undefined>();
   const [agentShiftsFailed, setAgentShiftsFailed] = useState(false);
   /// The Agents tab's own person selection. Undefined means everyone, which
@@ -610,11 +152,24 @@ export const App = ({ client }: AppProps) => {
   const [member, setMember] = useState<{ id: string; name: string } | undefined>();
   const [memberStats, setMemberStats] = useState<MeStatsResponse | undefined>();
   const [memberFailed, setMemberFailed] = useState(false);
+  /// The home screen's own reading: today, for the signed-in viewer, over
+  /// whichever project the filing header is pointed at. It keeps its own copy
+  /// so opening a teammate's month in All stats never rewrites the day the
+  /// clock above is counting.
+  const [todayStats, setTodayStats] = useState<MeStatsResponse | undefined>();
+  const [todayFailed, setTodayFailed] = useState(false);
+  const [todayTick, setTodayTick] = useState(0);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionRows, setSessionRows] = useState<readonly ReportRow[]>([]);
   const [sessionTotal, setSessionTotal] = useState(0);
   const [sessionPage, setSessionPage] = useState(1);
-  const [manageOpen, setManageOpen] = useState(false);
+  const [allStatsOpen, setAllStatsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [scopePickerOpen, setScopePickerOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [newProjectError, setNewProjectError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [joinBusy, setJoinBusy] = useState(false);
@@ -669,7 +224,10 @@ export const App = ({ client }: AppProps) => {
           return;
         }
         if (organizationResult.status === "fulfilled") setOrganization(organizationResult.value.organization);
-        if (meResult.status === "fulfilled") setSelfId(meResult.value.user.id);
+        if (meResult.status === "fulfilled") {
+          setSelfId(meResult.value.user.id);
+          setSelfName(meResult.value.user.name);
+        }
         if (projectsResult.status === "fulfilled") setProjects(projectsResult.value.projects);
         if (preferencesResult.status === "fulfilled") {
           // The unassigned scope is retired from the pickers; a stored one
@@ -725,11 +283,45 @@ export const App = ({ client }: AppProps) => {
     void client.updatePreferences({ scope, range }).catch(() => undefined);
   }, [client, signedIn, preferencesReady, scope, range]);
 
+  // The home screen's day. It follows the filing header's project and nothing
+  // else: the All-stats range picker used to move it, which quietly turned the
+  // heading's own date into a month's total.
+  useEffect(() => {
+    if (!signedIn || !preferencesReady) return undefined;
+    let cancelled = false;
+    client.meStats(scopeParams(rangeQuery("today"))).then(
+      (result) => {
+        if (cancelled) return;
+        setTodayStats(result);
+        setTodayFailed(false);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof ClientError && error.kind === "auth") {
+          expireSession();
+          return;
+        }
+        setTodayFailed(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, signedIn, preferencesReady, scopeParams, expireSession, todayTick]);
+
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    const timer = window.setInterval(() => setTodayTick((tick) => tick + 1), TODAY_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [signedIn]);
+
   // The drill-down: one member's breakdown for the scope and range on screen.
+  // Only while All stats is open — nobody is served by fetching a teammate's
+  // year in the background.
   const viewedId = member?.id ?? selfId;
   const viewingSelf = member === undefined || member.id === selfId;
   useEffect(() => {
-    if (!signedIn || !preferencesReady || viewedId === undefined) return undefined;
+    if (!signedIn || !preferencesReady || !allStatsOpen || viewedId === undefined) return undefined;
     let cancelled = false;
     setMemberStats(undefined);
     setMemberFailed(false);
@@ -749,12 +341,12 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, range, viewedId, scopeParams, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, range, viewedId, scopeParams, expireSession]);
 
   // The Agents tab's shifts, over the range on screen; loads only while the
   // tab is open, since nobody is served by fetching it in the background.
   useEffect(() => {
-    if (!signedIn || !preferencesReady || boardTab !== "agents") return undefined;
+    if (!signedIn || !preferencesReady || !allStatsOpen || boardTab !== "agents") return undefined;
     let cancelled = false;
     setAgentShiftsFailed(false);
     // Nobody selected sends no parameter at all, so the default tab keeps
@@ -778,9 +370,9 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, boardTab, range, shiftsMember, scopeParams, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, boardTab, range, shiftsMember, scopeParams, expireSession]);
 
-  // Recent sessions load only while their tab is open, one page at a time.
+  // Recent sessions load only while their drawer is open, one page at a time.
   useEffect(() => {
     if (!signedIn || !preferencesReady || !sessionsOpen) return undefined;
     let cancelled = false;
@@ -797,12 +389,25 @@ export const App = ({ client }: AppProps) => {
     };
   }, [client, signedIn, preferencesReady, sessionsOpen, range, sessionPage, scopeParams]);
 
-  // Reset on scope, range, or a fresh open: reopening the tab with a page
+  // Reset on scope, range, or a fresh open: reopening the drawer with a page
   // counter still at 2 would append page 2's rows on top of themselves.
   useEffect(() => {
     setSessionPage(1);
     setSessionRows([]);
   }, [scope, range, sessionsOpen]);
+
+  // One overlay owns Escape at a time, innermost first, so one press closes
+  // one dialog.
+  useEffect(() => {
+    if (!allStatsOpen && !settingsOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      if (settingsOpen) setSettingsOpen(false);
+      else setAllStatsOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [allStatsOpen, settingsOpen]);
 
   const submitAuth = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -841,21 +446,27 @@ export const App = ({ client }: AppProps) => {
     setJustSignedUp(false);
     setOrganization(undefined);
     setSelfId(undefined);
+    setSelfName(undefined);
     setProjects([]);
     setEntries([]);
     setMember(undefined);
     setMemberStats(undefined);
     setMemberFailed(false);
     setBoardFailed(false);
+    setTodayStats(undefined);
+    setTodayFailed(false);
     // The Agents tab holds another workspace's shifts and another workspace's
     // person id, and the id would go on being sent as a filter. Cleared with
     // the rest of the board, so the next account opens on its own data.
-    setBoardTab("people");
+    setBoardTab("humans");
     setShiftsMember(undefined);
     setAgentShifts(undefined);
     setAgentShiftsFailed(false);
     setSessionsOpen(false);
     setSessionRows([]);
+    setAllStatsOpen(false);
+    setSettingsOpen(false);
+    setScopePickerOpen(false);
     setPreferencesReady(false);
     preferencesDirty.current = false;
     setAuthError(undefined);
@@ -896,6 +507,28 @@ export const App = ({ client }: AppProps) => {
     // A scope naming a project that no longer exists falls back to everything.
     if (scope !== "all" && !listed.projects.some((project) => project.id === scope)) {
       setScope("all");
+    }
+  };
+
+  /// Creates a project and points the dashboard at it, which is the only
+  /// reason to make one from the filing header.
+  const createProject = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const trimmed = newProjectName.trim();
+    if (newProjectBusy || trimmed === "") return;
+    setNewProjectBusy(true);
+    setNewProjectError(undefined);
+    try {
+      const created = await client.createProject(trimmed);
+      await refreshProjects();
+      setNewProjectName("");
+      setNewProjectOpen(false);
+      setScope(created.id);
+      setScopePickerOpen(false);
+    } catch (error: unknown) {
+      setNewProjectError(messageFor(error));
+    } finally {
+      setNewProjectBusy(false);
     }
   };
 
@@ -964,7 +597,7 @@ export const App = ({ client }: AppProps) => {
         <WebGLShader />
         <section className="welcome" aria-labelledby="welcome-title">
           <p className="eyebrow">You're in</p>
-          <h1 id="welcome-title" className="hero-title">One last thing — the app.</h1>
+          <h1 id="welcome-title" className="welcome-title">One last thing — the app.</h1>
           <p className="hero-sub">
             SIQshift tracks time from your desktop. Download the app, sign in with this account,
             and your hours show up on the dashboard.
@@ -988,6 +621,32 @@ export const App = ({ client }: AppProps) => {
     .sort(boardSorters[boardSort])
     .map((entry, index) => ({ ...entry, rank: boardSort === "active" ? entry.rank : index + 1 }));
   const memberAppRows = memberStats === undefined ? [] : buildAppRows(memberStats.apps);
+  const viewedName = member?.name ?? selfName ?? "You";
+
+  // Where the dashboard is pointed. The desktop's header names the project its
+  // recording files under; a browser records nothing, so the same line names
+  // the project everything below is read for.
+  const scopeProject = scope === "all" ? undefined : projects.find((project) => project.id === scope);
+  const scopeName = scope === "all" ? "All projects" : scopeProject?.name ?? "Unknown project";
+
+  const todayTotalSeconds = todayStats?.totalDurationSeconds ?? 0;
+  const todayProjectRows = (todayStats?.projects ?? [])
+    .filter((entry) => entry.durationSeconds > 0)
+    .map((entry) => ({
+      key: entry.project.id,
+      name: entry.project.name,
+      color: projects.find((project) => project.id === entry.project.id)?.color ?? null,
+      durationSeconds: entry.durationSeconds,
+      share: todayTotalSeconds === 0 ? 0 : Math.round((entry.durationSeconds / todayTotalSeconds) * 100),
+    }))
+    .sort((a, b) => b.durationSeconds - a.durationSeconds || a.name.localeCompare(b.name));
+  const todayMeterRows = buildMeterRows(todayStats?.apps ?? []);
+  // The app rows measure time spent in front of something; the day's total is
+  // session wall-clock, which also counts the gaps too short to end a stretch.
+  // The two were never going to be equal, so the difference gets a row of its
+  // own rather than reading as a column that quietly does not add up.
+  const foregroundSeconds = todayMeterRows.reduce((sum, row) => sum + row.durationSeconds, 0);
+  const quietSeconds = Math.max(0, todayTotalSeconds - foregroundSeconds);
 
   return (
     <main className="shell">
@@ -999,287 +658,480 @@ export const App = ({ client }: AppProps) => {
         </div>
         <div className="masthead-actions">
           <DownloadInstaller />
-          <button className="ghost" type="button" onClick={() => setManageOpen(true)}>Projects</button>
           <button
             className="ghost help-button"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            ⚙
+          </button>
+        </div>
+      </header>
+
+      <div className="screen">
+        {dataError && <p className="error" role="alert">{dataError}</p>}
+
+        {/* Where the time is read from, named in words rather than hidden
+            behind an icon: the workspace, then the project, then a plain link
+            to change it. */}
+        <div className="filing-header">
+          <p className="filing-where" data-testid="filing-where">
+            {organization && <span className="filing-org">{organization.name}</span>}
+            <span className="filing-project">
+              <span
+                className="project-dot"
+                aria-hidden="true"
+                style={scopeProject?.color == null ? undefined : { background: scopeProject.color }}
+              />
+              {scopeName}
+            </span>
+          </p>
+          <button
+            className="filing-change"
+            type="button"
+            data-testid="filing-change"
+            aria-expanded={scopePickerOpen}
+            onClick={() => setScopePickerOpen((open) => !open)}
+          >
+            {scopePickerOpen ? "Done" : "Change"}
+          </button>
+        </div>
+
+        {/* The clock and nothing else: a label, and the day's total under it. */}
+        <section className="hero card recording-card" aria-labelledby="recording-heading">
+          <h2 id="recording-heading" className="hero-title">
+            {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+          </h2>
+          <output className="elapsed" data-testid="elapsed-time" aria-label="Time recorded today">
+            {formatDuration(todayTotalSeconds)}
+          </output>
+          <p className="subtle hero-note">
+            Recorded for you by the SIQshift app on your computers. There is nothing to start here.
+          </p>
+          {scopePickerOpen && (
+            <div className="filing-picker">
+              {/* One project at a time, so this is a radio group wearing a
+                  tick rather than a row of checkboxes that could imply two. */}
+              <div className="project-picker" role="radiogroup" aria-label="Show time from" data-testid="project-picker">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={scope === "all"}
+                  className="project-choice"
+                  onClick={() => { setScope("all"); setScopePickerOpen(false); }}
+                >
+                  <span className="project-tick" aria-hidden="true">{scope === "all" ? "✓" : ""}</span>
+                  All projects
+                </button>
+                {projects.map((project) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={scope === project.id}
+                    className="project-choice"
+                    onClick={() => { setScope(project.id); setScopePickerOpen(false); }}
+                  >
+                    <span className="project-tick" aria-hidden="true">{scope === project.id ? "✓" : ""}</span>
+                    {project.name}
+                  </button>
+                ))}
+              </div>
+              {newProjectOpen ? (
+                <form className="new-project-form" onSubmit={createProject}>
+                  <label>New project name<input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} maxLength={80} placeholder="e.g. Client work" autoComplete="off" required /></label>
+                  {newProjectError && <p className="error" role="alert">{newProjectError}</p>}
+                  <div className="new-project-actions">
+                    <button className="primary" type="submit" disabled={newProjectBusy || newProjectName.trim() === ""}>{newProjectBusy ? "Creating…" : "Create project"}</button>
+                    <button className="ghost" type="button" disabled={newProjectBusy} onClick={() => { setNewProjectOpen(false); setNewProjectName(""); setNewProjectError(undefined); }}>Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <button className="new-project-trigger" type="button" onClick={() => setNewProjectOpen(true)}>New project…</button>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* The main surface below the clock: where today's time went, grouped
+            by the projects it was filed under, then by app. Everything
+            historical lives behind "All stats" at the bottom. */}
+        <section className="session-stats card" aria-labelledby="today-panel-title">
+          <div className="panel-head">
+            <h2 id="today-panel-title">Today</h2>
+          </div>
+          {todayFailed && todayStats === undefined && (
+            <p className="error" role="alert">Could not load today's hours.</p>
+          )}
+          {todayMeterRows.length === 0 && todayProjectRows.length === 0 ? (
+            !todayFailed && <p className="subtle" data-testid="today-panel-empty">{TODAY_EMPTY}</p>
+          ) : (
+            <>
+              {todayProjectRows.length > 0 && (
+                <ul className="meter-list" data-testid="project-list">
+                  {todayProjectRows.map((row) => (
+                    <li key={row.key} className="meter-row">
+                      <span
+                        className="project-dot"
+                        aria-hidden="true"
+                        style={row.color === null ? undefined : { background: row.color }}
+                      />
+                      <span className="meter-name">{row.name}</span>
+                      <span
+                        className="meter-bar"
+                        aria-hidden="true"
+                        style={{ "--share": `${row.share}%` } as React.CSSProperties}
+                      />
+                      <span className="meter-duration">{formatHumanDuration(row.durationSeconds)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {todayMeterRows.length > 0 && (
+                <ul className="meter-list meter-apps" data-testid="session-app-list">
+                  {todayMeterRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
+                  {quietSeconds >= 60 && (
+                    <li className="meter-row" data-testid="quiet-row">
+                      <span className="app-mark is-plain" aria-hidden="true" />
+                      <span className="meter-name">Quiet time</span>
+                      <span aria-hidden="true" />
+                      <span className="meter-duration">{formatHumanDuration(quietSeconds)}</span>
+                    </li>
+                  )}
+                </ul>
+              )}
+              <HourlyGraph
+                buckets={todayStats?.hourly ?? []}
+                personLabel="You"
+                tokenBlind={tokenBlindRuntimes(todayStats?.agents)}
+              />
+            </>
+          )}
+        </section>
+
+        {/* The two ways out of this screen, kept to the foot of it: neither is
+            what the page is for. */}
+        <div className="screen-foot">
+          <button
+            className="foot-button"
+            type="button"
+            onClick={() => setAllStatsOpen(true)}
+            data-testid="all-stats-trigger"
+          >
+            All stats
+          </button>
+          <button
+            className="foot-button is-icon"
             type="button"
             aria-label="How SIQshift works"
             title="How SIQshift works"
             onClick={() => setHelpOpen(true)}
           >
-            ?
+            ⓘ
           </button>
-          <button className="ghost" type="button" onClick={() => void signOut()}>Sign out</button>
-        </div>
-      </header>
-
-      {/* The two global filters. Everything below reflects both. */}
-      <div className="control-bar">
-        <label className="scope-picker">
-          <span className="visually-hidden">Project scope</span>
-          <select value={scope} onChange={(event) => setScope(event.target.value as ProjectScope)}>
-            <option value="all">All projects</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
-          </select>
-        </label>
-        <div className="range-toggle" role="group" aria-label="Date range">
-          {(Object.keys(rangeLabels) as Range[]).map((value) => (
-            <button
-              key={value}
-              type="button"
-              className={range === value ? "is-active" : undefined}
-              onClick={() => setRange(value)}
-            >
-              {rangeLabels[value]}
-            </button>
-          ))}
         </div>
       </div>
 
-      {dataError && <p className="error" role="alert">{dataError}</p>}
-
-      {organization && entries.length <= 1 && (
-        <section className="card join-card" aria-labelledby="join-title">
-          <div>
-            <h2 id="join-title">Joining a teammate?</h2>
-            <p className="subtle">Enter their invite code to move this account into their workspace.</p>
-          </div>
-          {joinError && <p className="error" role="alert">{joinError}</p>}
-          <form className="join-form" onSubmit={joinWorkspace}>
-            <label>
-              <span className="visually-hidden">Invite code to join</span>
-              <input value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="ABCDE-FGHJK" autoComplete="off" spellCheck={false} required />
-            </label>
-            <button className="ghost" type="submit" disabled={joinBusy}>{joinBusy ? "Joining…" : "Join"}</button>
-          </form>
-        </section>
-      )}
-
-      <section className="card" aria-labelledby="board-title">
-        <div className="card-head">
-          <h2 id="board-title" className="visually-hidden">Leaderboard</h2>
-          {/* People is the human board; Agents is the map of shifts by
-              codebase. One card, one detail region, whichever workforce is on
-              screen. */}
-          <div className="range-toggle" role="group" aria-label="People or agents">
-            <button
-              type="button"
-              className={boardTab === "people" ? "is-active" : undefined}
-              onClick={() => setBoardTab("people")}
-            >
-              People
-            </button>
-            <button
-              type="button"
-              className={boardTab === "agents" ? "is-active" : undefined}
-              onClick={() => setBoardTab("agents")}
-            >
-              Agents
-            </button>
-          </div>
-          {boardTab === "people" && (
-            <span className="board-tools">
-              <span className="total">{boardFailed ? "Not loaded" : `${formatHumanDuration(activeTotal)} total`}</span>
-              <label className="board-sort">
-                <span className="visually-hidden">Sort by</span>
-                <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
-                  <option value="active">By active time</option>
-                  <option value="agent">By agent time</option>
-                  <option value="leverage">By leverage</option>
-                </select>
-              </label>
-            </span>
-          )}
-        </div>
-        {boardTab === "agents" ? (
-          <ShiftsTab
-            shifts={agentShifts}
-            shiftsFailed={agentShiftsFailed}
-            range={range}
-            rangeLabel={rangeSentence[range]}
-            people={agentShifts?.people ?? []}
-            selected={shiftsMember}
-            onSelect={setShiftsMember}
-            selfId={selfId}
-          />
-        ) : boardFailed ? (
-          <p className="subtle">Could not load hours for this range.</p>
-        ) : loading && entries.length === 0 ? (
-          <p className="subtle" role="status">Loading hours…</p>
-        ) : (
-          <>
-            {!boardHasTime && (
-              <p className="subtle">
-                {scope === "all"
-                  ? "No recorded time in this range yet. Install the desktop app and it records on its own."
-                  : "Nothing recorded here in this range. Pick another range, or All projects."}
-              </p>
-            )}
-            {entries.length > 0 && (
-              <ol className="board-list">
-                {sortedEntries.map((entry) => (
-                  <li key={entry.user.id} className={entry.user.id === viewedId ? "is-selected" : undefined}>
-                    <button
-                      type="button"
-                      className="board-choice"
-                      aria-pressed={entry.user.id === viewedId}
-                      onClick={() => setMember({ id: entry.user.id, name: entry.user.name })}
-                    >
-                      <span className="board-rank">{entry.rank}</span>
-                      <span className="board-name">
-                        {entry.user.name}
-                        {entry.user.id === selfId && <span className="you-tag"> you</span>}
-                      </span>
-                      <span className="board-times">
-                        <span className="board-hours">{formatHumanDuration(entry.activeSeconds)}</span>
-                        <span className="board-agent">
-                          Agent {formatHumanDuration(entry.agentSeconds)}
-                          {leverage(entry) !== null && ` · ${leverage(entry)}×`}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </>
-        )}
-
-        {boardTab === "people" && viewedId !== undefined && (
-          <section className="member-stats" aria-labelledby="member-stats-title">
-            <div className="member-stats-head">
-              <h3 id="member-stats-title">
-                {(member?.name ?? entries.find((entry) => entry.user.id === selfId)?.user.name ?? "You")}
-                {" · "}
-                {rangeSentence[range]}
-              </h3>
-              {viewedId !== selfId && (
-                <button type="button" className="member-self" onClick={() => setMember(undefined)}>
-                  Show my own
+      {allStatsOpen && (
+        <div className="modal-overlay" onClick={() => setAllStatsOpen(false)}>
+          <section
+            className="today-card card modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="all-stats-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-head">
+              <h2 id="all-stats-title" className="visually-hidden">All stats</h2>
+              <div className="range-toggle" role="group" aria-label="Humans or agents">
+                <button
+                  type="button"
+                  className={boardTab === "humans" ? "is-active" : undefined}
+                  onClick={() => setBoardTab("humans")}
+                >
+                  Humans
                 </button>
-              )}
+                <button
+                  type="button"
+                  className={boardTab === "agents" ? "is-active" : undefined}
+                  onClick={() => setBoardTab("agents")}
+                >
+                  Agents
+                </button>
+              </div>
+              <div className="range-toggle" role="group" aria-label="Date range">
+                {(Object.keys(rangeLabels) as Range[]).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={range === value ? "is-active" : undefined}
+                    onClick={() => setRange(value)}
+                  >
+                    {rangeLabels[value]}
+                  </button>
+                ))}
+              </div>
+              <button className="ghost modal-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
             </div>
-            {memberFailed ? (
-              <p className="subtle">Could not load this member's breakdown.</p>
-            ) : memberStats === undefined ? (
-              <p className="subtle" role="status">Loading…</p>
+
+            {boardTab === "agents" ? (
+              <ShiftsTab
+                shifts={agentShifts}
+                shiftsFailed={agentShiftsFailed}
+                range={range}
+                rangeLabel={rangeSentence[range]}
+                people={agentShifts?.people ?? []}
+                selected={shiftsMember}
+                onSelect={setShiftsMember}
+                selfId={selfId}
+              />
             ) : (
               <>
-                <MemberBreakdown stats={memberStats} self={viewingSelf} />
-                {/* Recorded sessions run past active time when agents keep
-                    working unattended; say so where the two totals meet. */}
-                {memberStats.totalDurationSeconds > memberStats.activeSeconds && (
-                  <p className="member-foot">
-                    Sessions recorded {formatHumanDuration(memberStats.totalDurationSeconds)} in all - time agents
-                    kept working unattended sits inside that, never inside the active hours above.
-                  </p>
-                )}
-                <HourlyGraph
-                  buckets={memberStats.hourly ?? []}
-                  personLabel={viewingSelf ? "You" : (member?.name ?? "Person")}
-                  formatDuration={formatHumanDuration}
-                  tokenBlind={tokenBlindRuntimes(memberStats.agents)}
-                />
-                {memberStats.projects.length > 0 && (
-                  <ul className="stat-list">
-                    {memberStats.projects.filter((entry) => entry.durationSeconds > 0).map((entry) => (
-                      <li key={entry.project.id} className="stat-row">
-                        <span className="stat-name">{entry.project.name}</span>
-                        <span className="stat-duration">{formatHumanDuration(entry.durationSeconds)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {memberAppRows.length === 0 ? (
-                  <p className="subtle">No recorded time in this range.</p>
+                <div className="board-head">
+                  <h3 className="visually-hidden">Leaderboard</h3>
+                  <span className="board-tools">
+                    <span className="total">{boardFailed ? "Not loaded" : `${formatHumanDuration(activeTotal)} total`}</span>
+                    <label className="board-sort">
+                      <span className="visually-hidden">Sort by</span>
+                      <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
+                        <option value="active">By active time</option>
+                        <option value="agent">By agent time</option>
+                        <option value="leverage">By leverage</option>
+                      </select>
+                    </label>
+                  </span>
+                </div>
+                {boardFailed ? (
+                  <p className="subtle">Could not load hours for this range.</p>
+                ) : loading && entries.length === 0 ? (
+                  <p className="subtle" role="status">Loading hours…</p>
                 ) : (
-                  <ul className="stat-list stat-apps">
-                    {memberAppRows.map((row) => (
-                      <li key={row.key} className="stat-row">
-                        <span className={row.agent ? "stat-name is-agent" : "stat-name"}>{row.label}</span>
-                        <span className="stat-duration">{formatHumanDuration(row.durationSeconds)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    {!boardHasTime && (
+                      <p className="subtle">
+                        {scope === "all"
+                          ? "No recorded time in this range yet. Install the desktop app and it records on its own."
+                          : "Nothing recorded here in this range. Pick another range, or All projects."}
+                      </p>
+                    )}
+                    {entries.length > 0 && (
+                      <ol className="board-list" data-testid="board-list">
+                        {sortedEntries.map((entry) => (
+                          <li key={entry.user.id} className={entry.user.id === viewedId ? "is-selected" : undefined}>
+                            <button
+                              type="button"
+                              className="board-choice"
+                              aria-pressed={entry.user.id === viewedId}
+                              onClick={() => setMember({ id: entry.user.id, name: entry.user.name })}
+                            >
+                              <span className="board-rank">{entry.rank}</span>
+                              <span className="board-name">
+                                {entry.user.name}
+                                {entry.user.id === selfId && <span className="you-tag"> you</span>}
+                              </span>
+                              <span className="board-times">
+                                <span className="board-hours">{formatHumanDuration(entry.activeSeconds)}</span>
+                                <span className="board-agent">
+                                  Agent {formatHumanDuration(entry.agentSeconds)}
+                                  {leverage(entry) !== null && ` · ${leverage(entry)}×`}
+                                </span>
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </>
                 )}
-                {memberStats.unattributedSeconds > 0 && (
-                  <p className="member-foot">
-                    {formatHumanDuration(memberStats.unattributedSeconds)} of that landed in the default project,
-                    because nothing said which project it was for.
-                  </p>
+
+                {viewedId !== undefined && (
+                  <section className="member-stats" aria-labelledby="member-stats-title" data-testid="member-stats">
+                    <div className="member-stats-head">
+                      <h3 id="member-stats-title">{viewedName} · {rangeSentence[range]}</h3>
+                      {viewedId !== selfId && (
+                        <button type="button" className="member-self" onClick={() => setMember(undefined)}>
+                          Show my own
+                        </button>
+                      )}
+                    </div>
+                    {memberFailed ? (
+                      <p className="subtle">Could not load this member's breakdown.</p>
+                    ) : memberStats === undefined ? (
+                      <p className="subtle" role="status">Loading…</p>
+                    ) : (
+                      <>
+                        {/* Recorded is whole sessions, so unattended agent
+                            stretches sit inside it; the active-time split
+                            below is the person's own. */}
+                        <p className="member-total">
+                          <strong>{formatHumanDuration(memberStats.totalDurationSeconds)}</strong> recorded
+                          {memberStats.totalDurationSeconds > memberStats.activeSeconds && (
+                            <span className="metric-hint"> · unattended agent time included</span>
+                          )}
+                        </p>
+                        <MemberBreakdown
+                          activeSeconds={memberStats.activeSeconds}
+                          concurrency={memberStats.concurrency}
+                          self={viewingSelf}
+                        />
+                        <HourlyGraph
+                          buckets={memberStats.hourly ?? []}
+                          personLabel={viewingSelf ? "You" : viewedName}
+                          tokenBlind={tokenBlindRuntimes(memberStats.agents)}
+                        />
+                        {memberStats.projects.length > 0 && (
+                          <ul className="app-list" data-testid="member-project-list">
+                            {memberStats.projects.filter((entry) => entry.durationSeconds > 0).map((entry) => (
+                              <li key={entry.project.id} className="app-row">
+                                <span className="app-name">{entry.project.name}</span>
+                                <span className="app-duration">{formatHumanDuration(entry.durationSeconds)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {memberAppRows.length === 0 ? (
+                          <p className="subtle" data-testid="today-empty">No recorded time in this range.</p>
+                        ) : (
+                          <ul className="app-list" data-testid="member-app-list">
+                            {memberAppRows.map((row) => (
+                              <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
+                                <span className="app-name">{row.label}</span>
+                                <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {memberStats.unattributedSeconds > 0 && (
+                          <p className="verified-foot" data-testid="unattributed-foot">
+                            {formatHumanDuration(memberStats.unattributedSeconds)} of that landed in the default project,
+                            because nothing said which project it was for.
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </section>
                 )}
               </>
             )}
+
+            {/* History lives out of the main scroll, one page at a time. */}
+            <details
+              className="sessions-card"
+              open={sessionsOpen}
+              onToggle={(event) => setSessionsOpen((event.target as HTMLDetailsElement).open)}
+            >
+              <summary>Recent sessions{sessionTotal > 0 ? ` (${sessionTotal})` : ""}</summary>
+              {sessionRows.length === 0 ? (
+                <p className="subtle">Nothing recorded in this range.</p>
+              ) : (
+                <>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Member</th>
+                        <th scope="col">Project</th>
+                        <th scope="col">Started</th>
+                        <th scope="col" className="numeric">Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sessionRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.user.name}</td>
+                          <td>{row.project.name}</td>
+                          <td>{new Date(row.startedAt).toLocaleString()}</td>
+                          <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {sessionRows.length < sessionTotal && (
+                    <button className="ghost" type="button" onClick={() => setSessionPage((page) => page + 1)}>
+                      Show more
+                    </button>
+                  )}
+                </>
+              )}
+            </details>
           </section>
-        )}
-      </section>
-
-      {/* History lives out of the main scroll, one page at a time. */}
-      <details
-        className="card sessions-card"
-        open={sessionsOpen}
-        onToggle={(event) => setSessionsOpen((event.target as HTMLDetailsElement).open)}
-      >
-        <summary>Recent sessions{sessionTotal > 0 ? ` (${sessionTotal})` : ""}</summary>
-        {sessionRows.length === 0 ? (
-          <p className="subtle">Nothing recorded in this range.</p>
-        ) : (
-          <>
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Member</th>
-                  <th scope="col">Project</th>
-                  <th scope="col">Started</th>
-                  <th scope="col" className="numeric">Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sessionRows.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.user.name}</td>
-                    <td>{row.project.name}</td>
-                    <td>{new Date(row.startedAt).toLocaleString()}</td>
-                    <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {sessionRows.length < sessionTotal && (
-              <button className="ghost" type="button" onClick={() => setSessionPage((page) => page + 1)}>
-                Show more
-              </button>
-            )}
-          </>
-        )}
-      </details>
-
-      {organization && (
-        <section className="card invite-card">
-          <div>
-            <h2>Invite your team</h2>
-            <p className="subtle">Anyone who enters this code at sign-up joins this workspace.</p>
-          </div>
-          <div className="invite-actions">
-            <code className="invite-code">{organization.inviteCode}</code>
-            <button className="ghost" type="button" onClick={() => void copyInviteCode()}>{copied ? "Copied" : "Copy"}</button>
-          </div>
-        </section>
+        </div>
       )}
 
-      {manageOpen && (
-        <ManageProjects
-          client={client}
-          projects={projects}
-          onChanged={() => {
-            void refreshProjects()
-              .then(() => reloadBoard())
-              .catch((error: unknown) => setDataError(messageFor(error)));
-          }}
-          onClose={() => setManageOpen(false)}
-        />
+      {settingsOpen && (
+        <div className="modal-overlay" onClick={() => setSettingsOpen(false)}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+            className="card modal settings-panel"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-head">
+              <h2 id="settings-title">Settings</h2>
+              <button className="ghost modal-close" type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}>✕</button>
+            </div>
+
+            {/* One group open at a time keeps the panel scannable; native
+                details/summary so there is no tab machinery to maintain. */}
+            <details className="settings-group" open>
+              <summary>Recording</summary>
+              <p className="subtle">
+                Recording happens in the SIQshift app on each computer, so its switches — the
+                consent toggle, the quiet-minutes limit, and which AI tools are connected — live
+                there. This page only reads what those computers sent.
+              </p>
+              <DownloadInstaller />
+              <button
+                className="link privacy-open"
+                type="button"
+                onClick={() => { setSettingsOpen(false); setHelpOpen(true); }}
+              >
+                See exactly what&apos;s recorded — and what never is
+              </button>
+            </details>
+
+            <ProjectsGroup client={client} projects={projects} onChanged={() => {
+              void refreshProjects()
+                .then(() => reloadBoard())
+                .catch((error: unknown) => setDataError(messageFor(error)));
+            }} />
+
+            {organization && (
+              <details className="settings-group">
+                <summary>Team</summary>
+                <p className="subtle">
+                  You are keeping time with <strong>{organization.name}</strong>. Anyone who enters
+                  this code at sign-up joins this workspace.
+                </p>
+                <div className="team-code-row">
+                  <code className="invite-code" data-testid="invite-code">{organization.inviteCode}</code>
+                  <button className="ghost" type="button" onClick={() => void copyInviteCode()}>{copied ? "Copied" : "Copy code"}</button>
+                </div>
+                <form className="join-form" onSubmit={joinWorkspace}>
+                  <label className="team-join-label">
+                    Their invite code
+                    <input
+                      value={joinCode}
+                      onChange={(event) => setJoinCode(event.target.value)}
+                      placeholder="Join another team: ABCDE-FGHJK"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                    />
+                  </label>
+                  <button className="primary" type="submit" disabled={joinBusy || joinCode.trim() === ""}>
+                    {joinBusy ? "Joining…" : "Join this team"}
+                  </button>
+                </form>
+                {joinError && <p className="error" role="alert">{joinError}</p>}
+              </details>
+            )}
+
+            <button className="link" type="button" onClick={() => void signOut()}>Sign out</button>
+          </section>
+        </div>
       )}
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
@@ -1308,9 +1160,6 @@ type ShiftsTabProps = {
 /// once rather than one worker's long day. It carries no bar, because the
 /// board is deliberately computed before the filter and a pre-filter
 /// numerator over the post-filter total would read past 100%.
-///
-/// Held rates appear only once a commit is decided; a rate with no decided
-/// commits is not a fact, so the group says nothing instead of "pending".
 const ShiftsTab = ({ shifts, shiftsFailed, range, rangeLabel, people, selected, onSelect, selfId }: ShiftsTabProps) => {
   // The heading names whoever the numbers below it are actually about, which
   // is the request that came back rather than the row last clicked: naming the
@@ -1350,97 +1199,58 @@ const ShiftsTab = ({ shifts, shiftsFailed, range, rangeLabel, people, selected, 
 type ShiftsTabBodyProps = Omit<ShiftsTabProps, "shifts" | "shiftsFailed" | "rangeLabel"> & { shifts: AgentShiftsResponse };
 
 /// Everything under the head: the board, the total, the graph, the drawers.
-const ShiftsTabBody = ({ shifts, range, people, selected, onSelect, selfId }: ShiftsTabBodyProps) => {
-  return (
-    <>
-      {people.length > 1 && (
-        <ol className="board-list" data-testid="agent-people">
-          {people.map((person, index) => (
-            <li key={person.owner.id} className={person.owner.id === selected?.id ? "is-selected" : undefined}>
-              <button
-                type="button"
-                className="board-choice"
-                aria-pressed={person.owner.id === selected?.id}
-                onClick={() => onSelect(
-                  person.owner.id === selected?.id ? undefined : { id: person.owner.id, name: person.owner.name },
-                )}
-              >
-                <span className="board-rank">{index + 1}</span>
-                <span className="board-name">
-                  {person.owner.name}
-                  {person.owner.id === selfId && <span className="you-tag"> you</span>}
+const ShiftsTabBody = ({ shifts, range, people, selected, onSelect, selfId }: ShiftsTabBodyProps) => (
+  <>
+    {people.length > 1 && (
+      <ol className="board-list" data-testid="agent-people">
+        {people.map((person, index) => (
+          <li key={person.owner.id} className={person.owner.id === selected?.id ? "is-selected" : undefined}>
+            <button
+              type="button"
+              className="board-choice"
+              aria-pressed={person.owner.id === selected?.id}
+              onClick={() => onSelect(
+                person.owner.id === selected?.id ? undefined : { id: person.owner.id, name: person.owner.name },
+              )}
+            >
+              <span className="board-rank">{index + 1}</span>
+              <span className="board-name">
+                {person.owner.name}
+                {person.owner.id === selfId && <span className="you-tag"> you</span>}
+              </span>
+              <span className="board-times">
+                <span className="board-hours">{formatHumanDuration(person.agentSeconds)}</span>
+                <span className="board-agent">
+                  {person.shiftCount} shift{person.shiftCount === 1 ? "" : "s"}
                 </span>
-                <span className="board-times">
-                  <span className="board-hours">{formatHumanDuration(person.agentSeconds)}</span>
-                  <span className="board-agent">
-                    {person.shiftCount} shift{person.shiftCount === 1 ? "" : "s"}
-                  </span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ol>
-      )}
-      <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
-      <HourlyGraph buckets={hourlyFromShifts(shifts, range)} formatDuration={formatHumanDuration} />
-      {shifts.groups.length === 0 ? (
-        <p className="subtle">No agent worked in this range.</p>
-      ) : shifts.groups.map((group) => (
-        /* A drawer, because a busy week runs to hundreds of shifts and the
-           codebases are the map. The head reads in the shared meter row -
-           mark, name, a bar of this codebase's share of the recorded agent
-           time, duration - so a column of codebases scans the way a
-           breakdown does, and it stays exactly four cells: the summary is a
-           four-track grid, so a disclosure glyph added as a fifth child
-           would wrap onto an implicit second row and double its height.
-           Open state is left to the DOM: nothing is gated on opening, and
-           the keys are stable, so a viewer's open drawers survive a refetch. */
-        <details className="shift-group" key={group.repo ?? ""} data-testid="shift-group">
-          <summary className="meter-row shift-group-head">
-            <span className="project-dot" aria-hidden="true" />
-            <span className="meter-name">
-              {group.repo ?? "No codebase recorded"}
-              {group.heldRate !== null && <span className="meter-detail held-tag"> · {Math.round(group.heldRate * 100)}% held</span>}
-              <span className="meter-detail"> · {group.shiftCount} shift{group.shiftCount === 1 ? "" : "s"}</span>
-            </span>
-            <span
-              className="meter-bar"
-              aria-hidden="true"
-              style={{ "--share": `${shifts.totalAgentSeconds === 0 ? 0 : Math.round((group.agentSeconds / shifts.totalAgentSeconds) * 100)}%` } as React.CSSProperties}
-            />
-            <span className="meter-duration">{formatHumanDuration(group.agentSeconds)}</span>
-          </summary>
-          <ul className="shift-list">
-            {group.shifts.map((shift) => (
-              <li key={shift.id} className="shift-row">
-                <span className="shift-when">{shiftClock(shift.startedAt)}</span>
-                <span className="shift-facts">
-                  {agentRuntimeLabel(shift.source)}
-                  {` · ${shift.owner.name}`}
-                  {shift.model !== null && ` · ${shift.model}`}
-                  {shift.commitCount > 0 && ` · ${shift.commitCount} commit${shift.commitCount === 1 ? "" : "s"}`}
-                </span>
-                <span className="shift-duration">{formatHumanDuration(shift.agentSeconds)}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ))}
-    </>
-  );
-};
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    )}
+    <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
+    <HourlyGraph buckets={hourlyFromShifts(shifts.groups, rangeBounds(range))} />
+    {shifts.groups.length === 0 ? (
+      <p className="subtle">No agent worked in this range.</p>
+    ) : (
+      <ShiftGroups groups={shifts.groups} totalAgentSeconds={shifts.totalAgentSeconds} />
+    )}
+  </>
+);
 
-type ManageProjectsProps = {
+type ProjectsGroupProps = {
   client: Client;
   projects: readonly ProjectListItem[];
   onChanged: () => void;
-  onClose: () => void;
 };
 
-/** Create and the guarded delete: the whole management surface. */
-const ManageProjects = ({ client, projects, onChanged, onClose }: ManageProjectsProps) => {
+/** Rename, create, and the guarded delete: the whole management surface. */
+const ProjectsGroup = ({ client, projects, onChanged }: ProjectsGroupProps) => {
   const [error, setError] = useState<string | undefined>();
   const [newName, setNewName] = useState("");
+  const [renamingId, setRenamingId] = useState<string | undefined>();
+  const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<{ project: ProjectListItem; usage: ProjectUsageResponse } | undefined>();
   const [reassignTo, setReassignTo] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -1459,120 +1269,136 @@ const ManageProjects = ({ client, projects, onChanged, onClose }: ManageProjects
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <section
-        className="card modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="manage-title"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="card-head">
-          <h2 id="manage-title">Projects</h2>
-          <button className="ghost" type="button" aria-label="Close projects" onClick={onClose}>✕</button>
-        </div>
-        {error && <p className="error" role="alert">{error}</p>}
-
-        {deleting === undefined ? (
-          <>
-            <ul className="manage-list">
-              {projects.map((project) => (
-                <li key={project.id} className="manage-row">
-                  <span className="manage-name">
-                    {project.name}
-                    {project.isDefault && <span className="you-tag"> default</span>}
-                  </span>
-                  {!project.isDefault && (
-                    <button
-                      className="ghost is-danger"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => {
-                        // A read, not a mutation: opening the dialog must
-                        // not refetch the whole board.
-                        setBusy(true);
-                        setError(undefined);
-                        void client.projectUsage(project.id).then(
-                          (usage) => {
-                            setBusy(false);
-                            // An empty project has nothing to guard: it goes
-                            // on the click. Only recorded time needs the ask.
-                            if (usage.sessionCount === 0 && usage.agentSessionCount === 0 && usage.agentCount === 0) {
-                              void act(() => client.deleteProject(project.id, { reassignTo: null }));
-                              return;
-                            }
-                            setDeleting({ project, usage });
-                            setReassignTo("");
-                          },
-                          (usageError: unknown) => {
-                            setError(messageFor(usageError));
-                            setBusy(false);
-                          },
-                        );
-                      }}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <form
-              className="manage-create"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void act(async () => {
-                  await client.createProject(newName.trim());
-                  setNewName("");
-                });
-              }}
-            >
-              <label>
-                <span className="visually-hidden">New project name</span>
-                <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="New project…" maxLength={80} required />
-              </label>
-              <button className="ghost" type="submit" disabled={busy}>Create</button>
-            </form>
-          </>
-        ) : (
-          <div className="manage-delete">
-            <p>
-              Deleting <strong>{deleting.project.name}</strong> takes with it{" "}
-              <strong>{deleting.usage.sessionCount} sessions</strong> ({formatHumanDuration(deleting.usage.durationSeconds)})
-              and {deleting.usage.agentSessionCount} agent sessions, unless they move first.
-            </p>
-            {deleting.usage.agentCount > 0 && (
-              <p className="subtle">
-                {deleting.usage.agentCount} roster {deleting.usage.agentCount === 1 ? "agent moves" : "agents move"} with it,
-                or retires where another agent already works the destination.
-              </p>
-            )}
+    <details className="settings-group">
+      <summary>Projects</summary>
+      {error && <p className="error" role="alert">{error}</p>}
+      {deleting === undefined ? (
+        <>
+          <ul className="manage-list" data-testid="project-manage-list">
+            {projects.map((project) => (
+              <li key={project.id} className="manage-row">
+                {renamingId === project.id ? (
+                  <form
+                    className="manage-rename"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const trimmed = renameDraft.trim();
+                      if (trimmed === "") return;
+                      void act(async () => {
+                        await client.updateProject(project.id, { name: trimmed });
+                        setRenamingId(undefined);
+                      });
+                    }}
+                  >
+                    <label>
+                      <span className="visually-hidden">New name for {project.name}</span>
+                      <input value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} maxLength={80} required />
+                    </label>
+                    <button type="submit" disabled={busy}>Save</button>
+                    <button type="button" onClick={() => setRenamingId(undefined)}>Cancel</button>
+                  </form>
+                ) : (
+                  <>
+                    <span className="manage-name">
+                      <span className="project-dot" aria-hidden="true" style={project.color == null ? undefined : { background: project.color }} />
+                      {project.name}
+                      {project.isDefault && <span className="you-tag"> default</span>}
+                    </span>
+                    <span className="manage-actions">
+                      <button type="button" disabled={busy} onClick={() => { setRenamingId(project.id); setRenameDraft(project.name); }}>Rename</button>
+                      {!project.isDefault && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            // A read, not a mutation: opening the dialog must
+                            // not refetch the whole board.
+                            setBusy(true);
+                            setError(undefined);
+                            void client.projectUsage(project.id).then(
+                              (usage) => {
+                                setBusy(false);
+                                // An empty project has nothing to guard: it
+                                // goes on the click. Only recorded time needs
+                                // the ask.
+                                if (usage.sessionCount === 0 && usage.agentSessionCount === 0 && usage.agentCount === 0) {
+                                  void act(() => client.deleteProject(project.id, { reassignTo: null }));
+                                  return;
+                                }
+                                setDeleting({ project, usage });
+                                setReassignTo("");
+                              },
+                              (usageError: unknown) => {
+                                setError(messageFor(usageError));
+                                setBusy(false);
+                              },
+                            );
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          <form
+            className="manage-create"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void act(async () => {
+                await client.createProject(newName.trim());
+                setNewName("");
+              });
+            }}
+          >
             <label>
-              What happens to its sessions?
-              <select value={reassignTo} onChange={(event) => setReassignTo(event.target.value)}>
-                <option value="">Delete them with the project</option>
-                {projects.filter((project) => project.id !== deleting.project.id).map((project) => (
-                  <option key={project.id} value={project.id}>Move to {project.name}</option>
-                ))}
-              </select>
+              <span className="visually-hidden">New project name</span>
+              <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="New project…" maxLength={80} required />
             </label>
-            <div className="manage-actions">
-              <button
-                className="ghost is-danger"
-                type="button"
-                disabled={busy}
-                onClick={() => void act(async () => {
-                  await client.deleteProject(deleting.project.id, { reassignTo: reassignTo === "" ? null : reassignTo });
-                  setDeleting(undefined);
-                })}
-              >
-                Delete {deleting.project.name}
-              </button>
-              <button className="ghost" type="button" disabled={busy} onClick={() => setDeleting(undefined)}>Cancel</button>
-            </div>
+            <button className="ghost" type="submit" disabled={busy}>Create</button>
+          </form>
+        </>
+      ) : (
+        <div className="manage-delete" data-testid="project-delete-confirm">
+          <p>
+            Deleting <strong>{deleting.project.name}</strong> takes with it{" "}
+            <strong>{deleting.usage.sessionCount} sessions</strong> ({formatHumanDuration(deleting.usage.durationSeconds)})
+            and {deleting.usage.agentSessionCount} agent sessions, unless they move first.
+          </p>
+          {deleting.usage.agentCount > 0 && (
+            <p className="subtle">
+              {deleting.usage.agentCount} roster {deleting.usage.agentCount === 1 ? "agent moves" : "agents move"} with it,
+              or retires where another agent already works the destination.
+            </p>
+          )}
+          <label>
+            What happens to its sessions?
+            <select value={reassignTo} onChange={(event) => setReassignTo(event.target.value)}>
+              <option value="">Delete them with the project</option>
+              {projects.filter((project) => project.id !== deleting.project.id).map((project) => (
+                <option key={project.id} value={project.id}>Move to {project.name}</option>
+              ))}
+            </select>
+          </label>
+          <div className="manage-actions">
+            <button
+              className="ghost is-danger"
+              type="button"
+              disabled={busy}
+              onClick={() => void act(async () => {
+                await client.deleteProject(deleting.project.id, { reassignTo: reassignTo === "" ? null : reassignTo });
+                setDeleting(undefined);
+              })}
+            >
+              Delete {deleting.project.name}
+            </button>
+            <button className="ghost" type="button" disabled={busy} onClick={() => setDeleting(undefined)}>Cancel</button>
           </div>
-        )}
-      </section>
-    </div>
+        </div>
+      )}
+    </details>
   );
 };
