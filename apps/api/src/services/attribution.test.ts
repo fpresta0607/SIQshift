@@ -9,6 +9,7 @@ import {
   repoKeyLabel,
   repoLabel,
   resolveProjectForCwd,
+  resolveProjectForRemote,
   resolveProjectForRule,
   type PathMappingCandidate,
 } from "./attribution.js";
@@ -17,9 +18,9 @@ const projectA = "a1c7e513-b094-4d4c-ae55-21790ae019a4";
 const projectB = "b1c7e513-b094-4d4c-ae55-21790ae019a4";
 
 let serial = 0;
-function mapping(pathPrefix: string, projectId: string, kind: "path_prefix" | "url_rule" = "path_prefix"): PathMappingCandidate {
+function mapping(pathPrefix: string, projectId: string, kind: "path_prefix" | "url_rule" = "path_prefix", repoUrl: string | null = null): PathMappingCandidate {
   serial += 1;
-  return { id: `m${serial}`, kind, pathPrefix, projectId };
+  return { id: `m${serial}`, kind, pathPrefix, repoUrl, projectId };
 }
 
 describe("repoLabel", () => {
@@ -337,6 +338,88 @@ describe("resolveProjectForCwd", () => {
   it("never matches a url_rule pattern against a working directory", () => {
     const mappings = [mapping("C:/dev/siqshift", projectA, "url_rule")];
     expect(resolveProjectForCwd("c:/dev/siqshift", mappings)).toBeNull();
+  });
+
+  // The Overlord's shape: goblins work in `<repo>/.worktrees/gb-<id>`, below
+  // the root any mapping already names. The boundary rule matches those
+  // without any worktree-specific logic - this test pins it so the nested
+  // case is never quietly lost.
+  it("matches a worktree nested under the mapped project root", () => {
+    const mappings = [mapping("C:/dev/peakCraftsman", projectA)];
+    expect(resolveProjectForCwd("C:\\dev\\peakCraftsman\\.worktrees\\gb-peak-simplify", mappings)).toBe(projectA);
+  });
+
+  // And the gap the nested case leaves: a worktree the operator keeps
+  // outside the project root can never match by prefix at all.
+  it("matches nothing for a worktree stored outside every mapped root", () => {
+    const mappings = [mapping("C:/dev/peakCraftsman", projectA)];
+    expect(resolveProjectForCwd("C:\\Users\\fpres\\.treehouse\\peakcraftsman-4b3191\\peakcraftsman", mappings)).toBeNull();
+  });
+});
+
+describe("resolveProjectForRemote", () => {
+  it("resolves a repository the path lane cannot reach through its remote", () => {
+    const mappings = [mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/peakcraftsman.git")];
+    expect(resolveProjectForRemote("https://github.com/acme/peakcraftsman", mappings)).toBe(projectA);
+  });
+
+  it("normalizes both sides before comparing, never compares verbatim", () => {
+    const spellings = [
+      "git@github.com:acme/api.git",
+      "https://github.com/acme/api.git",
+      "https://github.com/acme/api",
+      "ssh://git@github.com/acme/api",
+      "https://token@github.com/acme/api.git",
+    ];
+    for (const repoUrl of spellings) {
+      const mappings = [mapping("C:/wherever", projectA, "path_prefix", repoUrl)];
+      expect(resolveProjectForRemote(spellings[0]!, mappings)).toBe(projectA);
+      expect(resolveProjectForRemote(spellings[1]!, mappings)).toBe(projectA);
+    }
+  });
+
+  it("answers null when no mapping names the remote", () => {
+    const mappings = [
+      mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/peakcraftsman.git"),
+      mapping("C:/dev/other", projectB),
+    ];
+    expect(resolveProjectForRemote("https://github.com/acme/unrelated.git", mappings)).toBeNull();
+    expect(resolveProjectForRemote(null, mappings)).toBeNull();
+  });
+
+  // The guard the Overlord asked for by name: two different remotes are two
+  // codebases and never collapse into one project because their paths look
+  // alike or their mappings sit nearby.
+  it("never resolves one remote through a mapping that names a different one", () => {
+    const mappings = [mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/peakcraftsman.git")];
+    expect(resolveProjectForRemote("git@github.com:acme/peakcraftsman-extra.git", mappings)).toBeNull();
+  });
+
+  it("answers null when the matching mappings disagree about the project", () => {
+    const mappings = [
+      mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/api.git"),
+      mapping("C:/elsewhere", projectB, "path_prefix", "https://github.com/acme/api.git"),
+    ];
+    expect(resolveProjectForRemote("git@github.com:acme/api.git", mappings)).toBeNull();
+  });
+
+  it("agrees when the matching mappings name the same project twice", () => {
+    const mappings = [
+      mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/api.git"),
+      mapping("C:/elsewhere", projectA, "path_prefix", "https://github.com/acme/api.git"),
+    ];
+    expect(resolveProjectForRemote("git@github.com:acme/api.git", mappings)).toBe(projectA);
+  });
+
+  it("ignores url_rule mappings however their repoUrl is spelled", () => {
+    const mappings = [mapping("github.com/acme/*", projectA, "url_rule", "git@github.com:acme/api.git")];
+    expect(resolveProjectForRemote("git@github.com:acme/api.git", mappings)).toBeNull();
+  });
+
+  it("refuses a remote that names no host - a file url, a bare path", () => {
+    const mappings = [mapping("C:/dev", projectA, "path_prefix", "git@github.com:acme/api.git")];
+    expect(resolveProjectForRemote("file:///srv/git/api", mappings)).toBeNull();
+    expect(resolveProjectForRemote("C:/dev/local-repo", mappings)).toBeNull();
   });
 });
 

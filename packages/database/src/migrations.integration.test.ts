@@ -431,3 +431,128 @@ integration(
     });
   },
 );
+
+/**
+ * The worktree backfill resolves a session's cwd by the same rule live ingest
+ * does - `matchesBoundary` in apps/api/src/services/attribution.ts, a literal
+ * prefix that only matches on a path-segment boundary. A mapped path holding
+ * an `_` or a `%` is where a SQL `LIKE` stops being that rule and starts being
+ * a pattern, and a backfill that moves a row live ingest would leave alone is
+ * a wrong answer written to production.
+ */
+integration(
+  databaseUrl
+    ? "the worktree backfill matches mapped paths literally"
+    : "the worktree backfill matches mapped paths literally (skipped: TEST_DATABASE_URL is not set)",
+  () => {
+    let disposable: DisposableTestDatabase | undefined;
+    let database = undefined as unknown as DatabaseConnection;
+    const organizationId = randomUUID();
+    const ownerId = randomUUID();
+    const mappedProjectId = randomUUID();
+    const insideMapping = randomUUID();
+    const wildcardNeighbour = randomUUID();
+    const worktreeProjectId = randomUUID();
+    const misattributed = randomUUID();
+
+    beforeAll(async () => {
+      if (!databaseUrl) return;
+      disposable = await createDisposableTestDatabase(databaseUrl, "migrations_backfill_prefix");
+      database = disposable.database;
+      await runMigrations(database);
+      await database.client`
+        insert into organizations (id, name, invite_code)
+        values (${organizationId}, 'Prefix backfill', ${randomUUID().replaceAll("-", "").slice(0, 11)})
+      `;
+      await database.client`
+        insert into users (id, organization_id, email, name)
+        values (${ownerId}, ${organizationId}, 'prefix@example.test', 'Owner')
+      `;
+      // The second project is the bogus per-worktree codebase the backfill
+      // exists to empty; a row sitting on it is what a move-and-record pass
+      // has to get right, and get right only once.
+      await database.client`
+        insert into projects (id, organization_id, name)
+        values (${mappedProjectId}, ${organizationId}, 'My App'),
+               (${worktreeProjectId}, ${organizationId}, 'my_app worktree')
+      `;
+      // The mapped root carries an underscore, which LIKE reads as "any one
+      // character" and a literal prefix reads as an underscore.
+      await database.client`
+        insert into project_path_mappings (organization_id, user_id, kind, path_prefix, project_id)
+        values (${organizationId}, ${ownerId}, 'path_prefix', 'C:/dev/my_app', ${mappedProjectId})
+      `;
+      const startedAt = "2026-08-06T14:00:00.000Z";
+      await database.client`
+        insert into agent_sessions (id, organization_id, user_id, source, external_session_id, cwd, started_at, last_event_at)
+        values
+          (${insideMapping}, ${organizationId}, ${ownerId}, 'claude_code', ${insideMapping}, 'C:/dev/my_app/src', ${startedAt}, ${startedAt}),
+          (${wildcardNeighbour}, ${organizationId}, ${ownerId}, 'claude_code', ${wildcardNeighbour}, 'C:/dev/myXapp/src', ${startedAt}, ${startedAt})
+      `;
+    }, 60_000);
+
+    afterAll(async () => {
+      if (disposable !== undefined) await disposable.cleanup();
+    });
+
+    it("attributes a session under the mapped root and leaves its wildcard-adjacent neighbour alone", async () => {
+      if (!database) return;
+      const [report] = await database.client`
+        select backfill_agent_session_worktree_attribution(false) as report
+      `;
+      expect(report.report.moved).toBe(1);
+
+      const rows = await database.client`
+        select cwd, project_id from agent_sessions where organization_id = ${organizationId}
+      `;
+      const attributed = new Map(rows.map((row) => [row.cwd as string, row.project_id as string | null]));
+      expect(attributed.get("C:/dev/my_app/src")).toBe(mappedProjectId);
+      // `C:/dev/myXapp` is not inside `C:/dev/my_app`; only a LIKE pattern
+      // thinks otherwise, and this row stays unattributed as live ingest
+      // would leave it.
+      expect(attributed.get("C:/dev/myXapp/src")).toBeNull();
+    });
+
+    // The plan the function builds is a TEMP TABLE ON COMMIT DROP, so it
+    // outlives the call but not the transaction. 0018's header tells the
+    // operator to dry-run and then apply, and an operator who wraps that pair
+    // in one BEGIN is entitled to have it work rather than fail on the second
+    // call. The row this seeds is the pass's whole subject: it starts on the
+    // worktree project, so a move has somewhere to move it from and the
+    // recorded origin has a value that a second pass could overwrite.
+    it("dry-runs then applies inside one transaction, and a second apply moves nothing", async () => {
+      if (!database) return;
+      const startedAt = "2026-08-06T14:00:00.000Z";
+      const reports = await database.client.begin(async (tx) => {
+        await tx`
+          insert into agent_sessions (id, organization_id, user_id, source, external_session_id, project_id, cwd, started_at, last_event_at)
+          values (${misattributed}, ${organizationId}, ${ownerId}, 'claude_code', ${misattributed},
+                  ${worktreeProjectId}, 'C:/dev/my_app/.worktrees/gb-1/api', ${startedAt}, ${startedAt})
+        `;
+        const [planned] = await tx`select backfill_agent_session_worktree_attribution(true) as report`;
+        const [applied] = await tx`select backfill_agent_session_worktree_attribution(false) as report`;
+        const [reapplied] = await tx`select backfill_agent_session_worktree_attribution(false) as report`;
+        return { planned: planned.report, applied: applied.report, reapplied: reapplied.report };
+      });
+
+      expect(reports.planned.dry_run).toBe(true);
+      // The dry run planned the row's move and left it unmade, so the apply
+      // that follows still has exactly that work to do - and once it has done
+      // it, a further pass has none.
+      expect(reports.planned.moved).toBeGreaterThanOrEqual(1);
+      expect(reports.applied.moved).toBe(reports.planned.moved);
+      expect(reports.reapplied.moved).toBe(0);
+
+      const [row] = await database.client`
+        select project_id, original_project_id, attribution_backfilled_at
+        from agent_sessions where id = ${misattributed}
+      `;
+      // The worktree's session now belongs to its parent repository's project,
+      // and the record of where it came from names the project it actually
+      // left - not the one the second pass found it on.
+      expect(row.project_id).toBe(mappedProjectId);
+      expect(row.original_project_id).toBe(worktreeProjectId);
+      expect(row.attribution_backfilled_at).not.toBeNull();
+    });
+  },
+);

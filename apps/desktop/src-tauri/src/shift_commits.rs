@@ -245,8 +245,12 @@ pub async fn capture_from_spool(
         let repo = git_evidence::discover_repo(Path::new(&capture.cwd)).await;
         let (repo_root, branch, commits) = match repo {
             Some(location) => {
+                // The commit range reads HEAD where the shift ran: a linked
+                // worktree's commits are invisible to the main checkout's
+                // HEAD, so git history is read at the toplevel even though
+                // attribution records the main root.
                 let commits = git_evidence::commits_in_window(
-                    &location.root,
+                    &location.toplevel,
                     &capture.start_head,
                     capture.started_at,
                     capture.ended_at,
@@ -608,6 +612,77 @@ mod tests {
         capture_from_spool(&agent_path, &windows_path, &commits_path).await;
         let second_pass = read_registry(&commits_path);
         assert_eq!(second_pass, first_pass);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shift run inside a linked worktree records the main repository's
+    /// root, not the worktree - attribution keys off the main root, while the
+    /// commit range still reads the worktree's own HEAD.
+    #[tokio::test]
+    async fn a_shift_in_a_worktree_captures_its_commit_under_the_main_repo_root() {
+        let dir = temp_dir("capture-worktree");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir creates");
+        init_repo(&repo).await;
+        let worktree = repo.join(".worktrees").join("gb-the-shift");
+        std::fs::create_dir_all(&worktree).expect("worktrees dir creates");
+        // A worktree branches off a commit; one cut from an unborn HEAD has
+        // no HEAD of its own, so the shift's window needs this first.
+        commit_in_repo(&repo, "base", 1_700_000_000).await;
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "gb-side",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .await;
+        let started_at = unix_now() - 600;
+        commit_in_repo(&repo, "work from before the shift", started_at - 60).await;
+
+        let agent_path = dir.join("agent-spool.jsonl");
+        let windows_path = dir.join("shift-windows.json");
+        let commits_path = dir.join("shift-commits.json");
+        let cwd = worktree.to_string_lossy().into_owned();
+
+        let start_head = crate::git_evidence::head_sha(&worktree).expect("the worktree has a HEAD");
+        spool::append(
+            &agent_path,
+            &started_event(&iso8601(started_at), &cwd, Some(&start_head)),
+        )
+        .expect("append succeeds");
+        commit_in_repo(&worktree, "did work in the worktree", started_at + 60).await;
+        spool::append(
+            &agent_path,
+            &event(
+                AgentEventKind::Ended,
+                &iso8601(started_at + 300),
+                Some(&cwd),
+            ),
+        )
+        .expect("append succeeds");
+
+        capture_from_spool(&agent_path, &windows_path, &commits_path).await;
+        let entries = read_registry(&commits_path);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.subject.as_str())
+                .collect::<Vec<_>>(),
+            ["did work in the worktree"],
+        );
+        // The evidence names the main repository, and the branch names the
+        // worktree the shift ran in.
+        assert_eq!(
+            std::fs::canonicalize(&entries[0].repo_root).expect("canonical"),
+            std::fs::canonicalize(&repo).expect("repo canonical"),
+        );
+        assert_eq!(entries[0].branch.as_deref(), Some("gb-side"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

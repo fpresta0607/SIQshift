@@ -128,7 +128,11 @@ a gap nothing can vouch for.
 Every session belongs to exactly one project, resolved in this order:
 
 1. **The project the person pinned.** The desktop app's picker is an override, not a start button.
-2. **The folder an agent is working in.** Agent CLIs report their working directory; `resolveProjectForCwd` matches it against the user's path mappings by normalized longest prefix on path-segment boundaries, so `c:/dev/siqshift` matches `c:/dev/siqshift/src` but never `c:/dev/siqshift-extra`.
+2. **The repository an agent is working in.** Agent CLIs report their working directory, and the desktop resolves the repository around it to its **main** checkout, so a shift in a linked worktree lands on the same project as a shift in the checkout that worktree hangs off.
+   Three lanes then answer in order, each only when the one before it found nothing: the repository root's path, the working directory's path, and the repository's git remote.
+   The two path lanes are `resolveProjectForCwd` matching against the user's path mappings by normalized longest prefix on path-segment boundaries, so `c:/dev/siqshift` matches `c:/dev/siqshift/src` but never `c:/dev/siqshift-extra`.
+   The remote lane matches the repository's normalized remote against the `repo_url` a path mapping carries, which is the only lane that reaches a worktree kept outside every mapped root.
+   A lane matching two different projects is ambiguous and resolves to nothing rather than to a guess.
 3. **The default project**, which is the oldest project on the account. Every new workspace
    already starts with `General`, so there is always somewhere for the time to go.
 
@@ -268,6 +272,7 @@ refusals never fail a batch.
 An agent's identity is durable across sessions, keyed by **(operator, runtime, repository)** per organization - the same person's Claude Code working the same repository is one roster entry, not a new row per shift, and two people running the same runtime on the same repository are two workers rather than one.
 The repository is named by its git remote, normalized (`github.com/owner/repo`), and never by the directory it happens to sit in: a worktree, a second worktree, and a second checkout under a different folder name are all one repository and so one roster entry, on this machine and on the next one.
 A repository with no remote is identified by its own directory, which keeps local-only work from pooling into a single row.
+That directory is the repository's **root** as the desktop resolves it - the main checkout, the parent of the git common directory, not the worktree a shift ran in - so even a remoteless repository's worktrees stay one entry; ["Where the hours land"](#where-the-hours-land) covers what that same root means for project attribution.
 Each `agent_sessions` row is that identity's shift.
 The operator is whoever's desktop uploaded the shift, so every runtime gets the distinction the day its hooks are wired.
 A shift with no repository at all - it is not in one, or the desktop predates the probe and its directory names no codebase either - lands in that person's **unassigned** bucket, a real roster row several shifts share.

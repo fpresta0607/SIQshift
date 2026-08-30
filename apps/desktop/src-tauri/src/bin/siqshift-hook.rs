@@ -45,11 +45,13 @@ fn run() -> Result<(), String> {
     if event.event == AgentEventKind::Started {
         // One probe of the working directory answers three questions: which
         // commit the shift opened at, which directory it is working in, and
-        // which repository that directory belongs to. The remote is the one
-        // the identity keys on - a worktree and a second checkout report two
-        // roots and one remote - and the root rides along as evidence.
-        // Each collapses any failure to `None` on its own, so a machine
-        // without git records none of them and nothing else changes.
+        // which repository that directory belongs to - the main repository
+        // root, so a shift in a linked worktree attributes to the project its
+        // parent checkout belongs to. The remote is the one the identity keys
+        // on - a worktree and a second checkout report two roots and one
+        // remote - and the root rides along as evidence. Each collapses any
+        // failure to `None` on its own, so a machine without git records none
+        // of them and nothing else changes.
         let cwd = event.cwd.clone();
         if let Some(cwd) = cwd.as_deref().map(Path::new) {
             event.start_head = git_evidence::head_sha(cwd);

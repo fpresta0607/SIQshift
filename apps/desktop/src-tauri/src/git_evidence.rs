@@ -23,6 +23,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// never block the uploader indefinitely over it.
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The probe both `discover_repo` and `repo_root` resolve the main repository
+/// root with; see `main_root_of_common_dir` for why the common directory and
+/// not `--show-toplevel` is the question being asked.
+const GIT_COMMON_DIR_ARGS: &[&str] = &["rev-parse", "--path-format=absolute", "--git-common-dir"];
+
 /// Runs one read-only git command, discarding stderr (never worth surfacing
 /// to a user) and returning trimmed stdout on success. Any failure — git not
 /// installed, not a repo, a bad ref, a timeout — collapses to `None`; the
@@ -49,22 +54,44 @@ async fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
         .map(|text| text.trim().to_string())
 }
 
-/// Where a shift's working directory actually lives, and which branch (if
-/// any — a detached HEAD carries none) was checked out there.
+/// Where a shift's working directory actually lives. `toplevel` is the working
+/// tree the shift runs in — a linked worktree stays itself, because its HEAD
+/// and branch are its own — and `root` is the **main** repository root those
+/// working trees hang off, which is what project attribution and the recorded
+/// evidence name. A plain checkout reports the same directory twice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoLocation {
+    /// The main repository root: where attribution keys off, and where a
+    /// captured commit is later verified — the main checkout outlives the
+    /// worktrees a cleanup removes.
     pub root: PathBuf,
+    /// The working tree `cwd` sits in: where HEAD, the branch, and the
+    /// shift's own commit range live. A linked worktree's commits are
+    /// invisible to the main checkout's HEAD, so git commands that read
+    /// history run here, not at `root`.
+    pub toplevel: PathBuf,
     pub branch: Option<String>,
 }
 
 /// Resolves `cwd` to the repo it sits in, or `None` when it is not inside a
 /// git working tree at all — a non-repo cwd records nothing, not an error.
 pub async fn discover_repo(cwd: &Path) -> Option<RepoLocation> {
-    let root = run_git(cwd, &["rev-parse", "--show-toplevel"]).await?;
-    let root = PathBuf::from(root);
-    let head = run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+    let toplevel = run_git(cwd, &["rev-parse", "--show-toplevel"]).await?;
+    let toplevel = PathBuf::from(toplevel);
+    let head = run_git(&toplevel, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
     let branch = if head == "HEAD" { None } else { Some(head) };
-    Some(RepoLocation { root, branch })
+    // The main root comes from the common-directory probe; when that probe
+    // cannot answer (old git), the toplevel is the working tree itself and
+    // the two names agree, as they always did for a plain checkout.
+    let root = run_git(cwd, GIT_COMMON_DIR_ARGS)
+        .await
+        .and_then(main_root_of_common_dir)
+        .unwrap_or_else(|| toplevel.clone());
+    Some(RepoLocation {
+        root,
+        toplevel,
+        branch,
+    })
 }
 
 /// The commit `HEAD` pointed at when a shift opened. Recorded by the hook at
@@ -93,23 +120,33 @@ pub fn head_sha(cwd: &Path) -> Option<String> {
         .map(|text| text.trim().to_string())
 }
 
-/// The repository a shift's working directory sits in, or `None` when it is
-/// not inside a git working tree at all - a non-repo cwd names no codebase,
-/// which is honest rather than an error.
+/// The repository a shift's working directory belongs to: the **main**
+/// repository root, not the linked worktree a session may run in — a goblin
+/// in `<repo>/.worktrees/gb-<id>` and a human in `<repo>` report the same
+/// root, because both work the same repository. `None` when it is not inside
+/// a git working tree at all - a non-repo cwd names no codebase, which is
+/// honest rather than an error.
 ///
 /// Synchronous for the same reason `head_sha` is, and not `discover_repo`
 /// reused: that one is async over `tokio::process::Command` and the hook is a
 /// synchronous binary with no runtime, and it must never block the agent CLI
-/// that invoked it. `git rev-parse --show-toplevel` takes no locks and reads
-/// the directory walk it would have done anyway.
+/// that invoked it. Both probes take no locks and read the directory walk it
+/// would have done anyway.
 pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
     probe_repo_root("git", cwd)
 }
 
-fn probe_repo_root(git: &str, cwd: &Path) -> Option<PathBuf> {
+/// Runs one read-only git command synchronously, collapsing every failure —
+/// git absent, not a repo, a refused flag — to `None`, so the caller always
+/// has an honest "unknown" to fall back to. Synchronous because the hook is a
+/// synchronous binary with no runtime, which is also why there is no
+/// `GIT_TIMEOUT` here: a hang blocks the caller rather than collapsing, so
+/// this stays reserved for the `rev-parse` probes, which take no locks and
+/// read what git has already opened.
+fn run_git_sync(git: &str, cwd: &Path, args: &[&str]) -> Option<String> {
     let mut command = std::process::Command::new(git);
     command
-        .args(["rev-parse", "--show-toplevel"])
+        .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -120,7 +157,54 @@ fn probe_repo_root(git: &str, cwd: &Path) -> Option<PathBuf> {
     if !output.status.success() {
         return None;
     }
-    let root = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_string())
+}
+
+fn probe_repo_root(git: &str, cwd: &Path) -> Option<PathBuf> {
+    match main_repo_root_from(git, cwd) {
+        Some(root) => Some(root),
+        None => probe_toplevel(git, cwd),
+    }
+}
+
+/// The main repository root a working directory belongs to: the parent of the
+/// git common directory, not `--show-toplevel`.
+///
+/// `--show-toplevel` from a linked worktree names the worktree, which is how
+/// a goblin working in `<repo>/.worktrees/gb-<id>` recorded itself as a
+/// codebase the repository it serves has never heard of. Every linked
+/// worktree shares its parent's common directory
+/// (`rev-parse --path-format=absolute --git-common-dir` → `<repo>/.git`), so
+/// that directory's parent is the main tree the worktree belongs to — the
+/// same answer `--show-toplevel` gives for a plain checkout, and the one
+/// attribution keys off.
+///
+/// A common directory named anything else identifies no main tree and the
+/// toplevel answer stands: a submodule's is `<super>/.git/modules/<name>`
+/// (its parent is not a checkout), a bare repository's is the bare directory
+/// itself (which has no working tree at all), and a `GIT_DIR` pointed
+/// somewhere custom says nothing about where a main tree lives. An older git
+/// without `--path-format` refuses the flag and falls through too — the
+/// probe degrades to the pre-worktree-attribution behavior, never to a
+/// wrong answer.
+fn main_repo_root_from(git: &str, cwd: &Path) -> Option<PathBuf> {
+    main_root_of_common_dir(run_git_sync(git, cwd, GIT_COMMON_DIR_ARGS)?)
+}
+
+/// Reads one `--git-common-dir` answer, shared by the async and synchronous
+/// probes so both decide the same way about the same string.
+fn main_root_of_common_dir(common: String) -> Option<PathBuf> {
+    let common = PathBuf::from(common);
+    if !common.file_name().is_some_and(|name| name == ".git") {
+        return None;
+    }
+    common.parent().map(|root| root.to_path_buf())
+}
+
+fn probe_toplevel(git: &str, cwd: &Path) -> Option<PathBuf> {
+    let root = run_git_sync(git, cwd, &["rev-parse", "--show-toplevel"])?;
     if root.is_empty() {
         return None;
     }
@@ -562,6 +646,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The Overlord's observation, made a rule: a goblin working in
+    /// `<repo>/.worktrees/gb-<id>` and a human working in `<repo>` are the
+    /// same repository, so both report the same root. `--show-toplevel` from
+    /// the worktree names the worktree - which is why a worktree used to read
+    /// as somewhere else entirely.
+    #[tokio::test]
+    async fn repo_root_of_a_worktree_names_the_main_repository() {
+        let dir = temp_dir("repo-root-worktree");
+        init_repo(&dir).await;
+        commit_at(&dir, "a.txt", "first", 1_700_000_000).await;
+        let worktree = dir.join(".worktrees").join("gb-the-shift");
+        std::fs::create_dir_all(&worktree).expect("worktrees dir creates");
+        run(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "gb-side",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .await;
+
+        let from_worktree = repo_root(&worktree).expect("the worktree resolves a root");
+        assert_eq!(
+            std::fs::canonicalize(&from_worktree).expect("canonical"),
+            std::fs::canonicalize(&dir).expect("canonical")
+        );
+
+        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bare repository has no working tree, and a cwd inside one names no
+    /// codebase. Its common directory is the bare directory itself - not a
+    /// `.git` directory - so the common-dir lane refuses it and the toplevel
+    /// fallback answers the same `None` it always did.
+    #[tokio::test]
+    async fn repo_root_inside_a_bare_repository_is_an_honest_none() {
+        let dir = temp_dir("repo-root-bare");
+        let bare = dir.join("repo.git");
+        run(
+            &dir,
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                "--initial-branch=main",
+                &bare.to_string_lossy(),
+            ],
+        )
+        .await;
+
+        assert_eq!(repo_root(&bare), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Two worktrees of one repository are two roots and one remote. That is
     /// the whole reason identity keys on the remote: keyed on the root, this
     /// repository would have minted an agent per worktree.
@@ -595,8 +739,11 @@ mod tests {
             Some("git@github.com:fpresta0607/siqshift.git")
         );
         assert_eq!(repo_remote(&worktree), repo_remote(&dir));
-        // The roots differ, which is exactly what used to split them.
-        assert_ne!(repo_root(&worktree), repo_root(&dir));
+        // The roots used to differ - `--show-toplevel` names the worktree -
+        // which is exactly what used to split them. `repo_root` now resolves
+        // the main repository both sit in, so one repository is one root and
+        // one remote, however many worktrees hang off it.
+        assert_eq!(repo_root(&worktree), repo_root(&dir));
 
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&dir);
@@ -862,6 +1009,45 @@ mod tests {
         );
         assert!(location.branch.is_some());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shift running in a linked worktree keeps its own HEAD and branch -
+    /// git history is read at the toplevel, where those live - while the
+    /// recorded root is the main repository both trees hang off.
+    #[tokio::test]
+    async fn discover_repo_in_a_worktree_keeps_the_toplevel_and_names_the_main_root() {
+        let dir = temp_dir("discover-worktree");
+        init_repo(&dir).await;
+        commit_at(&dir, "a.txt", "first commit", 1_000).await;
+        let worktree = dir.join(".worktrees").join("gb-the-shift");
+        std::fs::create_dir_all(&worktree).expect("worktrees dir creates");
+        run(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "gb-side",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .await;
+
+        let location = discover_repo(&worktree).await.expect("repo discovers");
+
+        assert_eq!(
+            std::fs::canonicalize(&location.root).expect("root canonicalizes"),
+            std::fs::canonicalize(&dir).expect("dir canonicalizes"),
+        );
+        assert_eq!(
+            std::fs::canonicalize(&location.toplevel).expect("toplevel canonicalizes"),
+            std::fs::canonicalize(&worktree).expect("worktree canonicalizes"),
+        );
+        assert_eq!(location.branch.as_deref(), Some("gb-side"));
+
+        let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

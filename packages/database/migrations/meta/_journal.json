@@ -120,6 +120,41 @@
       "when": 1787201566105,
       "tag": "0016_agent_identity_by_remote",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788032529993,
+      "tag": "0017_agent-session-attribution-audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788032529994,
+      "tag": "0018_backfill_worktree_attribution",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788032529995,
+      "tag": "0019_backfill_audit_stamp",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788032529996,
+      "tag": "0020_backfill_audit_stamp_fix",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788032529997,
+      "tag": "0021_backfill_plan_reentrant",
+      "breakpoints": true
     }
   ]
 }
