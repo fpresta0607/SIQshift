@@ -76,8 +76,13 @@ from a path key, and the directory itself only when there is no key at all.
 That is one definition, read by the roster view, by the default name the API mints and by
 scripts/repair-agent-identity-by-remote.mjs, so a row whose root is one worktree still renders the
 whole repository's name and a repaired roster reads exactly like a freshly minted one.
-A shift whose directory names no codebase reads "No codebase recorded"; there is no
-default codebase, just as `resolveProjectForCwd` returns null rather than falling back to a project.
+A shift labels itself the paystub's way: first commit's repo root, else cwd; when those name only
+a run (a no-mistakes gate worktree under `.no-mistakes/worktrees/<hash>/<ULID>` - most recorded
+shifts ran in one), it falls back to its roster identity's `agentCodebaseLabel`, which is why the
+shifts map attributes gate worktrees at all. Whatever still names nothing groups last, split by
+`nullCause` (`no-working-directory`, `unidentified-run-directory`) so one bucket never hides two
+answers; there is no default codebase, just as `resolveProjectForCwd` returns null rather than
+falling back to a project.
 
 Agents are durable identities, not rows per run: one `agents` row per `(organization, owner, source, repo_key)` - one person's harness working one **repository** - and each `agent_sessions` row is one of its shifts.
 The operator is the authenticated uploader, so the dimension costs each runtime nothing.

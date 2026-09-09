@@ -176,6 +176,13 @@ rows. Everything the agents themselves did lives on the **Agents tab**, as a map
 grouped by the codebase they worked: the recorded total on top, then one group per repo with
 its shifts underneath - each shift naming its runtime, its operator, the model it drove, and
 the commits it recorded.
+A shift labels itself the way the roster labels an agent: by its first commit's repo root, else
+its working directory, and when those name only a run - a validation gate worktree, a CI
+checkout - by the repository its roster identity is keyed on. A shift that can name nothing at
+all groups last, split by why: **No working directory recorded** when nothing was captured, and
+**Run worktree, codebase not identified** when the work happened in a per-run directory whose
+repository no runtime identified - a named absence, so a capture gap never reads like work that
+legitimately had no repo.
 The web tab opens on a board of the people whose agents ran, ranked by agent time, and picking
 one narrows the map to their shifts; the desktop gets the map alone, since its Humans tab
 already lists every member.

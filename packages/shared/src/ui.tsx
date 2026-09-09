@@ -639,10 +639,25 @@ export type ShiftRow = {
 /** One codebase's shifts, as both Agents tabs render them. */
 export type ShiftGroup = {
   repo: string | null;
+  /** Why the group has no codebase name, when it has none; a string so a future cause degrades to the old wording, never a crash. */
+  nullCause?: string | null | undefined;
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
   shifts: readonly ShiftRow[];
+};
+
+/**
+ * What a codebase-less group says instead of a name. Each cause reads as what
+ * it is: a capture that never saw a directory is a tracking gap; a run
+ * worktree with no repository behind it is a named absence, not a bug.
+ * An older API sends no cause at all, which keeps the original wording.
+ */
+export const shiftGroupLabel = (group: ShiftGroup): string => {
+  if (group.repo !== null) return group.repo;
+  if (group.nullCause === "no-working-directory") return "No working directory recorded";
+  if (group.nullCause === "unidentified-run-directory") return "Run worktree, codebase not identified";
+  return "No codebase recorded";
 };
 
 /// A shift's start, short enough for a row: a same-day shift shows only its
@@ -684,7 +699,7 @@ export const ShiftGroups = ({
         <summary className="meter-row shift-group-head">
           <span className="project-dot" aria-hidden="true" />
           <span className="meter-name">
-            {group.repo ?? "No codebase recorded"}
+            {shiftGroupLabel(group)}
             {group.heldRate !== null && <span className="meter-detail held-tag"> · {Math.round(group.heldRate * 100)}% held</span>}
             <span className="meter-detail"> · {group.shiftCount} shift{group.shiftCount === 1 ? "" : "s"}</span>
           </span>

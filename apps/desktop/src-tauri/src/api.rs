@@ -213,13 +213,17 @@ pub struct AgentShifts {
 }
 
 /// One codebase's group: its summed runtime and the shifts that worked it,
-/// newest first. `repo` is a folder name, never a path; `None` is the group
-/// of shifts that recorded neither a commit root nor a working directory.
+/// newest first. `repo` is a folder name, never a path; `None` is a group of
+/// shifts that could name no codebase at all, and `null_cause` says why - so
+/// a capture gap and a run worktree with no repository never render as one
+/// collapsed row. `None`/absent on an older API, which keeps the old wording.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentShiftsGroup {
     #[serde(default)]
     pub repo: Option<String>,
+    #[serde(default)]
+    pub null_cause: Option<String>,
     #[serde(default)]
     pub agent_seconds: u64,
     #[serde(default)]
@@ -1238,6 +1242,7 @@ mod tests {
                 "totalAgentSeconds": 5400,
                 "groups": [{
                     "repo": "siqshift",
+                    "nullCause": null,
                     "agentSeconds": 5400,
                     "shiftCount": 1,
                     "heldRate": 0.5,
@@ -1258,6 +1263,22 @@ mod tests {
         .expect("the full shape decodes");
         assert_eq!(shifts.total_agent_seconds, 5400);
         assert_eq!(shifts.groups[0].shifts[0].commit_count, 2);
+        assert_eq!(shifts.groups[0].null_cause, None);
+
+        // A newer API's cause rides through to the webview, so the desktop can
+        // name why a group has no codebase instead of rendering one row for
+        // every reason.
+        let caused: AgentShifts = serde_json::from_str(
+            r#"{"groups": [{"repo": null, "nullCause": "no-working-directory", "shifts": []}]}"#,
+        )
+        .expect("a cause decodes");
+        assert_eq!(
+            caused.groups[0].null_cause.as_deref(),
+            Some("no-working-directory")
+        );
+        // And serializes back with the same camelCase name the decoder reads.
+        let wire = serde_json::to_string(&caused).expect("serializes");
+        assert!(wire.contains("nullCause\":\"no-working-directory\""));
 
         let empty: AgentShifts = serde_json::from_str("{}").expect("absence decodes");
         assert_eq!(empty.total_agent_seconds, 0);

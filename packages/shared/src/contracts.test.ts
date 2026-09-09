@@ -1143,6 +1143,22 @@ describe("agent shifts contracts", () => {
     expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, people: [], groups: [] })).not.toThrow();
   });
 
+  it("names why a codebase-less group exists, and keeps the cause off named groups", () => {
+    const group = (repo: string | null, nullCause: unknown) => ({
+      ...shiftsResponse.groups[0],
+      repo,
+      nullCause,
+    });
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, groups: [group(null, "no-working-directory")] })).not.toThrow();
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, groups: [group(null, "unidentified-run-directory")] })).not.toThrow();
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, groups: [group(null, null)] })).not.toThrow();
+    // Absent entirely - an API from before the field - parses, and an unknown
+    // cause does not: the UI falls back to wording the older wire never had.
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, groups: [{ ...group(null, null), nullCause: undefined }] })).not.toThrow();
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, groups: [group(null, "something-else")] })).toThrow();
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, groups: [group("siqshift", "no-working-directory")] })).toThrow();
+  });
+
   it("refuses a person row that is not whole seconds, not a count, or carries a field nothing renders", () => {
     const withPeople = (people: unknown) => () => agentShiftsResponseSchema.parse({ ...shiftsResponse, people });
 

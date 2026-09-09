@@ -143,6 +143,7 @@ const agentShifts = {
     },
     {
       repo: null,
+      nullCause: "unidentified-run-directory",
       agentSeconds: 1_800,
       shiftCount: 1,
       heldRate: null,
@@ -1311,9 +1312,11 @@ describe("the agents tab", () => {
     expect(groups[0]).toHaveTextContent("1h 30m");
     // Held appears once a commit is decided, and only then: the label-less
     // group's commits are all pending, so it says nothing rather than
-    // "pending".
+    // "pending". And its cause is named - a run worktree whose repository
+    // nothing identified, not a capture that saw nothing at all.
     expect(groups[0]).toHaveTextContent("50% held");
-    expect(groups[1]).toHaveTextContent("No codebase recorded");
+    expect(groups[1]).toHaveTextContent("Run worktree, codebase not identified");
+    expect(groups[1]).not.toHaveTextContent("No codebase recorded");
     expect(groups[1]!.textContent).not.toMatch(/held|pending/);
     // There is no leaderboard here: nothing ranks, nothing is clickable.
     expect(within(panel).queryByTestId("agent-roster-list")).not.toBeInTheDocument();

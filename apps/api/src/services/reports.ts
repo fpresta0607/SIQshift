@@ -49,7 +49,7 @@ import type {
   SiteTotalRecord,
 } from "../repositories.js";
 import { asAgentView } from "./agents.js";
-import { repoLabel } from "./attribution.js";
+import { agentCodebaseLabel, repoLabel } from "./attribution.js";
 import { rosterEligibleSource, type AgentSessionReaper } from "./agent-sessions.js";
 
 export interface ReportService {
@@ -849,10 +849,17 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       // roster join, so two worktree clones of the same repo read as one
       // codebase, which is what the tab is for. Each shift labels itself the
       // paystub's way - its first commit's repo root, else its working
-      // directory - and a shift that recorded neither groups under null.
+      // directory - and a shift whose own paths name only a run (a no-mistakes
+      // gate worktree, a CI checkout) falls back to its roster identity's
+      // repository: the remote the runtime probed for exactly this shift, the
+      // same evidence that keyed the identity. A shift that can name nothing
+      // at all groups under null, split by why - no directory ever captured,
+      // or a run directory whose repository no runtime identified - so the
+      // reader can tell a capture gap from work that legitimately has no repo.
       type ShiftView = AgentShiftsResponse["groups"][number]["shifts"][number];
       type PersonView = AgentShiftsResponse["people"][number];
-      const groups = new Map<string | null, { agentSeconds: number; commits: ShiftCommitRecord[]; shifts: ShiftView[] }>();
+      type NullCause = NonNullable<AgentShiftsResponse["groups"][number]["nullCause"]>;
+      const groups = new Map<string, { repo: string | null; nullCause: NullCause | null; agentSeconds: number; commits: ShiftCommitRecord[]; shifts: ShiftView[] }>();
       const people = new Map<string, PersonView>();
       for (const interval of intervals) {
         // Browser spans are attention, not shifts, the roster's own rule.
@@ -875,8 +882,14 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         if (selectedUserId !== undefined && interval.user.id !== selectedUserId) continue;
         const shiftCommitList = commitsBySession.get(interval.sessionId) ?? [];
         const root = shiftCommitList[0]?.repoRoot ?? interval.cwd;
-        const repo = root === null || root === undefined ? null : repoLabel(root);
-        const group = groups.get(repo) ?? { agentSeconds: 0, commits: [], shifts: [] };
+        const repo = (root === null || root === undefined ? null : repoLabel(root))
+          ?? agentCodebaseLabel(interval.agentRepoRoot, interval.agentRepoKey);
+        const nullCause: NullCause | null = repo === null
+          ? (root === null || root === undefined ? "no-working-directory" : "unidentified-run-directory")
+          : null;
+        const key = repo ?? `null:${nullCause}`;
+        const group = groups.get(key)
+          ?? { repo, nullCause, agentSeconds: 0, commits: [], shifts: [] };
         group.agentSeconds += shiftSeconds;
         group.commits.push(...shiftCommitList);
         group.shifts.push({
@@ -889,12 +902,13 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           agentSeconds: shiftSeconds,
           commitCount: shiftCommitList.length,
         });
-        groups.set(repo, group);
+        groups.set(key, group);
       }
 
-      const groupViews = [...groups.entries()]
-        .map(([repo, group]) => ({
-          repo,
+      const groupViews = [...groups.values()]
+        .map((group) => ({
+          repo: group.repo,
+          nullCause: group.nullCause,
           agentSeconds: group.agentSeconds,
           shiftCount: group.shifts.length,
           heldRate: heldRateOf(group.commits),

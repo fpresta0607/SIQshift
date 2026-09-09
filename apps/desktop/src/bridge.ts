@@ -306,6 +306,8 @@ export type AgentShiftRow = {
 /// before then, and the tab says nothing rather than "pending".
 export type AgentShiftsGroup = {
   repo: string | null;
+  /** Why the group has no codebase name; absent on an older API and always null on a named group. */
+  nullCause: string | null;
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
@@ -836,6 +838,9 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
       const group = record(entry);
       return {
         repo: stringOrNull(group.repo),
+        // Absent on an older API decodes to null, not a crash - the exact
+        // bridge rule this decoder exists to keep.
+        nullCause: stringOrNull(group.nullCause ?? null),
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
         shiftCount: nonnegativeInteger(group.shiftCount ?? 0),
         heldRate: unitRateOrNull(group.heldRate),
