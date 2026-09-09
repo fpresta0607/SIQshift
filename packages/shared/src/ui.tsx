@@ -695,7 +695,7 @@ export const ShiftGroups = ({
 }) => (
   <>
     {groups.map((group) => (
-      <details className="shift-group" key={group.repo ?? ""} data-testid="shift-group">
+      <details className="shift-group" key={group.repo ?? `null:${group.nullCause ?? "none"}`} data-testid="shift-group">
         <summary className="meter-row shift-group-head">
           <span className="project-dot" aria-hidden="true" />
           <span className="meter-name">

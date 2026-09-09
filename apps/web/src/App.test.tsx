@@ -1442,6 +1442,10 @@ describe("the agents tab", () => {
   });
 
   it("names each codebase-less cause, so a capture gap never reads like a run worktree", async () => {
+    // Two codebase-less groups are siblings with no repo to key on, so React
+    // sees one identity unless the cause distinguishes them, and a viewer's
+    // open drawer follows the wrong group home across a refetch.
+    const consoleError = vi.spyOn(console, "error");
     const person = await signIn(clientFor({
       agentShifts: vi.fn().mockResolvedValue({
         ...agentShiftsResponse,
@@ -1461,6 +1465,8 @@ describe("the agents tab", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("No working directory recorded");
     expect(groups[1]).toHaveTextContent("No codebase recorded");
+    expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    consoleError.mockRestore();
   });
 
   it("emits the meter row the layout suite styles, four cells to a row", async () => {
