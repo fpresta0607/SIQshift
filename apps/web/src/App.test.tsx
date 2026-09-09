@@ -111,6 +111,7 @@ const agentShiftsResponse = {
     },
     {
       repo: null,
+      nullCause: "unidentified-run-directory",
       agentSeconds: 1_800,
       shiftCount: 1,
       heldRate: null,
@@ -1433,8 +1434,39 @@ describe("the agents tab", () => {
     expect(groups[0]).toHaveTextContent("50% held");
     // The label-less group's commits are all pending: it says nothing rather
     // than "pending", because a rate with no decided commits is not a fact.
-    expect(groups[1]).toHaveTextContent("No codebase recorded");
+    // And its cause is named: these shifts worked a run worktree whose
+    // repository nothing identified, not a capture that saw nothing at all.
+    expect(groups[1]).toHaveTextContent("Run worktree, codebase not identified");
+    expect(groups[1]).not.toHaveTextContent("No codebase recorded");
     expect(groups[1]!.textContent).not.toMatch(/held|pending/);
+  });
+
+  it("names each codebase-less cause, so a capture gap never reads like a run worktree", async () => {
+    // Two codebase-less groups are siblings with no repo to key on, so React
+    // sees one identity unless the cause distinguishes them, and a viewer's
+    // open drawer follows the wrong group home across a refetch.
+    const consoleError = vi.spyOn(console, "error");
+    const person = await signIn(clientFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShiftsResponse,
+        groups: [
+          { ...agentShiftsResponse.groups[1], nullCause: "no-working-directory" },
+          // An API from before the cause existed keeps the original wording.
+          { ...agentShiftsResponse.groups[1], nullCause: undefined },
+        ],
+      }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+
+    const groups = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toHaveTextContent("No working directory recorded");
+    expect(groups[1]).toHaveTextContent("No codebase recorded");
+    expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    consoleError.mockRestore();
   });
 
   it("emits the meter row the layout suite styles, four cells to a row", async () => {

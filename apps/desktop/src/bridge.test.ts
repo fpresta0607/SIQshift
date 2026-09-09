@@ -293,6 +293,7 @@ describe("defaultBridge", () => {
       totalAgentSeconds: 5_400,
       groups: [{
         repo: "siqshift",
+        nullCause: null,
         agentSeconds: 5_400,
         shiftCount: 1,
         heldRate: 0.5,
@@ -328,7 +329,13 @@ describe("defaultBridge", () => {
     // A group with a label-less repo and no decided commit keeps both nulls.
     invoke.mockResolvedValueOnce({ groups: [{ repo: null, shifts: [] }] });
     const bare = await defaultBridge.agentShifts();
-    expect(bare.groups[0]).toMatchObject({ repo: null, heldRate: null, agentSeconds: 0 });
+    expect(bare.groups[0]).toMatchObject({ repo: null, nullCause: null, heldRate: null, agentSeconds: 0 });
+
+    // The cause travels when a newer API sends it, and stays null when it does
+    // not - absence keeps the old wording rather than inventing an answer.
+    invoke.mockResolvedValueOnce({ groups: [{ repo: null, nullCause: "unidentified-run-directory", shifts: [] }] });
+    const caused = await defaultBridge.agentShifts();
+    expect(caused.groups[0]!.nullCause).toBe("unidentified-run-directory");
   });
 
   it("rejects a held rate outside [0, 1] rather than rendering a nonsense percent", async () => {

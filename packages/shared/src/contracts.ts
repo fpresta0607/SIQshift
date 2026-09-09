@@ -858,8 +858,17 @@ export const agentShiftsResponseSchema = z
       .strict()),
     groups: z.array(z
       .object({
-        /** A codebase's folder name, never a path; null groups the shifts that recorded neither a commit root nor a working directory. */
+        /** A codebase's folder name, never a path; null groups the shifts that could name no codebase at all. */
         repo: repoLabelSchema.nullable(),
+        /**
+         * Why a null-repo group exists, so one collapsed bucket can never hide
+         * several different answers: `no-working-directory` - no commit root
+         * and no working directory was ever captured - and
+         * `unidentified-run-directory` - the shift worked in a per-run
+         * worktree whose repository no runtime identified. Always null on a
+         * named group. Additive: an API from before it sends none.
+         */
+        nullCause: z.enum(["no-working-directory", "unidentified-run-directory"]).nullable().optional(),
         agentSeconds: z.number().int().nonnegative().safe(),
         shiftCount: z.number().int().nonnegative().safe(),
         /** merged / decided; null while nothing has been decided. */
@@ -880,7 +889,10 @@ export const agentShiftsResponseSchema = z
           })
           .strict()),
       })
-      .strict()),
+      // A cause explains a missing name and nothing else: a named group
+      // carrying one is a contradiction, and the wire refuses it.
+      .strict()
+      .refine((group) => group.repo === null || group.nullCause == null)),
   })
   .strict();
 

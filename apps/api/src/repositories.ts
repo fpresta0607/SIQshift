@@ -229,6 +229,14 @@ export interface AgentIntervalRecord {
   projectId: string | null;
   /** Null for legacy sessions recorded before roster minting shipped. */
   agentId: string | null;
+  /**
+   * The roster identity's codebase evidence — `agentCodebaseLabel`'s inputs,
+   * probed by the runtime for this very shift. What a shift whose own root
+   * names only a run (a per-run worktree) falls back to when it needs a
+   * codebase label. Null on legacy rows and on the unassigned bucket.
+   */
+  agentRepoRoot: string | null;
+  agentRepoKey: string | null;
   startedAt: Date;
   endedAt: Date;
 }

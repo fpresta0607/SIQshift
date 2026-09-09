@@ -193,6 +193,8 @@ describe("report routes", () => {
       cwd: "C:\\dev\\siqshift",
       projectId: ids.project,
       agentId: "e1c7e513-b094-4d4c-ae55-21790ae019a4",
+      agentRepoRoot: null,
+      agentRepoKey: null,
       startedAt: new Date("2026-08-06T14:00:00.000Z"),
       endedAt: new Date("2026-08-06T15:00:00.000Z"),
     }];
@@ -287,6 +289,8 @@ describe("report routes", () => {
       cwd: "C:\\dev\\siqshift",
       projectId: ids.project,
       agentId: "e1c7e513-b094-4d4c-ae55-21790ae019a4",
+      agentRepoRoot: null,
+      agentRepoKey: null,
       startedAt: new Date("2026-08-06T14:00:00.000Z"),
       endedAt: new Date("2026-08-06T15:00:00.000Z"),
     }];

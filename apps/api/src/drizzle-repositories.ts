@@ -828,6 +828,8 @@ export class DrizzleReportRepository implements ReportRepository {
         cwd: agentSessions.cwd,
         projectId: agentSessions.projectId,
         agentId: agentSessions.agentId,
+        agentRepoRoot: agents.repoRoot,
+        agentRepoKey: agents.repoKey,
         startedAt: agentSessions.startedAt,
         endedAt: intervalEnd,
       })
@@ -836,6 +838,12 @@ export class DrizzleReportRepository implements ReportRepository {
         eq(users.organizationId, agentSessions.organizationId),
         eq(users.id, agentSessions.userId),
       ))
+      // The identity's repository travels with the interval: a shift worked in
+      // a per-run worktree (a no-mistakes gate worktree, a CI checkout) names
+      // no codebase from its own paths, but its roster row is keyed on the
+      // remote the runtime probed for exactly this shift. Left, because a
+      // legacy shift without an identity keeps its null agentId.
+      .leftJoin(agents, eq(agents.id, agentSessions.agentId))
       .where(and(
         eq(agentSessions.organizationId, subject.organizationId),
         ...(query.userId === undefined ? [] : [eq(agentSessions.userId, query.userId)]),
@@ -857,6 +865,8 @@ export class DrizzleReportRepository implements ReportRepository {
       cwd: row.cwd,
       projectId: row.projectId,
       agentId: row.agentId,
+      agentRepoRoot: row.agentRepoRoot,
+      agentRepoKey: row.agentRepoKey,
       startedAt: row.startedAt,
       endedAt: row.endedAt instanceof Date ? row.endedAt : new Date(row.endedAt as unknown as string),
     }));
