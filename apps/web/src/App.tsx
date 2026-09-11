@@ -330,13 +330,19 @@ export const App = ({ client }: AppProps) => {
   }, [client, signedIn, preferencesReady, scopeParams, expireSession, todayTick]);
 
   // A tab nobody is looking at asks nothing: the tick is skipped while the
-  // document is hidden, and becoming visible refreshes immediately, so the
-  // panel is current the moment it is read rather than current all night.
+  // document is hidden, and becoming visible asks again, so the panel is
+  // current the moment it is read rather than current all night. Both paths
+  // share one clock, because a question asked again inside an upload interval
+  // cannot come back with a different answer however it came to be asked.
+  const todayAskedAt = useRef(0);
   useEffect(() => {
     if (!signedIn) return undefined;
-    const refresh = (): void => setTodayTick((tick) => tick + 1);
+    todayAskedAt.current = Date.now();
     const refreshWhenVisible = (): void => {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - todayAskedAt.current < TODAY_REFRESH_MS) return;
+      todayAskedAt.current = Date.now();
+      setTodayTick((tick) => tick + 1);
     };
     const timer = window.setInterval(refreshWhenVisible, TODAY_REFRESH_MS);
     document.addEventListener("visibilitychange", refreshWhenVisible);

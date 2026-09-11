@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -574,14 +574,52 @@ describe("dashboard", () => {
       const afterSignIn = meStats.mock.calls.length;
 
       // Nobody is reading it, so nobody is served by the rows it would cost.
+      // The advance is acted on, because a tick that did fire would otherwise
+      // leave its render queued and this count would pass without meaning it.
       visibility.mockReturnValue("hidden");
-      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS * 3);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS * 3);
+      });
       expect(meStats).toHaveBeenCalledTimes(afterSignIn);
 
       // Read again, and the panel is current before it is looked at twice.
       visibility.mockReturnValue("visible");
       document.dispatchEvent(new Event("visibilitychange"));
       await waitFor(() => expect(meStats).toHaveBeenCalledTimes(afterSignIn + 1));
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not ask again for a look-away shorter than an upload interval", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      const meStats = vi.fn().mockResolvedValue(memberStats);
+      await signIn(clientFor({ meStats }));
+      await screen.findByTestId("session-app-list");
+      const afterSignIn = meStats.mock.calls.length;
+
+      // Away long enough that an upload could have landed, so this one asks.
+      visibility.mockReturnValue("hidden");
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS);
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(meStats).toHaveBeenCalledTimes(afterSignIn + 1));
+
+      // Straight back out and in: nothing can have been uploaded since, so the
+      // rows this would read are the rows already on screen.
+      visibility.mockReturnValue("hidden");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS / 5);
+      });
+      visibility.mockReturnValue("visible");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS / 5);
+      });
+      expect(meStats).toHaveBeenCalledTimes(afterSignIn + 1);
     } finally {
       visibility.mockRestore();
       vi.useRealTimers();
