@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { summedSeconds } from "@siqshift/shared";
 import type { AgentShiftsFilters, ReportFilters } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
@@ -84,6 +85,27 @@ class Reports implements ReportRepository {
   public async readLeaderboardForOrganization(_subject: AuthenticatedSubject, query: ReportQuery) {
     this.lastLeaderboardQuery = query;
     return this.leaderboardRows;
+  }
+  /**
+   * The median moved into SQL, so the fake answers it the way the query does:
+   * over the same overlapping sessions, each clipped to the range and rounded
+   * before the middle is taken.
+   */
+  public async readMedianSessionSeconds(_subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null> {
+    const range = {
+      ...(query.from === undefined ? {} : { start: query.from.getTime() }),
+      ...(query.toExclusive === undefined ? {} : { end: query.toExclusive.getTime() }),
+    };
+    const lengths = this.sessionIntervals
+      .filter((session) => query.userId === undefined || session.user.id === query.userId)
+      .filter((session) => query.projectId === undefined || session.projectId === query.projectId)
+      .filter((session) => query.unassignedOnly !== true || session.attribution === "default")
+      .map((session) => summedSeconds([{ start: session.startedAt.getTime(), end: session.stoppedAt.getTime() }], range))
+      .filter((seconds) => seconds > 0)
+      .sort((a, b) => a - b);
+    if (lengths.length === 0) return null;
+    const middle = Math.floor(lengths.length / 2);
+    return lengths.length % 2 === 1 ? lengths[middle]! : Math.round((lengths[middle - 1]! + lengths[middle]!) / 2);
   }
   public roster: { id: string; name: string }[] = [];
   public async readMembersForOrganization() {
@@ -383,11 +405,22 @@ const noTokens = {
   tokensReported: false,
 };
 
+/** A /me/stats card with nothing measured: the split and the breakdown are still its own. */
 const noMeasurement = {
   activeSeconds: 0,
   agentSeconds: 0,
   concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
   byAgent: [] as never[],
+};
+
+/**
+ * A board row with nothing measured. The concurrency split and the per-agent
+ * breakdown are deliberately absent here: no client ever read either off a
+ * board row, and both now ride only on /me/stats, where they are rendered.
+ */
+const noBoardMeasurement = {
+  activeSeconds: 0,
+  agentSeconds: 0,
 };
 
 describe("report service", () => {
@@ -544,8 +577,8 @@ describe("leaderboard", () => {
     const result = await service.leaderboard(subject, {});
 
     expect(result.entries).toEqual([
-      { rank: 1, user: { id: ids.user, name: "Alex" }, durationSeconds: 7_200, sessionCount: 3, attributedSeconds: 5_400, unattributedSeconds: 1_800, ...noMeasurement },
-      { rank: 2, user: { id: ids.otherUser, name: "Sam" }, durationSeconds: 3_600, sessionCount: 1, attributedSeconds: 3_600, unattributedSeconds: 0, ...noMeasurement },
+      { rank: 1, user: { id: ids.user, name: "Alex" }, durationSeconds: 7_200, sessionCount: 3, attributedSeconds: 5_400, unattributedSeconds: 1_800, ...noBoardMeasurement },
+      { rank: 2, user: { id: ids.otherUser, name: "Sam" }, durationSeconds: 3_600, sessionCount: 1, attributedSeconds: 3_600, unattributedSeconds: 0, ...noBoardMeasurement },
     ]);
     expect(result.totalDurationSeconds).toBe(10_800);
     expect(result.medianSessionSeconds).toBeNull();
@@ -582,9 +615,15 @@ describe("leaderboard", () => {
     expect(alex?.rank).toBe(1);
     expect(alex?.activeSeconds).toBe(7_200);
     expect(alex?.agentSeconds).toBe(10_800);
-    expect(alex?.concurrency).toEqual({ t0Seconds: 3_600, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 3_600, awaySeconds: 0 });
+    // The split and the per-agent breakdown are the person's own card, read
+    // from the same intervals over the same window, so the board and the card
+    // cannot disagree about the hours they share.
+    const own = await service.meStats(subject, {});
+    expect(own.activeSeconds).toBe(alex?.activeSeconds);
+    expect(own.agentSeconds).toBe(alex?.agentSeconds);
+    expect(own.concurrency).toEqual({ t0Seconds: 3_600, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 3_600, awaySeconds: 0 });
     // The by-agent split sums to agent time, never to active time.
-    expect(alex?.byAgent).toEqual([
+    expect(own.byAgent).toEqual([
       { source: "claude_code", model: null, durationSeconds: 7_200, sessionCount: 2, maxConcurrent: 2, medianSeconds: 3_600 },
       { source: "codex", model: null, durationSeconds: 3_600, sessionCount: 1, maxConcurrent: 1, medianSeconds: 3_600 },
     ]);
@@ -617,8 +656,9 @@ describe("leaderboard", () => {
     const [alex] = result.entries;
     expect(alex?.activeSeconds).toBe(7_200);
     expect(alex?.agentSeconds).toBe(0);
-    expect(alex?.concurrency).toEqual({ t0Seconds: 7_200, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 });
-    expect(alex?.byAgent).toEqual([]);
+    const own = await service.meStats(subject, {});
+    expect(own.concurrency).toEqual({ t0Seconds: 7_200, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 });
+    expect(own.byAgent).toEqual([]);
   });
 
   // The Overlord's report: a day whose header said unattended agent time was
@@ -654,7 +694,13 @@ describe("leaderboard", () => {
     // Not zero, and not folded into the hours: 3h of runtime beside 1h at the desk.
     expect(alex?.activeSeconds).toBe(3_600);
     expect(alex?.agentSeconds).toBe(10_800);
-    const split = alex!.concurrency;
+    // /me/stats measures the same window from the same reads, so a member's
+    // own card can never disagree with their row on the board - and the split
+    // that reconciles against the board's numbers is the card's.
+    const own = await service.meStats(subject, { fromAt: hour(9).toISOString(), toExclusiveAt: hour(12).toISOString() });
+    expect(own.agentSeconds).toBe(alex?.agentSeconds);
+    expect(own.activeSeconds).toBe(alex?.activeSeconds);
+    const split = own.concurrency;
     // active = t0 + t1 + t2 + t3plus, the split's own contract.
     expect(split.t0Seconds + split.t1Seconds + split.t2Seconds + split.t3PlusSeconds).toBe(alex!.activeSeconds);
     // agent = Sum(n x tn) + away: the hour they overlapped plus the two they did not.
@@ -664,12 +710,6 @@ describe("leaderboard", () => {
     // the measured away runtime is what it may claim of that gap - never the
     // gap itself, and never anything when no agent was measured.
     expect(alex!.durationSeconds - alex!.activeSeconds).toBe(7_200);
-    // /me/stats measures the same window from the same reads, so a member's
-    // own card can never disagree with their row on the board.
-    const own = await service.meStats(subject, { fromAt: hour(9).toISOString(), toExclusiveAt: hour(12).toISOString() });
-    expect(own.agentSeconds).toBe(alex?.agentSeconds);
-    expect(own.activeSeconds).toBe(alex?.activeSeconds);
-    expect(own.concurrency).toEqual(split);
   });
 
   it("shares a rank between members with identical totals", async () => {

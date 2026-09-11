@@ -623,3 +623,72 @@ export const projectPathMappings = pgTable(
     ),
   ],
 );
+
+// One person's finished UTC day, folded once at upload time so the report path
+// does not re-read a quarter of a million segment rows to answer "how long".
+//
+// Why a UTC day and not the viewer's: nothing in this product stores a
+// timezone, and two members of one workspace can sit in different ones. A UTC
+// day is the only boundary the data model can state, so the report path spends
+// whole UTC days out of this table and reads the raw rows only for the partial
+// day at each end of the range. Union and sweep both add exactly across a
+// partition of the timeline, so that hybrid is not an approximation.
+//
+// Milliseconds, not seconds. The reporting math rounds once per group after
+// summing, and a table of pre-rounded day-seconds would drift by up to a second
+// a day against the answer the live path gives.
+//
+// Every column here is a cache of rows that are still present. A missing row is
+// always correct - the report path falls back to reading that day live - which
+// is what lets the maintenance skip a day it cannot fold honestly: today, and
+// any day an agent session is still running through.
+export const userDailyRollups = pgTable(
+  "user_daily_rollups",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    // Midnight UTC of the day these totals cover; the day is [day, day + 1).
+    day: timestamp("day", { mode: "date", withTimezone: true }).notNull(),
+    // Union of the person's working intervals inside the day, overlaps collapsed.
+    activeMs: bigint("active_ms", { mode: "number" }).notNull(),
+    // Summed agent runtime inside the day; parallel agents count once each.
+    agentMs: bigint("agent_ms", { mode: "number" }).notNull(),
+    // The concurrency partition of activeMs: no agent, one, two, three or more.
+    concurrency0Ms: bigint("concurrency_0_ms", { mode: "number" }).notNull(),
+    concurrency1Ms: bigint("concurrency_1_ms", { mode: "number" }).notNull(),
+    concurrency2Ms: bigint("concurrency_2_ms", { mode: "number" }).notNull(),
+    concurrency3PlusMs: bigint("concurrency_3_plus_ms", { mode: "number" }).notNull(),
+    // Agent runtime with nobody at the keyboard; agentMs less the covered share.
+    awayMs: bigint("away_ms", { mode: "number" }).notNull(),
+    // When this fold last ran, so an operator can tell a stale row from an absent one.
+    computedAt: timestamp("computed_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
+    ...auditColumns,
+  },
+  (table) => [
+    unique("user_daily_rollups_organization_user_day_unique").on(table.organizationId, table.userId, table.day),
+    foreignKey({
+      columns: [table.organizationId, table.userId],
+      foreignColumns: [users.organizationId, users.id],
+      name: "user_daily_rollups_organization_user_fk",
+    }).onDelete("cascade"),
+    check("user_daily_rollups_active_ms_nonnegative", sql`${table.activeMs} >= 0`),
+    check("user_daily_rollups_agent_ms_nonnegative", sql`${table.agentMs} >= 0`),
+    check("user_daily_rollups_concurrency_0_ms_nonnegative", sql`${table.concurrency0Ms} >= 0`),
+    check("user_daily_rollups_concurrency_1_ms_nonnegative", sql`${table.concurrency1Ms} >= 0`),
+    check("user_daily_rollups_concurrency_2_ms_nonnegative", sql`${table.concurrency2Ms} >= 0`),
+    check("user_daily_rollups_concurrency_3_plus_ms_nonnegative", sql`${table.concurrency3PlusMs} >= 0`),
+    check("user_daily_rollups_away_ms_nonnegative", sql`${table.awayMs} >= 0`),
+    // A day is a whole day, so a row that is not midnight UTC is a fold against
+    // the wrong boundary and every range built on it would be wrong.
+    check("user_daily_rollups_day_is_utc_midnight", sql`${table.day} = date_trunc('day', ${table.day} at time zone 'UTC') at time zone 'UTC'`),
+    // The invariant the reporting module holds everywhere: active time is
+    // exactly its concurrency partition. Enforced here because a rollup that
+    // breaks it silently breaks every range that spends this row.
+    check(
+      "user_daily_rollups_concurrency_partitions_active",
+      sql`${table.activeMs} = ${table.concurrency0Ms} + ${table.concurrency1Ms} + ${table.concurrency2Ms} + ${table.concurrency3PlusMs}`,
+    ),
+    index("user_daily_rollups_organization_day_idx").on(table.organizationId, table.day),
+  ],
+);

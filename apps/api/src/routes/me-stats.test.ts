@@ -293,6 +293,9 @@ class MemoryReports implements ReportRepository {
   public async readLeaderboardForOrganization(): Promise<never> {
     throw new Error("not used by me/stats");
   }
+  public async readMedianSessionSeconds(): Promise<never> {
+    throw new Error("not used by me/stats");
+  }
   public async readMembersForOrganization(): Promise<never> {
     throw new Error("not used by me/stats");
   }

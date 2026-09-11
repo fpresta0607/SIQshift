@@ -211,6 +211,35 @@ teammate whose range has no evidence reads as `0s`, never as missing.
 The desktop app's **What's recorded** panel and the web dashboard's **How SIQshift works**
 dialog state these rules word for word.
 
+### The board reads folded days, not raw segments
+
+Active time, agent time and the concurrency split are all additive over a
+partition of the timeline: measure a week day by day, add the days, and you get
+the same numbers a single sweep over the week gives.
+That is what lets the leaderboard stop re-reading raw evidence.
+
+Every upload folds the finished UTC days it touched into `user_daily_rollups` -
+one row per member per day, carrying active milliseconds, agent milliseconds, the
+four concurrency buckets and away time.
+A report then splits its range into a partial first day, the whole days between,
+and a partial last day: the whole days are read out of that table as a handful of
+small rows, and only the two ragged edges still read segments.
+The current UTC day is never folded, because it is still being written to.
+
+The table is a cache and nothing depends on it existing.
+A day with no row is read live, so an environment that has not run the migration
+yet is slower rather than wrong, and a failed fold leaves its days unfolded rather
+than stating stale numbers.
+The fold is also cleared before it is rebuilt, so a crash halfway through can only
+lose the cache, never corrupt it.
+
+Two things still read raw segments on purpose: a **project-scoped** range, because
+active time under a project is presence intersected with that project's sessions
+and a per-person-per-day row cannot state it; and the per-agent breakdown on a
+person's own card, which is a different shape entirely.
+**Today** sees no benefit either - a single local day has two partial UTC days and
+no whole day between them.
+
 ### Attributed and unattributed
 
 `time_sessions.attribution` records which of those answers applied, and reporting

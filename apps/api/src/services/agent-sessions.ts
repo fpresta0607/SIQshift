@@ -83,6 +83,16 @@ export interface AgentSessionServiceDependencies {
   sessions: SessionRepository;
   /** Optional so older wirings keep working; without it no identity is stamped. */
   agents?: AgentRepository;
+  /**
+   * Called with the instants a successful upload touched, so the finished UTC
+   * days among them can be folded.
+   *
+   * A plain callback rather than the rollup service itself: the fold reads
+   * agent-session intervals, and importing it here would make this module and
+   * that one import each other. The composition root supplies it and owns the
+   * decision that a cache-maintenance failure must not fail an upload.
+   */
+  onUploaded?: (subject: AuthenticatedSubject, instants: readonly Date[]) => Promise<void>;
   clock?: () => Date;
   staleThresholdMs?: number;
 }
@@ -192,6 +202,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         if (fromCwd !== null) return fromCwd;
         return resolveProjectForRemote(event.repoRemote, mappings);
       };
+      const folded: Date[] = [];
       for (const event of events) {
         const occurredAt = event.occurredAt.getTime();
         if (!Number.isFinite(occurredAt)) {
@@ -263,7 +274,14 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           );
         }
         results.push({ externalSessionId: event.externalSessionId, accepted: true });
+        folded.push(event.occurredAt);
       }
+      // An agent session reaches back to whenever it started, so a batch that
+      // only carries an "ended" event still moves a day this batch never names.
+      // Folding the days the events landed in is therefore a floor, not a
+      // guarantee: a session spanning several days is fully folded once its own
+      // heartbeats have touched each of them, which they do every few minutes.
+      await dependencies.onUploaded?.(subject, folded);
       return { results };
     },
   };

@@ -1,8 +1,11 @@
 import {
+  addTimeMeasurementsMs,
   clipInterval,
   intersectIntervals,
   isAttributed,
   measureTime,
+  measureTimeMs,
+  roundTimeMeasurement,
   summedSeconds,
   unionSeconds,
   type AgentShiftRow,
@@ -24,6 +27,7 @@ import {
   type ReportFilters,
   type ReportResponse,
   type ReportRow,
+  type TimeMeasurementMs,
   type TokenTotals,
 } from "@siqshift/shared";
 
@@ -50,8 +54,10 @@ import type {
   ShiftCommitRepository,
   ShiftRepoRootRecord,
   SiteTotalRecord,
+  UserDailyRollupRepository,
 } from "../repositories.js";
 import { asAgentView } from "./agents.js";
+import { isSpentDay, planRollupRange, rollupWindow, type LiveSpan } from "./rollup-ranges.js";
 import { agentCodebaseLabel, repoLabel } from "./attribution.js";
 import { rosterEligibleSource, type AgentSessionReaper } from "./agent-sessions.js";
 
@@ -80,6 +86,14 @@ export interface ReportServiceDependencies {
   shiftCommits?: ShiftCommitRepository;
   /** Without it, token totals stay at zero under tokensReported false, and hourly token fields stay null. */
   agentUsage?: AgentUsageRepository;
+  /**
+   * Folded finished days. Without it the leaderboard reads every interval row
+   * in the range, which is what it did before this table existed and is still
+   * what a project-scoped range does.
+   */
+  rollups?: UserDailyRollupRepository;
+  /** Injected so a test can stand at a fixed instant; production passes nothing. */
+  now?: () => Date;
 }
 
 const millisecondsPerDay = 24 * 60 * 60 * 1_000;
@@ -344,6 +358,111 @@ function rankTokens(row: { tokens: TokenTotals; tokensReported: boolean }): numb
   return row.tokensReported ? totalTokens(row.tokens) + 1 : 0;
 }
 
+
+/** One member's measured time, with the name the live reads saw when they saw one. */
+type MeasuredMember = { name?: string; measurement: TimeMeasurementMs };
+
+/**
+ * Every member's active and agent time over the range, spending whole finished
+ * UTC days out of the rollup table and reading only what it cannot cover.
+ *
+ * The rollup holds no project, so it answers the all-projects scope alone: a
+ * project or unassigned scope narrows active time to the slices where that
+ * scope's sessions were open, which a table with one row per person per day
+ * cannot state. Those ranges read live, exactly as they did before.
+ *
+ * Returning milliseconds is the point. Seconds round once per group, and a
+ * range assembled from pre-rounded days would drift a second a day away from
+ * the answer the live path gives for the same range.
+ */
+async function measureMembersMs(
+  dependencies: ReportServiceDependencies,
+  subject: AuthenticatedSubject,
+  query: ReportQuery,
+  now: Date,
+): Promise<Map<string, MeasuredMember>> {
+  const range = queryRange(query);
+  const scoped = query.projectId !== undefined || query.unassignedOnly === true;
+  const openRange = { start: range.start ?? null, end: range.end ?? null };
+
+  const liveSpans: LiveSpan[] = [{ from: query.from ?? null, toExclusive: query.toExclusive ?? null }];
+  const totals = new Map<string, TimeMeasurementMs[]>();
+  // A stored day names only a user id. The live reads join `users`, so they do
+  // carry a name, and it is kept here for the one case the roster read cannot
+  // answer: someone the roster no longer lists whose measured work still counts.
+  const names = new Map<string, string>();
+  const add = (userId: string, measurement: TimeMeasurementMs): void => {
+    const pieces = totals.get(userId) ?? [];
+    pieces.push(measurement);
+    totals.set(userId, pieces);
+  };
+
+  const rollups = dependencies.rollups;
+  if (rollups !== undefined && !scoped) {
+    const window = rollupWindow(openRange, (await rollups.earliestDay(subject))?.getTime() ?? null, now);
+    const stored = window.from.getTime() >= window.toExclusive.getTime()
+      ? []
+      : await rollups.readForRange(subject, window.from, window.toExclusive);
+    const plan = planRollupRange(openRange, window, new Set(stored.map((row) => row.day.getTime())));
+    for (const row of stored) {
+      if (!isSpentDay(row.day.getTime(), plan)) continue;
+      add(row.userId, {
+        activeMs: row.activeMs,
+        agentMs: row.agentMs,
+        concurrency: {
+          t0Ms: row.concurrency0Ms,
+          t1Ms: row.concurrency1Ms,
+          t2Ms: row.concurrency2Ms,
+          t3PlusMs: row.concurrency3PlusMs,
+          awayMs: row.awayMs,
+        },
+      });
+    }
+    liveSpans.length = 0;
+    liveSpans.push(...plan.live);
+  }
+
+  // Each span is read on its own and measured against its own bounds. They do
+  // not overlap - not each other, and not the days spent above - so adding the
+  // pieces is the same union the live path computes in one pass.
+  const reads = await Promise.all(liveSpans.map(async (span) => {
+    // The bounds are replaced rather than narrowed: an open side of a span is
+    // an absent bound, which is what the repository reads already mean by it.
+    const { from: _rangeFrom, toExclusive: _rangeToExclusive, ...scopeOnly } = query;
+    const spanQuery: ReportQuery = {
+      ...scopeOnly,
+      ...(span.from === null ? {} : { from: span.from }),
+      ...(span.toExclusive === null ? {} : { toExclusive: span.toExclusive }),
+    };
+    const [presence, sessions, agents] = await Promise.all([
+      dependencies.reports.readPresenceIntervals(subject, spanQuery),
+      scoped ? dependencies.reports.readSessionIntervals(subject, spanQuery) : Promise.resolve([] as SessionIntervalRecord[]),
+      dependencies.reports.readAgentIntervals(subject, spanQuery),
+    ]);
+    return { span, members: collectMembers(presence, sessions, agents) };
+  }));
+
+  for (const read of reads) {
+    const spanRange: Partial<Interval> = {
+      ...(read.span.from === null ? {} : { start: read.span.from.getTime() }),
+      ...(read.span.toExclusive === null ? {} : { end: read.span.toExclusive.getTime() }),
+    };
+    for (const member of read.members.values()) {
+      names.set(member.user.id, member.user.name);
+      add(member.user.id, measureTimeMs(
+        workingIntervals(member, query),
+        member.agents.map((agent) => agent.interval),
+        spanRange,
+      ));
+    }
+  }
+
+  return new Map([...totals].map(([userId, pieces]) => [userId, {
+    ...(names.has(userId) ? { name: names.get(userId)! } : {}),
+    measurement: addTimeMeasurementsMs(pieces),
+  }]));
+}
+
 /**
  * One member's numbers under the current scope. Presence carries no project,
  * so a project or unassigned scope narrows it to the slices where that scope's
@@ -602,6 +721,7 @@ function intervalsByAgentId(
 }
 
 export function createReportService(dependencies: ReportServiceDependencies): ReportService {
+  const now = dependencies.now ?? ((): Date => new Date());
   return {
     async list(subject: AuthenticatedSubject, filters: ReportFilters): Promise<ReportResponse> {
       validatePagination(filters);
@@ -647,14 +767,12 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
       await authorizeFilters(dependencies.reports, subject, query);
       await dependencies.reaper.reapStale(subject);
-      const [rows, roster, presence, sessionIntervals, agentIntervals] = await Promise.all([
+      const [rows, roster, measurements, median] = await Promise.all([
         dependencies.reports.readLeaderboardForOrganization(subject, query),
         dependencies.reports.readMembersForOrganization(subject),
-        dependencies.reports.readPresenceIntervals(subject, query),
-        dependencies.reports.readSessionIntervals(subject, query),
-        dependencies.reports.readAgentIntervals(subject, query),
+        measureMembersMs(dependencies, subject, query, now()),
+        dependencies.reports.readMedianSessionSeconds(subject, query),
       ]);
-      const members = collectMembers(presence, sessionIntervals, agentIntervals);
       const legacy = rows.map(asLeaderboardEntry);
       const legacyById = new Map(legacy.map((entry) => [entry.user.id, entry]));
       // Every member of the workspace is on the board, zeros included: a
@@ -665,18 +783,27 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         legacy.push(empty);
         legacyById.set(user.id, empty);
       }
-      // Interval evidence can name someone the roster no longer does (a
-      // member deleted mid-range); their measured work still counts.
-      for (const member of members.values()) {
-        if (legacyById.has(member.user.id)) continue;
-        const empty = { rank: 0, user: member.user, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
+      // Measured evidence can name someone the roster no longer does (a member
+      // deleted mid-range); their work still counts, and the name comes from
+      // the roster read when it still has one.
+      const rosterById = new Map(roster.map((user) => [user.id, user]));
+      for (const [userId, member] of measurements) {
+        if (legacyById.has(userId)) continue;
+        // The roster names everyone in the workspace, so it answers first; the
+        // name a live read carried is the fallback for evidence the roster no
+        // longer lists, which is the case this loop exists for.
+        const name = rosterById.get(userId)?.name ?? member.name;
+        if (name === undefined) continue;
+        const empty = { rank: 0, user: { id: userId, name }, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
         legacy.push(empty);
-        legacyById.set(member.user.id, empty);
+        legacyById.set(userId, empty);
       }
       const measured = legacy.map((entry) => {
-        const member = members.get(entry.user.id);
-        const measurement = member === undefined ? EMPTY_MEASUREMENT : measureMember(member, query);
-        return { ...entry, ...measurement };
+        const member = measurements.get(entry.user.id);
+        const rounded = member === undefined
+          ? { activeSeconds: 0, agentSeconds: 0 }
+          : roundTimeMeasurement(member.measurement);
+        return { ...entry, activeSeconds: rounded.activeSeconds, agentSeconds: rounded.agentSeconds };
       });
       // The board ranks by active time - the human-hours number - with the
       // legacy duration as a stable tiebreak. A rank is shared only when the
@@ -693,7 +820,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       return {
         filters,
         totalDurationSeconds: entries.reduce((total, entry) => total + entry.durationSeconds, 0),
-        medianSessionSeconds: medianSessionSeconds(sessionIntervals, query),
+        medianSessionSeconds: median,
         entries,
       };
     },

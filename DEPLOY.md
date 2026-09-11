@@ -289,6 +289,34 @@ header. It keys on `attribution_backfilled_at`, not on `original_project_id`:
 a row moved out of *unattributed* has a null original value and is otherwise
 indistinguishable from a row no pass ever touched.
 
+### `0022_user_daily_rollups` is additive, and still has to go first
+
+`0022` creates one empty table and touches no existing row, so it opens no
+window of the `0015`/`0016` kind and takes no meaningful time on a database of
+any size.
+
+It is still bound by "migrate first, then deploy", because `server.ts` wires the
+rollup repository unconditionally: an API build that carries this change and
+talks to a database without the table answers `500` on the leaderboard, which
+reads the table for every unscoped range. Apply it, then `railway up`:
+
+```bash
+DATABASE_URL='<the same direct URL>' pnpm --filter @siqshift/database migrate
+```
+
+Rolling the API *back* is safe with the table in place - the older build simply
+never looks at it - so there is nothing to undo.
+
+The table fills itself. Each upload folds the finished UTC days it touched, so
+the cache warms as people work rather than needing a backfill, and until a day
+is folded its range is read live exactly as it was before. A day that reads
+wrong for any reason can be deleted; the next upload that touches it refolds it,
+and in the meantime the reports are correct and merely slower:
+
+```sql
+DELETE FROM user_daily_rollups WHERE organization_id = '<org>' AND day >= '<utc midnight>';
+```
+
 ---
 
 ## 1. API on Railway

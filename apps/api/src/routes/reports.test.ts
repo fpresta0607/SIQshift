@@ -71,6 +71,9 @@ class Reports implements ReportRepository {
   public async readLeaderboardForOrganization(): Promise<never> {
     throw new Error("not used by these routes");
   }
+  public async readMedianSessionSeconds(): Promise<never> {
+    throw new Error("not used by these routes");
+  }
   public async readMembersForOrganization(): Promise<never> {
     throw new Error("not used by these routes");
   }

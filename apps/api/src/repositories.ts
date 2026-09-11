@@ -253,6 +253,13 @@ export interface ReportRepository {
   readPageForOrganization(subject: AuthenticatedSubject, query: ReportQuery, options: ReportPageOptions): Promise<ReportPageRead>;
   readExportForOrganization(subject: AuthenticatedSubject, query: ReportQuery, maxRows: number): Promise<ReportExportRead>;
   readLeaderboardForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<LeaderboardRowRecord[]>;
+  /**
+   * Median completed-session length in the range, in whole seconds; null when
+   * the range holds no session. Computed in SQL because the board shows one
+   * number and reading every session row to find its middle was the last
+   * full-range row read the leaderboard made.
+   */
+  readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null>;
   /** Every member of the workspace, so the board can list them all - zeros included. */
   readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]>;
   /** Per-project totals for one member — the reporting math scoped to the caller for /me/stats. */
@@ -659,4 +666,46 @@ export interface PathMappingRepository {
   create(input: CreatePathMapping): Promise<PathMappingRecord>;
   update(subject: AuthenticatedSubject, mappingId: string, input: UpdatePathMapping): Promise<PathMappingRecord | null>;
   remove(subject: AuthenticatedSubject, mappingId: string): Promise<boolean>;
+}
+
+/**
+ * One member's folded UTC day. Milliseconds, because the reporting module
+ * rounds to seconds once per group and a stored second would drift.
+ */
+export interface UserDailyRollupRecord {
+  userId: string;
+  /** Midnight UTC; the row covers [day, day + 1). */
+  day: Date;
+  activeMs: number;
+  agentMs: number;
+  concurrency0Ms: number;
+  concurrency1Ms: number;
+  concurrency2Ms: number;
+  concurrency3PlusMs: number;
+  awayMs: number;
+}
+
+export interface UserDailyRollupRepository {
+  /** Every folded day in the range, org-wide. Days are whole, so the range is read as [from, toExclusive). */
+  readForRange(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]>;
+  /** The earliest folded day this organization holds, for a range with no lower bound; null when nothing is folded. */
+  earliestDay(subject: AuthenticatedSubject): Promise<Date | null>;
+  /**
+   * Drops every stored row for these days.
+   *
+   * Deliberately separate from the write, and deliberately first. A day with no
+   * row is always correct - the report path reads it live - so clearing before
+   * folding means a fold that fails leaves the day merely unfolded rather than
+   * stating numbers that no longer match the rows underneath it.
+   */
+  clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void>;
+  /**
+   * Writes freshly folded rows.
+   *
+   * The caller passes a row for every member it folded, zeros included: the
+   * read path treats any row for a day as proof the whole workspace's day is
+   * folded, so a quiet member left out would read as a measured zero rather
+   * than as a day the report still has to read live.
+   */
+  writeDays(subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void>;
 }

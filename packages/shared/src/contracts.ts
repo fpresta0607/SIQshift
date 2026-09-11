@@ -187,6 +187,18 @@ export const hourlyBucketSchema = z
   })
   .strict();
 
+/**
+ * One row of the board: who, how long, and the two measured numbers the row
+ * actually renders.
+ *
+ * Deliberately not the concurrency split or the per-agent breakdown. Both used
+ * to ride here and no client ever read either - the web board reads the rank,
+ * the name and the two durations, and the desktop's decoder does not even
+ * declare the other two. Computing them meant measuring every member's
+ * concurrency sweep and per-model split on every board request, which is the
+ * work a stored daily fold exists to avoid. A person's concurrency rows come
+ * from `/me/stats`, where they are rendered.
+ */
 export const leaderboardEntrySchema = z
   .object({
     rank: z.number().int().positive(),
@@ -199,8 +211,6 @@ export const leaderboardEntrySchema = z
     activeSeconds: z.number().int().nonnegative().safe(),
     /** Summed agent runtime. May exceed activeSeconds; that is leverage, not a bug. */
     agentSeconds: z.number().int().nonnegative().safe(),
-    concurrency: concurrencySchema,
-    byAgent: z.array(agentSplitSchema),
   })
   .strict();
 

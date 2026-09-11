@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, sum } from "drizzle-orm";
 import {
   activitySegments,
   agents,
@@ -14,6 +14,7 @@ import {
   projects,
   shiftCommits,
   timeSessions,
+  userDailyRollups,
   userProjectSelections,
   users,
   userViewPreferences,
@@ -66,6 +67,8 @@ import {
   type InsertEndedAgentSession,
   type LeaderboardRowRecord,
   type ObservedSessionInsert,
+  type UserDailyRollupRecord,
+  type UserDailyRollupRepository,
   type PathMappingRecord,
   type PathMappingRepository,
   type ProjectRecord,
@@ -772,6 +775,40 @@ export class DrizzleReportRepository implements ReportRepository {
       startedAt: row.startedAt,
       endedAt: row.endedAt,
     }));
+  }
+
+  /**
+   * Median in-range session length, in whole seconds; null with no sessions.
+   *
+   * The same overlap predicates and the same clipping `readSessionIntervals`
+   * feeds the JavaScript fold, so the number does not move: each session's
+   * in-range length is rounded to seconds first, zero-length ones drop out, and
+   * `percentile_cont` averages the middle pair exactly as the fold did.
+   */
+  public async readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null> {
+    const lower = query.from === undefined ? timeSessions.startedAt : sql`greatest(${timeSessions.startedAt}, ${query.from})`;
+    const upper = query.toExclusive === undefined ? timeSessions.stoppedAt : sql`least(${timeSessions.stoppedAt}, ${query.toExclusive})`;
+    const lengths = this.db
+      .select({ seconds: sql<number>`round(extract(epoch from (${upper} - ${lower})))`.as("seconds") })
+      .from(timeSessions)
+      .where(and(
+        eq(timeSessions.organizationId, subject.organizationId),
+        or(eq(timeSessions.status, "stopped"), eq(timeSessions.status, "needs_review")),
+        isNotNull(timeSessions.stoppedAt),
+        ...(query.userId === undefined ? [] : [eq(timeSessions.userId, query.userId)]),
+        ...(query.projectId === undefined ? [] : [eq(timeSessions.projectId, query.projectId)]),
+        ...(query.unassignedOnly === true ? [eq(timeSessions.attribution, "default")] : []),
+        ...(query.from === undefined ? [] : [gt(timeSessions.stoppedAt, query.from)]),
+        ...(query.toExclusive === undefined ? [] : [lt(timeSessions.startedAt, query.toExclusive)]),
+      ))
+      .as("lengths");
+    const [row] = await this.db
+      .select({ median: sql<string | null>`percentile_cont(0.5) within group (order by ${lengths.seconds})` })
+      .from(lengths)
+      .where(sql`${lengths.seconds} > 0`);
+    if (row?.median === null || row?.median === undefined) return null;
+    const median = Math.round(Number(row.median));
+    return Number.isFinite(median) ? median : null;
   }
 
   /** Completed sessions overlapping the range, with the scope predicates applied. */
@@ -1974,5 +2011,80 @@ export class DrizzlePathMappingRepository implements PathMappingRepository {
       ))
       .returning({ id: projectPathMappings.id });
     return rows.length > 0;
+  }
+}
+
+/**
+ * The folded-day cache behind the leaderboard.
+ *
+ * Nothing here is a source of truth: every row restates rows that are still in
+ * `activity_segments`, `time_sessions` and `agent_sessions`. A missing row is
+ * always correct, because the report path reads that day live instead - which
+ * is what lets the fold decline a day it cannot state honestly.
+ */
+export class DrizzleUserDailyRollupRepository implements UserDailyRollupRepository {
+  public constructor(private readonly db: DatabaseConnection["db"]) {}
+
+  public async readForRange(
+    subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+  ): Promise<UserDailyRollupRecord[]> {
+    const rows = await this.db
+      .select({
+        userId: userDailyRollups.userId,
+        day: userDailyRollups.day,
+        activeMs: userDailyRollups.activeMs,
+        agentMs: userDailyRollups.agentMs,
+        concurrency0Ms: userDailyRollups.concurrency0Ms,
+        concurrency1Ms: userDailyRollups.concurrency1Ms,
+        concurrency2Ms: userDailyRollups.concurrency2Ms,
+        concurrency3PlusMs: userDailyRollups.concurrency3PlusMs,
+        awayMs: userDailyRollups.awayMs,
+      })
+      .from(userDailyRollups)
+      .where(and(
+        eq(userDailyRollups.organizationId, subject.organizationId),
+        gte(userDailyRollups.day, from),
+        lt(userDailyRollups.day, toExclusive),
+      ))
+      .orderBy(asc(userDailyRollups.day), asc(userDailyRollups.userId));
+    return rows;
+  }
+
+  public async earliestDay(subject: AuthenticatedSubject): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ day: min(userDailyRollups.day) })
+      .from(userDailyRollups)
+      .where(eq(userDailyRollups.organizationId, subject.organizationId));
+    return row?.day ?? null;
+  }
+
+  public async clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
+    if (days.length === 0) return;
+    await this.db
+      .delete(userDailyRollups)
+      .where(and(
+        eq(userDailyRollups.organizationId, subject.organizationId),
+        inArray(userDailyRollups.day, [...days]),
+      ));
+  }
+
+  public async writeDays(subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void> {
+    if (rows.length === 0) return;
+    const computedAt = new Date();
+    await this.db.insert(userDailyRollups).values(rows.map((row) => ({
+      organizationId: subject.organizationId,
+      userId: row.userId,
+      day: row.day,
+      activeMs: row.activeMs,
+      agentMs: row.agentMs,
+      concurrency0Ms: row.concurrency0Ms,
+      concurrency1Ms: row.concurrency1Ms,
+      concurrency2Ms: row.concurrency2Ms,
+      concurrency3PlusMs: row.concurrency3PlusMs,
+      awayMs: row.awayMs,
+      computedAt,
+    })));
   }
 }

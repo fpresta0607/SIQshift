@@ -13,6 +13,7 @@ import {
   DrizzleReportRepository,
   DrizzleSessionRepository,
   DrizzleShiftCommitRepository,
+  DrizzleUserDailyRollupRepository,
   DrizzleViewPreferencesRepository,
 } from "./drizzle-repositories.js";
 import { parseEnv } from "./env.js";
@@ -36,6 +37,7 @@ const server = serveApp(
     agentUsageRepository: new DrizzleAgentUsageRepository(db),
     pathMappingRepository: new DrizzlePathMappingRepository(db),
     viewPreferencesRepository: new DrizzleViewPreferencesRepository(db),
+    userDailyRollupRepository: new DrizzleUserDailyRollupRepository(db),
   }),
   config,
 );
