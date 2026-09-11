@@ -29,9 +29,13 @@ section is the authoritative prose; keep it true when you change the model.
 **Agent numbers belong to the agent.** The All-stats/board Humans tab answers for the person -
 their active time and how many agents ran through it - and everything the agents themselves did
 lives on the Agents tab as a map of shifts grouped by codebase (`/reports/agent-shifts`): the
-recorded total, then one collapsible group per repo label with its shifts underneath, each shift
-naming its runtime, operator, model and commits. A group's held share renders only once a commit
-is decided, never as "pending". The roster (`agents` table, `/agents` routes) remains the identity
+recorded total, an hourly series, then one collapsible group per repo label. **That response is
+aggregates only.** A group states its totals and a `groupKey`; the shifts behind it are a separate
+paged read, `GET /reports/agent-shifts/rows`, made when a reader actually opens a drawer, under the
+same range, scope and person the heads were totalled with. Sending every shift to draw four numbers
+per group was this endpoint's whole payload, and on an all-time range it was the largest single
+response the product made. A group's held share renders only once a commit is decided, never as
+"pending". The roster (`agents` table, `/agents` routes) remains the identity
 model and the deployed desktop builds still read the old report routes, so the API keeps serving
 them; only the surfaces moved.
 

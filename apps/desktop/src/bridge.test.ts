@@ -291,27 +291,28 @@ describe("defaultBridge", () => {
   it("decodes the shifts-by-codebase map, and reads absence as empty rather than a crash", async () => {
     invoke.mockResolvedValueOnce({
       totalAgentSeconds: 5_400,
+      hourly: [{
+        hourStart: "2026-08-06T15:00:00.000Z",
+        activeSeconds: 0,
+        agentSeconds: 5_400,
+        inputTokens: null,
+        outputTokens: null,
+        cacheCreationInputTokens: null,
+        cacheReadInputTokens: null,
+      }],
       groups: [{
+        groupKey: "siqshift",
         repo: "siqshift",
         nullCause: null,
         agentSeconds: 5_400,
         shiftCount: 1,
         heldRate: 0.5,
-        shifts: [{
-          id: "00000000-0000-4000-8000-000000000601",
-          source: "claude_code",
-          owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
-          model: "claude-opus-5",
-          startedAt: "2026-08-06T15:00:00.000Z",
-          endedAt: "2026-08-06T16:00:00.000Z",
-          agentSeconds: 5_400,
-          commitCount: 3,
-        }],
       }],
     });
     await expect(defaultBridge.agentShifts("2026-08-01T00:00:00.000Z", "2026-08-08T00:00:00.000Z")).resolves.toMatchObject({
       totalAgentSeconds: 5_400,
-      groups: [{ repo: "siqshift", heldRate: 0.5, shifts: [{ model: "claude-opus-5", commitCount: 3 }] }],
+      hourly: [{ hourStart: "2026-08-06T15:00:00.000Z", agentSeconds: 5_400 }],
+      groups: [{ groupKey: "siqshift", repo: "siqshift", shiftCount: 1, heldRate: 0.5 }],
     });
     // The command name and argument keys are the seam between this bundle and
     // the Rust command Tauri registers: a typo on either side compiles fine
@@ -324,22 +325,59 @@ describe("defaultBridge", () => {
     // An API older than this build sends no groups at all: an empty map, not
     // an error, is what keeps the tab alive across the deploy window.
     invoke.mockResolvedValueOnce({});
-    await expect(defaultBridge.agentShifts()).resolves.toEqual({ totalAgentSeconds: 0, groups: [] });
+    await expect(defaultBridge.agentShifts()).resolves.toEqual({ totalAgentSeconds: 0, hourly: [], groups: [] });
 
     // A group with a label-less repo and no decided commit keeps both nulls.
+    // An API old enough to have sent the shifts inline names no group either,
+    // and an empty key asks for no page - the same empty drawer it gave.
     invoke.mockResolvedValueOnce({ groups: [{ repo: null, shifts: [] }] });
     const bare = await defaultBridge.agentShifts();
-    expect(bare.groups[0]).toMatchObject({ repo: null, nullCause: null, heldRate: null, agentSeconds: 0 });
+    expect(bare.groups[0]).toMatchObject({ groupKey: "", repo: null, nullCause: null, heldRate: null, agentSeconds: 0 });
 
     // The cause travels when a newer API sends it, and stays null when it does
     // not - absence keeps the old wording rather than inventing an answer.
-    invoke.mockResolvedValueOnce({ groups: [{ repo: null, nullCause: "unidentified-run-directory", shifts: [] }] });
+    invoke.mockResolvedValueOnce({ groups: [{ repo: null, nullCause: "unidentified-run-directory" }] });
     const caused = await defaultBridge.agentShifts();
     expect(caused.groups[0]!.nullCause).toBe("unidentified-run-directory");
   });
 
   it("rejects a held rate outside [0, 1] rather than rendering a nonsense percent", async () => {
-    invoke.mockResolvedValueOnce({ groups: [{ repo: "x", heldRate: 1.5, shifts: [] }] });
+    invoke.mockResolvedValueOnce({ groups: [{ repo: "x", heldRate: 1.5 }] });
     await expect(defaultBridge.agentShifts()).rejects.toMatchObject({ kind: "unknown" });
+  });
+
+  it("reads one group's page of shifts, and an absent pagination as none", async () => {
+    invoke.mockResolvedValueOnce({
+      shifts: [{
+        id: "00000000-0000-4000-8000-000000000601",
+        source: "claude_code",
+        owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
+        model: "claude-opus-5",
+        startedAt: "2026-08-06T15:00:00.000Z",
+        endedAt: "2026-08-06T16:00:00.000Z",
+        agentSeconds: 5_400,
+        commitCount: 3,
+      }],
+      pagination: { page: 1, pageSize: 50, totalRows: 9 },
+    });
+    await expect(
+      defaultBridge.agentShiftRows("siqshift", 1, "2026-08-01T00:00:00.000Z", "2026-08-08T00:00:00.000Z"),
+    ).resolves.toMatchObject({
+      shifts: [{ model: "claude-opus-5", commitCount: 3 }],
+      totalRows: 9,
+    });
+    // The same seam as `agent_shifts`: a typo in the command name or an
+    // argument key compiles fine and leaves every drawer empty.
+    expect(invoke).toHaveBeenLastCalledWith("agent_shift_rows", {
+      groupKey: "siqshift",
+      page: 1,
+      fromAt: "2026-08-01T00:00:00.000Z",
+      toExclusiveAt: "2026-08-08T00:00:00.000Z",
+    });
+
+    // An API that has no such endpoint answers nothing useful; an empty drawer
+    // beats a tab that dies decoding one.
+    invoke.mockResolvedValueOnce({});
+    await expect(defaultBridge.agentShiftRows("siqshift", 1)).resolves.toEqual({ shifts: [], totalRows: 0 });
   });
 });

@@ -71,7 +71,57 @@ const rosterAgent = {
   createdAt: "2026-08-01T00:00:00.000Z",
 };
 
+/// The shifts behind each group, keyed the way the API serves them: a drawer
+/// asks for one group's page, and the heads carry none of this.
+const agentShiftRowsByGroup: Record<string, readonly Record<string, unknown>[]> = {
+  siqshift: [
+    {
+      id: "00000000-0000-4000-8000-000000000601",
+      source: "claude_code",
+      owner: { id: "u2", name: "Alex" },
+      model: "claude-opus-5",
+      startedAt: "2026-08-06T15:00:00.000Z",
+      endedAt: "2026-08-06T16:00:00.000Z",
+      agentSeconds: 3_600,
+      commitCount: 2,
+    },
+    {
+      id: "00000000-0000-4000-8000-000000000602",
+      source: "claude_code",
+      owner: { id: "u2", name: "Alex" },
+      model: null,
+      startedAt: "2026-08-06T13:00:00.000Z",
+      endedAt: "2026-08-06T13:30:00.000Z",
+      agentSeconds: 1_800,
+      commitCount: 0,
+    },
+  ],
+  "null:unidentified-run-directory": [{
+    id: "00000000-0000-4000-8000-000000000603",
+    source: "pi",
+    owner: { id: "u2", name: "Alex" },
+    model: "deepseek-v4-pro",
+    startedAt: "2026-08-06T12:00:00.000Z",
+    endedAt: "2026-08-06T12:30:00.000Z",
+    agentSeconds: 1_800,
+    commitCount: 1,
+  }],
+};
+
+/// The hour buckets the server folds over those shifts, contiguous from the
+/// first one onward so the quiet 14:00 reads as quiet rather than vanishing.
+const agentShiftsHourly = [12, 13, 14, 15].map((hour) => ({
+  hourStart: `2026-08-06T${String(hour).padStart(2, "0")}:00:00.000Z`,
+  activeSeconds: 0,
+  agentSeconds: hour === 15 ? 3_600 : hour === 14 ? 0 : 1_800,
+  inputTokens: null,
+  outputTokens: null,
+  cacheCreationInputTokens: null,
+  cacheReadInputTokens: null,
+}));
+
 /// The Agents tab's map: two codebases, three shifts, one decided commit.
+/// Heads only - the shifts hang behind `groupKey`.
 const agentShiftsResponse = {
   filters: {},
   totalAgentSeconds: 7_200,
@@ -80,53 +130,36 @@ const agentShiftsResponse = {
     { owner: { id: "u2", name: "Alex" }, agentSeconds: 5_400, shiftCount: 2 },
     { owner: { id: "u3", name: "Sam" }, agentSeconds: 1_800, shiftCount: 1 },
   ],
+  hourly: agentShiftsHourly,
   groups: [
     {
+      groupKey: "siqshift",
       repo: "siqshift",
       agentSeconds: 5_400,
       shiftCount: 2,
       heldRate: 0.5,
-      shifts: [
-        {
-          id: "00000000-0000-4000-8000-000000000601",
-          source: "claude_code",
-          owner: { id: "u2", name: "Alex" },
-          model: "claude-opus-5",
-          startedAt: "2026-08-06T15:00:00.000Z",
-          endedAt: "2026-08-06T16:00:00.000Z",
-          agentSeconds: 3_600,
-          commitCount: 2,
-        },
-        {
-          id: "00000000-0000-4000-8000-000000000602",
-          source: "claude_code",
-          owner: { id: "u2", name: "Alex" },
-          model: null,
-          startedAt: "2026-08-06T13:00:00.000Z",
-          endedAt: "2026-08-06T13:30:00.000Z",
-          agentSeconds: 1_800,
-          commitCount: 0,
-        },
-      ],
     },
     {
+      groupKey: "null:unidentified-run-directory",
       repo: null,
       nullCause: "unidentified-run-directory",
       agentSeconds: 1_800,
       shiftCount: 1,
       heldRate: null,
-      shifts: [{
-        id: "00000000-0000-4000-8000-000000000603",
-        source: "pi",
-        owner: { id: "u2", name: "Alex" },
-        model: "deepseek-v4-pro",
-        startedAt: "2026-08-06T12:00:00.000Z",
-        endedAt: "2026-08-06T12:30:00.000Z",
-        agentSeconds: 1_800,
-        commitCount: 1,
-      }],
     },
   ],
+};
+
+/// One group's page, sliced the way the endpoint slices it.
+const agentShiftRowsFor = (query = "", pageSize = 50) => {
+  const params = new URLSearchParams(query.replace(/^\?/, ""));
+  const all = agentShiftRowsByGroup[params.get("groupKey") ?? ""] ?? [];
+  const page = Number(params.get("page") ?? "1");
+  return {
+    filters: {},
+    shifts: all.slice((page - 1) * pageSize, page * pageSize),
+    pagination: { page, pageSize, totalRows: all.length },
+  };
 };
 
 function clientFor(overrides: Partial<Client> = {}): Client {
@@ -146,7 +179,14 @@ function clientFor(overrides: Partial<Client> = {}): Client {
     report: vi.fn().mockResolvedValue({ rows: [], totalDurationSeconds: 0, filters: {}, pagination: { page: 1, pageSize: 25, totalRows: 0, totalPages: 0 } }),
     joinOrganization: vi.fn().mockResolvedValue(undefined),
     restoreSession: vi.fn().mockResolvedValue(false),
-    agentShifts: vi.fn().mockResolvedValue(agentShiftsResponse),
+    // An unbounded range gets no hourly series, which is what the server
+    // answers: per-hour resolution over all of history means nothing.
+    agentShifts: vi.fn().mockImplementation((query: string = "") => Promise.resolve(
+      new URLSearchParams(query.replace(/^\?/, "")).has("fromAt")
+        ? agentShiftsResponse
+        : { ...agentShiftsResponse, hourly: [] },
+    )),
+    agentShiftRows: vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query))),
     ...overrides,
   } as unknown as Client;
 }
@@ -1493,9 +1533,9 @@ describe("the agents tab", () => {
       agentShifts: vi.fn().mockResolvedValue({
         ...agentShiftsResponse,
         groups: [
-          { ...agentShiftsResponse.groups[1], nullCause: "no-working-directory" },
-          // An API from before the cause existed keeps the original wording.
-          { ...agentShiftsResponse.groups[1], nullCause: undefined },
+          { ...agentShiftsResponse.groups[1], groupKey: "null:no-working-directory", nullCause: "no-working-directory" },
+          // An API that names no cause keeps the original wording.
+          { ...agentShiftsResponse.groups[1], groupKey: "null:none", nullCause: undefined },
         ],
       }),
     }));
@@ -1712,7 +1752,13 @@ describe("the agents tab", () => {
     await person.click(stats.getByRole("button", { name: "Agents" }));
 
     const panel = within(await screen.findByTestId("agent-shifts"));
-    const rows = within(panel.getAllByTestId("shift-group")[0]!).getAllByRole("listitem");
+    const group = panel.getAllByTestId("shift-group")[0]!;
+    // The rows are not in the response that drew the head: opening the drawer
+    // is what asks for them.
+    await person.click(group.querySelector("summary")!);
+
+    await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
+    const rows = within(group).getAllByRole("listitem");
     expect(rows[0]).toHaveTextContent("Claude Code");
     expect(rows[0]).toHaveTextContent("Alex");
     expect(rows[0]).toHaveTextContent("claude-opus-5");
@@ -1721,9 +1767,82 @@ describe("the agents tab", () => {
     expect(rows[1]!.textContent).not.toMatch(/not recorded/);
   });
 
+  it("asks for a group's shifts only when its drawer opens, under the filters the head was totalled with", async () => {
+    const agentShiftRows = vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query)));
+    const person = await signIn(clientFor({ agentShiftRows }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+
+    // The whole point of the change: drawing the heads costs no rows at all.
+    expect(agentShiftRows).not.toHaveBeenCalled();
+
+    await person.click(panel.getAllByTestId("shift-group")[0]!.querySelector("summary")!);
+
+    await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
+    const asked = new URLSearchParams((agentShiftRows.mock.calls[0]?.[0] as string).replace(/^\?/, ""));
+    expect(asked.get("groupKey")).toBe("siqshift");
+    expect(asked.get("page")).toBe("1");
+    // Same selection the head was totalled under, or a drawer lists shifts its
+    // own head never counted.
+    expect(asked.has("fromAt")).toBe(true);
+    expect(asked.has("toExclusiveAt")).toBe(true);
+  });
+
+  it("pages a long drawer rather than pulling the whole group at once", async () => {
+    const agentShiftRows = vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query, 1)));
+    const person = await signIn(clientFor({ agentShiftRows }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    const group = panel.getAllByTestId("shift-group")[0]!;
+    await person.click(group.querySelector("summary")!);
+
+    // One row of two, and the drawer says how many are still behind it.
+    await person.click(await within(group).findByRole("button", { name: /Show more \(1 left\)/ }));
+
+    await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
+    expect(new URLSearchParams((agentShiftRows.mock.calls.at(-1)?.[0] as string).replace(/^\?/, "")).get("page")).toBe("2");
+    // Exhausted, so the control retires rather than asking for an empty page.
+    expect(within(group).queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+  });
+
+  it("says so inside the drawer when a page fails, and asks again on the next open", async () => {
+    // Deliberately not a retry on a timer: a failing page that re-fetches
+    // itself would hammer the endpoint this whole split exists to quieten. The
+    // reader reopening the drawer is the retry.
+    const agentShiftRows = vi.fn()
+      .mockRejectedValueOnce(new Error("nope"))
+      .mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query)));
+    const person = await signIn(clientFor({ agentShiftRows }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    const group = panel.getAllByTestId("shift-group")[0]!;
+    const head = group.querySelector("summary")!;
+    await person.click(head);
+
+    expect(await within(group).findByRole("alert")).toHaveTextContent("These shifts could not be loaded.");
+    // The head is read from the aggregate, so a failed drawer cannot empty it.
+    expect(group).toHaveTextContent("2 shifts");
+    expect(group).toHaveTextContent("50% held");
+
+    await person.click(head);
+    await person.click(head);
+
+    await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
+    expect(within(group).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("says nobody worked rather than rendering an empty map", async () => {
     const person = await signIn(clientFor({
-      agentShifts: vi.fn().mockResolvedValue({ filters: {}, totalAgentSeconds: 0, groups: [] }),
+      agentShifts: vi.fn().mockResolvedValue({ filters: {}, totalAgentSeconds: 0, people: [], hourly: [], groups: [] }),
     }));
     await screen.findByRole("heading", { name: "SIQstack" });
 

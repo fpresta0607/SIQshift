@@ -35,8 +35,8 @@ import {
   ShiftGroups,
   buildAppRows,
   buildMeterRows,
-  hourlyFromShifts,
   recordedBasis,
+  type ShiftPage,
 } from "@siqshift/shared/ui";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
@@ -515,6 +515,19 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, allStatsOpen, overlayTab, boardRange, signedIn?.user.id, statsTick]);
+
+  // One page of one group's shifts, asked for when a drawer opens. Its
+  // identity tracks the bridge and the range and nothing else - deliberately
+  // not `statsTick`, since a drawer that threw its rows away every minute
+  // would undo the whole point of keeping them off the group heads.
+  const loadShiftRows = useCallback(
+    async (groupKey: string, page: number): Promise<ShiftPage> => {
+      const bounds = rangeBounds(boardRange);
+      const result = await bridge.agentShiftRows(groupKey, page, bounds?.fromAt, bounds?.toExclusiveAt);
+      return { shifts: result.shifts, totalRows: result.totalRows };
+    },
+    [bridge, boardRange],
+  );
 
   // Agent plan quota, read from this machine. Advisory and never on the
   // critical path: a failure leaves the dials unknown rather than saying so.
@@ -1424,11 +1437,15 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     <h3 id="agent-shifts-title">Agents · {RANGE_LABEL[boardRange]}</h3>
                   </div>
                   <p className="today-total"><strong>{formatHuman(agentShifts.totalAgentSeconds)}</strong> recorded</p>
-                  <HourlyGraph buckets={hourlyFromShifts(agentShifts.groups, rangeBounds(boardRange))} />
+                  <HourlyGraph buckets={agentShifts.hourly} />
                   {agentShifts.groups.length === 0 ? (
                     <p className="subtle">No agent worked in this range.</p>
                   ) : (
-                    <ShiftGroups groups={agentShifts.groups} totalAgentSeconds={agentShifts.totalAgentSeconds} />
+                    <ShiftGroups
+                      groups={agentShifts.groups}
+                      totalAgentSeconds={agentShifts.totalAgentSeconds}
+                      loadShifts={loadShiftRows}
+                    />
                   )}
                 </section>
               )}

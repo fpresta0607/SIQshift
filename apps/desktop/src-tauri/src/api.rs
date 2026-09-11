@@ -4,6 +4,7 @@
 //! or a URL (either can contain a token), and the caller always learns which
 //! kind of failure it was so the UI can react without parsing strings.
 
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::monitor::{ObservedSession, SegmentRecord};
@@ -208,18 +209,29 @@ struct LeaderboardResponse {
 pub struct AgentShifts {
     #[serde(default)]
     pub total_agent_seconds: u64,
+    /// Agent runtime by the hour, for the line above the groups. Empty over an
+    /// unbounded range, and empty from an API old enough to have folded the
+    /// series client-side from the shifts it used to send.
+    #[serde(default)]
+    pub hourly: Vec<MeStatsHourlyBucket>,
     #[serde(default)]
     pub groups: Vec<AgentShiftsGroup>,
 }
 
-/// One codebase's group: its summed runtime and the shifts that worked it,
-/// newest first. `repo` is a folder name, never a path; `None` is a group of
-/// shifts that could name no codebase at all, and `null_cause` says why - so
-/// a capture gap and a run worktree with no repository never render as one
-/// collapsed row. `None`/absent on an older API, which keeps the old wording.
+/// One codebase's group head: its summed runtime and how many shifts made it.
+/// `repo` is a folder name, never a path; `None` is a group of shifts that
+/// could name no codebase at all, and `null_cause` says why - so a capture gap
+/// and a run worktree with no repository never render as one collapsed row.
+/// `None`/absent on an older API, which keeps the old wording.
+///
+/// The shifts themselves are a separate paged read keyed by `group_key`, made
+/// when a reader opens a drawer. An API old enough to have sent them inline
+/// simply sends no `group_key`, and the drawer stays empty rather than dying.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentShiftsGroup {
+    #[serde(default)]
+    pub group_key: String,
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
@@ -231,8 +243,6 @@ pub struct AgentShiftsGroup {
     /// merged / decided; `None` while nothing has been decided yet.
     #[serde(default)]
     pub held_rate: Option<f64>,
-    #[serde(default)]
-    pub shifts: Vec<AgentShiftRow>,
 }
 
 /// One shift: a terminal session, with the facts it attested itself.
@@ -252,6 +262,28 @@ pub struct AgentShiftRow {
     /// How many commits the shift recorded; the subjects stay off this wire.
     #[serde(default)]
     pub commit_count: u32,
+}
+
+/// One page of one group's shifts, newest first, with the group's whole count
+/// so a drawer knows whether another page exists.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftRows {
+    #[serde(default)]
+    pub shifts: Vec<AgentShiftRow>,
+    #[serde(default)]
+    pub pagination: AgentShiftRowsPagination,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftRowsPagination {
+    #[serde(default)]
+    pub page: u32,
+    #[serde(default)]
+    pub page_size: u32,
+    #[serde(default)]
+    pub total_rows: u64,
 }
 
 #[derive(Deserialize)]
@@ -871,6 +903,27 @@ impl ApiClient {
             .await
     }
 
+    /// One page of one group's shifts. The bounds are the ones the group heads
+    /// were read with, because a drawer that asked under a different range
+    /// would list shifts its own head never counted.
+    pub async fn agent_shift_rows(
+        &self,
+        access_token: &str,
+        group_key: &str,
+        page: u32,
+        from_at: Option<&str>,
+        to_exclusive_at: Option<&str>,
+    ) -> ApiResult<AgentShiftRows> {
+        let page = page.to_string();
+        let mut pairs = vec![("groupKey", group_key), ("page", page.as_str())];
+        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
+            pairs.push(("fromAt", from_at));
+            pairs.push(("toExclusiveAt", to_exclusive_at));
+        }
+        self.get_json_query(access_token, "/reports/agent-shifts/rows", &pairs)
+            .await
+    }
+
     pub async fn me(&self, access_token: &str) -> ApiResult<TimerUser> {
         let body: MeResponse = self.get_json(access_token, "/me").await?;
         Ok(TimerUser {
@@ -1206,14 +1259,39 @@ impl ApiClient {
         Ok(body.mappings)
     }
 
+    /// A GET whose query carries values that have to be escaped. A codebase
+    /// label is a folder name, so it can hold the very characters that divide
+    /// a query string - `&`, `#`, a space - and interpolating one would split
+    /// a single label into two parameters.
+    async fn get_json_query<T: serde::de::DeserializeOwned>(
+        &self,
+        access_token: &str,
+        path: &str,
+        pairs: &[(&str, &str)],
+    ) -> ApiResult<T> {
+        let mut url = Url::parse(&format!("{}{}", self.api_base_url, path))
+            .map_err(|_| BridgeError::unknown("The request address could not be built."))?;
+        url.query_pairs_mut().extend_pairs(pairs);
+        self.get_json_url(access_token, url.as_str()).await
+    }
+
     async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         access_token: &str,
         path: &str,
     ) -> ApiResult<T> {
+        self.get_json_url(access_token, &format!("{}{}", self.api_base_url, path))
+            .await
+    }
+
+    async fn get_json_url<T: serde::de::DeserializeOwned>(
+        &self,
+        access_token: &str,
+        url: &str,
+    ) -> ApiResult<T> {
         let response = self
             .http
-            .get(format!("{}{}", self.api_base_url, path))
+            .get(url)
             .bearer_auth(access_token)
             .send()
             .await
@@ -1240,36 +1318,41 @@ mod tests {
         let shifts: AgentShifts = serde_json::from_str(
             r#"{
                 "totalAgentSeconds": 5400,
+                "hourly": [{
+                    "hourStart": "2026-08-06T15:00:00.000Z",
+                    "activeSeconds": 0,
+                    "agentSeconds": 5400,
+                    "inputTokens": null,
+                    "outputTokens": null,
+                    "cacheCreationInputTokens": null,
+                    "cacheReadInputTokens": null
+                }],
                 "groups": [{
+                    "groupKey": "siqshift",
                     "repo": "siqshift",
                     "nullCause": null,
                     "agentSeconds": 5400,
                     "shiftCount": 1,
                     "heldRate": 0.5,
-                    "shifts": [{
-                        "id": "s1",
-                        "source": "claude_code",
-                        "owner": {"id": "u1", "name": "Alex"},
-                        "model": "claude-opus-5",
-                        "startedAt": "2026-08-06T15:00:00.000Z",
-                        "endedAt": "2026-08-06T16:00:00.000Z",
-                        "agentSeconds": 5400,
-                        "commitCount": 2,
-                        "aFieldFromTheFuture": true
-                    }]
+                    "aFieldFromTheFuture": true
                 }]
             }"#,
         )
         .expect("the full shape decodes");
         assert_eq!(shifts.total_agent_seconds, 5400);
-        assert_eq!(shifts.groups[0].shifts[0].commit_count, 2);
+        assert_eq!(shifts.groups[0].group_key, "siqshift");
+        assert_eq!(shifts.groups[0].shift_count, 1);
         assert_eq!(shifts.groups[0].null_cause, None);
+        // The line above the groups is the server's series now, not a fold over
+        // rows this response no longer carries.
+        assert_eq!(shifts.hourly[0].agent_seconds, 5400);
+        assert_eq!(shifts.hourly[0].input_tokens, None);
 
         // A newer API's cause rides through to the webview, so the desktop can
         // name why a group has no codebase instead of rendering one row for
         // every reason.
         let caused: AgentShifts = serde_json::from_str(
-            r#"{"groups": [{"repo": null, "nullCause": "no-working-directory", "shifts": []}]}"#,
+            r#"{"groups": [{"groupKey": "null:no-working-directory", "repo": null, "nullCause": "no-working-directory"}]}"#,
         )
         .expect("a cause decodes");
         assert_eq!(
@@ -1283,11 +1366,47 @@ mod tests {
         let empty: AgentShifts = serde_json::from_str("{}").expect("absence decodes");
         assert_eq!(empty.total_agent_seconds, 0);
         assert!(empty.groups.is_empty());
+        assert!(empty.hourly.is_empty());
 
+        // An API old enough to have sent the shifts inline names no group and
+        // no series. Both degrade to empty, so an installed build that predates
+        // the split shows heads with quiet drawers rather than dying on decode.
         let bare: AgentShifts =
-            serde_json::from_str(r#"{"groups": [{"repo": null}]}"#).expect("a bare group decodes");
+            serde_json::from_str(r#"{"groups": [{"repo": null, "shifts": [{"id": "s1"}]}]}"#)
+                .expect("a bare group decodes");
         assert_eq!(bare.groups[0].held_rate, None);
-        assert!(bare.groups[0].shifts.is_empty());
+        assert_eq!(bare.groups[0].group_key, "");
+    }
+
+    /// One group's page decodes the same tolerant way, and an endpoint that is
+    /// not there yet is an empty drawer rather than a dead tab.
+    #[test]
+    fn reads_a_page_of_one_groups_shifts() {
+        let rows: AgentShiftRows = serde_json::from_str(
+            r#"{
+                "filters": {"groupKey": "siqshift", "page": 1, "pageSize": 50},
+                "shifts": [{
+                    "id": "s1",
+                    "source": "claude_code",
+                    "owner": {"id": "u1", "name": "Alex"},
+                    "model": "claude-opus-5",
+                    "startedAt": "2026-08-06T15:00:00.000Z",
+                    "endedAt": "2026-08-06T16:00:00.000Z",
+                    "agentSeconds": 5400,
+                    "commitCount": 2,
+                    "aFieldFromTheFuture": true
+                }],
+                "pagination": {"page": 1, "pageSize": 50, "totalRows": 9}
+            }"#,
+        )
+        .expect("a page decodes");
+        assert_eq!(rows.shifts[0].commit_count, 2);
+        // The whole count is what tells a drawer another page exists.
+        assert_eq!(rows.pagination.total_rows, 9);
+
+        let empty: AgentShiftRows = serde_json::from_str("{}").expect("absence decodes");
+        assert!(empty.shifts.is_empty());
+        assert_eq!(empty.pagination.total_rows, 0);
     }
 
     #[test]

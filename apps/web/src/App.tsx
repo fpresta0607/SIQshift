@@ -23,8 +23,8 @@ import {
   ShiftGroups,
   buildAppRows,
   buildMeterRows,
-  hourlyFromShifts,
   recordedBasis,
+  type ShiftPage,
 } from "@siqshift/shared/ui";
 
 import { ClientError, type Client } from "./client.js";
@@ -191,6 +191,30 @@ export const App = ({ client }: AppProps) => {
   const scopeParams = useCallback(
     (base: string): string => (scope === "all" ? base : withParams(base, { scope })),
     [scope],
+  );
+
+  // The Agents tab's selection as a query, shared by the group heads and by
+  // the rows behind them so a drawer can never ask under a different range,
+  // scope or person than the head it hangs from. Nobody selected sends no
+  // parameter at all, so the tab keeps working against an API deployed before
+  // `userId` existed: the filters schema is strict, and an unknown key is a
+  // 400 that empties the tab.
+  const shiftsQuery = useCallback(
+    (): string => scopeParams(
+      shiftsMember === undefined ? rangeQuery(range) : withParams(rangeQuery(range), { userId: shiftsMember.id }),
+    ),
+    [scopeParams, range, shiftsMember],
+  );
+
+  // One page of one group's shifts, asked for when a drawer opens. Its
+  // identity changes with the query behind it, which is what tells the drawers
+  // their rows have gone stale.
+  const loadShiftRows = useCallback(
+    async (groupKey: string, page: number): Promise<ShiftPage> => {
+      const result = await client.agentShiftRows(withParams(shiftsQuery(), { groupKey, page: String(page) }));
+      return { shifts: result.shifts, totalRows: result.pagination.totalRows };
+    },
+    [client, shiftsQuery],
   );
 
   // On page load, trade a persisted auth cookie for a JWT before choosing
@@ -381,12 +405,7 @@ export const App = ({ client }: AppProps) => {
     if (!signedIn || !preferencesReady || !allStatsOpen || boardTab !== "agents") return undefined;
     let cancelled = false;
     setAgentShiftsFailed(false);
-    // Nobody selected sends no parameter at all, so the default tab keeps
-    // working against an API deployed before `userId` existed: the filters
-    // schema is strict, and an unknown key is a 400 that empties the tab.
-    client.agentShifts(scopeParams(
-      shiftsMember === undefined ? rangeQuery(range) : withParams(rangeQuery(range), { userId: shiftsMember.id }),
-    )).then(
+    client.agentShifts(shiftsQuery()).then(
       (result) => {
         if (!cancelled) setAgentShifts(result);
       },
@@ -402,7 +421,7 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, allStatsOpen, boardTab, range, shiftsMember, scopeParams, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, boardTab, shiftsQuery, expireSession]);
 
   // Recent sessions load only while their drawer is open, one page at a time.
   useEffect(() => {
@@ -957,12 +976,12 @@ export const App = ({ client }: AppProps) => {
               <ShiftsTab
                 shifts={agentShifts}
                 shiftsFailed={agentShiftsFailed}
-                range={range}
                 rangeLabel={rangeSentence[range]}
                 people={agentShifts?.people ?? []}
                 selected={shiftsMember}
                 onSelect={setShiftsMember}
                 selfId={selfId}
+                loadShifts={loadShiftRows}
               />
             ) : (
               <>
@@ -1236,12 +1255,12 @@ export const App = ({ client }: AppProps) => {
 type ShiftsTabProps = {
   shifts: AgentShiftsResponse | undefined;
   shiftsFailed: boolean;
-  range: Range;
   rangeLabel: string;
   people: AgentShiftsResponse["people"];
   selected: { id: string; name: string } | undefined;
   onSelect: (person: { id: string; name: string } | undefined) => void;
   selfId: string | undefined;
+  loadShifts: (groupKey: string, page: number) => Promise<ShiftPage>;
 };
 
 /// The Agents tab: who ran agents, and what those agents ran. A board of the
@@ -1254,7 +1273,7 @@ type ShiftsTabProps = {
 /// once rather than one worker's long day. It carries no bar, because the
 /// board is deliberately computed before the filter and a pre-filter
 /// numerator over the post-filter total would read past 100%.
-const ShiftsTab = ({ shifts, shiftsFailed, range, rangeLabel, people, selected, onSelect, selfId }: ShiftsTabProps) => {
+const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, people, selected, onSelect, selfId, loadShifts }: ShiftsTabProps) => {
   // The heading names whoever the numbers below it are actually about, which
   // is the request that came back rather than the row last clicked: naming the
   // new person over the old person's total is the one way this tab can lie.
@@ -1279,11 +1298,11 @@ const ShiftsTab = ({ shifts, shiftsFailed, range, rangeLabel, people, selected, 
       {!shiftsFailed && shifts !== undefined && (
         <ShiftsTabBody
           shifts={shifts}
-          range={range}
           people={people}
           selected={selected}
           onSelect={onSelect}
           selfId={selfId}
+          loadShifts={loadShifts}
         />
       )}
     </section>
@@ -1293,7 +1312,7 @@ const ShiftsTab = ({ shifts, shiftsFailed, range, rangeLabel, people, selected, 
 type ShiftsTabBodyProps = Omit<ShiftsTabProps, "shifts" | "shiftsFailed" | "rangeLabel"> & { shifts: AgentShiftsResponse };
 
 /// Everything under the head: the board, the total, the graph, the drawers.
-const ShiftsTabBody = ({ shifts, range, people, selected, onSelect, selfId }: ShiftsTabBodyProps) => (
+const ShiftsTabBody = ({ shifts, people, selected, onSelect, selfId, loadShifts }: ShiftsTabBodyProps) => (
   <>
     {people.length > 1 && (
       <ol className="board-list" data-testid="agent-people">
@@ -1324,11 +1343,11 @@ const ShiftsTabBody = ({ shifts, range, people, selected, onSelect, selfId }: Sh
       </ol>
     )}
     <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
-    <HourlyGraph buckets={hourlyFromShifts(shifts.groups, rangeBounds(range))} />
+    <HourlyGraph buckets={shifts.hourly} />
     {shifts.groups.length === 0 ? (
       <p className="subtle">No agent worked in this range.</p>
     ) : (
-      <ShiftGroups groups={shifts.groups} totalAgentSeconds={shifts.totalAgentSeconds} />
+      <ShiftGroups groups={shifts.groups} totalAgentSeconds={shifts.totalAgentSeconds} loadShifts={loadShifts} />
     )}
   </>
 );

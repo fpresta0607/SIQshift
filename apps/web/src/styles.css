@@ -199,6 +199,8 @@ a.primary { display: inline-block; text-decoration: none; }
 .shift-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 2px 0 0; padding: 0 0 0 14px; list-style: none; }
 .shift-row { display: flex; align-items: baseline; gap: 10px; padding: 3px 2px; border-bottom: 1px solid rgba(163, 179, 194, .08); font-size: .82rem; }
 .shift-row:last-child { border-bottom: 0; }
+.shift-more { border: 0; padding: 0; background: transparent; color: var(--text-secondary); font-size: .78rem; letter-spacing: normal; text-decoration: underline; text-underline-offset: 3px; }
+.shift-more:hover, .shift-more:focus-visible { color: #ffffff; }
 .shift-when { flex: none; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .shift-facts { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .shift-duration { flex: none; font-variant-numeric: tabular-nums; }

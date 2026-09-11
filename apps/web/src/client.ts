@@ -1,4 +1,5 @@
 import type {
+  AgentShiftRowsResponse,
   AgentShiftsResponse,
   LeaderboardResponse,
   MeResponse,
@@ -269,8 +270,11 @@ export function createClient(config: ClientConfig) {
       });
     },
 
-    /** Every shift in the range grouped by the codebase it worked. */
+    /** Every shift in the range grouped by the codebase it worked - the group heads alone. */
     agentShifts: (query = "") => json<AgentShiftsResponse>(`/reports/agent-shifts${query}`),
+
+    /** One group's shifts, a page at a time; the query names the group and the page. */
+    agentShiftRows: (query = "") => json<AgentShiftRowsResponse>(`/reports/agent-shifts/rows${query}`),
 
     leaderboard: (query = "") => json<LeaderboardResponse>(`/reports/leaderboard${query}`),
     report: (query = "") => json<ReportResponse>(`/reports${query}`),

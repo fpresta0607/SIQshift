@@ -299,24 +299,37 @@ export type AgentShiftRow = {
   commitCount: number;
 };
 
-/// One codebase's group: summed runtime and the shifts that worked it,
-/// newest first. `repo` is a folder name, never a path; null groups the
-/// shifts that recorded neither a commit root nor a working directory.
-/// `heldRate` stays null until a commit is decided - no rate is a fact
-/// before then, and the tab says nothing rather than "pending".
+/// One codebase's group head: its summed runtime and how many shifts made it.
+/// `repo` is a folder name, never a path; null groups the shifts that recorded
+/// neither a commit root nor a working directory. `heldRate` stays null until
+/// a commit is decided - no rate is a fact before then, and the tab says
+/// nothing rather than "pending".
+///
+/// The shifts themselves are a separate paged read keyed by `groupKey`, made
+/// when a reader opens a drawer. An API old enough to have sent them inline
+/// sends no key, and an empty key asks for nothing.
 export type AgentShiftsGroup = {
+  groupKey: string;
   repo: string | null;
   /** Why the group has no codebase name; absent on an older API and always null on a named group. */
   nullCause: string | null;
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
-  shifts: readonly AgentShiftRow[];
 };
 
 export type AgentShifts = {
   totalAgentSeconds: number;
+  /// Agent runtime by the hour for the line graph; empty over an unbounded range.
+  hourly: readonly MeStatsHourlyBucket[];
   groups: readonly AgentShiftsGroup[];
+};
+
+/// One page of one group's shifts, newest first, with the group's whole count
+/// so a drawer knows whether another page exists.
+export type AgentShiftRows = {
+  shifts: readonly AgentShiftRow[];
+  totalRows: number;
 };
 
 
@@ -355,8 +368,11 @@ export interface TimerBridge {
   /// member's breakdown; absent means the caller.
   meStats(fromAt?: string, toExclusiveAt?: string, userId?: string, scope?: string): Promise<MeStats>;
   /// Every shift in the range grouped by the codebase it worked, for the
-  /// Agents tab. Both bounds absent asks for all time.
+  /// Agents tab - the group heads alone. Both bounds absent asks for all time.
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
+  /// One page of one group's shifts. The bounds must be the ones the heads
+  /// were read with, or the drawer lists shifts its own head never counted.
+  agentShiftRows(groupKey: string, page: number, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
   projectUpdate(id: string, input: { name?: string; isArchived?: boolean }): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
@@ -834,9 +850,13 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
   const candidate = record(value);
   return {
     totalAgentSeconds: nonnegativeInteger(candidate.totalAgentSeconds ?? 0),
+    hourly: (Array.isArray(candidate.hourly) ? candidate.hourly : []).map(decodeHourlyBucket),
     groups: (Array.isArray(candidate.groups) ? candidate.groups : []).map((entry) => {
       const group = record(entry);
       return {
+        // Absent on an API old enough to have sent the shifts inline; an empty
+        // key asks for no page, which is the same empty drawer that API gave.
+        groupKey: string(group.groupKey ?? ""),
         repo: stringOrNull(group.repo),
         // Absent on an older API decodes to null, not a crash - the exact
         // bridge rule this decoder exists to keep.
@@ -844,9 +864,17 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
         shiftCount: nonnegativeInteger(group.shiftCount ?? 0),
         heldRate: unitRateOrNull(group.heldRate),
-        shifts: (Array.isArray(group.shifts) ? group.shifts : []).map(decodeAgentShiftRow),
       };
     }),
+  };
+};
+
+export const decodeAgentShiftRows = (value: unknown): AgentShiftRows => {
+  const candidate = record(value);
+  const pagination = record(candidate.pagination ?? {});
+  return {
+    shifts: (Array.isArray(candidate.shifts) ? candidate.shifts : []).map(decodeAgentShiftRow),
+    totalRows: nonnegativeInteger(pagination.totalRows ?? 0),
   };
 };
 
@@ -899,6 +927,8 @@ export const defaultBridge: TimerBridge = {
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
+  agentShiftRows: (groupKey, page, fromAt, toExclusiveAt) =>
+    invokeDecoded("agent_shift_rows", decodeAgentShiftRows, { groupKey, page, fromAt, toExclusiveAt }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),
   projectUsage: (id) => invokeDecoded("project_usage", decodeProjectUsage, { id }),
