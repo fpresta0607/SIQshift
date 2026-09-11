@@ -424,7 +424,7 @@ Neon → SIQshift → Auth → Configuration:
 
 ## 4. Neon usage quotas, and the outage that hit one
 
-On 2026-09-11 production stopped answering every query with `Your project has
+On 2026-09-11 production began refusing every query with `Your project has
 exceeded the data transfer quota.` The Neon console showed 5.54 GB of transfer
 against a 5 GB allowance and 52.49 of 100 CU-hours, both for the period
 beginning 1 September, so on that trend compute was on course to exhaust before
