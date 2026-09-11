@@ -4,6 +4,7 @@
 //! or a URL (either can contain a token), and the caller always learns which
 //! kind of failure it was so the UI can react without parsing strings.
 
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::monitor::{ObservedSession, SegmentRecord};
@@ -208,18 +209,32 @@ struct LeaderboardResponse {
 pub struct AgentShifts {
     #[serde(default)]
     pub total_agent_seconds: u64,
+    /// Agent runtime by the hour, for the line above the groups. Empty over an
+    /// unbounded range, and empty from an API old enough to have folded the
+    /// series client-side from the shifts it used to send.
+    #[serde(default)]
+    pub hourly: Vec<MeStatsHourlyBucket>,
     #[serde(default)]
     pub groups: Vec<AgentShiftsGroup>,
 }
 
-/// One codebase's group: its summed runtime and the shifts that worked it,
-/// newest first. `repo` is a folder name, never a path; `None` is a group of
-/// shifts that could name no codebase at all, and `null_cause` says why - so
-/// a capture gap and a run worktree with no repository never render as one
-/// collapsed row. `None`/absent on an older API, which keeps the old wording.
+/// One codebase's group head: its summed runtime and how many shifts made it.
+/// `repo` is a folder name, never a path; `None` is a group of shifts that
+/// could name no codebase at all, and `null_cause` says why - so a capture gap
+/// and a run worktree with no repository never render as one collapsed row.
+/// `None`/absent on an older API, which keeps the old wording.
+///
+/// The shifts themselves are a separate paged read keyed by `group_key`, made
+/// when a reader opens a drawer. An API old enough to have sent them inline
+/// sends no `group_key`, which lands here as an empty string; the webview
+/// rebuilds the server's own key from `repo` and `null_cause` so the drawers
+/// keep distinct identities, and reports that it could not load the shifts
+/// from a route that API does not serve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentShiftsGroup {
+    #[serde(default)]
+    pub group_key: String,
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
@@ -231,8 +246,6 @@ pub struct AgentShiftsGroup {
     /// merged / decided; `None` while nothing has been decided yet.
     #[serde(default)]
     pub held_rate: Option<f64>,
-    #[serde(default)]
-    pub shifts: Vec<AgentShiftRow>,
 }
 
 /// One shift: a terminal session, with the facts it attested itself.
@@ -252,6 +265,29 @@ pub struct AgentShiftRow {
     /// How many commits the shift recorded; the subjects stay off this wire.
     #[serde(default)]
     pub commit_count: u32,
+}
+
+/// One page of one group's shifts, newest first, and where the next page
+/// starts. `next_cursor` is `None` once the group is exhausted, which is the
+/// whole of what a drawer needs to decide whether to offer another page.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftRows {
+    #[serde(default)]
+    pub shifts: Vec<AgentShiftRow>,
+    #[serde(default)]
+    pub next_cursor: Option<AgentShiftCursor>,
+}
+
+/// Names the last shift a page returned, by the pair the rows are ordered on:
+/// `started_at` descending, `id` ascending to break an equal instant. A shift
+/// arriving at the head of the group does not move it, which is why the drawer
+/// pages on this rather than on a row offset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftCursor {
+    pub started_at: String,
+    pub id: String,
 }
 
 #[derive(Deserialize)]
@@ -871,6 +907,33 @@ impl ApiClient {
             .await
     }
 
+    /// One page of one group's shifts, from the cursor the page before it
+    /// returned. The bounds are the ones the group heads were read with,
+    /// because a drawer that asked under a different range would list shifts
+    /// its own head never counted.
+    pub async fn agent_shift_rows(
+        &self,
+        access_token: &str,
+        group_key: &str,
+        after: Option<&AgentShiftCursor>,
+        from_at: Option<&str>,
+        to_exclusive_at: Option<&str>,
+    ) -> ApiResult<AgentShiftRows> {
+        let mut pairs = vec![("groupKey", group_key)];
+        // Both halves of the cursor or neither: the filters schema refuses a
+        // half cursor rather than guessing what it names.
+        if let Some(after) = after {
+            pairs.push(("afterStartedAt", after.started_at.as_str()));
+            pairs.push(("afterId", after.id.as_str()));
+        }
+        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
+            pairs.push(("fromAt", from_at));
+            pairs.push(("toExclusiveAt", to_exclusive_at));
+        }
+        self.get_json_query(access_token, "/reports/agent-shifts/rows", &pairs)
+            .await
+    }
+
     pub async fn me(&self, access_token: &str) -> ApiResult<TimerUser> {
         let body: MeResponse = self.get_json(access_token, "/me").await?;
         Ok(TimerUser {
@@ -1206,14 +1269,39 @@ impl ApiClient {
         Ok(body.mappings)
     }
 
+    /// A GET whose query carries values that have to be escaped. A codebase
+    /// label is a folder name, so it can hold the very characters that divide
+    /// a query string - `&`, `#`, a space - and interpolating one would split
+    /// a single label into two parameters.
+    async fn get_json_query<T: serde::de::DeserializeOwned>(
+        &self,
+        access_token: &str,
+        path: &str,
+        pairs: &[(&str, &str)],
+    ) -> ApiResult<T> {
+        let mut url = Url::parse(&format!("{}{}", self.api_base_url, path))
+            .map_err(|_| BridgeError::unknown("The request address could not be built."))?;
+        url.query_pairs_mut().extend_pairs(pairs);
+        self.get_json_url(access_token, url.as_str()).await
+    }
+
     async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         access_token: &str,
         path: &str,
     ) -> ApiResult<T> {
+        self.get_json_url(access_token, &format!("{}{}", self.api_base_url, path))
+            .await
+    }
+
+    async fn get_json_url<T: serde::de::DeserializeOwned>(
+        &self,
+        access_token: &str,
+        url: &str,
+    ) -> ApiResult<T> {
         let response = self
             .http
-            .get(format!("{}{}", self.api_base_url, path))
+            .get(url)
             .bearer_auth(access_token)
             .send()
             .await
@@ -1240,36 +1328,41 @@ mod tests {
         let shifts: AgentShifts = serde_json::from_str(
             r#"{
                 "totalAgentSeconds": 5400,
+                "hourly": [{
+                    "hourStart": "2026-08-06T15:00:00.000Z",
+                    "activeSeconds": 0,
+                    "agentSeconds": 5400,
+                    "inputTokens": null,
+                    "outputTokens": null,
+                    "cacheCreationInputTokens": null,
+                    "cacheReadInputTokens": null
+                }],
                 "groups": [{
+                    "groupKey": "siqshift",
                     "repo": "siqshift",
                     "nullCause": null,
                     "agentSeconds": 5400,
                     "shiftCount": 1,
                     "heldRate": 0.5,
-                    "shifts": [{
-                        "id": "s1",
-                        "source": "claude_code",
-                        "owner": {"id": "u1", "name": "Alex"},
-                        "model": "claude-opus-5",
-                        "startedAt": "2026-08-06T15:00:00.000Z",
-                        "endedAt": "2026-08-06T16:00:00.000Z",
-                        "agentSeconds": 5400,
-                        "commitCount": 2,
-                        "aFieldFromTheFuture": true
-                    }]
+                    "aFieldFromTheFuture": true
                 }]
             }"#,
         )
         .expect("the full shape decodes");
         assert_eq!(shifts.total_agent_seconds, 5400);
-        assert_eq!(shifts.groups[0].shifts[0].commit_count, 2);
+        assert_eq!(shifts.groups[0].group_key, "siqshift");
+        assert_eq!(shifts.groups[0].shift_count, 1);
         assert_eq!(shifts.groups[0].null_cause, None);
+        // The line above the groups is the server's series now, not a fold over
+        // rows this response no longer carries.
+        assert_eq!(shifts.hourly[0].agent_seconds, 5400);
+        assert_eq!(shifts.hourly[0].input_tokens, None);
 
         // A newer API's cause rides through to the webview, so the desktop can
         // name why a group has no codebase instead of rendering one row for
         // every reason.
         let caused: AgentShifts = serde_json::from_str(
-            r#"{"groups": [{"repo": null, "nullCause": "no-working-directory", "shifts": []}]}"#,
+            r#"{"groups": [{"groupKey": "null:no-working-directory", "repo": null, "nullCause": "no-working-directory"}]}"#,
         )
         .expect("a cause decodes");
         assert_eq!(
@@ -1283,11 +1376,62 @@ mod tests {
         let empty: AgentShifts = serde_json::from_str("{}").expect("absence decodes");
         assert_eq!(empty.total_agent_seconds, 0);
         assert!(empty.groups.is_empty());
+        assert!(empty.hourly.is_empty());
 
+        // An API old enough to have sent the shifts inline names no group and
+        // no series. Both degrade to empty, so an installed build that predates
+        // the split shows heads rather than dying on decode. The absent key
+        // lands here as an empty string and reaches the webview as one, which
+        // is why the decoder there rebuilds it rather than trusting it.
         let bare: AgentShifts =
-            serde_json::from_str(r#"{"groups": [{"repo": null}]}"#).expect("a bare group decodes");
+            serde_json::from_str(r#"{"groups": [{"repo": null, "shifts": [{"id": "s1"}]}]}"#)
+                .expect("a bare group decodes");
         assert_eq!(bare.groups[0].held_rate, None);
-        assert!(bare.groups[0].shifts.is_empty());
+        assert_eq!(bare.groups[0].group_key, "");
+        let wire = serde_json::to_string(&bare).expect("serializes");
+        assert!(wire.contains("\"groupKey\":\"\""));
+    }
+
+    /// One group's page decodes the same tolerant way, and an endpoint that is
+    /// not there yet is an empty drawer rather than a dead tab.
+    #[test]
+    fn reads_a_page_of_one_groups_shifts() {
+        let rows: AgentShiftRows = serde_json::from_str(
+            r#"{
+                "filters": {"groupKey": "siqshift", "pageSize": 50},
+                "shifts": [{
+                    "id": "s1",
+                    "source": "claude_code",
+                    "owner": {"id": "u1", "name": "Alex"},
+                    "model": "claude-opus-5",
+                    "startedAt": "2026-08-06T15:00:00.000Z",
+                    "endedAt": "2026-08-06T16:00:00.000Z",
+                    "agentSeconds": 5400,
+                    "commitCount": 2,
+                    "aFieldFromTheFuture": true
+                }],
+                "nextCursor": {"startedAt": "2026-08-06T15:00:00.000Z", "id": "s1"}
+            }"#,
+        )
+        .expect("a page decodes");
+        assert_eq!(rows.shifts[0].commit_count, 2);
+        // The cursor is what tells a drawer another page exists, and it names
+        // the last row rather than a position a re-sorted list would move.
+        assert_eq!(
+            rows.next_cursor,
+            Some(AgentShiftCursor {
+                started_at: "2026-08-06T15:00:00.000Z".to_string(),
+                id: "s1".to_string(),
+            })
+        );
+
+        // Spent, and absent, both read as nowhere further to go.
+        let spent: AgentShiftRows = serde_json::from_str(r#"{"shifts": [], "nextCursor": null}"#)
+            .expect("a spent page decodes");
+        assert_eq!(spent.next_cursor, None);
+        let empty: AgentShiftRows = serde_json::from_str("{}").expect("absence decodes");
+        assert!(empty.shifts.is_empty());
+        assert_eq!(empty.next_cursor, None);
     }
 
     #[test]
@@ -1648,5 +1792,107 @@ mod tests {
         .expect("agent outcome parses");
         assert!(events.results[0].accepted);
         assert_eq!(events.results[1].reason.as_deref(), Some("stale"));
+    }
+
+    /// A codebase label is a folder name, so a group key can hold the very
+    /// characters that divide a query string. What matters is the request the
+    /// drawer actually puts on the wire: one escaped `groupKey` the server
+    /// reads back whole, beside the cursor and the range the head was read
+    /// with - not a label split into extra parameters.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_a_page_with_the_group_key_escaped_on_the_wire() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = r#"{"shifts": [{"id": "s1", "source": "claude_code",
+            "owner": {"id": "u1", "name": "Alex"}, "model": "claude-opus-5",
+            "startedAt": "2026-08-06T15:00:00.000Z", "endedAt": "2026-08-06T16:00:00.000Z",
+            "agentSeconds": 3600, "commitCount": 2}], "nextCursor": null}"#;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the loopback stub binds");
+        let port = listener
+            .local_addr()
+            .expect("the stub has an address")
+            .port();
+        let served = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("the stub accepts");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4_096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.expect("the stub reads");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 STUB\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("the stub answers");
+            stream.flush().await.expect("the stub flushes");
+            String::from_utf8_lossy(&request).into_owned()
+        });
+
+        let client = ApiClient::new(
+            format!("http://127.0.0.1:{port}/auth"),
+            format!("http://127.0.0.1:{port}"),
+        )
+        .expect("the stub client builds");
+        let cursor = AgentShiftCursor {
+            started_at: "2026-08-06T14:00:00.000Z".to_string(),
+            id: "s0".to_string(),
+        };
+        let page = client
+            .agent_shift_rows(
+                "token",
+                "retire & 91 #2",
+                Some(&cursor),
+                Some("2026-08-06T00:00:00.000Z"),
+                Some("2026-08-07T00:00:00.000Z"),
+            )
+            .await
+            .expect("the page reads");
+
+        let request = served.await.expect("the stub finishes");
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("the request has a target")
+            .to_string();
+        let url =
+            Url::parse(&format!("http://127.0.0.1:{port}{target}")).expect("the target is a URL");
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+
+        assert_eq!(url.path(), "/reports/agent-shifts/rows");
+        // The label survives the trip whole, and the separators inside it are
+        // escaped rather than starting a parameter of their own.
+        assert!(!target.contains("retire & 91 #2"), "target was {target}");
+        assert_eq!(
+            pairs,
+            vec![
+                ("groupKey".to_string(), "retire & 91 #2".to_string()),
+                (
+                    "afterStartedAt".to_string(),
+                    "2026-08-06T14:00:00.000Z".to_string()
+                ),
+                ("afterId".to_string(), "s0".to_string()),
+                ("fromAt".to_string(), "2026-08-06T00:00:00.000Z".to_string()),
+                (
+                    "toExclusiveAt".to_string(),
+                    "2026-08-07T00:00:00.000Z".to_string()
+                ),
+            ]
+        );
+        assert_eq!(page.shifts.len(), 1);
+        assert_eq!(page.shifts[0].commit_count, 2);
+        assert!(page.next_cursor.is_none());
     }
 }

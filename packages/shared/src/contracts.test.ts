@@ -11,6 +11,8 @@ import {
   agentsReportResponseSchema,
   agentsReportRowSchema,
   agentSchema,
+  agentShiftRowsFiltersSchema,
+  agentShiftRowsResponseSchema,
   agentShiftsFiltersSchema,
   agentShiftsResponseSchema,
   agentsListResponseSchema,
@@ -1097,6 +1099,17 @@ describe("agent usage upload contracts", () => {
 });
 
 describe("agent shifts contracts", () => {
+  const shiftRow = {
+    id: ids.session,
+    source: "claude_code",
+    owner: { id: ids.user, name: "Alex" },
+    model: "claude-opus-5",
+    startedAt,
+    endedAt: "2026-08-06T15:00:00.000Z",
+    agentSeconds: 3_600,
+    commitCount: 2,
+  };
+
   const shiftsResponse = {
     filters: {},
     totalAgentSeconds: 5_400,
@@ -1104,21 +1117,21 @@ describe("agent shifts contracts", () => {
       { owner: { id: ids.user, name: "Alex" }, agentSeconds: 3_600, shiftCount: 2 },
       { owner: { id: ids.session, name: "Sam" }, agentSeconds: 1_800, shiftCount: 1 },
     ],
+    hourly: [{
+      hourStart: startedAt,
+      activeSeconds: 0,
+      agentSeconds: 3_600,
+      inputTokens: null,
+      outputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: null,
+    }],
     groups: [{
+      groupKey: "siqshift",
       repo: "siqshift",
       agentSeconds: 5_400,
       shiftCount: 3,
       heldRate: 0.5,
-      shifts: [{
-        id: ids.session,
-        source: "claude_code",
-        owner: { id: ids.user, name: "Alex" },
-        model: "claude-opus-5",
-        startedAt,
-        endedAt: "2026-08-06T15:00:00.000Z",
-        agentSeconds: 3_600,
-        commitCount: 2,
-      }],
     }],
   };
 
@@ -1137,10 +1150,82 @@ describe("agent shifts contracts", () => {
     expect(() => agentShiftsFiltersSchema.parse({ userId: "alex" })).toThrow();
   });
 
-  it("carries a board of people beside the codebase groups", () => {
+  it("carries a board of people and an hourly series beside the codebase groups", () => {
     expect(() => agentShiftsResponseSchema.parse(shiftsResponse)).not.toThrow();
-    // A range nobody worked still ships the field, so the client parses one shape.
-    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, people: [], groups: [] })).not.toThrow();
+    // A range nobody worked still ships the fields, so the client parses one shape.
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, people: [], hourly: [], groups: [] })).not.toThrow();
+  });
+
+  it("keeps the shift rows off the group heads, behind their own paged request", () => {
+    // The change this endpoint exists for: a group states its totals, and the
+    // rows are a separate read. Leaving them on the head is refused rather than
+    // ignored, because a client that still sent them would be paying the whole
+    // payload this split removed.
+    expect(() => agentShiftsResponseSchema.parse({
+      ...shiftsResponse,
+      groups: [{ ...shiftsResponse.groups[0], shifts: [shiftRow] }],
+    })).toThrow();
+    // The key is the handle a drawer asks with, so a group without one is not
+    // addressable and the wire refuses it.
+    expect(() => agentShiftsResponseSchema.parse({
+      ...shiftsResponse,
+      groups: [{ ...shiftsResponse.groups[0], groupKey: undefined }],
+    })).toThrow();
+  });
+
+  it("pages one group's rows from a whole cursor, refusing half of one and an unnamed group", () => {
+    // No cursor is the first page, and the query string carries the size as
+    // text, so it coerces the way the report's own pagination does.
+    const defaulted = agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift" });
+    expect(defaulted.pageSize).toBe(50);
+    expect(defaulted.afterStartedAt).toBeUndefined();
+    expect(defaulted.afterId).toBeUndefined();
+    expect(agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", pageSize: "10" }).pageSize).toBe(10);
+    // A cursor is one value split across two query parameters. Half of it names
+    // no shift, so the wire refuses it rather than inventing a meaning.
+    const cursor = { afterStartedAt: shiftRow.startedAt, afterId: shiftRow.id };
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", ...cursor })).not.toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", afterStartedAt: cursor.afterStartedAt })).toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", afterId: cursor.afterId })).toThrow();
+    // An offset went with it: a row position is exactly what a list the server
+    // re-sorts on every read cannot keep, so a client still sending one gets a
+    // 400 rather than a page silently taken from the wrong place.
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", page: "3" })).toThrow();
+    // A group has to be named: a page of "every shift in the range" is the
+    // payload this endpoint exists to stop sending.
+    expect(() => agentShiftRowsFiltersSchema.parse({})).toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", pageSize: 500 })).toThrow();
+    // Strict against the live query string, the same as the aggregate's.
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", sort: "hours" })).toThrow();
+  });
+
+  it("answers a page of rows with where the next one starts, and null once the group is spent", () => {
+    const rowsResponse = {
+      filters: { groupKey: "siqshift", pageSize: 50 },
+      shifts: [shiftRow],
+      nextCursor: { startedAt: shiftRow.startedAt, id: shiftRow.id },
+    };
+    expect(() => agentShiftRowsResponseSchema.parse(rowsResponse)).not.toThrow();
+    // Exhausted says so with a null rather than with a count a moving range
+    // could not keep honest.
+    expect(() => agentShiftRowsResponseSchema.parse({ ...rowsResponse, nextCursor: null })).not.toThrow();
+    // A key the range no longer holds is an empty page, not an error.
+    expect(() => agentShiftRowsResponseSchema.parse({
+      ...rowsResponse,
+      shifts: [],
+      nextCursor: null,
+    })).not.toThrow();
+    // Half a cursor on the way back is refused the same way it is on the way in.
+    expect(() => agentShiftRowsResponseSchema.parse({
+      ...rowsResponse,
+      nextCursor: { startedAt: shiftRow.startedAt },
+    })).toThrow();
+    // The nested strictness that keeps a speculative field off the wire: the
+    // commit subjects stay off it, because nothing renders them.
+    expect(() => agentShiftRowsResponseSchema.parse({
+      ...rowsResponse,
+      shifts: [{ ...shiftRow, commitSubjects: ["fix: a thing"] }],
+    })).toThrow();
   });
 
   it("names why a codebase-less group exists, and keeps the cause off named groups", () => {

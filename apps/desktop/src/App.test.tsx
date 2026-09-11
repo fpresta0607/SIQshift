@@ -132,56 +132,93 @@ const mapping = {
   projectId: project.id,
 };
 
+/// The shifts behind each group, keyed the way the API serves them: the heads
+/// carry none of these, and a drawer asks for one group's page.
+const agentShiftRowsByGroup: Record<string, readonly Record<string, unknown>[]> = {
+  siqshift: [
+    {
+      id: "00000000-0000-4000-8000-000000000601",
+      source: "claude_code",
+      owner: { id: user.id, name: user.name },
+      model: "claude-opus-5",
+      startedAt: "2026-08-06T15:00:00.000Z",
+      endedAt: "2026-08-06T16:00:00.000Z",
+      agentSeconds: 3_600,
+      commitCount: 2,
+    },
+    {
+      id: "00000000-0000-4000-8000-000000000602",
+      source: "claude_code",
+      owner: { id: user.id, name: user.name },
+      model: null,
+      startedAt: "2026-08-06T13:00:00.000Z",
+      endedAt: "2026-08-06T13:30:00.000Z",
+      agentSeconds: 1_800,
+      commitCount: 0,
+    },
+  ],
+  "null:unidentified-run-directory": [{
+    id: "00000000-0000-4000-8000-000000000603",
+    source: "pi",
+    owner: { id: user.id, name: user.name },
+    model: "deepseek-v4-pro",
+    startedAt: "2026-08-06T12:00:00.000Z",
+    endedAt: "2026-08-06T12:30:00.000Z",
+    agentSeconds: 1_800,
+    commitCount: 1,
+  }],
+};
+
+/// The hour buckets the server folds over those shifts, contiguous from the
+/// first one onward so the quiet 14:00 reads as quiet rather than vanishing.
+const agentShiftsHourly = [12, 13, 14, 15].map((hour) => ({
+  hourStart: `2026-08-06T${String(hour).padStart(2, "0")}:00:00.000Z`,
+  activeSeconds: 0,
+  agentSeconds: hour === 15 ? 3_600 : hour === 14 ? 0 : 1_800,
+  inputTokens: null,
+  outputTokens: null,
+  cacheCreationInputTokens: null,
+  cacheReadInputTokens: null,
+}));
+
 /// The Agents tab's map: two codebases, three shifts, one decided commit.
+/// Heads only - the shifts hang behind `groupKey`.
 const agentShifts = {
   totalAgentSeconds: 7_200,
+  hourly: agentShiftsHourly,
   groups: [
     {
+      groupKey: "siqshift",
       repo: "siqshift",
+      nullCause: null,
       agentSeconds: 5_400,
       shiftCount: 2,
       heldRate: 0.5,
-      shifts: [
-        {
-          id: "00000000-0000-4000-8000-000000000601",
-          source: "claude_code",
-          owner: { id: user.id, name: user.name },
-          model: "claude-opus-5",
-          startedAt: "2026-08-06T15:00:00.000Z",
-          endedAt: "2026-08-06T16:00:00.000Z",
-          agentSeconds: 3_600,
-          commitCount: 2,
-        },
-        {
-          id: "00000000-0000-4000-8000-000000000602",
-          source: "claude_code",
-          owner: { id: user.id, name: user.name },
-          model: null,
-          startedAt: "2026-08-06T13:00:00.000Z",
-          endedAt: "2026-08-06T13:30:00.000Z",
-          agentSeconds: 1_800,
-          commitCount: 0,
-        },
-      ],
     },
     {
+      groupKey: "null:unidentified-run-directory",
       repo: null,
       nullCause: "unidentified-run-directory",
       agentSeconds: 1_800,
       shiftCount: 1,
       heldRate: null,
-      shifts: [{
-        id: "00000000-0000-4000-8000-000000000603",
-        source: "pi",
-        owner: { id: user.id, name: user.name },
-        model: "deepseek-v4-pro",
-        startedAt: "2026-08-06T12:00:00.000Z",
-        endedAt: "2026-08-06T12:30:00.000Z",
-        agentSeconds: 1_800,
-        commitCount: 1,
-      }],
     },
   ],
+};
+
+/// One group's page, cut from the cursor the way the command cuts it: the
+/// first row strictly after the named one in the group's own ordering.
+const agentShiftRowsFor = (groupKey: string, after: { id: string } | null, pageSize = 50) => {
+  const all = agentShiftRowsByGroup[groupKey] ?? [];
+  const start = after === null ? 0 : all.findIndex((row) => row.id === after.id) + 1;
+  const shifts = all.slice(start, start + pageSize);
+  const last = shifts.at(-1);
+  return {
+    shifts,
+    nextCursor: last === undefined || start + shifts.length >= all.length
+      ? null
+      : { startedAt: last.startedAt, id: last.id },
+  };
 };
 
 const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
@@ -214,7 +251,12 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   settingsGet: vi.fn().mockResolvedValue(settings),
   settingsUpdate: vi.fn().mockResolvedValue(settings),
   meStats: vi.fn().mockResolvedValue(meStats),
-  agentShifts: vi.fn().mockResolvedValue(agentShifts),
+  // An unbounded range gets no hourly series, which is what the server
+  // answers: per-hour resolution over all of history means nothing.
+  agentShifts: vi.fn().mockImplementation(async (fromAt?: string) => (
+    fromAt === undefined ? { ...agentShifts, hourly: [] } : agentShifts
+  )),
+  agentShiftRows: vi.fn().mockImplementation(async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after)),
   projectCreate: vi.fn().mockResolvedValue(newProject),
   projectUpdate: vi.fn().mockResolvedValue(project),
   projectUsage: vi.fn().mockResolvedValue({ sessionCount: 0, durationSeconds: 0, agentSessionCount: 0 }),
@@ -1562,8 +1604,13 @@ describe("the agents tab", () => {
     render(<App bridge={bridgeFor()} />);
 
     const panel = await openAgentsTab(person);
+    const group = within(panel).getAllByTestId("shift-group")[0]!;
+    // The rows are not in the response that drew the head: opening the drawer
+    // is what asks for them.
+    await person.click(group.querySelector("summary")!);
 
-    const rows = within(within(panel).getAllByTestId("shift-group")[0]!).getAllByRole("listitem");
+    await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
+    const rows = within(group).getAllByRole("listitem");
     // Newest first, as the API orders them.
     expect(rows[0]).toHaveTextContent("Claude Code");
     expect(rows[0]).toHaveTextContent("Timer User");
@@ -1574,10 +1621,72 @@ describe("the agents tab", () => {
     expect(rows[1]!.textContent).not.toMatch(/not recorded/);
   });
 
+  it("asks for a group's shifts only when its drawer opens, under the bounds the head was totalled with", async () => {
+    const agentShiftRows = vi.fn().mockImplementation(
+      async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after),
+    );
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShiftRows })} />);
+
+    const panel = await openAgentsTab(person);
+
+    // The whole point of the change: drawing the heads costs no rows at all.
+    expect(agentShiftRows).not.toHaveBeenCalled();
+
+    await person.click(within(panel).getAllByTestId("shift-group")[0]!.querySelector("summary")!);
+
+    await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
+    // Same bounds the head was totalled under, or a drawer lists shifts its own
+    // head never counted.
+    // The first page names no cursor at all: there is no row to start after.
+    expect(agentShiftRows.mock.calls[0]?.slice(0, 2)).toEqual(["siqshift", null]);
+    expect(agentShiftRows.mock.calls[0]?.[2]).toEqual(expect.any(String));
+    expect(agentShiftRows.mock.calls[0]?.[3]).toEqual(expect.any(String));
+  });
+
+  it("pages a long drawer rather than pulling the whole group at once", async () => {
+    const agentShiftRows = vi.fn().mockImplementation(
+      async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after, 1),
+    );
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShiftRows })} />);
+
+    const panel = await openAgentsTab(person);
+    const group = within(panel).getAllByTestId("shift-group")[0]!;
+    await person.click(group.querySelector("summary")!);
+
+    // One row of two, and the drawer offers the rest.
+    await person.click(await within(group).findByRole("button", { name: "Show more" }));
+
+    await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
+    // The second page starts after the row the first one ended on, named by the
+    // pair the rows are ordered by rather than by a position in the list.
+    expect(agentShiftRows.mock.calls.at(-1)?.[1]).toEqual({
+      startedAt: "2026-08-06T15:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000601",
+    });
+    // Exhausted, so the control retires rather than asking for an empty page.
+    expect(within(group).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
+
+  it("says so inside the drawer when a page fails, and leaves the head alone", async () => {
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShiftRows: vi.fn().mockRejectedValue(new Error("nope")) })} />);
+
+    const panel = await openAgentsTab(person);
+    const group = within(panel).getAllByTestId("shift-group")[0]!;
+    await person.click(group.querySelector("summary")!);
+
+    expect(await within(group).findByRole("alert")).toHaveTextContent("These shifts could not be loaded.");
+    // The head is read from the aggregate, so a failed drawer cannot empty it.
+    expect(group).toHaveTextContent("2 shifts");
+    expect(group).toHaveTextContent("50% held");
+  });
+
   it("says nobody worked rather than rendering an empty map", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({
-      agentShifts: vi.fn().mockResolvedValue({ totalAgentSeconds: 0, groups: [] }),
+      agentShifts: vi.fn().mockResolvedValue({ totalAgentSeconds: 0, hourly: [], groups: [] }),
     })} />);
 
     const panel = await openAgentsTab(person);

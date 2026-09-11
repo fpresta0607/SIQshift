@@ -175,7 +175,9 @@ A person's breakdown stops at what is the person's: their active time and those 
 rows. Everything the agents themselves did lives on the **Agents tab**, as a map of shifts
 grouped by the codebase they worked: the recorded total on top, then one group per repo with
 its shifts underneath - each shift naming its runtime, its operator, the model it drove, and
-the commits it recorded.
+the commits it recorded. A group states its own totals; its shifts are fetched when you open
+it, a page at a time behind a **Show more** row, so a tab that draws four numbers per group
+never carries a month of shifts to do it.
 A shift labels itself the way the roster labels an agent: by its first commit's repo root, else
 its working directory, and when neither names a codebase - a validation gate worktree, a CI
 checkout, or no directory captured at all - by the repository its roster identity is keyed on.
@@ -199,9 +201,9 @@ that never happened. Hours are bucketed to the viewer's local midnight-to-midnig
 never UTC. The web dashboard reuses its existing today/7d/30d/90d range filter for the graph;
 **All time** is unbounded and has no graph, on either tab in either app — its full history
 lives in the CSV export. Both apps chart the course of the day on their main screen, and both
-All-stats overlays chart both tabs. The Agents tab's line is folded from the very shifts
-on screen, so the line and the list can never disagree, and it plots agent runtime alone with
-no person line beside it.
+All-stats overlays chart both tabs. The Agents tab's line is folded from the same read of the
+shifts the groups are totalled from, so the line and the list can never disagree, and it plots
+agent runtime alone with no person line beside it.
 
 The board lists every member of the workspace, not just the people with recorded time: a
 teammate whose range has no evidence reads as `0s`, never as missing.
@@ -491,6 +493,7 @@ organization are derived from verified claims, never from the request body.
 | `POST` | `/agent-sessions` | batch upload of agent lifecycle events |
 | `GET` `POST` `PATCH` `DELETE` | `/path-mappings`, `/path-mappings/:id` | map a path prefix to a project |
 | `GET` | `/reports`, `/reports/leaderboard`, `/reports/agents`, `/reports/agent-shifts`, `/reports/export.csv` | organization reporting |
+| `GET` | `/reports/agent-shifts/rows` | one codebase group's shifts, a page at a time; `groupKey` names the group the aggregate returned |
 | `GET` | `/me/stats` | the caller's totals per project, per app, and per agent; an optional `?userId=` opens a teammate's |
 | `GET` `PUT` | `/me/preferences` | the web dashboard's scope+range view state |
 | `GET` | `/agents` | the org's roster of agent identities |

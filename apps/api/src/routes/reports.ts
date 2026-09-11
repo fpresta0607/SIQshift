@@ -1,4 +1,4 @@
-import { agentShiftsFiltersSchema, agentShiftsResponseSchema, agentsReportFiltersSchema, agentsReportResponseSchema, leaderboardFiltersSchema, leaderboardResponseSchema, reportFiltersSchema, reportResponseSchema } from "@siqshift/shared";
+import { agentShiftRowsFiltersSchema, agentShiftRowsResponseSchema, agentShiftsFiltersSchema, agentShiftsResponseSchema, agentsReportFiltersSchema, agentsReportResponseSchema, leaderboardFiltersSchema, leaderboardResponseSchema, reportFiltersSchema, reportResponseSchema } from "@siqshift/shared";
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 
@@ -37,6 +37,16 @@ export function createReportRoutes(service: ReportService): Hono<ApiEnvironment>
     if (!parsed.success) throw new AppError("validation_error", "Invalid agent shifts filters.");
     return context.json(agentShiftsResponseSchema.parse(
       await service.agentShifts(getAuthenticatedSubject(context), parsed.data),
+    ));
+  });
+  // The rows behind one group's head, a page at a time. Registered after the
+  // aggregate, since Hono matches in order and "/agent-shifts" would not
+  // swallow this path either way.
+  routes.get("/agent-shifts/rows", async (context) => {
+    const parsed = agentShiftRowsFiltersSchema.safeParse(context.req.query());
+    if (!parsed.success) throw new AppError("validation_error", "Invalid agent shift row filters.");
+    return context.json(agentShiftRowsResponseSchema.parse(
+      await service.agentShiftRows(getAuthenticatedSubject(context), parsed.data),
     ));
   });
   routes.get("/export.csv", async (context) => {

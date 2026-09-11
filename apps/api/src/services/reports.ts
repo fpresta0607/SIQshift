@@ -5,6 +5,9 @@ import {
   measureTime,
   summedSeconds,
   unionSeconds,
+  type AgentShiftRow,
+  type AgentShiftRowsFilters,
+  type AgentShiftRowsResponse,
   type AgentShiftsFilters,
   type AgentShiftsResponse,
   type AgentSplit,
@@ -59,6 +62,7 @@ export interface ReportService {
   meStats(subject: AuthenticatedSubject, filters: MeStatsFilters): Promise<MeStatsResponse>;
   agentsReport(subject: AuthenticatedSubject, filters: AgentsReportFilters): Promise<AgentsReportResponse>;
   agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse>;
+  agentShiftRows(subject: AuthenticatedSubject, filters: AgentShiftRowsFilters): Promise<AgentShiftRowsResponse>;
 }
 
 export interface ReportExport {
@@ -824,114 +828,241 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
     },
 
     async agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse> {
-      const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
-      await authorizeFilters(dependencies.reports, subject, query);
-      await dependencies.reaper.reapStale(subject);
-      // Authorize the selection, then read without it. `normalizedQuery`
-      // forwards `userId` into the query and `readAgentIntervals` turns it
-      // into a predicate, so reading with it would narrow the rows `people`
-      // is rolled up from - the board would collapse to the one person who
-      // was picked, leaving no control to clear the selection with. The
-      // filter is applied in memory below instead, after the roll-up.
-      const { userId: selectedUserId, ...boardQuery } = query;
-      const [intervals, commits] = await Promise.all([
-        dependencies.reports.readAgentIntervals(subject, boardQuery),
-        dependencies.shiftCommits === undefined
-          ? Promise.resolve([] as ShiftCommitRecord[])
-          : dependencies.shiftCommits.listForOrganization(subject, boardQuery),
-      ]);
-      const range = queryRange(query);
-      const commitsBySession = new Map<string, ShiftCommitRecord[]>();
-      for (const commit of commits) {
-        const list = commitsBySession.get(commit.agentSessionId);
-        if (list === undefined) commitsBySession.set(commit.agentSessionId, [commit]);
-        else list.push(commit);
-      }
-
-      // One group per codebase label, assembled straight from the shifts: no
-      // roster join, so two worktree clones of the same repo read as one
-      // codebase, which is what the tab is for. Each shift labels itself the
-      // paystub's way - its first commit's repo root, else its working
-      // directory - and a shift whose own paths name only a run (a no-mistakes
-      // gate worktree, a CI checkout) falls back to its roster identity's
-      // repository: the remote the runtime probed for exactly this shift, the
-      // same evidence that keyed the identity. A shift that can name nothing
-      // at all groups under null, split by why - no directory ever captured,
-      // or a run directory whose repository no runtime identified - so the
-      // reader can tell a capture gap from work that legitimately has no repo.
-      type ShiftView = AgentShiftsResponse["groups"][number]["shifts"][number];
-      type PersonView = AgentShiftsResponse["people"][number];
-      type NullCause = NonNullable<AgentShiftsResponse["groups"][number]["nullCause"]>;
-      const groups = new Map<string, { repo: string | null; nullCause: NullCause | null; agentSeconds: number; commits: ShiftCommitRecord[]; shifts: ShiftView[] }>();
-      const people = new Map<string, PersonView>();
-      for (const interval of intervals) {
-        // Browser spans are attention, not shifts, the roster's own rule.
-        if (!rosterEligibleSource(interval.source)) continue;
-        const clipped = clipInterval({ start: interval.startedAt.getTime(), end: interval.endedAt.getTime() }, range);
-        if (clipped === null) continue;
-        // Rounded once, then spent on the person, the group and the shift, so
-        // the three totals reconcile exactly rather than drifting a second
-        // per shift across the hundreds of rows this tab exists to hold.
-        const shiftSeconds = Math.round((clipped.end - clipped.start) / 1_000);
-        // Every shift has exactly one owner, so the board is a partition of
-        // the same seconds the groups spend: summing it back reaches the
-        // total. This runs before the selection so the board keeps every
-        // person on it whoever is picked.
-        const person = people.get(interval.user.id)
-          ?? { owner: { id: interval.user.id, name: interval.user.name }, agentSeconds: 0, shiftCount: 0 };
-        person.agentSeconds += shiftSeconds;
-        person.shiftCount += 1;
-        people.set(interval.user.id, person);
-        if (selectedUserId !== undefined && interval.user.id !== selectedUserId) continue;
-        const shiftCommitList = commitsBySession.get(interval.sessionId) ?? [];
-        const root = shiftCommitList[0]?.repoRoot ?? interval.cwd;
-        const repo = (root === null || root === undefined ? null : repoLabel(root))
-          ?? agentCodebaseLabel(interval.agentRepoRoot, interval.agentRepoKey);
-        const nullCause: NullCause | null = repo === null
-          ? (root === null || root === undefined ? "no-working-directory" : "unidentified-run-directory")
-          : null;
-        const key = repo ?? `null:${nullCause}`;
-        const group = groups.get(key)
-          ?? { repo, nullCause, agentSeconds: 0, commits: [], shifts: [] };
-        group.agentSeconds += shiftSeconds;
-        group.commits.push(...shiftCommitList);
-        group.shifts.push({
-          id: interval.sessionId,
-          source: interval.source,
-          owner: { id: interval.user.id, name: interval.user.name },
-          model: interval.model,
-          startedAt: interval.startedAt.toISOString(),
-          endedAt: interval.endedAt.toISOString(),
-          agentSeconds: shiftSeconds,
-          commitCount: shiftCommitList.length,
-        });
-        groups.set(key, group);
-      }
-
-      const groupViews = [...groups.values()]
-        .map((group) => ({
+      const board = await readShiftBoard(dependencies, subject, filters);
+      return {
+        filters,
+        totalAgentSeconds: board.groups.reduce((sum, group) => sum + group.agentSeconds, 0),
+        // Heaviest first, with the id breaking ties so an equal pair keeps
+        // one order between two reads of the same range.
+        people: [...board.people.values()]
+          .sort((a, b) => b.agentSeconds - a.agentSeconds || a.owner.id.localeCompare(b.owner.id)),
+        hourly: shiftHourlySeries(board.groups, board.range),
+        // The heads alone. The shifts behind them are a paged read against
+        // `groupKey`, made when a reader opens a drawer: a busy month runs to
+        // thousands of rows, and shipping them all to draw four numbers per
+        // group was almost the whole of this response.
+        groups: board.groups.map((group) => ({
+          groupKey: group.key,
           repo: group.repo,
           nullCause: group.nullCause,
           agentSeconds: group.agentSeconds,
           shiftCount: group.shifts.length,
           heldRate: heldRateOf(group.commits),
-          shifts: group.shifts.sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
-        }))
-        // Heaviest first; the label-less group reads last whatever its hours,
-        // because "no codebase recorded" is a footnote, not a codebase.
-        .sort((a, b) => Number(a.repo === null) - Number(b.repo === null) || b.agentSeconds - a.agentSeconds);
+        })),
+      };
+    },
 
+    async agentShiftRows(subject: AuthenticatedSubject, filters: AgentShiftRowsFilters): Promise<AgentShiftRowsResponse> {
+      const { groupKey, pageSize, afterStartedAt, afterId, ...boardFilters } = filters;
+      const board = await readShiftBoard(dependencies, subject, boardFilters);
+      // A key the range no longer holds is an empty page, not an error: the
+      // aggregate a drawer was opened from can be a minute old, and a group
+      // that has since rolled out of a moving range is a normal answer.
+      const shifts = board.groups.find((group) => group.key === groupKey)?.shifts ?? [];
+      // Sliced from the first shift strictly after the cursor in the group's
+      // own ordering, never from an index: a shift that started since the last
+      // page moves every index below it and an offset would serve a row the
+      // drawer already holds. No cursor asks for the head of the list.
+      const start = afterStartedAt === undefined || afterId === undefined
+        ? 0
+        : shifts.findIndex((shift) => isAfterShiftCursor(shift, afterStartedAt, afterId));
+      const page = start === -1 ? [] : shifts.slice(start, start + pageSize);
+      const last = page.at(-1);
       return {
         filters,
-        totalAgentSeconds: groupViews.reduce((sum, group) => sum + group.agentSeconds, 0),
-        // Heaviest first, with the id breaking ties so an equal pair keeps
-        // one order between two reads of the same range.
-        people: [...people.values()]
-          .sort((a, b) => b.agentSeconds - a.agentSeconds || a.owner.id.localeCompare(b.owner.id)),
-        groups: groupViews,
+        shifts: page,
+        // The last row's own ordering pair while rows remain behind it. Null
+        // says the group is exhausted, which is the whole of what a drawer
+        // needs to decide whether to offer another page.
+        nextCursor: last === undefined || start + page.length >= shifts.length
+          ? null
+          : { startedAt: last.startedAt, id: last.id },
       };
     },
   };
+}
+
+/**
+ * Whether a shift falls strictly after a cursor in the board's own ordering -
+ * `startedAt` descending, `id` ascending to break an equal instant. The cursor
+ * instant is re-rendered through `Date` first, because it arrives off a query
+ * string where `...:00Z` and `...:00.000Z` name the same moment but do not
+ * compare as the same string.
+ */
+function isAfterShiftCursor(shift: AgentShiftRow, afterStartedAt: string, afterId: string): boolean {
+  const cursorStartedAt = new Date(afterStartedAt).toISOString();
+  if (shift.startedAt !== cursorStartedAt) return shift.startedAt < cursorStartedAt;
+  return shift.id > afterId;
+}
+
+/** One codebase's group mid-assembly: its shifts, and the commits its held rate is decided from. */
+type ShiftBoardGroup = {
+  key: string;
+  repo: string | null;
+  nullCause: NonNullable<AgentShiftsResponse["groups"][number]["nullCause"]> | null;
+  agentSeconds: number;
+  commits: ShiftCommitRecord[];
+  shifts: AgentShiftRow[];
+};
+
+/**
+ * The Agents tab's one read, shared by the aggregate and by the paged rows
+ * behind it, so a drawer can never list shifts its own head did not count.
+ * The cost of sharing it: opening a drawer reads the whole range again, since
+ * a shift's codebase label is computed here rather than in SQL and so cannot
+ * narrow the query to one group.
+ *
+ * One group per codebase label, assembled straight from the shifts: no roster
+ * join, so two worktree clones of the same repo read as one codebase, which
+ * is what the tab is for. Each shift labels itself the paystub's way - its
+ * first commit's repo root, else its working directory - and a shift whose
+ * own paths name only a run (a no-mistakes gate worktree, a CI checkout)
+ * falls back to its roster identity's repository: the remote the runtime
+ * probed for exactly this shift, the same evidence that keyed the identity. A
+ * shift that can name nothing at all groups under null, split by why - no
+ * directory ever captured, or a run directory whose repository no runtime
+ * identified - so the reader can tell a capture gap from work that
+ * legitimately has no repo.
+ */
+async function readShiftBoard(
+  dependencies: ReportServiceDependencies,
+  subject: AuthenticatedSubject,
+  filters: AgentShiftsFilters,
+): Promise<{
+  groups: ShiftBoardGroup[];
+  people: Map<string, AgentShiftsResponse["people"][number]>;
+  range: Partial<Interval>;
+}> {
+  const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
+  await authorizeFilters(dependencies.reports, subject, query);
+  await dependencies.reaper.reapStale(subject);
+  // Authorize the selection, then read without it. `normalizedQuery`
+  // forwards `userId` into the query and `readAgentIntervals` turns it
+  // into a predicate, so reading with it would narrow the rows `people`
+  // is rolled up from - the board would collapse to the one person who
+  // was picked, leaving no control to clear the selection with. The
+  // filter is applied in memory below instead, after the roll-up.
+  const { userId: selectedUserId, ...boardQuery } = query;
+  const [intervals, commits] = await Promise.all([
+    dependencies.reports.readAgentIntervals(subject, boardQuery),
+    dependencies.shiftCommits === undefined
+      ? Promise.resolve([] as ShiftCommitRecord[])
+      : dependencies.shiftCommits.listForOrganization(subject, boardQuery),
+  ]);
+  const range = queryRange(query);
+  const commitsBySession = new Map<string, ShiftCommitRecord[]>();
+  for (const commit of commits) {
+    const list = commitsBySession.get(commit.agentSessionId);
+    if (list === undefined) commitsBySession.set(commit.agentSessionId, [commit]);
+    else list.push(commit);
+  }
+
+  type NullCause = ShiftBoardGroup["nullCause"];
+  const groups = new Map<string, ShiftBoardGroup>();
+  const people = new Map<string, AgentShiftsResponse["people"][number]>();
+  for (const interval of intervals) {
+    // Browser spans are attention, not shifts, the roster's own rule.
+    if (!rosterEligibleSource(interval.source)) continue;
+    const clipped = clipInterval({ start: interval.startedAt.getTime(), end: interval.endedAt.getTime() }, range);
+    if (clipped === null) continue;
+    // Rounded once, then spent on the person, the group and the shift, so
+    // the three totals reconcile exactly rather than drifting a second
+    // per shift across the hundreds of rows this tab exists to hold.
+    const shiftSeconds = Math.round((clipped.end - clipped.start) / 1_000);
+    // Every shift has exactly one owner, so the board is a partition of
+    // the same seconds the groups spend: summing it back reaches the
+    // total. This runs before the selection so the board keeps every
+    // person on it whoever is picked.
+    const person = people.get(interval.user.id)
+      ?? { owner: { id: interval.user.id, name: interval.user.name }, agentSeconds: 0, shiftCount: 0 };
+    person.agentSeconds += shiftSeconds;
+    person.shiftCount += 1;
+    people.set(interval.user.id, person);
+    if (selectedUserId !== undefined && interval.user.id !== selectedUserId) continue;
+    const shiftCommitList = commitsBySession.get(interval.sessionId) ?? [];
+    const root = shiftCommitList[0]?.repoRoot ?? interval.cwd;
+    const repo = (root === null || root === undefined ? null : repoLabel(root))
+      ?? agentCodebaseLabel(interval.agentRepoRoot, interval.agentRepoKey);
+    const nullCause: NullCause = repo === null
+      ? (root === null || root === undefined ? "no-working-directory" : "unidentified-run-directory")
+      : null;
+    const key = repo ?? `null:${nullCause}`;
+    const group = groups.get(key)
+      ?? { key, repo, nullCause, agentSeconds: 0, commits: [], shifts: [] };
+    group.agentSeconds += shiftSeconds;
+    group.commits.push(...shiftCommitList);
+    group.shifts.push({
+      id: interval.sessionId,
+      source: interval.source,
+      owner: { id: interval.user.id, name: interval.user.name },
+      model: interval.model,
+      startedAt: interval.startedAt.toISOString(),
+      endedAt: interval.endedAt.toISOString(),
+      agentSeconds: shiftSeconds,
+      commitCount: shiftCommitList.length,
+    });
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    // Newest first, the id breaking ties: a page boundary falling between two
+    // shifts that share a start instant would otherwise be free to repeat one
+    // of them and drop the other across two page reads.
+    group.shifts.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id));
+  }
+  return {
+    groups: [...groups.values()]
+      // Heaviest first; the label-less group reads last whatever its hours,
+      // because "no codebase recorded" is a footnote, not a codebase.
+      .sort((a, b) => Number(a.repo === null) - Number(b.repo === null) || b.agentSeconds - a.agentSeconds),
+    people,
+    range,
+  };
+}
+
+/**
+ * The Agents tab's hourly series, over the shifts the tab is showing. Folded
+ * from the shifts' own instants rather than from their clipped seconds, so
+ * the line traces when the work happened.
+ *
+ * Per-hour resolution over an unbounded range is meaningless and the series
+ * would grow with the workspace's whole history, so an unbounded range - the
+ * Humans tab's series declines the same way - yields no buckets at all. The
+ * axis is contiguous from the range's start, zeros included, so quiet hours
+ * read as quiet rather than vanishing. Token counters read null because this
+ * series measures time alone.
+ */
+function shiftHourlySeries(groups: readonly ShiftBoardGroup[], range: Partial<Interval>): HourlyBucket[] {
+  if (range.start === undefined || range.end === undefined) return [];
+  const hourMs = 60 * 60 * 1_000;
+  const seconds = new Map<number, number>();
+  for (const group of groups) {
+    for (const shift of group.shifts) {
+      const start = Date.parse(shift.startedAt);
+      const end = Date.parse(shift.endedAt);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      for (let hour = Math.floor(start / hourMs) * hourMs; hour < end; hour += hourMs) {
+        const overlap = Math.min(end, hour + hourMs) - Math.max(start, hour);
+        if (overlap > 0) seconds.set(hour, (seconds.get(hour) ?? 0) + Math.round(overlap / 1_000));
+      }
+    }
+  }
+  if (seconds.size === 0) return [];
+  const first = Math.floor(range.start / hourMs) * hourMs;
+  const last = Math.max(...seconds.keys());
+  const buckets: HourlyBucket[] = [];
+  for (let hour = first; hour <= last; hour += hourMs) {
+    buckets.push({
+      hourStart: new Date(hour).toISOString(),
+      activeSeconds: 0,
+      agentSeconds: seconds.get(hour) ?? 0,
+      inputTokens: null,
+      outputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: null,
+    });
+  }
+  return buckets;
 }
 
 /** merged / decided; null while nothing has been decided - never a fake zero. */

@@ -38,8 +38,9 @@ use tauri::{
 use tokio::sync::Mutex;
 
 use api::{
-    AgentShifts, ApiClient, ApiResult, BridgeError, ErrorKind, LeaderboardEntry, MeStats,
-    Organization, ProjectUsage, TimerProject, TimerUser, ViewPreferences,
+    AgentShiftCursor, AgentShiftRows, AgentShifts, ApiClient, ApiResult, BridgeError, ErrorKind,
+    LeaderboardEntry, MeStats, Organization, ProjectUsage, TimerProject, TimerUser,
+    ViewPreferences,
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
@@ -580,6 +581,36 @@ async fn agent_shifts(
         .await
 }
 
+/// One page of one group's shifts, asked for when a drawer opens. The bounds
+/// are the ones the group heads were read with: a drawer that asked under a
+/// different range would list shifts its own head never counted.
+#[tauri::command]
+async fn agent_shift_rows(
+    state: State<'_, AppState>,
+    group_key: String,
+    after_started_at: Option<String>,
+    after_id: Option<String>,
+    from_at: Option<String>,
+    to_exclusive_at: Option<String>,
+) -> ApiResult<AgentShiftRows> {
+    let access_token = state.access_token().await?;
+    // Half a cursor names no shift, so it asks for the first page rather than
+    // for something the API would have to invent a meaning for.
+    let after = after_started_at
+        .zip(after_id)
+        .map(|(started_at, id)| AgentShiftCursor { started_at, id });
+    state
+        .client
+        .agent_shift_rows(
+            &access_token,
+            &group_key,
+            after.as_ref(),
+            from_at.as_deref(),
+            to_exclusive_at.as_deref(),
+        )
+        .await
+}
+
 /// How much of each coding agent's plan is left, read from what those CLIs
 /// already store on this machine. Answers from cache immediately; a stale
 /// reading refreshes on a background thread rather than holding the UI.
@@ -976,6 +1007,7 @@ pub fn run() {
             settings_update,
             me_stats,
             agent_shifts,
+            agent_shift_rows,
             app_icons,
             project_create,
             project_update,

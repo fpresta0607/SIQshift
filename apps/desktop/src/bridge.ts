@@ -299,24 +299,45 @@ export type AgentShiftRow = {
   commitCount: number;
 };
 
-/// One codebase's group: summed runtime and the shifts that worked it,
-/// newest first. `repo` is a folder name, never a path; null groups the
-/// shifts that recorded neither a commit root nor a working directory.
-/// `heldRate` stays null until a commit is decided - no rate is a fact
-/// before then, and the tab says nothing rather than "pending".
+/// One codebase's group head: its summed runtime and how many shifts made it.
+/// `repo` is a folder name, never a path; null groups the shifts that recorded
+/// neither a commit root nor a working directory. `heldRate` stays null until
+/// a commit is decided - no rate is a fact before then, and the tab says
+/// nothing rather than "pending".
+///
+/// The shifts themselves are a separate paged read keyed by `groupKey`, made
+/// when a reader opens a drawer. An API old enough to have sent them inline
+/// names no group, so the decoder rebuilds the server's own key from `repo`
+/// and `nullCause`: the drawer uses it as a React key and as its open-state
+/// identity, so one shared key would collapse every group onto one drawer.
 export type AgentShiftsGroup = {
+  groupKey: string;
   repo: string | null;
   /** Why the group has no codebase name; absent on an older API and always null on a named group. */
   nullCause: string | null;
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
-  shifts: readonly AgentShiftRow[];
 };
 
 export type AgentShifts = {
   totalAgentSeconds: number;
+  /// Agent runtime by the hour for the line graph; empty over an unbounded range.
+  hourly: readonly MeStatsHourlyBucket[];
   groups: readonly AgentShiftsGroup[];
+};
+
+/// Names the last shift a drawer holds, by the pair the rows are ordered on.
+export type AgentShiftCursor = {
+  startedAt: string;
+  id: string;
+};
+
+/// One page of one group's shifts, newest first, and where the next page
+/// starts - null once the group is exhausted.
+export type AgentShiftRows = {
+  shifts: readonly AgentShiftRow[];
+  nextCursor: AgentShiftCursor | null;
 };
 
 
@@ -355,8 +376,11 @@ export interface TimerBridge {
   /// member's breakdown; absent means the caller.
   meStats(fromAt?: string, toExclusiveAt?: string, userId?: string, scope?: string): Promise<MeStats>;
   /// Every shift in the range grouped by the codebase it worked, for the
-  /// Agents tab. Both bounds absent asks for all time.
+  /// Agents tab - the group heads alone. Both bounds absent asks for all time.
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
+  /// One page of one group's shifts. The bounds must be the ones the heads
+  /// were read with, or the drawer lists shifts its own head never counted.
+  agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
   projectUpdate(id: string, input: { name?: string; isArchived?: boolean }): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
@@ -834,19 +858,41 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
   const candidate = record(value);
   return {
     totalAgentSeconds: nonnegativeInteger(candidate.totalAgentSeconds ?? 0),
+    hourly: (Array.isArray(candidate.hourly) ? candidate.hourly : []).map(decodeHourlyBucket),
     groups: (Array.isArray(candidate.groups) ? candidate.groups : []).map((entry) => {
       const group = record(entry);
+      const repo = stringOrNull(group.repo);
+      // Absent on an older API decodes to null, not a crash - the exact
+      // bridge rule this decoder exists to keep.
+      const nullCause = stringOrNull(group.nullCause ?? null);
+      const rawKey = group.groupKey === undefined || group.groupKey === null ? "" : string(group.groupKey);
       return {
-        repo: stringOrNull(group.repo),
-        // Absent on an older API decodes to null, not a crash - the exact
-        // bridge rule this decoder exists to keep.
-        nullCause: stringOrNull(group.nullCause ?? null),
+        // Empty on an API old enough to have sent the shifts inline - the host
+        // deserializes an absent key into a String, so it reaches here as ""
+        // rather than as nothing. An empty key does not ask for nothing: the
+        // drawer still asks a route that API does not serve and reports that
+        // those shifts could not be loaded. What it must not do is collide,
+        // since the drawer keys both React and its open state on this, so an
+        // empty key is rebuilt exactly the way the server builds it.
+        groupKey: rawKey === "" ? repo ?? `null:${nullCause ?? "none"}` : rawKey,
+        repo,
+        nullCause,
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
         shiftCount: nonnegativeInteger(group.shiftCount ?? 0),
         heldRate: unitRateOrNull(group.heldRate),
-        shifts: (Array.isArray(group.shifts) ? group.shifts : []).map(decodeAgentShiftRow),
       };
     }),
+  };
+};
+
+export const decodeAgentShiftRows = (value: unknown): AgentShiftRows => {
+  const candidate = record(value);
+  const cursor = candidate.nextCursor;
+  return {
+    shifts: (Array.isArray(candidate.shifts) ? candidate.shifts : []).map(decodeAgentShiftRow),
+    nextCursor: cursor === undefined || cursor === null
+      ? null
+      : { startedAt: string(record(cursor).startedAt), id: uuid(record(cursor).id) },
   };
 };
 
@@ -899,6 +945,14 @@ export const defaultBridge: TimerBridge = {
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
+  agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>
+    invokeDecoded("agent_shift_rows", decodeAgentShiftRows, {
+      groupKey,
+      afterStartedAt: after?.startedAt,
+      afterId: after?.id,
+      fromAt,
+      toExclusiveAt,
+    }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),
   projectUsage: (id) => invokeDecoded("project_usage", decodeProjectUsage, { id }),

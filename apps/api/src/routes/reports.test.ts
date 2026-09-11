@@ -304,20 +304,14 @@ describe("report routes", () => {
       // misshapen person row is a 500 here rather than a silent field.
       people: [{ owner: { id: ids.user, name: "Alex" }, agentSeconds: 3_600, shiftCount: 1 }],
       groups: [{
+        // The handle a drawer asks for this group's rows with.
+        groupKey: "siqshift",
         // The codebase reaches every member as a name, never as the path.
         repo: "siqshift",
         agentSeconds: 3_600,
         shiftCount: 1,
         // Nothing decided, so no rate at all rather than a fake zero.
         heldRate: null,
-        shifts: [{
-          id: "11c7e513-b094-4d4c-ae55-21790ae019a4",
-          source: "claude_code",
-          owner: { id: ids.user, name: "Alex" },
-          model: "claude-opus-5",
-          agentSeconds: 3_600,
-          commitCount: 0,
-        }],
       }],
     });
   });

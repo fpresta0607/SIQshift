@@ -1,4 +1,4 @@
-import { agentShiftsFiltersSchema, leaderboardFiltersSchema, meStatsFiltersSchema } from "@siqshift/shared";
+import { agentShiftRowsFiltersSchema, agentShiftsFiltersSchema, leaderboardFiltersSchema, meStatsFiltersSchema } from "@siqshift/shared";
 import { describe, expect, it } from "vitest";
 
 import { rangeQuery } from "./App.js";
@@ -68,6 +68,35 @@ describe("web and API report contract", () => {
   it("sends no agent-shifts bounds at all for all time", () => {
     expect(rangeQuery("all")).toBe("");
     expect(() => agentShiftsFiltersSchema.parse({})).not.toThrow();
+  });
+
+  it.each(boundedRanges)("accepts the shift-rows query a drawer sends for %s", (range) => {
+    // A drawer asks under the range, scope and person its group head was
+    // totalled with, plus the group and the cursor the page before it returned.
+    // Both schemas are strict, so one key out of step here is a bare 400 and an
+    // Agents tab whose drawers never fill.
+    const cursor = "afterStartedAt=2026-08-06T15%3A00%3A00.000Z&afterId=00000000-0000-4000-8000-000000000601";
+    const parameters = parametersOf(`${rangeQuery(range)}&groupKey=siqshift&${cursor}`);
+
+    const filters = agentShiftRowsFiltersSchema.parse(parameters);
+
+    expect(filters.groupKey).toBe("siqshift");
+    expect(filters.afterStartedAt).toBe("2026-08-06T15:00:00.000Z");
+    expect(filters.afterId).toBe("00000000-0000-4000-8000-000000000601");
+    expect(filters.fromAt).toBe(parameters.fromAt);
+    expect(filters.toExclusiveAt).toBe(parameters.toExclusiveAt);
+  });
+
+  it("carries the scope and person into a drawer, and needs no bounds for all time", () => {
+    const filters = agentShiftRowsFiltersSchema.parse(
+      parametersOf(`?scope=${projectId}&userId=${memberId}&groupKey=null:no-working-directory`),
+    );
+
+    expect(filters.scope).toBe(projectId);
+    expect(filters.userId).toBe(memberId);
+    // The codebase-less groups are addressed by their cause, which is the same
+    // string the server grouped them under.
+    expect(filters.groupKey).toBe("null:no-working-directory");
   });
 
   it.each(["unassigned", projectId] as const)("carries the project scope the Agents tab is filtered to: %s", (scope) => {

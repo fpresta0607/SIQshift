@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { agentRuntimeForBinary, agentRuntimeLabel } from "./agent-runtimes.js";
 import { friendlyAppName } from "./app-names.js";
@@ -451,9 +451,6 @@ export const HourlyGraph = ({
 /** One foreground process' total, the shape both stats responses report. */
 export type AppDuration = { processName: string; durationSeconds: number };
 
-/** The instant bounds a range resolves to; absent means "everything". */
-export type RangeBounds = { fromAt: string; toExclusiveAt: string };
-
 const TOP_APP_ROWS = 8;
 
 /** One row of the All-stats app list. */
@@ -636,15 +633,33 @@ export type ShiftRow = {
   commitCount: number;
 };
 
-/** One codebase's shifts, as both Agents tabs render them. */
+/** One codebase's head, as both Agents tabs render it. The shifts behind it are a separate read. */
 export type ShiftGroup = {
+  /** Names this group to `loadShifts`, and nothing else; the server sends it rather than letting each client derive one. */
+  groupKey: string;
   repo: string | null;
   /** Why the group has no codebase name, when it has none; a string so a future cause degrades to the old wording, never a crash. */
   nullCause?: string | null | undefined;
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
+};
+
+/**
+ * Names the last shift a drawer holds, by the pair the rows are ordered on:
+ * newest `startedAt` first, `id` breaking an equal instant. A cursor survives
+ * a shift arriving at the head of the list, which is the whole reason the
+ * drawer pages on one rather than on a row offset.
+ */
+export type ShiftCursor = {
+  startedAt: string;
+  id: string;
+};
+
+/** One page of a group's shifts, and where the next one starts - null once the group is exhausted. */
+export type ShiftPage = {
   shifts: readonly ShiftRow[];
+  nextCursor: ShiftCursor | null;
 };
 
 /**
@@ -673,6 +688,14 @@ export const shiftClock = (startedAt: string): string => {
     : at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 };
 
+/** One drawer's rows so far, the cursor it last asked from, and where the next page starts. */
+type ShiftDrawer = {
+  rows: readonly ShiftRow[];
+  asked: ShiftCursor | null;
+  nextCursor: ShiftCursor | null;
+  status: "loading" | "ready" | "failed";
+};
+
 /**
  * The Agents tab's map: one collapsible group per codebase, its shifts inside.
  *
@@ -680,94 +703,173 @@ export const shiftClock = (startedAt: string): string => {
  * codebase's share of the recorded agent time, duration - so a column of
  * codebases scans the way a column of apps does. The held share appears only
  * once a commit is decided: a rate with no decided commits is not a fact, so
- * the head says nothing instead. A drawer, because a busy week runs to
- * hundreds of shifts; the head stays exactly four cells, since a disclosure
- * glyph added as a fifth child of the four-track grid would wrap onto an
- * implicit second row and double its height. Open state is left to the DOM:
- * the keys are stable, so a viewer's open drawers survive a refetch.
+ * the head says nothing instead. The head stays exactly four cells, since a
+ * disclosure glyph added as a fifth child of the four-track grid would wrap
+ * onto an implicit second row and double its height.
+ *
+ * A drawer, because a busy week runs to hundreds of shifts - and now because
+ * the rows are not in the response that drew the head. `loadShifts` fetches
+ * one page of one group, so a reader who opens two drawers pays for two
+ * drawers rather than for the whole month on every poll.
+ *
+ * Open state is React's here, not the DOM's: a drawer left open while the
+ * range or the person under it changes has to ask for its rows again, and a
+ * `<details>` that never closed fires no toggle to ask on. Callers must give
+ * `loadShifts` a stable identity per query - a `useCallback` over the range,
+ * scope and person - because a new identity is exactly what says "these rows
+ * are stale now".
  */
 export const ShiftGroups = ({
   groups,
   totalAgentSeconds,
+  loadShifts,
 }: {
   groups: readonly ShiftGroup[];
   totalAgentSeconds: number;
-}) => (
-  <>
-    {groups.map((group) => (
-      <details className="shift-group" key={group.repo ?? `null:${group.nullCause ?? "none"}`} data-testid="shift-group">
-        <summary className="meter-row shift-group-head">
-          <span className="project-dot" aria-hidden="true" />
-          <span className="meter-name">
-            {shiftGroupLabel(group)}
-            {group.heldRate !== null && <span className="meter-detail held-tag"> · {Math.round(group.heldRate * 100)}% held</span>}
-            <span className="meter-detail"> · {group.shiftCount} shift{group.shiftCount === 1 ? "" : "s"}</span>
-          </span>
-          <span
-            className="meter-bar"
-            aria-hidden="true"
-            style={{ "--share": `${totalAgentSeconds === 0 ? 0 : Math.round((group.agentSeconds / totalAgentSeconds) * 100)}%` } as CSSProperties}
-          />
-          <span className="meter-duration">{formatHumanDuration(group.agentSeconds)}</span>
-        </summary>
-        <ul className="shift-list">
-          {group.shifts.map((shift) => (
-            <li key={shift.id} className="shift-row">
-              <span className="shift-when">{shiftClock(shift.startedAt)}</span>
-              <span className="shift-facts">
-                {agentRuntimeLabel(shift.source)}
-                {` · ${shift.owner.name}`}
-                {shift.model !== null && ` · ${shift.model}`}
-                {shift.commitCount > 0 && ` · ${shift.commitCount} commit${shift.commitCount === 1 ? "" : "s"}`}
-              </span>
-              <span className="shift-duration">{formatHumanDuration(shift.agentSeconds)}</span>
-            </li>
-          ))}
-        </ul>
-      </details>
-    ))}
-  </>
-);
+  loadShifts: (groupKey: string, after: ShiftCursor | null) => Promise<ShiftPage>;
+}) => {
+  const [openKeys, setOpenKeys] = useState<ReadonlySet<string>>(new Set());
+  const [drawers, setDrawers] = useState<ReadonlyMap<string, ShiftDrawer>>(new Map());
+  // The query every in-flight page was asked under, so a page that lands
+  // after the range moved is dropped rather than filed under the new one.
+  const query = useRef(loadShifts);
 
-/// The Agents tab's hourly series, folded client-side from the very shifts on
-/// screen so the line and the list can never disagree. Per-hour resolution
-/// over an unbounded range is meaningless and the fold would grow with the
-/// workspace's whole history, so an unbounded range - the Humans tab's
-/// server-computed series declines the same way - yields no graph at all.
-/// Token counters read null because this series measures time alone.
-export const hourlyFromShifts = (
-  groups: readonly ShiftGroup[],
-  bounds: RangeBounds | undefined,
-): readonly ChartHourlyBucket[] => {
-  if (bounds === undefined) return [];
-  const seconds = new Map<number, number>();
-  for (const group of groups) {
-    for (const shift of group.shifts) {
-      const start = Date.parse(shift.startedAt);
-      const end = Date.parse(shift.endedAt);
-      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-      for (let hour = Math.floor(start / 3_600_000) * 3_600_000; hour < end; hour += 3_600_000) {
-        const overlap = Math.min(end, hour + 3_600_000) - Math.max(start, hour);
-        if (overlap > 0) seconds.set(hour, (seconds.get(hour) ?? 0) + Math.round(overlap / 1_000));
-      }
-    }
-  }
-  if (seconds.size === 0) return [];
-  // A contiguous axis from the range's start onward, zeros included, so quiet
-  // hours read as quiet rather than vanishing.
-  const first = Math.floor(Date.parse(bounds.fromAt) / 3_600_000) * 3_600_000;
-  const last = Math.max(...seconds.keys());
-  const buckets: ChartHourlyBucket[] = [];
-  for (let hour = first; hour <= last; hour += 3_600_000) {
-    buckets.push({
-      hourStart: new Date(hour).toISOString(),
-      activeSeconds: 0,
-      agentSeconds: seconds.get(hour) ?? 0,
-      inputTokens: null,
-      outputTokens: null,
-      cacheCreationInputTokens: null,
-      cacheReadInputTokens: null,
+  useEffect(() => {
+    query.current = loadShifts;
+    setDrawers(new Map());
+  }, [loadShifts]);
+
+  const fetchPage = useCallback((groupKey: string, after: ShiftCursor | null): void => {
+    setDrawers((current) => {
+      const next = new Map(current);
+      next.set(groupKey, {
+        rows: after === null ? [] : current.get(groupKey)?.rows ?? [],
+        asked: after,
+        nextCursor: null,
+        status: "loading",
+      });
+      return next;
     });
-  }
-  return buckets;
+    loadShifts(groupKey, after).then(
+      (result) => setDrawers((current) => {
+        if (query.current !== loadShifts) return current;
+        const drawer = current.get(groupKey);
+        if (drawer?.asked !== after || drawer.status !== "loading") return current;
+        const next = new Map(current);
+        next.set(groupKey, {
+          // Appended whole: a cursor names a shift, not a position, so a page
+          // read after a newer shift arrived still starts below the last row
+          // this drawer holds and cannot hand one of them back.
+          rows: after === null ? result.shifts : [...drawer.rows, ...result.shifts],
+          asked: after,
+          nextCursor: result.nextCursor,
+          status: "ready",
+        });
+        return next;
+      }),
+      // A failed page says so in the drawer and stops there; closing and
+      // reopening it is what asks again.
+      () => setDrawers((current) => {
+        if (query.current !== loadShifts) return current;
+        const drawer = current.get(groupKey);
+        if (drawer?.asked !== after || drawer.status !== "loading") return current;
+        const next = new Map(current);
+        next.set(groupKey, { ...drawer, status: "failed" });
+        return next;
+      }),
+    );
+  }, [loadShifts]);
+
+  // Every open drawer with no page yet asks for its first one. One rule covers
+  // both halves of it: a drawer the reader just opened, and a drawer left open
+  // while the query under it changed and cleared its rows.
+  useEffect(() => {
+    for (const groupKey of openKeys) {
+      if (drawers.has(groupKey)) continue;
+      fetchPage(groupKey, null);
+    }
+  }, [openKeys, drawers, fetchPage]);
+
+  const setOpen = (groupKey: string, open: boolean): void => {
+    setOpenKeys((current) => {
+      if (current.has(groupKey) === open) return current;
+      const next = new Set(current);
+      if (open) next.add(groupKey);
+      else next.delete(groupKey);
+      return next;
+    });
+    // A closed drawer keeps nothing. It costs one request to reopen, which is
+    // what the reader just asked for, and it is the only thing that lets a
+    // drawer whose page failed be tried again: the effect below deliberately
+    // never retries on its own, since a failure that re-fetches itself would
+    // hammer the endpoint this whole change exists to quieten.
+    if (open) return;
+    setDrawers((current) => {
+      if (!current.has(groupKey)) return current;
+      const next = new Map(current);
+      next.delete(groupKey);
+      return next;
+    });
+  };
+
+  return (
+    <>
+      {groups.map((group) => {
+        const drawer = drawers.get(group.groupKey);
+        const shown = drawer?.rows ?? [];
+        const more = drawer?.status === "ready" ? drawer.nextCursor : null;
+        return (
+          <details
+            className="shift-group"
+            key={group.groupKey}
+            data-testid="shift-group"
+            open={openKeys.has(group.groupKey)}
+            onToggle={(event) => setOpen(group.groupKey, event.currentTarget.open)}
+          >
+            <summary className="meter-row shift-group-head">
+              <span className="project-dot" aria-hidden="true" />
+              <span className="meter-name">
+                {shiftGroupLabel(group)}
+                {group.heldRate !== null && <span className="meter-detail held-tag"> · {Math.round(group.heldRate * 100)}% held</span>}
+                <span className="meter-detail"> · {group.shiftCount} shift{group.shiftCount === 1 ? "" : "s"}</span>
+              </span>
+              <span
+                className="meter-bar"
+                aria-hidden="true"
+                style={{ "--share": `${totalAgentSeconds === 0 ? 0 : Math.round((group.agentSeconds / totalAgentSeconds) * 100)}%` } as CSSProperties}
+              />
+              <span className="meter-duration">{formatHumanDuration(group.agentSeconds)}</span>
+            </summary>
+            <ul className="shift-list">
+              {shown.map((shift) => (
+                <li key={shift.id} className="shift-row">
+                  <span className="shift-when">{shiftClock(shift.startedAt)}</span>
+                  <span className="shift-facts">
+                    {agentRuntimeLabel(shift.source)}
+                    {` · ${shift.owner.name}`}
+                    {shift.model !== null && ` · ${shift.model}`}
+                    {shift.commitCount > 0 && ` · ${shift.commitCount} commit${shift.commitCount === 1 ? "" : "s"}`}
+                  </span>
+                  <span className="shift-duration">{formatHumanDuration(shift.agentSeconds)}</span>
+                </li>
+              ))}
+              {drawer?.status === "loading" && (
+                <li className="shift-row"><span className="shift-facts">Loading…</span></li>
+              )}
+              {drawer?.status === "failed" && (
+                <li className="shift-row"><span className="shift-facts" role="alert">These shifts could not be loaded.</span></li>
+              )}
+              {more !== null && (
+                <li className="shift-row">
+                  <button type="button" className="shift-more" onClick={() => fetchPage(group.groupKey, more)}>
+                    Show more
+                  </button>
+                </li>
+              )}
+            </ul>
+          </details>
+        );
+      })}
+    </>
+  );
 };

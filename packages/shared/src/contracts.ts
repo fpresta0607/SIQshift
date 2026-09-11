@@ -823,12 +823,35 @@ export const agentShiftsFiltersSchema = z
   })
   .strict();
 
+/** One shift: a terminal session, with the facts it attested itself. */
+export const agentShiftRowSchema = z
+  .object({
+    id: idSchema,
+    source: agentSourceSchema,
+    owner: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+    model: z.string().min(1).max(200).nullable(),
+    startedAt: timestampSchema,
+    /** A running shift reads its last event here, never "still open". */
+    endedAt: timestampSchema,
+    /** Clipped to the range, rounded once per shift. */
+    agentSeconds: z.number().int().nonnegative().safe(),
+    /** How many commits the shift recorded; the subjects stay off this wire, because nothing renders them. */
+    commitCount: z.number().int().nonnegative().safe(),
+  })
+  .strict();
+
 /**
  * The Agents tab's whole story: who ran agents, what those agents ran, and
  * where. `people` opens the tab, ranked by the agent time the range recorded,
- * and doubles as the tab's person filter. Then one group per repo label the
- * shifts named, heaviest first, the label-less group last; each group lists
- * its shifts newest first.
+ * and doubles as the tab's person filter. `hourly` is the same seconds over
+ * time, for the line above it. Then one group per repo label the shifts
+ * named, heaviest first, the label-less group last.
+ *
+ * Aggregates only: a group states its totals and nothing else, and the shifts
+ * behind it are a separate paged read - `GET /reports/agent-shifts/rows`,
+ * keyed by `groupKey` - made when a reader actually opens one. A busy month
+ * runs to thousands of shifts, and sending them all on a tab that renders
+ * four numbers per group was this endpoint's whole payload.
  *
  * The roster is still not the model here: a person row is a sum over shifts,
  * not an agent, which is why it carries `shiftCount` beside its seconds. One
@@ -856,8 +879,24 @@ export const agentShiftsResponseSchema = z
         shiftCount: z.number().int().nonnegative().safe(),
       })
       .strict()),
+    /**
+     * Agent runtime by the hour, over the shifts this response's filters
+     * selected. Per-hour resolution over an unbounded range is meaningless
+     * and the series would grow with the workspace's whole history, so an
+     * unbounded range yields no buckets at all - the same refusal the
+     * Humans tab's series makes. `activeSeconds` and the token counters are
+     * empty here because this series measures agent time alone.
+     */
+    hourly: z.array(hourlyBucketSchema),
     groups: z.array(z
       .object({
+        /**
+         * Names this group in a `GET /reports/agent-shifts/rows` request, and
+         * nothing else: a repo label, or `null:<cause>` for the groups that
+         * could name no codebase. Sent rather than derived so the handle a
+         * client asks with is the one the server grouped by.
+         */
+        groupKey: z.string().min(1).max(220),
         /** A codebase's folder name, never a path; null groups the shifts that could name no codebase at all. */
         repo: repoLabelSchema.nullable(),
         /**
@@ -873,26 +912,63 @@ export const agentShiftsResponseSchema = z
         shiftCount: z.number().int().nonnegative().safe(),
         /** merged / decided; null while nothing has been decided. */
         heldRate: heldRateSchema,
-        shifts: z.array(z
-          .object({
-            id: idSchema,
-            source: agentSourceSchema,
-            owner: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
-            model: z.string().min(1).max(200).nullable(),
-            startedAt: timestampSchema,
-            /** A running shift reads its last event here, never "still open". */
-            endedAt: timestampSchema,
-            /** Clipped to the range, rounded once per shift. */
-            agentSeconds: z.number().int().nonnegative().safe(),
-            /** How many commits the shift recorded; the subjects stay off this wire, because nothing renders them. */
-            commitCount: z.number().int().nonnegative().safe(),
-          })
-          .strict()),
       })
       // A cause explains a missing name and nothing else: a named group
       // carrying one is a contradiction, and the wire refuses it.
       .strict()
       .refine((group) => group.repo === null || group.nullCause == null)),
+  })
+  .strict();
+
+/**
+ * Names the last shift a drawer already holds: the pair the rows are ordered
+ * by - `startedAt` descending, `id` ascending to break an equal instant. The
+ * pair is unique per shift and does not move when a newer shift appears, which
+ * an offset cannot say: the server re-sorts the group on every read, so a
+ * shift arriving at the head shifts every window below it by one and an offset
+ * page then repeats a row it already served.
+ */
+export const agentShiftCursorSchema = z
+  .object({
+    startedAt: timestampSchema,
+    id: idSchema,
+  })
+  .strict();
+
+/**
+ * One group's shifts, newest first. Carries the same range, scope and person
+ * the aggregate was read with, because the rows have to come from the same
+ * selection the group totalled - a drawer opened against a different range
+ * would list shifts its own head never counted.
+ *
+ * Paged by cursor rather than by offset. The two cursor fields are one value
+ * split across a query string: half of it names no shift at all, so the wire
+ * refuses the half rather than inventing a meaning for it.
+ */
+export const agentShiftRowsFiltersSchema = agentShiftsFiltersSchema
+  .extend({
+    /** A `groupKey` from the aggregate response. A key no longer in range is an empty page, not an error. */
+    groupKey: z.string().min(1).max(220),
+    pageSize: z.coerce.number().int().min(1).max(200).default(50),
+    /** The `nextCursor` of the page before this one; absent asks for the first. */
+    afterStartedAt: timestampSchema.optional(),
+    afterId: idSchema.optional(),
+  })
+  .strict()
+  .refine((filters) => (filters.afterStartedAt === undefined) === (filters.afterId === undefined));
+
+/**
+ * One page of a group's shifts. `nextCursor` is the last row's ordering pair
+ * while the group holds more, and null once it is exhausted - the only thing
+ * a drawer needs to know whether to offer another page. No total travels with
+ * it: the group's count is read under a range that keeps moving, so a count
+ * taken one page ago cannot honestly say how many rows are still fetchable.
+ */
+export const agentShiftRowsResponseSchema = z
+  .object({
+    filters: agentShiftRowsFiltersSchema,
+    shifts: z.array(agentShiftRowSchema),
+    nextCursor: agentShiftCursorSchema.nullable(),
   })
   .strict();
 
@@ -1173,6 +1249,10 @@ export type AgentsReportRow = z.infer<typeof agentsReportRowSchema>;
 export type AgentsReportResponse = z.infer<typeof agentsReportResponseSchema>;
 export type AgentShiftsFilters = z.infer<typeof agentShiftsFiltersSchema>;
 export type AgentShiftsResponse = z.infer<typeof agentShiftsResponseSchema>;
+export type AgentShiftRow = z.infer<typeof agentShiftRowSchema>;
+export type AgentShiftCursor = z.infer<typeof agentShiftCursorSchema>;
+export type AgentShiftRowsFilters = z.infer<typeof agentShiftRowsFiltersSchema>;
+export type AgentShiftRowsResponse = z.infer<typeof agentShiftRowsResponseSchema>;
 export type AgentsReportSort = z.infer<typeof agentsReportSortSchema>;
 export type TokenTotals = z.infer<typeof tokenTotalsSchema>;
 export type MeStatsAgent = z.infer<typeof meStatsAgentSchema>;
