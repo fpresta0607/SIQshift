@@ -1305,6 +1305,51 @@ describe("the team board", () => {
     expect(meStatsMock.mock.calls.length).toBe(afterFirstRead);
   });
 
+  it("keeps refreshing when the window cannot say whether anyone can see it", async () => {
+    vi.useFakeTimers();
+    const meStatsMock = vi.fn().mockResolvedValue(meStats);
+    render(<App bridge={bridgeFor({ meStats: meStatsMock })} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const afterFirstRead = meStatsMock.mock.calls.length;
+
+    // A window that has gone out from under the webview answers nothing at
+    // all. Skipping is the optimisation and showing the day is the job, so an
+    // unanswerable window is assumed to be on screen rather than leaving the
+    // panel on a reading from whenever the probe first broke.
+    windowControls.isVisible.mockRejectedValue(new Error("window is gone"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    const afterOneTick = meStatsMock.mock.calls.length;
+    expect(afterOneTick).toBeGreaterThan(afterFirstRead);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(meStatsMock.mock.calls.length).toBeGreaterThan(afterOneTick);
+  });
+
+  it("reads once for two alt-tabs inside a tick, and at once after a long stretch away", async () => {
+    vi.useFakeTimers();
+    const meStatsMock = vi.fn().mockResolvedValue(meStats);
+    render(<App bridge={bridgeFor({ meStats: meStatsMock })} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    // Two ticks' worth of time in the tray: the reading on screen is old, so
+    // being shown again is worth a read straight away.
+    hideWindow();
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    const beforeFocus = meStatsMock.mock.calls.length;
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+    const afterFocus = meStatsMock.mock.calls.length;
+    expect(afterFocus).toBeGreaterThan(beforeFocus);
+
+    // Alt-tab away and straight back. The reading is seconds old and one bump
+    // fans out to every open report, so this focus asks the server for
+    // nothing.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+    expect(meStatsMock.mock.calls.length).toBe(afterFocus);
+  });
+
   it("joins another workspace by invite code from settings", async () => {
     const bridge = bridgeFor({
       preferencesGet: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),

@@ -59,6 +59,11 @@ const QUOTA_POLL_MS = 120_000;
 /// launch, so a pending answer is followed up promptly.
 const QUOTA_PENDING_POLL_MS = 3_000;
 
+/// How often the Today panel refreshes while someone is looking at it, and
+/// the floor a focus refresh honours: one tick's worth of reading a minute is
+/// the budget, whether the window was shown once or alt-tabbed ten times.
+const STATS_TICK_MS = 60_000;
+
 /// The reading for one agent source (`claude_code` → the `claude` provider).
 const quotaFor = (snapshot: QuotaSnapshot | undefined, source: string): AgentQuota | undefined =>
   snapshot?.providers.find((provider) => provider.sources.includes(source));
@@ -549,23 +554,42 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // `document.visibilityState`: a webview hidden with its window does not
   // reliably say so, while the window knows whether it is on screen. Showing
   // it refreshes at once, so what appears is current rather than a minute old.
+  //
+  // A window that cannot answer the question is assumed to be on screen:
+  // skipping is the optimisation, showing the day is the job, and a probe that
+  // threw must not leave the panel frozen on a stale reading forever. The
+  // focus refresh keeps the tick's floor, since one bump fans out to the
+  // roster, the leaderboard and the whole agent-shifts map: alt-tabbing in and
+  // out would otherwise read more than the unconditional tick it replaced.
+  const lastStatsRefreshAt = useRef(Date.now());
   useEffect(() => {
     if (signedIn === undefined) return undefined;
     const appWindow = getCurrentWindow();
     let cancelled = false;
-    const refresh = (): void => setStatsTick((tick) => tick + 1);
-    const tick = async (): Promise<void> => {
-      const [shown, minimized] = await Promise.all([appWindow.isVisible(), appWindow.isMinimized()]);
-      if (!cancelled && shown && !minimized) refresh();
+    const refresh = (): void => {
+      lastStatsRefreshAt.current = Date.now();
+      setStatsTick((tick) => tick + 1);
     };
-    const timer = window.setInterval(() => { void tick(); }, 60_000);
+    const canBeSeen = async (): Promise<boolean> => {
+      try {
+        const [shown, minimized] = await Promise.all([appWindow.isVisible(), appWindow.isMinimized()]);
+        return shown && !minimized;
+      } catch {
+        return true;
+      }
+    };
+    const timer = window.setInterval(() => {
+      void canBeSeen().then((seen) => { if (!cancelled && seen) refresh(); });
+    }, STATS_TICK_MS);
     const unlisten = appWindow.onFocusChanged((event: { payload: boolean }) => {
-      if (!cancelled && event.payload) refresh();
+      if (cancelled || !event.payload) return;
+      if (Date.now() - lastStatsRefreshAt.current < STATS_TICK_MS) return;
+      refresh();
     });
     return () => {
       cancelled = true;
       window.clearInterval(timer);
-      void unlisten.then((stop) => stop());
+      void unlisten.then((stop) => stop(), () => {});
     };
   }, [signedIn?.user.id]);
 
