@@ -347,6 +347,12 @@ export interface AgentRepository {
   /** Mints or finds the identity for (org, operator, source, repository); replay yields the same id. */
   upsertForKey(input: UpsertAgentForKey): Promise<{ id: string }>;
   listForOrganization(subject: AuthenticatedSubject): Promise<AgentRecord[]>;
+  /**
+   * The named identities, for a caller that already knows which ones it needs.
+   * `/me/stats` labels only the agents its own shifts ran under, and reading
+   * the whole roster to find them was the report path's largest fixed read.
+   */
+  listByIds(subject: AuthenticatedSubject, agentIds: readonly string[]): Promise<AgentRecord[]>;
   findById(subject: AuthenticatedSubject, agentId: string): Promise<AgentRecord | null>;
   /** Applies the patch; null when the agent is not in the caller's organization. */
   update(subject: AuthenticatedSubject, agentId: string, patch: AgentUpdatePatch): Promise<AgentRecord | null>;
