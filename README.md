@@ -271,9 +271,11 @@ keeps the same posture — the browser launches it, it holds no credentials and
 opens no sockets, and browser spans recorded while the desktop app is closed
 wait on disk until it next runs.
 
-Uploads run every five minutes in batches of up to 500. A session older than the
-**seven-day** freshness bound is refused rather than backfilled, and per-row
-refusals never fail a batch.
+Uploads are event-driven in batches of up to 500: closing a segment or a session
+wakes the uploader at once (`upload_now`), so rows land within a poll of the work
+happening, and the five-minute tick is only the ceiling for whatever nothing woke.
+A session older than the **seven-day** freshness bound is refused rather than
+backfilled, and per-row refusals never fail a batch.
 
 ### Roster: agents as identities
 

@@ -113,7 +113,12 @@ const tokenBlindRuntimes = (agents: readonly MeStatsAgent[] | undefined): string
  */
 const TODAY_EMPTY = "Nothing has been added up yet. Your hours appear here as the SIQshift app on your computers sends them in.";
 
-/// Keeps the Today panel close to live, the way the desktop's own slow tick does.
+/// Keeps the Today panel close to live. The desktop's five-minute upload timer
+/// is a floor, not a cadence: it also uploads the moment a poll closes a
+/// segment or a session (`upload_now` in monitor.rs), and a segment closes
+/// every time the app in front changes, so rows land on the server as the work
+/// happens. Slowing this tick to the timer would make the panel stale about
+/// data the server already has.
 const TODAY_REFRESH_MS = 60_000;
 
 export const App = ({ client }: AppProps) => {
@@ -324,10 +329,22 @@ export const App = ({ client }: AppProps) => {
     };
   }, [client, signedIn, preferencesReady, scopeParams, expireSession, todayTick]);
 
+  // A tab nobody is looking at asks nothing: the tick is skipped while the
+  // document is hidden, and becoming visible asks at once, so the panel is
+  // current the moment it is read rather than current all night. A tab someone
+  // is reading keeps the cadence it always had.
   useEffect(() => {
     if (!signedIn) return undefined;
-    const timer = window.setInterval(() => setTodayTick((tick) => tick + 1), TODAY_REFRESH_MS);
-    return () => window.clearInterval(timer);
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState !== "visible") return;
+      setTodayTick((tick) => tick + 1);
+    };
+    const timer = window.setInterval(refreshWhenVisible, TODAY_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [signedIn]);
 
   // The drill-down: one member's breakdown for the scope and range on screen.
