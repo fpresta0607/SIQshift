@@ -908,6 +908,9 @@ type ShiftBoardGroup = {
 /**
  * The Agents tab's one read, shared by the aggregate and by the paged rows
  * behind it, so a drawer can never list shifts its own head did not count.
+ * The cost of sharing it: opening a drawer reads the whole range again, since
+ * a shift's codebase label is computed here rather than in SQL and so cannot
+ * narrow the query to one group.
  *
  * One group per codebase label, assembled straight from the shifts: no roster
  * join, so two worktree clones of the same repo read as one codebase, which

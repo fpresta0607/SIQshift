@@ -1793,4 +1793,106 @@ mod tests {
         assert!(events.results[0].accepted);
         assert_eq!(events.results[1].reason.as_deref(), Some("stale"));
     }
+
+    /// A codebase label is a folder name, so a group key can hold the very
+    /// characters that divide a query string. What matters is the request the
+    /// drawer actually puts on the wire: one escaped `groupKey` the server
+    /// reads back whole, beside the cursor and the range the head was read
+    /// with - not a label split into extra parameters.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_a_page_with_the_group_key_escaped_on_the_wire() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = r#"{"shifts": [{"id": "s1", "source": "claude_code",
+            "owner": {"id": "u1", "name": "Alex"}, "model": "claude-opus-5",
+            "startedAt": "2026-08-06T15:00:00.000Z", "endedAt": "2026-08-06T16:00:00.000Z",
+            "agentSeconds": 3600, "commitCount": 2}], "nextCursor": null}"#;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the loopback stub binds");
+        let port = listener
+            .local_addr()
+            .expect("the stub has an address")
+            .port();
+        let served = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("the stub accepts");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4_096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.expect("the stub reads");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 STUB\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("the stub answers");
+            stream.flush().await.expect("the stub flushes");
+            String::from_utf8_lossy(&request).into_owned()
+        });
+
+        let client = ApiClient::new(
+            format!("http://127.0.0.1:{port}/auth"),
+            format!("http://127.0.0.1:{port}"),
+        )
+        .expect("the stub client builds");
+        let cursor = AgentShiftCursor {
+            started_at: "2026-08-06T14:00:00.000Z".to_string(),
+            id: "s0".to_string(),
+        };
+        let page = client
+            .agent_shift_rows(
+                "token",
+                "retire & 91 #2",
+                Some(&cursor),
+                Some("2026-08-06T00:00:00.000Z"),
+                Some("2026-08-07T00:00:00.000Z"),
+            )
+            .await
+            .expect("the page reads");
+
+        let request = served.await.expect("the stub finishes");
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("the request has a target")
+            .to_string();
+        let url =
+            Url::parse(&format!("http://127.0.0.1:{port}{target}")).expect("the target is a URL");
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+
+        assert_eq!(url.path(), "/reports/agent-shifts/rows");
+        // The label survives the trip whole, and the separators inside it are
+        // escaped rather than starting a parameter of their own.
+        assert!(!target.contains("retire & 91 #2"), "target was {target}");
+        assert_eq!(
+            pairs,
+            vec![
+                ("groupKey".to_string(), "retire & 91 #2".to_string()),
+                (
+                    "afterStartedAt".to_string(),
+                    "2026-08-06T14:00:00.000Z".to_string()
+                ),
+                ("afterId".to_string(), "s0".to_string()),
+                ("fromAt".to_string(), "2026-08-06T00:00:00.000Z".to_string()),
+                (
+                    "toExclusiveAt".to_string(),
+                    "2026-08-07T00:00:00.000Z".to_string()
+                ),
+            ]
+        );
+        assert_eq!(page.shifts.len(), 1);
+        assert_eq!(page.shifts[0].commit_count, 2);
+        assert!(page.next_cursor.is_none());
+    }
 }
