@@ -230,6 +230,29 @@ describe("maintaining the fold", () => {
     expect(rollups.rows).toEqual([]);
   });
 
+  it("reads one interval span per contiguous run of days, not one across the gaps between them", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(10, 9) });
+
+    // The catch-up shape: a desktop back from a long outage uploads one stale
+    // instant beside a recent one. Two days are folded, so two days are read -
+    // the week between them is not fetched only to be thrown away.
+    await service.refresh(subject, [at(0, 12), at(1, 12), at(8, 12)]);
+
+    const spans = (reads: ReportQuery[]): (string | undefined)[][] =>
+      reads.map((read) => [read.from?.toISOString(), read.toExclusive?.toISOString()]);
+    const expected = [
+      [day(0).toISOString(), day(2).toISOString()],
+      [day(8).toISOString(), day(9).toISOString()],
+    ];
+    expect(spans(reports.presenceReads)).toEqual(expected);
+    expect(spans(reports.agentReads)).toEqual(expected);
+    expect(rollups.rows.map((row) => row.day.toISOString()))
+      .toEqual([day(0).toISOString(), day(1).toISOString(), day(8).toISOString()]);
+  });
+
   it("folds nothing for a day that is still being written", async () => {
     const reports = new Reports();
     const rollups = new Rollups();
@@ -244,6 +267,9 @@ describe("maintaining the fold", () => {
 
 describe("planning a range against the fold", () => {
   const now = at(3, 9);
+
+  const liveBounds = (plan: { live: { from: Date | null; toExclusive: Date | null }[] }): (string | null)[][] =>
+    plan.live.map((span) => [span.from?.toISOString() ?? null, span.toExclusive?.toISOString() ?? null]);
 
   it("never spends today, however the range is bounded", () => {
     const window = rollupWindow({ start: day(0).getTime(), end: at(3, 23).getTime() }, day(0).getTime(), now);
@@ -293,9 +319,7 @@ describe("planning a range against the fold", () => {
     const range = { start: day(0).getTime(), end: day(3).getTime() };
     const plan = planRollupRange(range, rollupWindow(range, null, now), new Set());
 
-    expect(plan.live).toHaveLength(1);
-    expect(plan.live[0]?.from?.toISOString()).toBe(day(0).toISOString());
-    expect(plan.live[0]?.toExclusive?.toISOString()).toBe(day(3).toISOString());
+    expect(liveBounds(plan)).toEqual([[day(0).toISOString(), day(3).toISOString()]]);
   });
 
   it("spends nothing for a range that sits inside one unfinished day", () => {
@@ -303,7 +327,38 @@ describe("planning a range against the fold", () => {
     const plan = planRollupRange(range, rollupWindow(range, day(0).getTime(), now), new Set());
 
     expect(plan.window.from.getTime()).toBe(plan.window.toExclusive.getTime());
-    expect(plan.live).toHaveLength(1);
+    expect(liveBounds(plan)).toEqual([[at(3, 1).toISOString(), at(3, 8).toISOString()]]);
+  });
+
+  /**
+   * A range holding no whole finished day collapses the window onto today's
+   * midnight, which can sit outside the range on either side. The spans still
+   * have to be the range and nothing more: anything wider is time the caller
+   * never asked to measure, counted into the board.
+   */
+  describe("never names an instant outside the range it was given", () => {
+    it("for a client west of UTC asking for its own local Today", () => {
+      // The desktop sends local-midnight instants, so a UTC-5 client's Today is
+      // 05:00 to 05:00 - a range whose start sits inside the current UTC day.
+      const range = { start: at(3, 5).getTime(), end: at(4, 5).getTime() };
+      const plan = planRollupRange(range, rollupWindow(range, day(0).getTime(), at(3, 14)), new Set());
+
+      expect(liveBounds(plan)).toEqual([[at(3, 5).toISOString(), at(4, 5).toISOString()]]);
+    });
+
+    it("for a sub-day range inside a day that is already over", () => {
+      const range = { start: at(1, 8).getTime(), end: at(1, 17).getTime() };
+      const plan = planRollupRange(range, rollupWindow(range, day(0).getTime(), now), new Set());
+
+      expect(liveBounds(plan)).toEqual([[at(1, 8).toISOString(), at(1, 17).toISOString()]]);
+    });
+
+    it("for an open start that ends before the earliest day the table holds", () => {
+      const range = { start: null, end: at(-2, 12).getTime() };
+      const plan = planRollupRange(range, rollupWindow(range, day(0).getTime(), now), new Set());
+
+      expect(liveBounds(plan)).toEqual([[null, at(-2, 12).toISOString()]]);
+    });
   });
 });
 
@@ -315,6 +370,9 @@ describe("the board with and without the fold", () => {
     reports.presenceIntervals = [
       presence(ids.user, "Alex", at(0, 9), at(0, 17)),
       presence(ids.user, "Alex", at(1, 22), at(2, 2)),
+      // Early on the unfinished day, before any range below starts: a span that
+      // reaches back past a range's own start shows up here as extra minutes.
+      presence(ids.user, "Alex", at(3, 0, 30), at(3, 1, 30)),
       presence(ids.user, "Alex", at(3, 8), at(3, 9, 30)),
       presence(ids.otherUser, "Sam", at(0, 13), at(0, 14)),
       presence(ids.otherUser, "Sam", at(2, 9), at(2, 18)),
@@ -342,6 +400,12 @@ describe("the board with and without the fold", () => {
     ["a range on whole day boundaries", { fromAt: day(0).toISOString(), toExclusiveAt: day(3).toISOString() }],
     ["a range inside the unfinished day", { fromAt: at(3, 0).toISOString(), toExclusiveAt: at(3, 10).toISOString() }],
     ["a range that starts before anything recorded", { fromAt: at(-4, 0).toISOString(), toExclusiveAt: at(3, 9).toISOString() }],
+    // The two shapes that hold no whole finished day, so the window collapses
+    // onto a midnight outside the range. Both have recorded time just outside
+    // the range they ask for, so a span wider than the range is a wrong number
+    // on the board rather than only a wrong bound in the planner.
+    ["a sub-day range inside a day that is already over", { fromAt: at(1, 8).toISOString(), toExclusiveAt: at(1, 17).toISOString() }],
+    ["a range starting mid-day inside the unfinished day", { fromAt: at(3, 2).toISOString(), toExclusiveAt: at(3, 10).toISOString() }],
   ])("answers %s the same either way", async (_label, filters) => {
     const live = createReportService({
       reports: seed() as unknown as ReportRepository,

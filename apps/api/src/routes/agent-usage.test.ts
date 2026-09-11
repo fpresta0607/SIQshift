@@ -76,7 +76,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
   public async upsertStarted(): Promise<AgentSessionRecord> { throw new Error("not used"); }
   public async closeRunning(): Promise<AgentSessionRecord | null> { throw new Error("not used"); }
   public async insertEnded(): Promise<void> { throw new Error("not used"); }
-  public async advanceLastEvent(): Promise<boolean> { throw new Error("not used"); }
+  public async advanceLastEvent(): Promise<null> { throw new Error("not used"); }
   public async reapStale(): Promise<number> { throw new Error("not used"); }
   public async stampAgent(): Promise<void> { throw new Error("not used"); }
 }

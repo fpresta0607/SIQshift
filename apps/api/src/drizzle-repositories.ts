@@ -1270,7 +1270,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       .onConflictDoNothing({ target: agentSessionKey });
   }
 
-  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<boolean> {
+  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionRecord | null> {
     const key = and(
       eq(agentSessions.organizationId, subject.organizationId),
       eq(agentSessions.userId, subject.userId),
@@ -1288,13 +1288,13 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         updatedAt: now,
       })
       .where(and(key, eq(agentSessions.status, "running")))
-      .returning({ id: agentSessions.id });
-    if (running.length > 0) return true;
+      .returning();
+    if (running[0] !== undefined) return asAgentSessionRecord(running[0]);
     // A model-bearing heartbeat can arrive after the end that closed a short
     // session (start and end inside one upload interval), so the still-null
     // model is filled on an ended row too - without touching lastEventAt or
     // resurrecting it, and never when the heartbeat itself names no model.
-    if (model === null) return false;
+    if (model === null) return null;
     const ended = await this.db
       .update(agentSessions)
       .set({
@@ -1302,8 +1302,8 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         updatedAt: now,
       })
       .where(and(key, eq(agentSessions.status, "ended")))
-      .returning({ id: agentSessions.id });
-    return ended.length > 0;
+      .returning();
+    return ended[0] === undefined ? null : asAgentSessionRecord(ended[0]);
   }
 
   public async reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number> {
@@ -2085,6 +2085,26 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
       concurrency3PlusMs: row.concurrency3PlusMs,
       awayMs: row.awayMs,
       computedAt,
-    })));
+    })))
+      // Two refreshes of one day can interleave - the desktop posts activity
+      // and agent events concurrently, and teammates upload on their own. The
+      // loser of a plain insert would raise a unique violation and abandon the
+      // rest of its own write, leaving the day standing on numbers read before
+      // the newer rows landed. Overwriting instead lets the later fold win, and
+      // every measured column moves together so no row is left half updated.
+      .onConflictDoUpdate({
+        target: [userDailyRollups.organizationId, userDailyRollups.userId, userDailyRollups.day],
+        set: {
+          activeMs: sql`excluded.active_ms`,
+          agentMs: sql`excluded.agent_ms`,
+          concurrency0Ms: sql`excluded.concurrency_0_ms`,
+          concurrency1Ms: sql`excluded.concurrency_1_ms`,
+          concurrency2Ms: sql`excluded.concurrency_2_ms`,
+          concurrency3PlusMs: sql`excluded.concurrency_3_plus_ms`,
+          awayMs: sql`excluded.away_ms`,
+          computedAt,
+          updatedAt: computedAt,
+        },
+      });
   }
 }

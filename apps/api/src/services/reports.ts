@@ -383,6 +383,12 @@ async function measureMembersMs(
 ): Promise<Map<string, MeasuredMember>> {
   const range = queryRange(query);
   const scoped = query.projectId !== undefined || query.unassignedOnly === true;
+  // A stored day carries the whole workspace and names no project, so any
+  // narrowing it cannot restate reads live instead: the project and unassigned
+  // scopes, and equally a scope narrowed to one person - stored rows would
+  // contribute everyone's time while the live spans contributed one person's,
+  // putting other people's hours on their row.
+  const canSpendStoredDays = !scoped && query.userId === undefined;
   const openRange = { start: range.start ?? null, end: range.end ?? null };
 
   const liveSpans: LiveSpan[] = [{ from: query.from ?? null, toExclusive: query.toExclusive ?? null }];
@@ -398,7 +404,7 @@ async function measureMembersMs(
   };
 
   const rollups = dependencies.rollups;
-  if (rollups !== undefined && !scoped) {
+  if (rollups !== undefined && canSpendStoredDays) {
     const window = rollupWindow(openRange, (await rollups.earliestDay(subject))?.getTime() ?? null, now);
     const stored = window.from.getTime() >= window.toExclusive.getTime()
       ? []
@@ -502,18 +508,6 @@ function measureMember(member: MemberIntervals, query: ReportQuery): MemberMeasu
       .filter((split) => split.durationSeconds > 0)
       .sort((a, b) => b.durationSeconds - a.durationSeconds || a.source.localeCompare(b.source)),
   };
-}
-
-/** Median of the sessions' in-range seconds; null with no sessions. */
-function medianSessionSeconds(sessions: SessionIntervalRecord[], query: ReportQuery): number | null {
-  const range = { ...(query.from === undefined ? {} : { start: query.from.getTime() }), ...(query.toExclusive === undefined ? {} : { end: query.toExclusive.getTime() }) };
-  const lengths = sessions
-    .map((session) => summedSeconds([asInterval(session.startedAt, session.stoppedAt)], range))
-    .filter((seconds) => seconds > 0)
-    .sort((a, b) => a - b);
-  if (lengths.length === 0) return null;
-  const middle = Math.floor(lengths.length / 2);
-  return lengths.length % 2 === 1 ? lengths[middle]! : Math.round((lengths[middle - 1]! + lengths[middle]!) / 2);
 }
 
 const EMPTY_MEASUREMENT: MemberMeasurement = {

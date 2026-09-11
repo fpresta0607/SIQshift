@@ -640,8 +640,10 @@ export const projectPathMappings = pgTable(
 //
 // Every column here is a cache of rows that are still present. A missing row is
 // always correct - the report path falls back to reading that day live - which
-// is what lets the maintenance skip a day it cannot fold honestly: today, and
-// any day an agent session is still running through.
+// is what lets the maintenance skip today, the one day it cannot fold honestly
+// at all. A finished day a session is still running through is folded, and
+// refolded on every event that session reports, because an open session is
+// measured up to its last event and that instant keeps moving.
 export const userDailyRollups = pgTable(
   "user_daily_rollups",
   {

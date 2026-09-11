@@ -30,8 +30,11 @@
 -- Every column is a cache of rows that are still here; nothing is deleted by
 -- this migration and nothing reads it exclusively. A missing row is always
 -- correct, because the report path falls back to folding that day live. That
--- is what lets maintenance decline a day it cannot fold honestly - today, and
--- any day an agent session is still running through - by writing no row at all.
+-- is what lets maintenance decline today, the one day it cannot fold honestly
+-- at all, by writing no row for it. A finished day a session is still running
+-- through is folded, and refolded on every event that session reports: an open
+-- session is measured up to its last event, so that day's share of it moves
+-- until the session closes.
 --
 -- The two check constraints are not decoration. `day` must be midnight UTC or
 -- the row folds against the wrong boundary and every range spending it is

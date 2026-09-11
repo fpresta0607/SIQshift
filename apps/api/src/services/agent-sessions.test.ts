@@ -16,6 +16,7 @@ import type {
 } from "../repositories.js";
 import { createAgentSessionReaper, createAgentSessionService, type AgentSessionEventInput } from "./agent-sessions.js";
 import { identityRepoKey } from "./attribution.js";
+import { foldableDays } from "./rollups.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -104,19 +105,19 @@ class MemoryAgentSessions implements AgentSessionRepository {
     });
   }
 
-  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date): Promise<boolean> {
+  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date): Promise<AgentSessionRecord | null> {
     const existing = this.find(current, source, externalSessionId);
-    if (existing === undefined) return false;
+    if (existing === undefined) return null;
     if (existing.status === "running") {
       if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
       // Mirrors coalesce(model, $new): the first assignment wins.
       existing.model ??= model;
-      return true;
+      return existing;
     }
-    if (model === null) return false;
+    if (model === null) return null;
     // A model-bearing heartbeat also fills a still-null model on an ended row.
     existing.model ??= model;
-    return true;
+    return existing;
   }
 
   /** Mirrors staleness reaping: running rows older than the cutoff end at lastEventAt. */
@@ -219,6 +220,8 @@ function createService(options: {
   runningTimer?: SessionRecord | null;
   staleThresholdMs?: number;
   agents?: AgentRepository;
+  onUploaded?: (subject: AuthenticatedSubject, instants: readonly Date[]) => Promise<void>;
+  clock?: () => Date;
 } = {}) {
   const agentSessions = new MemoryAgentSessions();
   const timers = new MemoryTimers();
@@ -227,9 +230,10 @@ function createService(options: {
     agentSessions,
     pathMappings: new MemoryPathMappings(options.mappings ?? []),
     sessions: timers as SessionRepository,
-    clock: () => now,
+    clock: options.clock ?? (() => now),
     ...(options.staleThresholdMs === undefined ? {} : { staleThresholdMs: options.staleThresholdMs }),
     ...(options.agents === undefined ? {} : { agents: options.agents }),
+    ...(options.onUploaded === undefined ? {} : { onUploaded: options.onUploaded }),
   });
   return { agentSessions, service };
 }
@@ -376,6 +380,41 @@ describe("agent-session service", () => {
 
     expect(agentSessions.records).toHaveLength(1);
     expect(agentSessions.records[0]).toMatchObject({ lastEventAt: new Date("2026-08-06T13:40:00.000Z") });
+  });
+
+  /**
+   * A day is folded from the intervals stored for it, and an open session is
+   * measured up to its last event - so a day folded while a session was still
+   * running is short by whatever that session went on to claim of it, and the
+   * later events all carry later days. The fold therefore has to be told the
+   * days a session SPANS, not only the days its events landed in.
+   */
+  it("hands the fold the day a still-open session began in, on every event that moves its end", async () => {
+    const handed: Date[][] = [];
+    // A shift worked across midnight, reporting inside the staleness window
+    // throughout so it is never reaped and stays genuinely open.
+    let current = new Date("2026-08-05T23:40:00.000Z");
+    const { service } = createService({
+      clock: () => current,
+      onUploaded: async (_subject, instants) => { handed.push([...instants]); },
+    });
+    const ingestAt = async (moment: string, kind: AgentSessionEventInput["event"]): Promise<void> => {
+      current = new Date(moment);
+      await service.ingest(subject, [event({ event: kind, occurredAt: current })]);
+    };
+
+    await ingestAt("2026-08-05T23:40:00.000Z", "started");
+    // Everything below lands on 08-06 and names no instant on 08-05 at all,
+    // yet each moves the end the open session is measured to, and so what
+    // 08-05 is owed of it. A fold driven by the uploaded instants alone would
+    // leave 08-05 standing on whatever it was worth at 23:40, for good.
+    await ingestAt("2026-08-06T00:00:00.000Z", "heartbeat");
+    await ingestAt("2026-08-06T00:20:00.000Z", "heartbeat");
+    await ingestAt("2026-08-06T00:30:00.000Z", "ended");
+
+    const previousDay = new Date("2026-08-05T00:00:00.000Z").toISOString();
+    expect(handed.slice(1).map((instants) => foldableDays(instants, current).map((entry) => entry.toISOString())))
+      .toEqual([[previousDay], [previousDay], [previousDay]]);
   });
 
   it("fills a still-null model from a heartbeat that names one", async () => {

@@ -203,6 +203,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         return resolveProjectForRemote(event.repoRemote, mappings);
       };
       const folded: Date[] = [];
+      const spannedStarts: Date[] = [];
       for (const event of events) {
         const occurredAt = event.occurredAt.getTime();
         if (!Number.isFinite(occurredAt)) {
@@ -221,7 +222,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             const running = await dependencies.sessions.findRunning(subject);
             if (running !== null && running.projectId === projectId) linkedSessionId = running.id;
           }
-          await dependencies.agentSessions.upsertStarted({
+          const started = await dependencies.agentSessions.upsertStarted({
             organizationId: subject.organizationId,
             userId: subject.userId,
             source: event.source,
@@ -235,8 +236,10 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             occurredAt: event.occurredAt,
             receivedAt: now,
           });
+          spannedStarts.push(started.startedAt);
         } else if (event.event === "ended") {
           const existing = await dependencies.agentSessions.findByExternalKey(subject, event.source, event.externalSessionId);
+          if (existing !== null) spannedStarts.push(existing.startedAt);
           if (existing === null) {
             // End-before-start is tolerated: the row is stored directly as ended.
             const projectId = resolveProject(event, await loadMappings());
@@ -264,7 +267,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           // running or an already-ended row alike (the transcript reader's
           // backfill can land after the end that closed a short session); an
           // existing model is never overwritten (first assignment wins).
-          await dependencies.agentSessions.advanceLastEvent(
+          const touched = await dependencies.agentSessions.advanceLastEvent(
             subject,
             event.source,
             event.externalSessionId,
@@ -272,16 +275,19 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             event.occurredAt,
             now,
           );
+          if (touched !== null) spannedStarts.push(touched.startedAt);
         }
         results.push({ externalSessionId: event.externalSessionId, accepted: true });
         folded.push(event.occurredAt);
       }
-      // An agent session reaches back to whenever it started, so a batch that
-      // only carries an "ended" event still moves a day this batch never names.
-      // Folding the days the events landed in is therefore a floor, not a
-      // guarantee: a session spanning several days is fully folded once its own
-      // heartbeats have touched each of them, which they do every few minutes.
-      await dependencies.onUploaded?.(subject, folded);
+      // An agent session reaches back to whenever it started, and while it is
+      // still open the report path measures it up to its last event - so this
+      // batch moved every day the session spans, not only the days its own
+      // events landed in. Handing the fold each touched session's start
+      // instant alongside the event is what makes the day a long session began
+      // in converge: it is refolded on every heartbeat, and once more on the
+      // close that fixes its end.
+      await dependencies.onUploaded?.(subject, [...folded, ...spannedStarts]);
       return { results };
     },
   };

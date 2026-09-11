@@ -42,6 +42,20 @@ export function foldableDays(instants: readonly Date[], now: Date): Date[] {
   return [...days].sort((a, b) => a - b).map((day) => new Date(day));
 }
 
+/** Splits days already sorted ascending into runs of adjacent UTC days. */
+function contiguousRuns(days: readonly Date[]): Date[][] {
+  const runs: Date[][] = [];
+  for (const day of days) {
+    const current = runs[runs.length - 1];
+    if (current !== undefined && current[current.length - 1]!.getTime() + DAY_MS === day.getTime()) {
+      current.push(day);
+      continue;
+    }
+    runs.push([day]);
+  }
+  return runs;
+}
+
 export interface RollupServiceDependencies {
   reports: ReportRepository;
   rollups: UserDailyRollupRepository;
@@ -64,13 +78,16 @@ const asInterval = (start: Date, end: Date): Interval => ({ start: start.getTime
  *
  * Three rules make this safe to run from an upload handler:
  *
- * It folds whole finished UTC days only. A past day's numbers cannot move on
- * their own - an agent session that is still running only ever extends its own
- * end, which is already past that day's midnight, so the day's share of it is
- * fixed - and the freshness guard the presence read applies compares two
- * stored instants, so it never changes its mind about a row either. The only
- * thing that can change a finished day is data arriving for it late, and that
- * arrival is what calls this.
+ * It folds whole finished UTC days only, and a finished day is not therefore
+ * final. An agent session that is still running is read as ending at its last
+ * event, so every heartbeat moves the share the days it spans can claim, right
+ * up to the midnight each of them ends at. That is why the upload path hands
+ * this a running session's own start instant alongside the event, so a day a
+ * session began in is refolded every time that session reports. What cannot
+ * move on its own is a day nothing open still reaches into: the freshness
+ * guard the presence read applies compares two stored instants, so it never
+ * changes its mind about a row, and the only thing left that can change such a
+ * day is data arriving for it late - which is what calls this.
  *
  * It replaces rather than increments. The batch endpoints are idempotent on a
  * client id and will happily be re-sent the same day, and an increment would
@@ -93,16 +110,27 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // way. Writing the fold first and clearing after would leave the old
       // numbers standing over rows that no longer match them.
       await dependencies.rollups.clearDays(subject, days);
-      const from = days[0]!;
-      const toExclusive = new Date(days[days.length - 1]!.getTime() + DAY_MS);
-      const [members, presence, agents] = await Promise.all([
+      // One read per contiguous run rather than one read spanning them all: a
+      // backlog carrying one instant from ninety days ago and one from
+      // yesterday folds two days, and reading the ninety between them would be
+      // interval rows fetched only to be discarded.
+      const [members, reads] = await Promise.all([
         dependencies.reports.readMembersForOrganization(subject),
-        dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
-        dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
+        Promise.all(contiguousRuns(days).map(async (run) => {
+          const from = run[0]!;
+          const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
+          const [presence, agents] = await Promise.all([
+            dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
+            dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
+          ]);
+          return { run, presence, agents };
+        })),
       ]);
       const rows: UserDailyRollupRecord[] = [];
-      for (const day of days) {
-        rows.push(...foldDay(members, presence, agents, day));
+      for (const read of reads) {
+        for (const day of read.run) {
+          rows.push(...foldDay(members, read.presence, read.agents, day));
+        }
       }
       await dependencies.rollups.writeDays(subject, rows);
     },

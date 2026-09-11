@@ -120,15 +120,15 @@ class MemoryAgentSessions implements AgentSessionRepository {
 
   public async advanceLastEvent(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, _now: Date) {
     const existing = this.find(subject.organizationId, subject.userId, source, externalSessionId);
-    if (existing === undefined) return false;
+    if (existing === undefined) return null;
     if (existing.status === "running") {
       if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
       existing.model ??= model;
-      return true;
+      return existing;
     }
-    if (model === null) return false;
+    if (model === null) return null;
     existing.model ??= model;
-    return true;
+    return existing;
   }
 
   public async reapStale(subject: { organizationId: string; userId: string }, cutoff: Date, _now: Date) {

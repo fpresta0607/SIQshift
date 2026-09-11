@@ -50,6 +50,13 @@ export function rollupWindow(range: OpenRange, earliestStored: number | null, no
  * actually holds, and a day inside the window missing from it becomes a live
  * span rather than a silent zero. That is what makes an empty or half-built
  * table merely slower, never wrong.
+ *
+ * Every span is built out of the window's own midnights, and a window that
+ * holds no whole finished day collapses onto today's midnight, which can sit
+ * outside the range entirely. So `push` intersects each candidate with the
+ * range before it lands: no span can name an instant the caller did not ask
+ * for, whatever the window says. A null bound on either side is that side
+ * unbounded, so intersecting against it is a no-op.
  */
 export function planRollupRange(
   range: OpenRange,
@@ -59,7 +66,21 @@ export function planRollupRange(
   const windowStart = window.from.getTime();
   const windowEnd = window.toExclusive.getTime();
   const live: LiveSpan[] = [];
-  const push = (from: number | null, toExclusive: number | null): void => {
+  // An open side of a candidate is that side of the range, and a bounded one is
+  // pulled inside both of the range's bounds. Clamping both ends rather than
+  // one keeps the head and the tail ordered around the window even when the
+  // window has collapsed outside the range: they meet at one instant and merge,
+  // instead of both widening to the whole range and counting it twice.
+  const intoRange = (value: number | null, whenOpen: number | null): number | null => {
+    if (value === null) return whenOpen;
+    let clamped = value;
+    if (range.start !== null) clamped = Math.max(clamped, range.start);
+    if (range.end !== null) clamped = Math.min(clamped, range.end);
+    return clamped;
+  };
+  const push = (candidateFrom: number | null, candidateToExclusive: number | null): void => {
+    const from = intoRange(candidateFrom, range.start);
+    const toExclusive = intoRange(candidateToExclusive, range.end);
     if (from !== null && toExclusive !== null && from >= toExclusive) return;
     const previous = live[live.length - 1];
     // Touching spans merge, so a missing day beside an edge is one read.
