@@ -1,0 +1,23 @@
+# Repository policy override for the no-mistakes gate.
+#
+# This file is the gate's trust anchor for this repository: the supervisor
+# reads it from the task branch and from origin's default branch before it will
+# start a run, so a branch cannot quietly relax the policy its own run is
+# judged by. A repository without it cannot be gated at all.
+#
+# The values below match the machine-wide defaults, so this file changes no
+# behaviour today. It exists to state the policy in the repository rather than
+# only on one operator's machine.
+
+# Claude, with no reviewer fallback: a review that silently fell through to
+# another agent would not be the review the policy names.
+agent: claude
+
+# How many times a step may repair itself before it has to ask.
+# review is 0 on purpose: a review finding is a decision, not a retry.
+auto_fix:
+  review: 0
+  test: 1
+  lint: 1
+  rebase: 1
+  ci: 1
