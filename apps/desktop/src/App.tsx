@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { AccountSnapshot, SignedInAccount } from "./account.js";
@@ -561,15 +561,18 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // focus refresh keeps the tick's floor, since one bump fans out to the
   // roster, the leaderboard and the whole agent-shifts map: alt-tabbing in and
   // out would otherwise read more than the unconditional tick it replaced.
+  //
+  // Every path that moves the tick goes through this one function, so the
+  // clock it stamps answers for all of them.
   const lastStatsRefreshAt = useRef(Date.now());
+  const refreshStats = useCallback((): void => {
+    lastStatsRefreshAt.current = Date.now();
+    setStatsTick((tick) => tick + 1);
+  }, []);
   useEffect(() => {
     if (signedIn === undefined) return undefined;
     const appWindow = getCurrentWindow();
     let cancelled = false;
-    const refresh = (): void => {
-      lastStatsRefreshAt.current = Date.now();
-      setStatsTick((tick) => tick + 1);
-    };
     const canBeSeen = async (): Promise<boolean> => {
       try {
         const [shown, minimized] = await Promise.all([appWindow.isVisible(), appWindow.isMinimized()]);
@@ -579,19 +582,19 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       }
     };
     const timer = window.setInterval(() => {
-      void canBeSeen().then((seen) => { if (!cancelled && seen) refresh(); });
+      void canBeSeen().then((seen) => { if (!cancelled && seen) refreshStats(); });
     }, STATS_TICK_MS);
     const unlisten = appWindow.onFocusChanged((event: { payload: boolean }) => {
       if (cancelled || !event.payload) return;
       if (Date.now() - lastStatsRefreshAt.current < STATS_TICK_MS) return;
-      refresh();
+      refreshStats();
     });
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       void unlisten.then((stop) => stop(), () => {});
     };
-  }, [signedIn?.user.id]);
+  }, [refreshStats, signedIn?.user.id]);
 
   // One immediate refresh follows each finished stretch, delayed a beat so
   // the host's own upload of that session has landed before the refetch.
@@ -601,9 +604,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     const ended = lastSessionSince.current !== null && since === null;
     lastSessionSince.current = since;
     if (!ended) return undefined;
-    const timer = window.setTimeout(() => setStatsTick((tick) => tick + 1), 3_000);
+    const timer = window.setTimeout(refreshStats, 3_000);
     return () => window.clearTimeout(timer);
-  }, [monitorStatus?.currentSession?.since]);
+  }, [refreshStats, monitorStatus?.currentSession?.since]);
 
   // OS icons for the app rows on screen. Missing answers stay null so each
   // executable is looked up once per launch.

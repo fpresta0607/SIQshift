@@ -1350,6 +1350,40 @@ describe("the team board", () => {
     expect(meStatsMock.mock.calls.length).toBe(afterFocus);
   });
 
+  it("counts the refresh a finished stretch triggers against the next focus", async () => {
+    vi.useFakeTimers();
+    const meStatsMock = vi.fn().mockResolvedValue(meStats);
+    const monitorStatusMock = vi.fn().mockResolvedValue(recording);
+    render(<App bridge={bridgeFor({ meStats: meStatsMock, monitorStatus: monitorStatusMock })} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    hideWindow();
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    const beforeSessionEnd = meStatsMock.mock.calls.length;
+
+    // The stretch ends. That refresh is worth making even in the tray, since
+    // the host's own upload of the session has just landed.
+    monitorStatusMock.mockResolvedValue(status);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    const afterSessionEnd = meStatsMock.mock.calls.length;
+    expect(afterSessionEnd).toBeGreaterThan(beforeSessionEnd);
+
+    // Being shown seconds later asks for nothing: what is on screen was
+    // fetched by that refresh, not by whenever the window was last looked at.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+    expect(meStatsMock.mock.calls.length).toBe(afterSessionEnd);
+
+    // Back into the tray past the interval, and being shown reads again.
+    hideWindow();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(meStatsMock.mock.calls.length).toBe(afterSessionEnd);
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+    expect(meStatsMock.mock.calls.length).toBeGreaterThan(afterSessionEnd);
+  });
+
   it("joins another workspace by invite code from settings", async () => {
     const bridge = bridgeFor({
       preferencesGet: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
