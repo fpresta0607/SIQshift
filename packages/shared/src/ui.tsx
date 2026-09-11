@@ -744,9 +744,15 @@ export const ShiftGroups = ({
         if (query.current !== loadShifts) return current;
         const drawer = current.get(groupKey);
         if (drawer?.page !== page || drawer.status !== "loading") return current;
+        // A page is an offset into a list the server sorts fresh on every
+        // read, so a shift that started between two pages pushes the rows
+        // down and hands back one this drawer already shows. Appending only
+        // the ids it has not seen keeps the list a list rather than
+        // rendering the same shift twice under the same key.
+        const seen = new Set(drawer.rows.map((row) => row.id));
         const next = new Map(current);
         next.set(groupKey, {
-          rows: page === 1 ? result.shifts : [...drawer.rows, ...result.shifts],
+          rows: page === 1 ? result.shifts : [...drawer.rows, ...result.shifts.filter((shift) => !seen.has(shift.id))],
           page,
           totalRows: result.totalRows,
           status: "ready",

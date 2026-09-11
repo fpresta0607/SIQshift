@@ -328,11 +328,28 @@ describe("defaultBridge", () => {
     await expect(defaultBridge.agentShifts()).resolves.toEqual({ totalAgentSeconds: 0, hourly: [], groups: [] });
 
     // A group with a label-less repo and no decided commit keeps both nulls.
-    // An API old enough to have sent the shifts inline names no group either,
-    // and an empty key asks for no page - the same empty drawer it gave.
     invoke.mockResolvedValueOnce({ groups: [{ repo: null, shifts: [] }] });
     const bare = await defaultBridge.agentShifts();
-    expect(bare.groups[0]).toMatchObject({ groupKey: "", repo: null, nullCause: null, heldRate: null, agentSeconds: 0 });
+    expect(bare.groups[0]).toMatchObject({ repo: null, nullCause: null, heldRate: null, agentSeconds: 0 });
+
+    // An API old enough to have sent the shifts inline names no group at all.
+    // The drawer keys React and its open state on this, so every group still
+    // has to come back with its own: one shared key opens them all at once.
+    invoke.mockResolvedValueOnce({
+      groups: [
+        { repo: "siqshift" },
+        { repo: null, nullCause: "no-working-directory" },
+        { repo: null, nullCause: "unidentified-run-directory" },
+        { repo: null },
+      ],
+    });
+    const keyless = await defaultBridge.agentShifts();
+    expect(keyless.groups.map((group) => group.groupKey)).toEqual([
+      "siqshift",
+      "null:no-working-directory",
+      "null:unidentified-run-directory",
+      "null:none",
+    ]);
 
     // The cause travels when a newer API sends it, and stays null when it does
     // not - absence keeps the old wording rather than inventing an answer.

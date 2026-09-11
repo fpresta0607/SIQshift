@@ -307,7 +307,8 @@ export type AgentShiftRow = {
 ///
 /// The shifts themselves are a separate paged read keyed by `groupKey`, made
 /// when a reader opens a drawer. An API old enough to have sent them inline
-/// sends no key, and an empty key asks for nothing.
+/// sends no key, so the decoder rebuilds the server's own one from `repo` and
+/// `nullCause`: the drawer needs a distinct identity per group either way.
 export type AgentShiftsGroup = {
   groupKey: string;
   repo: string | null;
@@ -853,14 +854,20 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
     hourly: (Array.isArray(candidate.hourly) ? candidate.hourly : []).map(decodeHourlyBucket),
     groups: (Array.isArray(candidate.groups) ? candidate.groups : []).map((entry) => {
       const group = record(entry);
+      const repo = stringOrNull(group.repo);
+      // Absent on an older API decodes to null, not a crash - the exact
+      // bridge rule this decoder exists to keep.
+      const nullCause = stringOrNull(group.nullCause ?? null);
       return {
-        // Absent on an API old enough to have sent the shifts inline; an empty
-        // key asks for no page, which is the same empty drawer that API gave.
-        groupKey: string(group.groupKey ?? ""),
-        repo: stringOrNull(group.repo),
-        // Absent on an older API decodes to null, not a crash - the exact
-        // bridge rule this decoder exists to keep.
-        nullCause: stringOrNull(group.nullCause ?? null),
+        // Absent on an API old enough to have sent the shifts inline. Rebuilt
+        // exactly the way the server builds it, because the drawer keys both
+        // React and its open state on this: one shared key would collide every
+        // group onto one identity and open them all together.
+        groupKey: group.groupKey === undefined || group.groupKey === null
+          ? repo ?? `null:${nullCause ?? "none"}`
+          : string(group.groupKey),
+        repo,
+        nullCause,
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
         shiftCount: nonnegativeInteger(group.shiftCount ?? 0),
         heldRate: unitRateOrNull(group.heldRate),

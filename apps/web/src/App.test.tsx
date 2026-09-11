@@ -1811,6 +1811,50 @@ describe("the agents tab", () => {
     expect(within(group).queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
   });
 
+  it("does not repeat a shift when a newer one moves the page boundary between reads", async () => {
+    // The endpoint pages by offset into a list the server sorts fresh on every
+    // read, so a shift that starts between page one and page two pushes the
+    // rows down and page two hands back one the drawer already shows.
+    const started = {
+      id: "00000000-0000-4000-8000-000000000600",
+      source: "claude_code",
+      owner: { id: "u2", name: "Alex" },
+      model: "claude-sonnet-5",
+      startedAt: "2026-08-06T17:00:00.000Z",
+      endedAt: "2026-08-06T17:30:00.000Z",
+      agentSeconds: 1_800,
+      commitCount: 0,
+    };
+    const settled = agentShiftRowsByGroup.siqshift!;
+    let all: readonly Record<string, unknown>[] = settled;
+    const agentShiftRows = vi.fn().mockImplementation((query: string = "") => {
+      const params = new URLSearchParams(query.replace(/^\?/, ""));
+      const page = Number(params.get("page") ?? "1");
+      const serving = params.get("groupKey") === "siqshift" ? all : [];
+      all = [started, ...settled];
+      return Promise.resolve({
+        filters: {},
+        shifts: serving.slice(page - 1, page),
+        pagination: { page, pageSize: 1, totalRows: serving.length },
+      });
+    });
+    const person = await signIn(clientFor({ agentShiftRows }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    const group = panel.getAllByTestId("shift-group")[0]!;
+    await person.click(group.querySelector("summary")!);
+
+    await person.click(await within(group).findByRole("button", { name: /Show more \(1 left\)/ }));
+
+    // Page two repeated the only row page one showed. The drawer keeps one of
+    // it - two would collide on the same React key and read as two shifts.
+    await within(group).findByRole("button", { name: /Show more \(2 left\)/ });
+    expect(group.querySelectorAll(".shift-row .shift-when")).toHaveLength(1);
+  });
+
   it("says so inside the drawer when a page fails, and asks again on the next open", async () => {
     // Deliberately not a retry on a timer: a failing page that re-fetches
     // itself would hammer the endpoint this whole split exists to quieten. The
