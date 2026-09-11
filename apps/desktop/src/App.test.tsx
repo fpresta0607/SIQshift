@@ -12,7 +12,30 @@ const windowControls = vi.hoisted(() => ({
   minimize: vi.fn(),
   toggleMaximize: vi.fn(),
   close: vi.fn(),
+  // The stats tick asks the window whether anyone can see it before it reads
+  // the server. Shown and not minimized is the default so existing tests,
+  // which are all about a window someone is looking at, keep ticking.
+  isVisible: vi.fn(async () => true),
+  isMinimized: vi.fn(async () => false),
+  focusHandlers: [] as ((event: { payload: boolean }) => void)[],
+  onFocusChanged: vi.fn(async function (this: void, handler: (event: { payload: boolean }) => void) {
+    windowControls.focusHandlers.push(handler);
+    return () => {
+      windowControls.focusHandlers = windowControls.focusHandlers.filter((entry) => entry !== handler);
+    };
+  }),
 }));
+
+/** Puts the window in the tray, the state it spends most of its life in. */
+const hideWindow = (): void => {
+  windowControls.isVisible.mockResolvedValue(false);
+};
+
+/** Brings it back, the way showing it from the tray does. */
+const showWindow = (): void => {
+  windowControls.isVisible.mockResolvedValue(true);
+  for (const handler of windowControls.focusHandlers) handler({ payload: true });
+};
 
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => windowControls }));
 
@@ -227,6 +250,11 @@ const openSettings = async (person: ReturnType<typeof userEvent.setup>): Promise
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  // `clearAllMocks` forgets calls but keeps implementations, so a test that
+  // put the window in the tray would leave it there for every test after it.
+  windowControls.isVisible.mockResolvedValue(true);
+  windowControls.isMinimized.mockResolvedValue(false);
+  windowControls.focusHandlers = [];
 });
 
 describe("sign-in", () => {
@@ -1238,6 +1266,43 @@ describe("the team board", () => {
     // The next success clears it and resets the count.
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("reads nothing while it sits in the tray, and catches up when it is shown", async () => {
+    vi.useFakeTimers();
+    const meStatsMock = vi.fn().mockResolvedValue(meStats);
+    render(<App bridge={bridgeFor({ meStats: meStatsMock })} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const afterFirstRead = meStatsMock.mock.calls.length;
+
+    // Into the tray. Three ticks' worth of time passes and nobody can see the
+    // answer, so nothing is asked for.
+    hideWindow();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(meStatsMock.mock.calls.length).toBe(afterFirstRead);
+
+    // Shown again: current before it has been looked at twice.
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+    expect(meStatsMock.mock.calls.length).toBeGreaterThan(afterFirstRead);
+  });
+
+  it("skips the tick while minimized, which is not the same as hidden", async () => {
+    vi.useFakeTimers();
+    const meStatsMock = vi.fn().mockResolvedValue(meStats);
+    render(<App bridge={bridgeFor({ meStats: meStatsMock })} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const afterFirstRead = meStatsMock.mock.calls.length;
+
+    // A minimized window is still "visible" to the platform, so asking only
+    // isVisible would keep reading the server for a window on the taskbar.
+    windowControls.isMinimized.mockResolvedValue(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(meStatsMock.mock.calls.length).toBe(afterFirstRead);
   });
 
   it("joins another workspace by invite code from settings", async () => {

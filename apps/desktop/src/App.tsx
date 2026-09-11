@@ -542,10 +542,31 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   }, [bridge, signedIn?.user.id]);
 
   // Keeps the Today panel close to live: a slow tick refreshes the totals.
+  //
+  // This app spends most of its life in the tray, where the tick was still
+  // reading the roster, the intervals and every report the overlay had open,
+  // once a minute, for nobody. The window itself is the signal rather than
+  // `document.visibilityState`: a webview hidden with its window does not
+  // reliably say so, while the window knows whether it is on screen. Showing
+  // it refreshes at once, so what appears is current rather than a minute old.
   useEffect(() => {
     if (signedIn === undefined) return undefined;
-    const timer = window.setInterval(() => setStatsTick((tick) => tick + 1), 60_000);
-    return () => window.clearInterval(timer);
+    const appWindow = getCurrentWindow();
+    let cancelled = false;
+    const refresh = (): void => setStatsTick((tick) => tick + 1);
+    const tick = async (): Promise<void> => {
+      const [shown, minimized] = await Promise.all([appWindow.isVisible(), appWindow.isMinimized()]);
+      if (!cancelled && shown && !minimized) refresh();
+    };
+    const timer = window.setInterval(() => { void tick(); }, 60_000);
+    const unlisten = appWindow.onFocusChanged((event: { payload: boolean }) => {
+      if (!cancelled && event.payload) refresh();
+    });
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      void unlisten.then((stop) => stop());
+    };
   }, [signedIn?.user.id]);
 
   // One immediate refresh follows each finished stretch, delayed a beat so
