@@ -420,6 +420,50 @@ Neon → SIQshift → Auth → Configuration:
 - **Turn off "Allow localhost"** once you stop developing against it. Leaving it
   on in production widens what may redirect through your auth instance.
 
+### Keeping the project inside its plan
+
+On 2026-09-11 production stopped answering every query with `Your project has
+exceeded the data transfer quota.` Transfer was 5.54 GB against a 5 GB monthly
+allowance, and compute was 52.49 of 100 CU-hours in the same eleven days, so the
+endpoint would have paused around the 20th even if transfer had held. The
+outage looked nothing like a quota: the API answered `5xx`, the desktop app
+showed "The server is unavailable. Retrying shortly." (`api.rs`'s mapping for
+any `5xx`), and nothing anywhere said the word quota. Check the Neon usage page
+before debugging a total, uniform database failure.
+
+None of it was about how much data SIQshift stores. The whole database is about
+8 MB. It was the same small answers fetched over and over, so the two things to
+watch are how often a client asks and how many rows an answer reads:
+
+- **A poll on a short clock stops compute ever suspending.** Autosuspend needs
+  an idle window, and a client asking every minute never leaves one. Setting
+  autosuspend is worth nothing on its own while any surface still polls on a
+  timer; it starts paying only as those surfaces move to refreshing on change.
+- **A read that returns rows costs transfer even when the answer is one
+  number.** The report path in `drizzle-repositories.ts` is where that happens:
+  the interval reads exist to be folded into totals in JavaScript, so the bytes
+  Neon ships are larger than the bytes the client receives and much larger than
+  the numbers drawn. An unbounded range makes it worse, because "all time"
+  sends no bounds and reads the whole history on every refresh.
+
+Set these in the Neon console for the SIQshift project:
+
+| Setting | Value | Why |
+|---|---|---|
+| Compute autosuspend | 5 minutes | The shortest window that does not cold-start an ordinary working session |
+| History retention | The minimum the team needs | Retention is storage that grows with write volume, and buys nothing once a branch is older than any restore anyone would take |
+| Usage alert, data transfer | 3 GB | Two-thirds of the allowance, which leaves time to act before queries start failing |
+| Usage alert, compute | 60 CU-hours | The same margin against the 100 CU-hour allowance |
+
+The alerts matter most, because the failure has no warning of its own and no
+graceful degradation: every query fails at once.
+
+**Stale branches count against the project's branch limit.** `migrate-dryrun-0015`
+and `docker-verify` are both idle. A dry-run branch has served its purpose the
+moment the migration it rehearsed is applied, so delete them once nobody needs
+the schema they hold. Deleting a branch is not reversible, so confirm with the
+person who made it rather than treating idle as abandoned.
+
 ---
 
 ## 4. Desktop installers
