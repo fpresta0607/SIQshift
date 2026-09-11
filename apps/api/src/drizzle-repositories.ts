@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, lt, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql, sum } from "drizzle-orm";
 import {
   activitySegments,
   agents,
@@ -1437,6 +1437,16 @@ export class DrizzleAgentRepository implements AgentRepository {
   public async listForOrganization(subject: AuthenticatedSubject): Promise<AgentRecord[]> {
     const rows = await this.selectJoined()
       .where(eq(agents.organizationId, subject.organizationId))
+      .orderBy(asc(agents.name), asc(agents.id));
+    return rows.map(asAgentRecord);
+  }
+
+  public async listByIds(subject: AuthenticatedSubject, agentIds: readonly string[]): Promise<AgentRecord[]> {
+    // No ids is a member with no shifts in range, which is the common answer
+    // for a short window; an empty `IN ()` would be a round trip for nothing.
+    if (agentIds.length === 0) return [];
+    const rows = await this.selectJoined()
+      .where(and(eq(agents.organizationId, subject.organizationId), inArray(agents.id, [...agentIds])))
       .orderBy(asc(agents.name), asc(agents.id));
     return rows.map(asAgentRecord);
   }

@@ -157,12 +157,20 @@ function agentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
 
 /** The pay-run report's roster; empty by default so existing report/leaderboard/meStats tests are unaffected. */
 class Agents implements AgentRepository {
+  /** The ids the last `listByIds` asked for, so a test can pin what was read. */
+  public lastRequestedIds: readonly string[] | null = null;
   public constructor(public records: AgentRecord[] = []) {}
   public async upsertForKey(): Promise<{ id: string }> {
     throw new Error("not used");
   }
   public async listForOrganization(subject: AuthenticatedSubject): Promise<AgentRecord[]> {
     return this.records.filter((record) => record.organizationId === subject.organizationId);
+  }
+  public async listByIds(subject: AuthenticatedSubject, agentIds: readonly string[]): Promise<AgentRecord[]> {
+    this.lastRequestedIds = agentIds;
+    return this.records.filter(
+      (record) => record.organizationId === subject.organizationId && agentIds.includes(record.id),
+    );
   }
   public async findById(): Promise<AgentRecord | null> {
     throw new Error("not used");
@@ -971,6 +979,32 @@ describe("me/stats", () => {
 
     await expect(service.meStats(subject, { from: "2026-08-07", to: "2026-08-06" })).rejects.toMatchObject({ code: "validation_error" });
     await expect(service.meStats(subject, { from: "2025-01-01", to: "2026-01-02" })).rejects.toMatchObject({ code: "validation_error" });
+  });
+
+  it("reads only the identities its own shifts name, never the whole roster", async () => {
+    const reports = new Reports();
+    reports.agentIntervals = [
+      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: new Date("2026-08-06T14:00:00.000Z"), endedAt: new Date("2026-08-06T15:00:00.000Z") },
+    ];
+    // A roster with an identity this member never ran: reading it would be
+    // bytes off the wire on every 60-second refresh, for a row nothing renders.
+    const roster = new Agents([agentRecord({ id: ids.session }), agentRecord({ id: ids.otherAgent, source: "codex" })]);
+    const service = createReportService({ reports, reaper: silentReaper, agents: roster });
+
+    const result = await service.meStats(subject, {});
+
+    expect(roster.lastRequestedIds).toEqual([ids.session]);
+    expect(result.agents.map((row) => row.agent.id)).toEqual([ids.session]);
+  });
+
+  it("asks for nothing at all when no shift in range names an identity", async () => {
+    const roster = new Agents([agentRecord({ id: ids.session })]);
+    const service = createReportService({ reports: new Reports(), reaper: silentReaper, agents: roster });
+
+    const result = await service.meStats(subject, {});
+
+    expect(roster.lastRequestedIds).toEqual([]);
+    expect(result.agents).toEqual([]);
   });
 
   it("carries the caller's own agent rows, scoped exactly like the org-wide pay-run report", async () => {

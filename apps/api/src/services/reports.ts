@@ -727,7 +727,10 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           dependencies.shiftCommits.repoRootsByAgent(subject, query),
         ]);
       const grouped = intervalsByAgentId(agentIntervals, repoRoots);
-      const roster = await dependencies.agents.listForOrganization(subject);
+      // Only the identities this member's own shifts ran under. The whole
+      // roster was read here and then discarded down to exactly these ids,
+      // which on a 60-second refresh was the largest fixed read on the path.
+      const roster = await dependencies.agents.listByIds(subject, [...grouped.keys()]);
       const rosterById = new Map(roster.map((agent) => [agent.id, agent]));
       const countsById = new Map(commitCounts.map((row) => [row.agentId, row]));
       const usageById = new Map(usageByAgent.map((row) => [row.agentId, row]));

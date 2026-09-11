@@ -325,6 +325,7 @@ class PathMappings implements Partial<PathMappingRepository> {
 /** The pay-run report's roster; empty since these tests never seed a roster agent. */
 class Agents implements Partial<AgentRepository> {
   public async listForOrganization() { return []; }
+  public async listByIds() { return []; }
 }
 
 function session(overrides: Partial<StoredSession> = {}): StoredSession {
