@@ -13,8 +13,10 @@ vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
 const organization = { id: "00000000-0000-4000-8000-000000000001", name: "SIQstack", inviteCode: "ACDEF-GHJKM" };
 
-/// The App's own Today-card tick, which these tests drive by hand.
-const TODAY_REFRESH_MS = 60_000;
+/// The App's own Today-card tick, which these tests drive by hand. It matches
+/// the desktop's upload interval, because that is the soonest the answer can
+/// differ; a test that advanced by less would wait for a tick that never fires.
+const TODAY_REFRESH_MS = 300_000;
 
 /// Two projects, so the filing header has something to change to.
 const pickableProjects = [
@@ -557,6 +559,45 @@ describe("dashboard", () => {
       // The question did not change, so the answer on screen is still an answer.
       expect(screen.getByTestId("session-app-list")).toBeInTheDocument();
       expect(screen.queryByText("Could not load today's hours.")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks nothing while the tab is hidden, and catches up the moment it is looked at", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      const meStats = vi.fn().mockResolvedValue(memberStats);
+      await signIn(clientFor({ meStats }));
+      await screen.findByTestId("session-app-list");
+      const afterSignIn = meStats.mock.calls.length;
+
+      // Nobody is reading it, so nobody is served by the rows it would cost.
+      visibility.mockReturnValue("hidden");
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS * 3);
+      expect(meStats).toHaveBeenCalledTimes(afterSignIn);
+
+      // Read again, and the panel is current before it is looked at twice.
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(meStats).toHaveBeenCalledTimes(afterSignIn + 1));
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("still refreshes on its own clock while the tab is being looked at", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const meStats = vi.fn().mockResolvedValue(memberStats);
+      await signIn(clientFor({ meStats }));
+      await screen.findByTestId("session-app-list");
+      const afterSignIn = meStats.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS);
+      await waitFor(() => expect(meStats).toHaveBeenCalledTimes(afterSignIn + 1));
     } finally {
       vi.useRealTimers();
     }

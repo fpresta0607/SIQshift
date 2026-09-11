@@ -113,8 +113,13 @@ const tokenBlindRuntimes = (agents: readonly MeStatsAgent[] | undefined): string
  */
 const TODAY_EMPTY = "Nothing has been added up yet. Your hours appear here as the SIQshift app on your computers sends them in.";
 
-/// Keeps the Today panel close to live, the way the desktop's own slow tick does.
-const TODAY_REFRESH_MS = 60_000;
+/// Keeps the Today panel close to live. Nothing here records, so the panel can
+/// only change when a desktop upload lands, and the desktop uploads every 300 s
+/// (`UPLOAD_INTERVAL_SECONDS`). A faster tick cannot learn anything a slower one
+/// misses; it only asks the same question again, and every ask reads rows out of
+/// the database. A 60 s tick is also short enough that the compute behind it can
+/// never idle long enough to suspend.
+const TODAY_REFRESH_MS = 300_000;
 
 export const App = ({ client }: AppProps) => {
   const [booting, setBooting] = useState(true);
@@ -324,10 +329,21 @@ export const App = ({ client }: AppProps) => {
     };
   }, [client, signedIn, preferencesReady, scopeParams, expireSession, todayTick]);
 
+  // A tab nobody is looking at asks nothing: the tick is skipped while the
+  // document is hidden, and becoming visible refreshes immediately, so the
+  // panel is current the moment it is read rather than current all night.
   useEffect(() => {
     if (!signedIn) return undefined;
-    const timer = window.setInterval(() => setTodayTick((tick) => tick + 1), TODAY_REFRESH_MS);
-    return () => window.clearInterval(timer);
+    const refresh = (): void => setTodayTick((tick) => tick + 1);
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const timer = window.setInterval(refreshWhenVisible, TODAY_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [signedIn]);
 
   // The drill-down: one member's breakdown for the scope and range on screen.
