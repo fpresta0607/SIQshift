@@ -425,9 +425,10 @@ Neon → SIQshift → Auth → Configuration:
 ## 4. Neon usage quotas, and the outage that hit one
 
 On 2026-09-11 production stopped answering every query with `Your project has
-exceeded the data transfer quota.` Transfer was 5.54 GB against a 5 GB monthly
-allowance, and compute was 52.49 of 100 CU-hours in the same eleven days, so the
-endpoint would have paused around the 20th even if transfer had held. The
+exceeded the data transfer quota.` The Neon console showed 5.54 GB of transfer
+against a 5 GB allowance and 52.49 of 100 CU-hours, both for the period
+beginning 1 September, so on that trend compute was on course to exhaust before
+the period ended as well: two meters were failing at once, not one. The
 outage looked nothing like a quota from the outside: no client surface named
 the cause. The API answered `5xx` with its generic "An unexpected error
 occurred.", and the desktop app showed "The server is unavailable. Retrying
@@ -459,7 +460,7 @@ Set these in the Neon console for the SIQshift project:
 |---|---|---|
 | Compute autosuspend | 5 minutes | The shortest window that does not cold-start an ordinary working session |
 | History retention | The minimum the team needs | Retention is storage that grows with write volume, and buys nothing once a branch is older than any restore anyone would take |
-| Usage alert, data transfer | 3 GB | Two-thirds of the allowance, which leaves time to act before queries start failing |
+| Usage alert, data transfer | 3 GB | 60% of the allowance, which leaves time to act before queries start failing |
 | Usage alert, compute | 60 CU-hours | The same margin against the 100 CU-hour allowance |
 
 The alerts matter most, because the failure has no warning of its own and no
