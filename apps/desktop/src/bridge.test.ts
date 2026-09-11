@@ -333,14 +333,17 @@ describe("defaultBridge", () => {
     expect(bare.groups[0]).toMatchObject({ repo: null, nullCause: null, heldRate: null, agentSeconds: 0 });
 
     // An API old enough to have sent the shifts inline names no group at all.
-    // The drawer keys React and its open state on this, so every group still
-    // has to come back with its own: one shared key opens them all at once.
+    // The host deserializes that absence into a String, so it reaches the
+    // decoder as "" rather than as nothing - the shape the real transport can
+    // actually emit. The drawer keys React and its open state on the result, so
+    // every group still has to come back with its own: one shared key would
+    // open them all on a single click.
     invoke.mockResolvedValueOnce({
       groups: [
-        { repo: "siqshift" },
-        { repo: null, nullCause: "no-working-directory" },
-        { repo: null, nullCause: "unidentified-run-directory" },
-        { repo: null },
+        { groupKey: "", repo: "siqshift" },
+        { groupKey: "", repo: null, nullCause: "no-working-directory" },
+        { groupKey: "", repo: null, nullCause: "unidentified-run-directory" },
+        { groupKey: "", repo: null },
       ],
     });
     const keyless = await defaultBridge.agentShifts();
@@ -350,6 +353,9 @@ describe("defaultBridge", () => {
       "null:unidentified-run-directory",
       "null:none",
     ]);
+    // Two codebase-less groups are the case that collides if the key is not
+    // rebuilt: they differ only by their cause, and both arrive keyless.
+    expect(new Set(keyless.groups.slice(1, 3).map((group) => group.groupKey)).size).toBe(2);
 
     // The cause travels when a newer API sends it, and stays null when it does
     // not - absence keeps the old wording rather than inventing an answer.
@@ -363,7 +369,8 @@ describe("defaultBridge", () => {
     await expect(defaultBridge.agentShifts()).rejects.toMatchObject({ kind: "unknown" });
   });
 
-  it("reads one group's page of shifts, and an absent pagination as none", async () => {
+  it("reads one group's page of shifts, and an absent cursor as a spent group", async () => {
+    const cursor = { startedAt: "2026-08-06T15:00:00.000Z", id: "00000000-0000-4000-8000-000000000601" };
     invoke.mockResolvedValueOnce({
       shifts: [{
         id: "00000000-0000-4000-8000-000000000601",
@@ -375,26 +382,40 @@ describe("defaultBridge", () => {
         agentSeconds: 5_400,
         commitCount: 3,
       }],
-      pagination: { page: 1, pageSize: 50, totalRows: 9 },
+      nextCursor: cursor,
     });
     await expect(
-      defaultBridge.agentShiftRows("siqshift", 1, "2026-08-01T00:00:00.000Z", "2026-08-08T00:00:00.000Z"),
+      defaultBridge.agentShiftRows("siqshift", null, "2026-08-01T00:00:00.000Z", "2026-08-08T00:00:00.000Z"),
     ).resolves.toMatchObject({
       shifts: [{ model: "claude-opus-5", commitCount: 3 }],
-      totalRows: 9,
+      nextCursor: cursor,
     });
     // The same seam as `agent_shifts`: a typo in the command name or an
-    // argument key compiles fine and leaves every drawer empty.
+    // argument key compiles fine and leaves every drawer empty. The first page
+    // names no cursor, so both halves travel as undefined rather than as a
+    // half cursor the API would refuse.
     expect(invoke).toHaveBeenLastCalledWith("agent_shift_rows", {
       groupKey: "siqshift",
-      page: 1,
+      afterStartedAt: undefined,
+      afterId: undefined,
       fromAt: "2026-08-01T00:00:00.000Z",
       toExclusiveAt: "2026-08-08T00:00:00.000Z",
+    });
+
+    // A cursor travels split across the two arguments the command takes.
+    invoke.mockResolvedValueOnce({ shifts: [], nextCursor: null });
+    await expect(defaultBridge.agentShiftRows("siqshift", cursor)).resolves.toEqual({ shifts: [], nextCursor: null });
+    expect(invoke).toHaveBeenLastCalledWith("agent_shift_rows", {
+      groupKey: "siqshift",
+      afterStartedAt: cursor.startedAt,
+      afterId: cursor.id,
+      fromAt: undefined,
+      toExclusiveAt: undefined,
     });
 
     // An API that has no such endpoint answers nothing useful; an empty drawer
     // beats a tab that dies decoding one.
     invoke.mockResolvedValueOnce({});
-    await expect(defaultBridge.agentShiftRows("siqshift", 1)).resolves.toEqual({ shifts: [], totalRows: 0 });
+    await expect(defaultBridge.agentShiftRows("siqshift", null)).resolves.toEqual({ shifts: [], nextCursor: null });
   });
 });

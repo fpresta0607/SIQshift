@@ -853,20 +853,46 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
     },
 
     async agentShiftRows(subject: AuthenticatedSubject, filters: AgentShiftRowsFilters): Promise<AgentShiftRowsResponse> {
-      const { groupKey, page, pageSize, ...boardFilters } = filters;
+      const { groupKey, pageSize, afterStartedAt, afterId, ...boardFilters } = filters;
       const board = await readShiftBoard(dependencies, subject, boardFilters);
       // A key the range no longer holds is an empty page, not an error: the
       // aggregate a drawer was opened from can be a minute old, and a group
       // that has since rolled out of a moving range is a normal answer.
       const shifts = board.groups.find((group) => group.key === groupKey)?.shifts ?? [];
-      const offset = (page - 1) * pageSize;
+      // Sliced from the first shift strictly after the cursor in the group's
+      // own ordering, never from an index: a shift that started since the last
+      // page moves every index below it and an offset would serve a row the
+      // drawer already holds. No cursor asks for the head of the list.
+      const start = afterStartedAt === undefined || afterId === undefined
+        ? 0
+        : shifts.findIndex((shift) => isAfterShiftCursor(shift, afterStartedAt, afterId));
+      const page = start === -1 ? [] : shifts.slice(start, start + pageSize);
+      const last = page.at(-1);
       return {
         filters,
-        shifts: shifts.slice(offset, offset + pageSize),
-        pagination: { page, pageSize, totalRows: shifts.length },
+        shifts: page,
+        // The last row's own ordering pair while rows remain behind it. Null
+        // says the group is exhausted, which is the whole of what a drawer
+        // needs to decide whether to offer another page.
+        nextCursor: last === undefined || start + page.length >= shifts.length
+          ? null
+          : { startedAt: last.startedAt, id: last.id },
       };
     },
   };
+}
+
+/**
+ * Whether a shift falls strictly after a cursor in the board's own ordering -
+ * `startedAt` descending, `id` ascending to break an equal instant. The cursor
+ * instant is re-rendered through `Date` first, because it arrives off a query
+ * string where `...:00Z` and `...:00.000Z` name the same moment but do not
+ * compare as the same string.
+ */
+function isAfterShiftCursor(shift: AgentShiftRow, afterStartedAt: string, afterId: string): boolean {
+  const cursorStartedAt = new Date(afterStartedAt).toISOString();
+  if (shift.startedAt !== cursorStartedAt) return shift.startedAt < cursorStartedAt;
+  return shift.id > afterId;
 }
 
 /** One codebase's group mid-assembly: its shifts, and the commits its held rate is decided from. */

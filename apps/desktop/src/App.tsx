@@ -36,6 +36,7 @@ import {
   buildAppRows,
   buildMeterRows,
   recordedBasis,
+  type ShiftCursor,
   type ShiftPage,
 } from "@siqshift/shared/ui";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
@@ -521,10 +522,10 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // not `statsTick`, since a drawer that threw its rows away every minute
   // would undo the whole point of keeping them off the group heads.
   const loadShiftRows = useCallback(
-    async (groupKey: string, page: number): Promise<ShiftPage> => {
+    async (groupKey: string, after: ShiftCursor | null): Promise<ShiftPage> => {
       const bounds = rangeBounds(boardRange);
-      const result = await bridge.agentShiftRows(groupKey, page, bounds?.fromAt, bounds?.toExclusiveAt);
-      return { shifts: result.shifts, totalRows: result.totalRows };
+      const result = await bridge.agentShiftRows(groupKey, after, bounds?.fromAt, bounds?.toExclusiveAt);
+      return { shifts: result.shifts, nextCursor: result.nextCursor };
     },
     [bridge, boardRange],
   );

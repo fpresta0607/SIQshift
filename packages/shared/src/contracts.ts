@@ -921,30 +921,54 @@ export const agentShiftsResponseSchema = z
   .strict();
 
 /**
+ * Names the last shift a drawer already holds: the pair the rows are ordered
+ * by - `startedAt` descending, `id` ascending to break an equal instant. The
+ * pair is unique per shift and does not move when a newer shift appears, which
+ * an offset cannot say: the server re-sorts the group on every read, so a
+ * shift arriving at the head shifts every window below it by one and an offset
+ * page then repeats a row it already served.
+ */
+export const agentShiftCursorSchema = z
+  .object({
+    startedAt: timestampSchema,
+    id: idSchema,
+  })
+  .strict();
+
+/**
  * One group's shifts, newest first. Carries the same range, scope and person
  * the aggregate was read with, because the rows have to come from the same
  * selection the group totalled - a drawer opened against a different range
  * would list shifts its own head never counted.
+ *
+ * Paged by cursor rather than by offset. The two cursor fields are one value
+ * split across a query string: half of it names no shift at all, so the wire
+ * refuses the half rather than inventing a meaning for it.
  */
 export const agentShiftRowsFiltersSchema = agentShiftsFiltersSchema
   .extend({
     /** A `groupKey` from the aggregate response. A key no longer in range is an empty page, not an error. */
     groupKey: z.string().min(1).max(220),
-    page: z.coerce.number().int().min(1).max(10_000).default(1),
     pageSize: z.coerce.number().int().min(1).max(200).default(50),
+    /** The `nextCursor` of the page before this one; absent asks for the first. */
+    afterStartedAt: timestampSchema.optional(),
+    afterId: idSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((filters) => (filters.afterStartedAt === undefined) === (filters.afterId === undefined));
 
+/**
+ * One page of a group's shifts. `nextCursor` is the last row's ordering pair
+ * while the group holds more, and null once it is exhausted - the only thing
+ * a drawer needs to know whether to offer another page. No total travels with
+ * it: the group's count is read under a range that keeps moving, so a count
+ * taken one page ago cannot honestly say how many rows are still fetchable.
+ */
 export const agentShiftRowsResponseSchema = z
   .object({
     filters: agentShiftRowsFiltersSchema,
     shifts: z.array(agentShiftRowSchema),
-    pagination: z.object({
-      page: z.number().int().positive(),
-      pageSize: z.number().int().positive().max(200),
-      /** The group's whole shift count, so a drawer knows whether another page exists. */
-      totalRows: z.number().int().nonnegative().safe(),
-    }).strict(),
+    nextCursor: agentShiftCursorSchema.nullable(),
   })
   .strict();
 
@@ -1226,6 +1250,7 @@ export type AgentsReportResponse = z.infer<typeof agentsReportResponseSchema>;
 export type AgentShiftsFilters = z.infer<typeof agentShiftsFiltersSchema>;
 export type AgentShiftsResponse = z.infer<typeof agentShiftsResponseSchema>;
 export type AgentShiftRow = z.infer<typeof agentShiftRowSchema>;
+export type AgentShiftCursor = z.infer<typeof agentShiftCursorSchema>;
 export type AgentShiftRowsFilters = z.infer<typeof agentShiftRowsFiltersSchema>;
 export type AgentShiftRowsResponse = z.infer<typeof agentShiftRowsResponseSchema>;
 export type AgentsReportSort = z.infer<typeof agentsReportSortSchema>;

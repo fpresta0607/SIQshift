@@ -1173,14 +1173,24 @@ describe("agent shifts contracts", () => {
     })).toThrow();
   });
 
-  it("pages one group's rows, defaulting the page and refusing an unnamed group", () => {
-    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift" })).not.toThrow();
-    // The query string carries numbers as text, so the page coerces the way the
-    // report's own pagination does - and defaults rather than demanding one.
+  it("pages one group's rows from a whole cursor, refusing half of one and an unnamed group", () => {
+    // No cursor is the first page, and the query string carries the size as
+    // text, so it coerces the way the report's own pagination does.
     const defaulted = agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift" });
-    expect(defaulted.page).toBe(1);
     expect(defaulted.pageSize).toBe(50);
-    expect(agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", page: "3", pageSize: "10" }).page).toBe(3);
+    expect(defaulted.afterStartedAt).toBeUndefined();
+    expect(defaulted.afterId).toBeUndefined();
+    expect(agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", pageSize: "10" }).pageSize).toBe(10);
+    // A cursor is one value split across two query parameters. Half of it names
+    // no shift, so the wire refuses it rather than inventing a meaning.
+    const cursor = { afterStartedAt: shiftRow.startedAt, afterId: shiftRow.id };
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", ...cursor })).not.toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", afterStartedAt: cursor.afterStartedAt })).toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", afterId: cursor.afterId })).toThrow();
+    // An offset went with it: a row position is exactly what a list the server
+    // re-sorts on every read cannot keep, so a client still sending one gets a
+    // 400 rather than a page silently taken from the wrong place.
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", page: "3" })).toThrow();
     // A group has to be named: a page of "every shift in the range" is the
     // payload this endpoint exists to stop sending.
     expect(() => agentShiftRowsFiltersSchema.parse({})).toThrow();
@@ -1189,19 +1199,27 @@ describe("agent shifts contracts", () => {
     expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", sort: "hours" })).toThrow();
   });
 
-  it("answers a page of rows with the group's whole count, so a drawer knows what is left", () => {
+  it("answers a page of rows with where the next one starts, and null once the group is spent", () => {
     const rowsResponse = {
-      filters: { groupKey: "siqshift", page: 1, pageSize: 50 },
+      filters: { groupKey: "siqshift", pageSize: 50 },
       shifts: [shiftRow],
-      pagination: { page: 1, pageSize: 50, totalRows: 9 },
+      nextCursor: { startedAt: shiftRow.startedAt, id: shiftRow.id },
     };
     expect(() => agentShiftRowsResponseSchema.parse(rowsResponse)).not.toThrow();
+    // Exhausted says so with a null rather than with a count a moving range
+    // could not keep honest.
+    expect(() => agentShiftRowsResponseSchema.parse({ ...rowsResponse, nextCursor: null })).not.toThrow();
     // A key the range no longer holds is an empty page, not an error.
     expect(() => agentShiftRowsResponseSchema.parse({
       ...rowsResponse,
       shifts: [],
-      pagination: { page: 1, pageSize: 50, totalRows: 0 },
+      nextCursor: null,
     })).not.toThrow();
+    // Half a cursor on the way back is refused the same way it is on the way in.
+    expect(() => agentShiftRowsResponseSchema.parse({
+      ...rowsResponse,
+      nextCursor: { startedAt: shiftRow.startedAt },
+    })).toThrow();
     // The nested strictness that keeps a speculative field off the wire: the
     // commit subjects stay off it, because nothing renders them.
     expect(() => agentShiftRowsResponseSchema.parse({

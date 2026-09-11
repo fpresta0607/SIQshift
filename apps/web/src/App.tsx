@@ -24,6 +24,7 @@ import {
   buildAppRows,
   buildMeterRows,
   recordedBasis,
+  type ShiftCursor,
   type ShiftPage,
 } from "@siqshift/shared/ui";
 
@@ -210,9 +211,11 @@ export const App = ({ client }: AppProps) => {
   // identity changes with the query behind it, which is what tells the drawers
   // their rows have gone stale.
   const loadShiftRows = useCallback(
-    async (groupKey: string, page: number): Promise<ShiftPage> => {
-      const result = await client.agentShiftRows(withParams(shiftsQuery(), { groupKey, page: String(page) }));
-      return { shifts: result.shifts, totalRows: result.pagination.totalRows };
+    async (groupKey: string, after: ShiftCursor | null): Promise<ShiftPage> => {
+      const result = await client.agentShiftRows(withParams(shiftsQuery(), after === null
+        ? { groupKey }
+        : { groupKey, afterStartedAt: after.startedAt, afterId: after.id }));
+      return { shifts: result.shifts, nextCursor: result.nextCursor };
     },
     [client, shiftsQuery],
   );
@@ -1260,7 +1263,7 @@ type ShiftsTabProps = {
   selected: { id: string; name: string } | undefined;
   onSelect: (person: { id: string; name: string } | undefined) => void;
   selfId: string | undefined;
-  loadShifts: (groupKey: string, page: number) => Promise<ShiftPage>;
+  loadShifts: (groupKey: string, after: ShiftCursor | null) => Promise<ShiftPage>;
 };
 
 /// The Agents tab: who ran agents, and what those agents ran. A board of the

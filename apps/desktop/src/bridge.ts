@@ -307,8 +307,9 @@ export type AgentShiftRow = {
 ///
 /// The shifts themselves are a separate paged read keyed by `groupKey`, made
 /// when a reader opens a drawer. An API old enough to have sent them inline
-/// sends no key, so the decoder rebuilds the server's own one from `repo` and
-/// `nullCause`: the drawer needs a distinct identity per group either way.
+/// names no group, so the decoder rebuilds the server's own key from `repo`
+/// and `nullCause`: the drawer uses it as a React key and as its open-state
+/// identity, so one shared key would collapse every group onto one drawer.
 export type AgentShiftsGroup = {
   groupKey: string;
   repo: string | null;
@@ -326,11 +327,17 @@ export type AgentShifts = {
   groups: readonly AgentShiftsGroup[];
 };
 
-/// One page of one group's shifts, newest first, with the group's whole count
-/// so a drawer knows whether another page exists.
+/// Names the last shift a drawer holds, by the pair the rows are ordered on.
+export type AgentShiftCursor = {
+  startedAt: string;
+  id: string;
+};
+
+/// One page of one group's shifts, newest first, and where the next page
+/// starts - null once the group is exhausted.
 export type AgentShiftRows = {
   shifts: readonly AgentShiftRow[];
-  totalRows: number;
+  nextCursor: AgentShiftCursor | null;
 };
 
 
@@ -373,7 +380,7 @@ export interface TimerBridge {
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
   /// One page of one group's shifts. The bounds must be the ones the heads
   /// were read with, or the drawer lists shifts its own head never counted.
-  agentShiftRows(groupKey: string, page: number, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
+  agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
   projectUpdate(id: string, input: { name?: string; isArchived?: boolean }): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
@@ -858,14 +865,16 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
       // Absent on an older API decodes to null, not a crash - the exact
       // bridge rule this decoder exists to keep.
       const nullCause = stringOrNull(group.nullCause ?? null);
+      const rawKey = group.groupKey === undefined || group.groupKey === null ? "" : string(group.groupKey);
       return {
-        // Absent on an API old enough to have sent the shifts inline. Rebuilt
-        // exactly the way the server builds it, because the drawer keys both
-        // React and its open state on this: one shared key would collide every
-        // group onto one identity and open them all together.
-        groupKey: group.groupKey === undefined || group.groupKey === null
-          ? repo ?? `null:${nullCause ?? "none"}`
-          : string(group.groupKey),
+        // Empty on an API old enough to have sent the shifts inline - the host
+        // deserializes an absent key into a String, so it reaches here as ""
+        // rather than as nothing. An empty key does not ask for nothing: the
+        // drawer still asks a route that API does not serve and reports that
+        // those shifts could not be loaded. What it must not do is collide,
+        // since the drawer keys both React and its open state on this, so an
+        // empty key is rebuilt exactly the way the server builds it.
+        groupKey: rawKey === "" ? repo ?? `null:${nullCause ?? "none"}` : rawKey,
         repo,
         nullCause,
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
@@ -878,10 +887,12 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
 
 export const decodeAgentShiftRows = (value: unknown): AgentShiftRows => {
   const candidate = record(value);
-  const pagination = record(candidate.pagination ?? {});
+  const cursor = candidate.nextCursor;
   return {
     shifts: (Array.isArray(candidate.shifts) ? candidate.shifts : []).map(decodeAgentShiftRow),
-    totalRows: nonnegativeInteger(pagination.totalRows ?? 0),
+    nextCursor: cursor === undefined || cursor === null
+      ? null
+      : { startedAt: string(record(cursor).startedAt), id: uuid(record(cursor).id) },
   };
 };
 
@@ -934,8 +945,14 @@ export const defaultBridge: TimerBridge = {
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
-  agentShiftRows: (groupKey, page, fromAt, toExclusiveAt) =>
-    invokeDecoded("agent_shift_rows", decodeAgentShiftRows, { groupKey, page, fromAt, toExclusiveAt }),
+  agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>
+    invokeDecoded("agent_shift_rows", decodeAgentShiftRows, {
+      groupKey,
+      afterStartedAt: after?.startedAt,
+      afterId: after?.id,
+      fromAt,
+      toExclusiveAt,
+    }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),
   projectUsage: (id) => invokeDecoded("project_usage", decodeProjectUsage, { id }),

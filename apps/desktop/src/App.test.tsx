@@ -206,10 +206,19 @@ const agentShifts = {
   ],
 };
 
-/// One group's page, sliced the way the command slices it.
-const agentShiftRowsFor = (groupKey: string, page: number, pageSize = 50) => {
+/// One group's page, cut from the cursor the way the command cuts it: the
+/// first row strictly after the named one in the group's own ordering.
+const agentShiftRowsFor = (groupKey: string, after: { id: string } | null, pageSize = 50) => {
   const all = agentShiftRowsByGroup[groupKey] ?? [];
-  return { shifts: all.slice((page - 1) * pageSize, page * pageSize), totalRows: all.length };
+  const start = after === null ? 0 : all.findIndex((row) => row.id === after.id) + 1;
+  const shifts = all.slice(start, start + pageSize);
+  const last = shifts.at(-1);
+  return {
+    shifts,
+    nextCursor: last === undefined || start + shifts.length >= all.length
+      ? null
+      : { startedAt: last.startedAt, id: last.id },
+  };
 };
 
 const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
@@ -247,7 +256,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   agentShifts: vi.fn().mockImplementation(async (fromAt?: string) => (
     fromAt === undefined ? { ...agentShifts, hourly: [] } : agentShifts
   )),
-  agentShiftRows: vi.fn().mockImplementation(async (groupKey: string, page: number) => agentShiftRowsFor(groupKey, page)),
+  agentShiftRows: vi.fn().mockImplementation(async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after)),
   projectCreate: vi.fn().mockResolvedValue(newProject),
   projectUpdate: vi.fn().mockResolvedValue(project),
   projectUsage: vi.fn().mockResolvedValue({ sessionCount: 0, durationSeconds: 0, agentSessionCount: 0 }),
@@ -1614,7 +1623,7 @@ describe("the agents tab", () => {
 
   it("asks for a group's shifts only when its drawer opens, under the bounds the head was totalled with", async () => {
     const agentShiftRows = vi.fn().mockImplementation(
-      async (groupKey: string, page: number) => agentShiftRowsFor(groupKey, page),
+      async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after),
     );
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShiftRows })} />);
@@ -1629,14 +1638,15 @@ describe("the agents tab", () => {
     await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
     // Same bounds the head was totalled under, or a drawer lists shifts its own
     // head never counted.
-    expect(agentShiftRows.mock.calls[0]?.slice(0, 2)).toEqual(["siqshift", 1]);
+    // The first page names no cursor at all: there is no row to start after.
+    expect(agentShiftRows.mock.calls[0]?.slice(0, 2)).toEqual(["siqshift", null]);
     expect(agentShiftRows.mock.calls[0]?.[2]).toEqual(expect.any(String));
     expect(agentShiftRows.mock.calls[0]?.[3]).toEqual(expect.any(String));
   });
 
   it("pages a long drawer rather than pulling the whole group at once", async () => {
     const agentShiftRows = vi.fn().mockImplementation(
-      async (groupKey: string, page: number) => agentShiftRowsFor(groupKey, page, 1),
+      async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after, 1),
     );
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShiftRows })} />);
@@ -1645,13 +1655,18 @@ describe("the agents tab", () => {
     const group = within(panel).getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
 
-    // One row of two, and the drawer says how many are still behind it.
-    await person.click(await within(group).findByRole("button", { name: /Show more \(1 left\)/ }));
+    // One row of two, and the drawer offers the rest.
+    await person.click(await within(group).findByRole("button", { name: "Show more" }));
 
     await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
-    expect(agentShiftRows.mock.calls.at(-1)?.[1]).toBe(2);
+    // The second page starts after the row the first one ended on, named by the
+    // pair the rows are ordered by rather than by a position in the list.
+    expect(agentShiftRows.mock.calls.at(-1)?.[1]).toEqual({
+      startedAt: "2026-08-06T15:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000601",
+    });
     // Exhausted, so the control retires rather than asking for an empty page.
-    expect(within(group).queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+    expect(within(group).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
 
   it("says so inside the drawer when a page fails, and leaves the head alone", async () => {

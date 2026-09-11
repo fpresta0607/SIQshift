@@ -645,10 +645,21 @@ export type ShiftGroup = {
   heldRate: number | null;
 };
 
-/** One page of a group's shifts, plus how many the group holds in all. */
+/**
+ * Names the last shift a drawer holds, by the pair the rows are ordered on:
+ * newest `startedAt` first, `id` breaking an equal instant. A cursor survives
+ * a shift arriving at the head of the list, which is the whole reason the
+ * drawer pages on one rather than on a row offset.
+ */
+export type ShiftCursor = {
+  startedAt: string;
+  id: string;
+};
+
+/** One page of a group's shifts, and where the next one starts - null once the group is exhausted. */
 export type ShiftPage = {
   shifts: readonly ShiftRow[];
-  totalRows: number;
+  nextCursor: ShiftCursor | null;
 };
 
 /**
@@ -677,11 +688,11 @@ export const shiftClock = (startedAt: string): string => {
     : at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 };
 
-/** One drawer's rows so far, and which page it last asked for. */
+/** One drawer's rows so far, the cursor it last asked from, and where the next page starts. */
 type ShiftDrawer = {
   rows: readonly ShiftRow[];
-  page: number;
-  totalRows: number;
+  asked: ShiftCursor | null;
+  nextCursor: ShiftCursor | null;
   status: "loading" | "ready" | "failed";
 };
 
@@ -715,7 +726,7 @@ export const ShiftGroups = ({
 }: {
   groups: readonly ShiftGroup[];
   totalAgentSeconds: number;
-  loadShifts: (groupKey: string, page: number) => Promise<ShiftPage>;
+  loadShifts: (groupKey: string, after: ShiftCursor | null) => Promise<ShiftPage>;
 }) => {
   const [openKeys, setOpenKeys] = useState<ReadonlySet<string>>(new Set());
   const [drawers, setDrawers] = useState<ReadonlyMap<string, ShiftDrawer>>(new Map());
@@ -728,33 +739,30 @@ export const ShiftGroups = ({
     setDrawers(new Map());
   }, [loadShifts]);
 
-  const fetchPage = useCallback((groupKey: string, page: number): void => {
+  const fetchPage = useCallback((groupKey: string, after: ShiftCursor | null): void => {
     setDrawers((current) => {
       const next = new Map(current);
       next.set(groupKey, {
-        rows: page === 1 ? [] : current.get(groupKey)?.rows ?? [],
-        page,
-        totalRows: current.get(groupKey)?.totalRows ?? 0,
+        rows: after === null ? [] : current.get(groupKey)?.rows ?? [],
+        asked: after,
+        nextCursor: null,
         status: "loading",
       });
       return next;
     });
-    loadShifts(groupKey, page).then(
+    loadShifts(groupKey, after).then(
       (result) => setDrawers((current) => {
         if (query.current !== loadShifts) return current;
         const drawer = current.get(groupKey);
-        if (drawer?.page !== page || drawer.status !== "loading") return current;
-        // A page is an offset into a list the server sorts fresh on every
-        // read, so a shift that started between two pages pushes the rows
-        // down and hands back one this drawer already shows. Appending only
-        // the ids it has not seen keeps the list a list rather than
-        // rendering the same shift twice under the same key.
-        const seen = new Set(drawer.rows.map((row) => row.id));
+        if (drawer?.asked !== after || drawer.status !== "loading") return current;
         const next = new Map(current);
         next.set(groupKey, {
-          rows: page === 1 ? result.shifts : [...drawer.rows, ...result.shifts.filter((shift) => !seen.has(shift.id))],
-          page,
-          totalRows: result.totalRows,
+          // Appended whole: a cursor names a shift, not a position, so a page
+          // read after a newer shift arrived still starts below the last row
+          // this drawer holds and cannot hand one of them back.
+          rows: after === null ? result.shifts : [...drawer.rows, ...result.shifts],
+          asked: after,
+          nextCursor: result.nextCursor,
           status: "ready",
         });
         return next;
@@ -764,7 +772,7 @@ export const ShiftGroups = ({
       () => setDrawers((current) => {
         if (query.current !== loadShifts) return current;
         const drawer = current.get(groupKey);
-        if (drawer?.page !== page || drawer.status !== "loading") return current;
+        if (drawer?.asked !== after || drawer.status !== "loading") return current;
         const next = new Map(current);
         next.set(groupKey, { ...drawer, status: "failed" });
         return next;
@@ -778,7 +786,7 @@ export const ShiftGroups = ({
   useEffect(() => {
     for (const groupKey of openKeys) {
       if (drawers.has(groupKey)) continue;
-      fetchPage(groupKey, 1);
+      fetchPage(groupKey, null);
     }
   }, [openKeys, drawers, fetchPage]);
 
@@ -809,6 +817,7 @@ export const ShiftGroups = ({
       {groups.map((group) => {
         const drawer = drawers.get(group.groupKey);
         const shown = drawer?.rows ?? [];
+        const more = drawer?.status === "ready" ? drawer.nextCursor : null;
         return (
           <details
             className="shift-group"
@@ -850,10 +859,10 @@ export const ShiftGroups = ({
               {drawer?.status === "failed" && (
                 <li className="shift-row"><span className="shift-facts" role="alert">These shifts could not be loaded.</span></li>
               )}
-              {drawer?.status === "ready" && shown.length < drawer.totalRows && (
+              {more !== null && (
                 <li className="shift-row">
-                  <button type="button" className="shift-more" onClick={() => fetchPage(group.groupKey, drawer.page + 1)}>
-                    Show more ({drawer.totalRows - shown.length} left)
+                  <button type="button" className="shift-more" onClick={() => fetchPage(group.groupKey, more)}>
+                    Show more
                   </button>
                 </li>
               )}

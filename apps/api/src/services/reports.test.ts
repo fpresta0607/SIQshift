@@ -1397,7 +1397,7 @@ describe("agent shifts", () => {
     groupKey: string,
     filters: AgentShiftsFilters = {},
   ): Promise<readonly { id: string; commitCount: number }[]> => (
-    await service.agentShiftRows(subject, { ...filters, groupKey, page: 1, pageSize: 50 })
+    await service.agentShiftRows(subject, { ...filters, groupKey, pageSize: 50 })
   ).shifts;
 
   it("groups shifts by codebase, so two worktree clones of one repo read as one group", async () => {
@@ -1426,10 +1426,11 @@ describe("agent shifts", () => {
     // The heads carry no rows at all; the shifts are a second read, keyed by
     // the group the first one named. Newest first, each carrying its own facts.
     expect(result.groups[0]).not.toHaveProperty("shifts");
-    const siqshift = await service.agentShiftRows(subject, { groupKey: result.groups[0]!.groupKey, page: 1, pageSize: 50 });
+    const siqshift = await service.agentShiftRows(subject, { groupKey: result.groups[0]!.groupKey, pageSize: 50 });
     expect(siqshift.shifts.map((shift) => shift.id)).toEqual(["s2", "s1"]);
     expect(siqshift.shifts[1]).toMatchObject({ source: "claude_code", model: "claude-opus-5", owner: { name: "Alex" }, agentSeconds: 3_600 });
-    expect(siqshift.pagination).toEqual({ page: 1, pageSize: 50, totalRows: 2 });
+    // The group fits in one page, so there is nowhere further to go.
+    expect(siqshift.nextCursor).toBeNull();
   });
 
   it("pages one group's rows, and answers an empty page for a group the range no longer holds", async () => {
@@ -1449,21 +1450,65 @@ describe("agent shifts", () => {
     }));
     const service = createReportService({ reports, reaper: silentReaper });
 
-    const first = await service.agentShiftRows(subject, { groupKey: "siqshift", page: 1, pageSize: 2 });
-    const second = await service.agentShiftRows(subject, { groupKey: "siqshift", page: 2, pageSize: 2 });
+    const first = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 2 });
+    const second = await service.agentShiftRows(subject, {
+      groupKey: "siqshift",
+      pageSize: 2,
+      afterStartedAt: first.nextCursor!.startedAt,
+      afterId: first.nextCursor!.id,
+    });
 
-    // Newest first, split across the pages without repeating or dropping one,
-    // and every page states the whole count so a drawer knows what is left.
+    // Newest first, split across the pages without repeating or dropping one.
+    // The cursor names the last row served rather than a count, and goes null
+    // once the group is spent, which is what retires the drawer's control.
     expect(first.shifts.map((shift) => shift.id)).toEqual(["s14", "s12"]);
+    expect(first.nextCursor).toEqual({ startedAt: at(12).toISOString(), id: "s12" });
     expect(second.shifts.map((shift) => shift.id)).toEqual(["s10"]);
-    expect(first.pagination.totalRows).toBe(3);
-    expect(second.pagination.totalRows).toBe(3);
+    expect(second.nextCursor).toBeNull();
 
     // A drawer opened from an aggregate a minute old can name a group that has
     // since rolled out of a moving range. That is a normal answer, not an error.
-    const gone = await service.agentShiftRows(subject, { groupKey: "quartermaster", page: 1, pageSize: 50 });
+    const gone = await service.agentShiftRows(subject, { groupKey: "quartermaster", pageSize: 50 });
     expect(gone.shifts).toEqual([]);
-    expect(gone.pagination.totalRows).toBe(0);
+    expect(gone.nextCursor).toBeNull();
+  });
+
+  it("keeps a cursor page honest when a newer shift lands between two reads", async () => {
+    // The case an offset cannot survive: the group is re-sorted on every read,
+    // so a shift arriving at the head moves every row below it down by one and
+    // an offset page serves a row the drawer already holds while dropping one
+    // it never saw.
+    const interval = (hour: number) => ({
+      sessionId: `s${hour}`,
+      user: { id: ids.user, name: "Alex" },
+      source: "claude_code" as const,
+      model: null,
+      cwd: "C:/dev/siqshift",
+      projectId: ids.project,
+      agentId: ids.session,
+      agentRepoRoot: null,
+      agentRepoKey: null,
+      startedAt: at(hour),
+      endedAt: at(hour, 30),
+    });
+    const reports = new Reports();
+    reports.agentIntervals = [10, 11, 12, 13].map(interval);
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const first = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 2 });
+    // A newer shift starts while the reader is looking at page one.
+    reports.agentIntervals = [...reports.agentIntervals, interval(14)];
+    const second = await service.agentShiftRows(subject, {
+      groupKey: "siqshift",
+      pageSize: 2,
+      afterStartedAt: first.nextCursor!.startedAt,
+      afterId: first.nextCursor!.id,
+    });
+
+    const shown = [...first.shifts, ...second.shifts].map((shift) => shift.id);
+    expect(shown).toEqual(["s13", "s12", "s11", "s10"]);
+    expect(new Set(shown).size).toBe(shown.length);
+    expect(second.nextCursor).toBeNull();
   });
 
   it("folds the hourly series server-side, and declines it over an unbounded range", async () => {

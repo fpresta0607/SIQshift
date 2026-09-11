@@ -150,15 +150,21 @@ const agentShiftsResponse = {
   ],
 };
 
-/// One group's page, sliced the way the endpoint slices it.
+/// One group's page, cut from the cursor the way the endpoint cuts it: the
+/// first row strictly after the named one in the group's own ordering.
 const agentShiftRowsFor = (query = "", pageSize = 50) => {
   const params = new URLSearchParams(query.replace(/^\?/, ""));
   const all = agentShiftRowsByGroup[params.get("groupKey") ?? ""] ?? [];
-  const page = Number(params.get("page") ?? "1");
+  const afterId = params.get("afterId");
+  const start = afterId === null ? 0 : all.findIndex((row) => row.id === afterId) + 1;
+  const shifts = all.slice(start, start + pageSize);
+  const last = shifts.at(-1);
   return {
     filters: {},
-    shifts: all.slice((page - 1) * pageSize, page * pageSize),
-    pagination: { page, pageSize, totalRows: all.length },
+    shifts,
+    nextCursor: last === undefined || start + shifts.length >= all.length
+      ? null
+      : { startedAt: last.startedAt, id: last.id },
   };
 };
 
@@ -1784,7 +1790,9 @@ describe("the agents tab", () => {
     await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
     const asked = new URLSearchParams((agentShiftRows.mock.calls[0]?.[0] as string).replace(/^\?/, ""));
     expect(asked.get("groupKey")).toBe("siqshift");
-    expect(asked.get("page")).toBe("1");
+    // The first page names no cursor at all: there is no row to start after.
+    expect(asked.has("afterStartedAt")).toBe(false);
+    expect(asked.has("afterId")).toBe(false);
     // Same selection the head was totalled under, or a drawer lists shifts its
     // own head never counted.
     expect(asked.has("fromAt")).toBe(true);
@@ -1802,19 +1810,24 @@ describe("the agents tab", () => {
     const group = panel.getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
 
-    // One row of two, and the drawer says how many are still behind it.
-    await person.click(await within(group).findByRole("button", { name: /Show more \(1 left\)/ }));
+    // One row of two, and the drawer offers the rest.
+    await person.click(await within(group).findByRole("button", { name: "Show more" }));
 
     await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
-    expect(new URLSearchParams((agentShiftRows.mock.calls.at(-1)?.[0] as string).replace(/^\?/, "")).get("page")).toBe("2");
+    const asked = new URLSearchParams((agentShiftRows.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
+    // The second page starts after the row the first one ended on, named by
+    // the pair the rows are ordered by rather than by a position in the list.
+    expect(asked.get("afterId")).toBe("00000000-0000-4000-8000-000000000601");
+    expect(asked.get("afterStartedAt")).toBe("2026-08-06T15:00:00.000Z");
     // Exhausted, so the control retires rather than asking for an empty page.
-    expect(within(group).queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+    expect(within(group).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
 
-  it("does not repeat a shift when a newer one moves the page boundary between reads", async () => {
-    // The endpoint pages by offset into a list the server sorts fresh on every
-    // read, so a shift that starts between page one and page two pushes the
-    // rows down and page two hands back one the drawer already shows.
+  it("neither repeats nor drops a shift when a newer one lands between two page reads", async () => {
+    // The case an offset cannot survive: the server re-sorts the group on every
+    // read, so a shift arriving at the head moves every row below it down by
+    // one. A cursor names a shift rather than a position, so the second page
+    // still starts below the row the drawer already holds.
     const started = {
       id: "00000000-0000-4000-8000-000000000600",
       source: "claude_code",
@@ -1829,13 +1842,18 @@ describe("the agents tab", () => {
     let all: readonly Record<string, unknown>[] = settled;
     const agentShiftRows = vi.fn().mockImplementation((query: string = "") => {
       const params = new URLSearchParams(query.replace(/^\?/, ""));
-      const page = Number(params.get("page") ?? "1");
       const serving = params.get("groupKey") === "siqshift" ? all : [];
       all = [started, ...settled];
+      const afterId = params.get("afterId");
+      const start = afterId === null ? 0 : serving.findIndex((row) => row.id === afterId) + 1;
+      const shifts = serving.slice(start, start + 1);
+      const last = shifts.at(-1);
       return Promise.resolve({
         filters: {},
-        shifts: serving.slice(page - 1, page),
-        pagination: { page, pageSize: 1, totalRows: serving.length },
+        shifts,
+        nextCursor: last === undefined || start + shifts.length >= serving.length
+          ? null
+          : { startedAt: last.startedAt, id: last.id },
       });
     });
     const person = await signIn(clientFor({ agentShiftRows }));
@@ -1847,12 +1865,17 @@ describe("the agents tab", () => {
     const group = panel.getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
 
-    await person.click(await within(group).findByRole("button", { name: /Show more \(1 left\)/ }));
+    await person.click(await within(group).findByRole("button", { name: "Show more" }));
 
-    // Page two repeated the only row page one showed. The drawer keeps one of
-    // it - two would collide on the same React key and read as two shifts.
-    await within(group).findByRole("button", { name: /Show more \(2 left\)/ });
-    expect(group.querySelectorAll(".shift-row .shift-when")).toHaveLength(1);
+    // Two distinct shifts in order - an offset would have served the first one
+    // twice and never reached the second. The newer arrival is above both, so
+    // paging down cannot reach it; reopening the drawer is what shows it.
+    await waitFor(() => expect(group.querySelectorAll(".shift-row .shift-when")).toHaveLength(2));
+    expect([...group.querySelectorAll(".shift-facts")].map((row) => row.textContent))
+      .toEqual(["Claude Code · Alex · claude-opus-5 · 2 commits", "Claude Code · Alex"]);
+    // Spent, so the control retires rather than sitting there asking again for
+    // a row the drawer already holds.
+    expect(within(group).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
 
   it("says so inside the drawer when a page fails, and asks again on the next open", async () => {

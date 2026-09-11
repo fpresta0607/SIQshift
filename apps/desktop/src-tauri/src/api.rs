@@ -226,7 +226,10 @@ pub struct AgentShifts {
 ///
 /// The shifts themselves are a separate paged read keyed by `group_key`, made
 /// when a reader opens a drawer. An API old enough to have sent them inline
-/// simply sends no `group_key`, and the drawer stays empty rather than dying.
+/// sends no `group_key`, which lands here as an empty string; the webview
+/// rebuilds the server's own key from `repo` and `null_cause` so the drawers
+/// keep distinct identities, and reports that it could not load the shifts
+/// from a route that API does not serve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentShiftsGroup {
@@ -264,26 +267,27 @@ pub struct AgentShiftRow {
     pub commit_count: u32,
 }
 
-/// One page of one group's shifts, newest first, with the group's whole count
-/// so a drawer knows whether another page exists.
+/// One page of one group's shifts, newest first, and where the next page
+/// starts. `next_cursor` is `None` once the group is exhausted, which is the
+/// whole of what a drawer needs to decide whether to offer another page.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentShiftRows {
     #[serde(default)]
     pub shifts: Vec<AgentShiftRow>,
     #[serde(default)]
-    pub pagination: AgentShiftRowsPagination,
+    pub next_cursor: Option<AgentShiftCursor>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Names the last shift a page returned, by the pair the rows are ordered on:
+/// `started_at` descending, `id` ascending to break an equal instant. A shift
+/// arriving at the head of the group does not move it, which is why the drawer
+/// pages on this rather than on a row offset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentShiftRowsPagination {
-    #[serde(default)]
-    pub page: u32,
-    #[serde(default)]
-    pub page_size: u32,
-    #[serde(default)]
-    pub total_rows: u64,
+pub struct AgentShiftCursor {
+    pub started_at: String,
+    pub id: String,
 }
 
 #[derive(Deserialize)]
@@ -903,19 +907,25 @@ impl ApiClient {
             .await
     }
 
-    /// One page of one group's shifts. The bounds are the ones the group heads
-    /// were read with, because a drawer that asked under a different range
-    /// would list shifts its own head never counted.
+    /// One page of one group's shifts, from the cursor the page before it
+    /// returned. The bounds are the ones the group heads were read with,
+    /// because a drawer that asked under a different range would list shifts
+    /// its own head never counted.
     pub async fn agent_shift_rows(
         &self,
         access_token: &str,
         group_key: &str,
-        page: u32,
+        after: Option<&AgentShiftCursor>,
         from_at: Option<&str>,
         to_exclusive_at: Option<&str>,
     ) -> ApiResult<AgentShiftRows> {
-        let page = page.to_string();
-        let mut pairs = vec![("groupKey", group_key), ("page", page.as_str())];
+        let mut pairs = vec![("groupKey", group_key)];
+        // Both halves of the cursor or neither: the filters schema refuses a
+        // half cursor rather than guessing what it names.
+        if let Some(after) = after {
+            pairs.push(("afterStartedAt", after.started_at.as_str()));
+            pairs.push(("afterId", after.id.as_str()));
+        }
         if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
             pairs.push(("fromAt", from_at));
             pairs.push(("toExclusiveAt", to_exclusive_at));
@@ -1370,12 +1380,16 @@ mod tests {
 
         // An API old enough to have sent the shifts inline names no group and
         // no series. Both degrade to empty, so an installed build that predates
-        // the split shows heads with quiet drawers rather than dying on decode.
+        // the split shows heads rather than dying on decode. The absent key
+        // lands here as an empty string and reaches the webview as one, which
+        // is why the decoder there rebuilds it rather than trusting it.
         let bare: AgentShifts =
             serde_json::from_str(r#"{"groups": [{"repo": null, "shifts": [{"id": "s1"}]}]}"#)
                 .expect("a bare group decodes");
         assert_eq!(bare.groups[0].held_rate, None);
         assert_eq!(bare.groups[0].group_key, "");
+        let wire = serde_json::to_string(&bare).expect("serializes");
+        assert!(wire.contains("\"groupKey\":\"\""));
     }
 
     /// One group's page decodes the same tolerant way, and an endpoint that is
@@ -1384,7 +1398,7 @@ mod tests {
     fn reads_a_page_of_one_groups_shifts() {
         let rows: AgentShiftRows = serde_json::from_str(
             r#"{
-                "filters": {"groupKey": "siqshift", "page": 1, "pageSize": 50},
+                "filters": {"groupKey": "siqshift", "pageSize": 50},
                 "shifts": [{
                     "id": "s1",
                     "source": "claude_code",
@@ -1396,17 +1410,28 @@ mod tests {
                     "commitCount": 2,
                     "aFieldFromTheFuture": true
                 }],
-                "pagination": {"page": 1, "pageSize": 50, "totalRows": 9}
+                "nextCursor": {"startedAt": "2026-08-06T15:00:00.000Z", "id": "s1"}
             }"#,
         )
         .expect("a page decodes");
         assert_eq!(rows.shifts[0].commit_count, 2);
-        // The whole count is what tells a drawer another page exists.
-        assert_eq!(rows.pagination.total_rows, 9);
+        // The cursor is what tells a drawer another page exists, and it names
+        // the last row rather than a position a re-sorted list would move.
+        assert_eq!(
+            rows.next_cursor,
+            Some(AgentShiftCursor {
+                started_at: "2026-08-06T15:00:00.000Z".to_string(),
+                id: "s1".to_string(),
+            })
+        );
 
+        // Spent, and absent, both read as nowhere further to go.
+        let spent: AgentShiftRows = serde_json::from_str(r#"{"shifts": [], "nextCursor": null}"#)
+            .expect("a spent page decodes");
+        assert_eq!(spent.next_cursor, None);
         let empty: AgentShiftRows = serde_json::from_str("{}").expect("absence decodes");
         assert!(empty.shifts.is_empty());
-        assert_eq!(empty.pagination.total_rows, 0);
+        assert_eq!(empty.next_cursor, None);
     }
 
     #[test]
