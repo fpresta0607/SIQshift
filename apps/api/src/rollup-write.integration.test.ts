@@ -14,16 +14,19 @@ import { DrizzleUserDailyRollupRepository } from "./drizzle-repositories.js";
 const databaseUrl = process.env.TEST_DATABASE_URL || undefined;
 const integration = databaseUrl ? describe : describe.skip;
 
-// A refresh clears the days it is about to fold, reads, then writes - and two
-// refreshes of one day interleave routinely, because the desktop posts activity
-// and agent events concurrently and teammates upload on their own. When they
-// do, the second write meets rows the first already inserted under
-// user_daily_rollups_organization_user_day_unique. A plain insert raises there,
-// and the caller swallows the error, leaving the day standing on the older
-// fold's numbers with nothing scheduled to correct it - exactly the stale-cache
-// outcome the clear-before-fold ordering exists to rule out. Only a real
-// PostgreSQL server can show which of those two happens, so this writes the
-// same day twice against one.
+// A refresh clears the days it is about to fold, reads, then writes - three
+// separate steps - and two refreshes of one day interleave routinely, because
+// the desktop posts activity and agent events concurrently and teammates upload
+// on their own. So the second write meets rows the first already inserted under
+// user_daily_rollups_organization_user_day_unique, and which of them arrives
+// last says nothing about which of them saw more.
+//
+// Both halves of that are SQL: the conflict resolution and the `computed_at`
+// comparison that decides it. A plain insert raised instead, and the caller
+// swallows the error, leaving the day on the older fold's numbers with nothing
+// scheduled to correct it - the stale-cache outcome the clear-before-fold
+// ordering exists to rule out. So this runs the real writes against a real
+// PostgreSQL server, in both arrival orders.
 integration("daily rollup writes", () => {
   let disposable: DisposableTestDatabase | undefined;
   let database = undefined as unknown as DatabaseConnection;
@@ -33,17 +36,27 @@ integration("daily rollup writes", () => {
   const day = new Date("2026-08-05T00:00:00.000Z");
   let repository: DrizzleUserDailyRollupRepository;
 
-  const fold = (activeMs: number, agentMs: number) => ({
+  /** One member's day, as a refresh that read its intervals at `computedAt` folded it. */
+  const fold = (activeMs: number, computedAt: string) => ({
     userId,
     day,
     activeMs,
-    agentMs,
+    agentMs: 0,
     concurrency0Ms: activeMs,
     concurrency1Ms: 0,
     concurrency2Ms: 0,
     concurrency3PlusMs: 0,
-    awayMs: agentMs,
+    awayMs: 0,
+    computedAt: new Date(computedAt),
   });
+
+  const storedActiveMs = async (): Promise<number | undefined> => {
+    const rows = await repository.readForRange(subject, day, new Date(day.getTime() + 24 * 60 * 60 * 1_000));
+    return rows[0]?.activeMs;
+  };
+
+  const earlierRead = "2026-08-06T09:00:00.000Z";
+  const laterRead = "2026-08-06T09:00:02.000Z";
 
   beforeAll(async () => {
     if (!databaseUrl) return;
@@ -66,15 +79,30 @@ integration("daily rollup writes", () => {
     await disposable.cleanup();
   });
 
-  it("lets the later fold of a day overwrite the earlier one rather than failing on it", async () => {
-    await repository.writeDays(subject, [fold(3_600_000, 600_000)]);
+  it("keeps the fold that read last, whichever of the two writes lands last", async () => {
+    // Arrival order matching read order: the later read simply wins.
+    await repository.writeDays(subject, [fold(3_600_000, earlierRead)]);
+    await expect(repository.writeDays(subject, [fold(7_200_000, laterRead)])).resolves.toBeUndefined();
+    expect(await storedActiveMs()).toBe(7_200_000);
 
-    // The interleaved refresh: it never saw a row to clear, and folds the same
-    // day from data the first one was too early to read.
-    await expect(repository.writeDays(subject, [fold(7_200_000, 900_000)])).resolves.toBeUndefined();
+    // And the interleaving the ordering exists for: A cleared and read, B
+    // cleared and read after A did, B wrote, and only now does A's write land.
+    // A never saw the rows B did, so it must not stand over them.
+    await repository.clearDays(subject, [day]);
+    await repository.writeDays(subject, [fold(7_200_000, laterRead)]);
+    await expect(repository.writeDays(subject, [fold(3_600_000, earlierRead)])).resolves.toBeUndefined();
 
-    const stored = await repository.readForRange(subject, day, new Date(day.getTime() + 24 * 60 * 60 * 1_000));
-    expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ activeMs: 7_200_000, agentMs: 900_000, concurrency0Ms: 7_200_000, awayMs: 900_000 });
+    expect(await storedActiveMs()).toBe(7_200_000);
+  });
+
+  it("folds a day again when the same refresh re-reads it later", async () => {
+    await repository.clearDays(subject, [day]);
+    await repository.writeDays(subject, [fold(3_600_000, earlierRead)]);
+
+    // Not contention: the ordinary case of a day being refolded because new
+    // evidence arrived for it. A later read always replaces an earlier one.
+    await repository.writeDays(subject, [fold(1_800_000, laterRead)]);
+
+    expect(await storedActiveMs()).toBe(1_800_000);
   });
 });

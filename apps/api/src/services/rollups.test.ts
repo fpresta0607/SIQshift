@@ -18,7 +18,8 @@ import type {
 } from "../repositories.js";
 import { createReportService } from "./reports.js";
 import { isSpentDay, planRollupRange, rollupWindow } from "./rollup-ranges.js";
-import { DAY_MS, createRollupService, foldDay, foldableDays, utcDayStart } from "./rollups.js";
+import { createRollupService, foldDay, foldableDays } from "./rollups.js";
+import { DAY_MS, utcDayStart, utcDaysBetween } from "./utc-days.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -131,9 +132,21 @@ class Rollups implements UserDailyRollupRepository {
   public async writeDays(_subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void> {
     this.calls.push("write");
     if (this.failWrite) throw new Error("write failed");
-    this.rows.push(...rows);
+    // Mirrors the conditional upsert: a stored row only yields to a fold that
+    // read later than it did.
+    for (const row of rows) {
+      const index = this.rows.findIndex((stored) => stored.userId === row.userId && stored.day.getTime() === row.day.getTime());
+      if (index === -1) {
+        this.rows.push(row);
+        continue;
+      }
+      if (this.rows[index]!.computedAt.getTime() < row.computedAt.getTime()) this.rows[index] = row;
+    }
   }
 }
+
+/** Any read instant; the folds below never contend, so only the shape matters. */
+const readAt = new Date(Date.UTC(2026, 7, 9));
 
 const silentReaper = { reapStale: async (): Promise<number> => 0 };
 const agents = { listForOrganization: async () => [], listByIds: async () => [] } as unknown as AgentRepository;
@@ -151,13 +164,24 @@ describe("utc days", () => {
     expect(utcDayStart(at(0, 23, 59)).toISOString()).toBe(day(0).toISOString());
     expect(utcDayStart(at(1, 0)).toISOString()).toBe(day(1).toISOString());
   });
+
+  it("names every day a moved instant crossed, whichever way it moved", () => {
+    const names = (from: Date, to: Date): string[] => utcDaysBetween(from, to).map((entry) => entry.toISOString());
+
+    // A move inside one day names that day and no other.
+    expect(names(at(0, 1), at(0, 23))).toEqual([day(0).toISOString()]);
+    // A move across a midnight names the day it left as well as the one it reached.
+    expect(names(at(0, 23, 50), at(1, 0, 5))).toEqual([day(0).toISOString(), day(1).toISOString()]);
+    // Every day in between, and the direction of the move does not matter.
+    expect(names(at(2, 8), at(0, 9))).toEqual([day(0), day(1), day(2)].map((entry) => entry.toISOString()));
+  });
 });
 
 describe("folding a day", () => {
   it("clips at midnight, so a span across it lands in both days and neither twice", () => {
     const overnight = [presence(ids.user, "Alex", at(0, 22), at(1, 2))];
-    const first = foldDay([{ id: ids.user }], overnight, [], day(0));
-    const second = foldDay([{ id: ids.user }], overnight, [], day(1));
+    const first = foldDay([{ id: ids.user }], overnight, [], day(0), readAt);
+    const second = foldDay([{ id: ids.user }], overnight, [], day(1), readAt);
 
     expect(first[0]?.activeMs).toBe(2 * 60 * 60 * 1_000);
     expect(second[0]?.activeMs).toBe(2 * 60 * 60 * 1_000);
@@ -171,6 +195,7 @@ describe("folding a day", () => {
       [presence(ids.user, "Alex", at(0, 9), at(0, 10))],
       [],
       day(0),
+      readAt,
     );
 
     expect(rows.map((entry) => entry.userId).sort()).toEqual([ids.user, ids.otherUser].sort());
@@ -183,6 +208,7 @@ describe("folding a day", () => {
       [presence(ids.user, "Alex", at(0, 9), at(0, 11))],
       [agentInterval(ids.user, "Alex", at(0, 9), at(0, 11), { source: "browser" })],
       day(0),
+      readAt,
     );
 
     // A tab is attention, not an agent: the two hours stay unassisted.
@@ -199,6 +225,7 @@ describe("folding a day", () => {
         agentInterval(ids.user, "Alex", at(0, 13), at(0, 14)),
       ],
       day(0),
+      readAt,
     );
 
     // The check constraint the migration carries, asserted where it is produced.
@@ -251,6 +278,39 @@ describe("maintaining the fold", () => {
     expect(spans(reports.agentReads)).toEqual(expected);
     expect(rollups.rows.map((row) => row.day.toISOString()))
       .toEqual([day(0).toISOString(), day(1).toISOString(), day(8).toISOString()]);
+  });
+
+  /**
+   * The review's sequence: a day folded while a session was still running is
+   * short by whatever that session went on to claim of it, so the day has to be
+   * folded again once the session's end has moved past its midnight.
+   */
+  it("refolds a day to its whole share once a running session's end moves past that midnight", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(0, 22), at(1, 2))];
+    // Still open, so the read ends it at its last event - ten minutes short of midnight.
+    reports.agentIntervals = [agentInterval(ids.user, "Alex", at(0, 22), at(0, 23, 50))];
+    const rollups = new Rollups();
+    let current = at(1, 0, 1);
+    const service = createRollupService({
+      reports: reports as unknown as ReportRepository,
+      rollups,
+      now: () => current,
+    });
+    const storedAgentMs = (): number | undefined =>
+      rollups.rows.find((row) => row.day.getTime() === day(0).getTime())?.agentMs;
+
+    await service.refresh(subject, [day(0)]);
+    expect(storedAgentMs()).toBe(110 * 60 * 1_000);
+
+    // The session reports again after midnight, so its known end crosses into
+    // the next day and day 0 is owed the full two hours it was open for.
+    reports.agentIntervals = [agentInterval(ids.user, "Alex", at(0, 22), at(1, 0, 5))];
+    current = at(1, 0, 6);
+    await service.refresh(subject, [day(0)]);
+
+    expect(storedAgentMs()).toBe(2 * 60 * 60 * 1_000);
   });
 
   it("folds nothing for a day that is still being written", async () => {

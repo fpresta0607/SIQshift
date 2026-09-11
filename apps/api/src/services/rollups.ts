@@ -9,20 +9,7 @@ import type {
   UserDailyRollupRepository,
 } from "../repositories.js";
 import { rosterEligibleSource } from "./agent-sessions.js";
-
-export const DAY_MS = 24 * 60 * 60 * 1_000;
-
-/** Midnight UTC at or before the instant. */
-export function utcDayStart(at: Date | number): Date {
-  const ms = typeof at === "number" ? at : at.getTime();
-  return new Date(Math.floor(ms / DAY_MS) * DAY_MS);
-}
-
-/** Midnight UTC at or after the instant. */
-export function utcDayCeiling(at: Date | number): Date {
-  const ms = typeof at === "number" ? at : at.getTime();
-  return new Date(Math.ceil(ms / DAY_MS) * DAY_MS);
-}
+import { DAY_MS, utcDayStart } from "./utc-days.js";
 
 /**
  * The distinct UTC days these instants fall in, oldest first, keeping only days
@@ -80,14 +67,15 @@ const asInterval = (start: Date, end: Date): Interval => ({ start: start.getTime
  *
  * It folds whole finished UTC days only, and a finished day is not therefore
  * final. An agent session that is still running is read as ending at its last
- * event, so every heartbeat moves the share the days it spans can claim, right
- * up to the midnight each of them ends at. That is why the upload path hands
- * this a running session's own start instant alongside the event, so a day a
- * session began in is refolded every time that session reports. What cannot
- * move on its own is a day nothing open still reaches into: the freshness
- * guard the presence read applies compares two stored instants, so it never
- * changes its mind about a row, and the only thing left that can change such a
- * day is data arriving for it late - which is what calls this.
+ * event, so a day it is still reaching into keeps owing more of it until that
+ * end moves past the day's midnight. That is the whole of it: a finished day's
+ * numbers can move only when a session's known end crosses it, which is why
+ * the upload path hands this the days between where each touched session's end
+ * was and where the event put it. What cannot move on its own is a day nothing
+ * open still reaches into: the freshness guard the presence read applies
+ * compares two stored instants, so it never changes its mind about a row, and
+ * the only thing left that can change such a day is data arriving for it late
+ * - which is what calls this.
  *
  * It replaces rather than increments. The batch endpoints are idempotent on a
  * client id and will happily be re-sent the same day, and an increment would
@@ -110,26 +98,29 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // way. Writing the fold first and clearing after would leave the old
       // numbers standing over rows that no longer match them.
       await dependencies.rollups.clearDays(subject, days);
+      const membersRead = dependencies.reports.readMembersForOrganization(subject);
       // One read per contiguous run rather than one read spanning them all: a
       // backlog carrying one instant from ninety days ago and one from
       // yesterday folds two days, and reading the ninety between them would be
-      // interval rows fetched only to be discarded.
-      const [members, reads] = await Promise.all([
-        dependencies.reports.readMembersForOrganization(subject),
-        Promise.all(contiguousRuns(days).map(async (run) => {
-          const from = run[0]!;
-          const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
-          const [presence, agents] = await Promise.all([
-            dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
-            dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
-          ]);
-          return { run, presence, agents };
-        })),
-      ]);
+      // interval rows fetched only to be discarded. The runs are walked one at
+      // a time because the upload is waiting on this: a catch-up batch landing
+      // on thirty scattered days must not open sixty connections at once.
       const rows: UserDailyRollupRecord[] = [];
+      const reads: { run: Date[]; presence: PresenceIntervalRecord[]; agents: AgentIntervalRecord[]; computedAt: Date }[] = [];
+      for (const run of contiguousRuns(days)) {
+        const from = run[0]!;
+        const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
+        const computedAt = now();
+        const [presence, agents] = await Promise.all([
+          dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
+          dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
+        ]);
+        reads.push({ run, presence, agents, computedAt });
+      }
+      const members = await membersRead;
       for (const read of reads) {
         for (const day of read.run) {
-          rows.push(...foldDay(members, read.presence, read.agents, day));
+          rows.push(...foldDay(members, read.presence, read.agents, day, read.computedAt));
         }
       }
       await dependencies.rollups.writeDays(subject, rows);
@@ -156,6 +147,7 @@ export function foldDay(
   presence: readonly PresenceIntervalRecord[],
   agents: readonly AgentIntervalRecord[],
   day: Date,
+  computedAt: Date,
 ): UserDailyRollupRecord[] {
   const range = { start: day.getTime(), end: day.getTime() + DAY_MS };
   const presenceByUser = new Map<string, Interval[]>();
@@ -197,6 +189,7 @@ export function foldDay(
       concurrency2Ms: measurement.concurrency.t2Ms,
       concurrency3PlusMs: measurement.concurrency.t3PlusMs,
       awayMs: measurement.concurrency.awayMs,
+      computedAt,
     };
   });
 }

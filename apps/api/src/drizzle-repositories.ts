@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, sum } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   activitySegments,
   agents,
@@ -37,6 +38,7 @@ import {
   type ActivitySegmentInsert,
   type ActivitySegmentRepository,
   type AgentIntervalRecord,
+  type AgentSessionEndShift,
   type AgentRecord,
   type AgentRepository,
   type AgentSessionRecord,
@@ -1170,6 +1172,21 @@ function asAgentSessionRecord(row: typeof agentSessions.$inferSelect): AgentSess
   };
 }
 
+/**
+ * Where the report path stops measuring a session. A closed session ends where
+ * it ended; an open one is only known to have run as far as its last event.
+ */
+const agentSessionKnownEnd = (row: { endedAt: Date | null; lastEventAt: Date }): Date => row.endedAt ?? row.lastEventAt;
+
+/**
+ * The pre-update row, captured in the same statement. `UPDATE t ... FROM t AS
+ * prior WHERE t.id = prior.id` reads `prior` from the snapshot the statement
+ * started with, so its columns are the old values while `RETURNING` over the
+ * updated table gives the new ones - which is how a write can report where the
+ * known end moved from without a second round trip to go and look.
+ */
+const priorAgentSession = alias(agentSessions, "prior_agent_session");
+
 const agentSessionKey = [
   agentSessions.organizationId,
   agentSessions.userId,
@@ -1190,7 +1207,14 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
     return rows[0] === undefined ? null : asAgentSessionRecord(rows[0]);
   }
 
-  public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionRecord> {
+  public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift> {
+    // The one write that cannot capture its own prior row: `ON CONFLICT` takes
+    // no `FROM`, so where the known end stood is read first.
+    const prior = await this.findByExternalKey(
+      { organizationId: input.organizationId, userId: input.userId, role: "member" },
+      input.source,
+      input.externalSessionId,
+    );
     const rows = await this.db
       .insert(agentSessions)
       .values({
@@ -1225,10 +1249,13 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         },
       })
       .returning();
-    return asAgentSessionRecord(rows[0]!);
+    return {
+      session: asAgentSessionRecord(rows[0]!),
+      previousEnd: prior === null ? null : agentSessionKnownEnd(prior),
+    };
   }
 
-  public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionRecord | null> {
+  public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionEndShift | null> {
     const rows = await this.db
       .update(agentSessions)
       .set({
@@ -1237,15 +1264,22 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         lastEventAt: sql`greatest(${agentSessions.lastEventAt}, ${endedAt.toISOString()}::timestamptz)`,
         updatedAt: now,
       })
+      .from(priorAgentSession)
       .where(and(
+        eq(agentSessions.id, priorAgentSession.id),
         eq(agentSessions.organizationId, subject.organizationId),
         eq(agentSessions.userId, subject.userId),
         eq(agentSessions.source, source),
         eq(agentSessions.externalSessionId, externalSessionId),
         eq(agentSessions.status, "running"),
       ))
-      .returning();
-    return rows[0] === undefined ? null : asAgentSessionRecord(rows[0]);
+      .returning({
+        ...getTableColumns(agentSessions),
+        priorEndedAt: priorAgentSession.endedAt,
+        priorLastEventAt: priorAgentSession.lastEventAt,
+      });
+    const row = rows[0];
+    return row === undefined ? null : { session: asAgentSessionRecord(row), previousEnd: agentSessionKnownEnd({ endedAt: row.priorEndedAt, lastEventAt: row.priorLastEventAt }) };
   }
 
   public async insertEnded(input: InsertEndedAgentSession): Promise<void> {
@@ -1270,13 +1304,19 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       .onConflictDoNothing({ target: agentSessionKey });
   }
 
-  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionRecord | null> {
+  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionEndShift | null> {
     const key = and(
+      eq(agentSessions.id, priorAgentSession.id),
       eq(agentSessions.organizationId, subject.organizationId),
       eq(agentSessions.userId, subject.userId),
       eq(agentSessions.source, source),
       eq(agentSessions.externalSessionId, externalSessionId),
     );
+    const returning = {
+      ...getTableColumns(agentSessions),
+      priorEndedAt: priorAgentSession.endedAt,
+      priorLastEventAt: priorAgentSession.lastEventAt,
+    };
     const running = await this.db
       .update(agentSessions)
       .set({
@@ -1287,9 +1327,13 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         model: sql`coalesce(${agentSessions.model}, ${model})`,
         updatedAt: now,
       })
+      .from(priorAgentSession)
       .where(and(key, eq(agentSessions.status, "running")))
-      .returning();
-    if (running[0] !== undefined) return asAgentSessionRecord(running[0]);
+      .returning(returning);
+    const advanced = running[0];
+    if (advanced !== undefined) {
+      return { session: asAgentSessionRecord(advanced), previousEnd: agentSessionKnownEnd({ endedAt: advanced.priorEndedAt, lastEventAt: advanced.priorLastEventAt }) };
+    }
     // A model-bearing heartbeat can arrive after the end that closed a short
     // session (start and end inside one upload interval), so the still-null
     // model is filled on an ended row too - without touching lastEventAt or
@@ -1301,9 +1345,12 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         model: sql`coalesce(${agentSessions.model}, ${model})`,
         updatedAt: now,
       })
+      .from(priorAgentSession)
       .where(and(key, eq(agentSessions.status, "ended")))
-      .returning();
-    return ended[0] === undefined ? null : asAgentSessionRecord(ended[0]);
+      .returning(returning);
+    const backfilled = ended[0];
+    if (backfilled === undefined) return null;
+    return { session: asAgentSessionRecord(backfilled), previousEnd: agentSessionKnownEnd({ endedAt: backfilled.priorEndedAt, lastEventAt: backfilled.priorLastEventAt }) };
   }
 
   public async reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number> {
@@ -2041,6 +2088,7 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
         concurrency2Ms: userDailyRollups.concurrency2Ms,
         concurrency3PlusMs: userDailyRollups.concurrency3PlusMs,
         awayMs: userDailyRollups.awayMs,
+        computedAt: userDailyRollups.computedAt,
       })
       .from(userDailyRollups)
       .where(and(
@@ -2072,7 +2120,7 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
 
   public async writeDays(subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void> {
     if (rows.length === 0) return;
-    const computedAt = new Date();
+    const now = new Date();
     await this.db.insert(userDailyRollups).values(rows.map((row) => ({
       organizationId: subject.organizationId,
       userId: row.userId,
@@ -2084,16 +2132,20 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
       concurrency2Ms: row.concurrency2Ms,
       concurrency3PlusMs: row.concurrency3PlusMs,
       awayMs: row.awayMs,
-      computedAt,
+      computedAt: row.computedAt,
     })))
       // Two refreshes of one day can interleave - the desktop posts activity
-      // and agent events concurrently, and teammates upload on their own. The
-      // loser of a plain insert would raise a unique violation and abandon the
-      // rest of its own write, leaving the day standing on numbers read before
-      // the newer rows landed. Overwriting instead lets the later fold win, and
-      // every measured column moves together so no row is left half updated.
+      // and agent events concurrently, and teammates upload on their own - and
+      // neither the order they clear in nor the order they write in says which
+      // of them saw more. What they read does. So a conflict is resolved by
+      // read time: the fold that read later overwrites, the fold that read
+      // earlier steps aside, and the day ends on the truer picture whichever
+      // write lands last. A plain insert instead raised a unique violation on
+      // the loser, which abandoned the rest of its write and left the day
+      // standing on numbers taken before the newer rows existed.
       .onConflictDoUpdate({
         target: [userDailyRollups.organizationId, userDailyRollups.userId, userDailyRollups.day],
+        setWhere: lt(userDailyRollups.computedAt, sql`excluded.computed_at`),
         set: {
           activeMs: sql`excluded.active_ms`,
           agentMs: sql`excluded.agent_ms`,
@@ -2102,8 +2154,8 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
           concurrency2Ms: sql`excluded.concurrency_2_ms`,
           concurrency3PlusMs: sql`excluded.concurrency_3_plus_ms`,
           awayMs: sql`excluded.away_ms`,
-          computedAt,
-          updatedAt: computedAt,
+          computedAt: sql`excluded.computed_at`,
+          updatedAt: now,
         },
       });
   }

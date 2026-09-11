@@ -3,11 +3,13 @@ import { agentRuntimeLabel, type AgentSessionEventBatchResponse, type AgentSourc
 import type { AuthenticatedSubject } from "../auth.js";
 import type {
   AgentRepository,
+  AgentSessionEndShift,
   AgentSessionRepository,
   PathMappingRepository,
   SessionRepository,
 } from "../repositories.js";
 import { identityRepoKey, resolveProjectForCwd, resolveProjectForRemote, resolveProjectForRule, type PathMappingCandidate } from "./attribution.js";
+import { utcDaysBetween } from "./utc-days.js";
 
 const futureEventToleranceMs = 30_000;
 /**
@@ -203,7 +205,21 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         return resolveProjectForRemote(event.repoRemote, mappings);
       };
       const folded: Date[] = [];
-      const spannedStarts: Date[] = [];
+      // A finished day's agent share can move only when a session's known end -
+      // where the report path stops measuring it - crosses that day. So every
+      // write reports where that end was and where it now is, and the days
+      // between the two are the days whose stored fold this batch invalidated.
+      // A heartbeat on a session already reporting inside today moves both
+      // instants within today and names nothing foldable, which is why the
+      // steady state costs nothing; the first heartbeat after a midnight names
+      // the day that just became final.
+      const recordEndShift = (shift: AgentSessionEndShift | null): void => {
+        if (shift === null) return;
+        const to = shift.session.endedAt ?? shift.session.lastEventAt;
+        const from = shift.previousEnd ?? to;
+        if (from.getTime() === to.getTime()) return;
+        folded.push(...utcDaysBetween(from, to));
+      };
       for (const event of events) {
         const occurredAt = event.occurredAt.getTime();
         if (!Number.isFinite(occurredAt)) {
@@ -222,7 +238,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             const running = await dependencies.sessions.findRunning(subject);
             if (running !== null && running.projectId === projectId) linkedSessionId = running.id;
           }
-          const started = await dependencies.agentSessions.upsertStarted({
+          recordEndShift(await dependencies.agentSessions.upsertStarted({
             organizationId: subject.organizationId,
             userId: subject.userId,
             source: event.source,
@@ -235,11 +251,9 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             linkedSessionId,
             occurredAt: event.occurredAt,
             receivedAt: now,
-          });
-          spannedStarts.push(started.startedAt);
+          }));
         } else if (event.event === "ended") {
           const existing = await dependencies.agentSessions.findByExternalKey(subject, event.source, event.externalSessionId);
-          if (existing !== null) spannedStarts.push(existing.startedAt);
           if (existing === null) {
             // End-before-start is tolerated: the row is stored directly as ended.
             const projectId = resolveProject(event, await loadMappings());
@@ -257,7 +271,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
               receivedAt: now,
             });
           } else if (existing.status === "running") {
-            await dependencies.agentSessions.closeRunning(subject, event.source, event.externalSessionId, event.occurredAt, now);
+            recordEndShift(await dependencies.agentSessions.closeRunning(subject, event.source, event.externalSessionId, event.occurredAt, now));
           }
           // An end for an already-ended session is a no-op replay.
         } else {
@@ -267,27 +281,19 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           // running or an already-ended row alike (the transcript reader's
           // backfill can land after the end that closed a short session); an
           // existing model is never overwritten (first assignment wins).
-          const touched = await dependencies.agentSessions.advanceLastEvent(
+          recordEndShift(await dependencies.agentSessions.advanceLastEvent(
             subject,
             event.source,
             event.externalSessionId,
             attestedModel(event.model),
             event.occurredAt,
             now,
-          );
-          if (touched !== null) spannedStarts.push(touched.startedAt);
+          ));
         }
         results.push({ externalSessionId: event.externalSessionId, accepted: true });
         folded.push(event.occurredAt);
       }
-      // An agent session reaches back to whenever it started, and while it is
-      // still open the report path measures it up to its last event - so this
-      // batch moved every day the session spans, not only the days its own
-      // events landed in. Handing the fold each touched session's start
-      // instant alongside the event is what makes the day a long session began
-      // in converge: it is refolded on every heartbeat, and once more on the
-      // close that fixes its end.
-      await dependencies.onUploaded?.(subject, [...folded, ...spannedStarts]);
+      await dependencies.onUploaded?.(subject, folded);
       return { results };
     },
   };

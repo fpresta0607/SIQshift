@@ -61,10 +61,11 @@ class MemoryAgentSessions implements AgentSessionRepository {
   public async upsertStarted(input: UpsertStartedAgentSession) {
     const existing = this.find(input.organizationId, input.userId, input.source, input.externalSessionId);
     if (existing !== undefined) {
+      const previousEnd = existing.endedAt ?? existing.lastEventAt;
       if (existing.status === "running" && input.occurredAt > existing.lastEventAt) {
         existing.lastEventAt = input.occurredAt;
       }
-      return existing;
+      return { session: existing, previousEnd };
     }
     const record: AgentSessionRecord = {
       id: crypto.randomUUID(),
@@ -84,17 +85,18 @@ class MemoryAgentSessions implements AgentSessionRepository {
       linkedSessionId: input.linkedSessionId,
     };
     this.records.push(record);
-    return record;
+    return { session: record, previousEnd: null };
   }
 
   public async closeRunning(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date, _now: Date) {
     const existing = this.find(subject.organizationId, subject.userId, source, externalSessionId);
     if (existing === undefined || existing.status === "ended") return null;
+    const previousEnd = existing.endedAt ?? existing.lastEventAt;
     existing.status = "ended";
     const terminalAt = endedAt > existing.lastEventAt ? endedAt : existing.lastEventAt;
     existing.endedAt = terminalAt;
     existing.lastEventAt = terminalAt;
-    return existing;
+    return { session: existing, previousEnd };
   }
 
   public async insertEnded(input: InsertEndedAgentSession) {
@@ -121,14 +123,15 @@ class MemoryAgentSessions implements AgentSessionRepository {
   public async advanceLastEvent(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, _now: Date) {
     const existing = this.find(subject.organizationId, subject.userId, source, externalSessionId);
     if (existing === undefined) return null;
+    const previousEnd = existing.endedAt ?? existing.lastEventAt;
     if (existing.status === "running") {
       if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
       existing.model ??= model;
-      return existing;
+      return { session: existing, previousEnd };
     }
     if (model === null) return null;
     existing.model ??= model;
-    return existing;
+    return { session: existing, previousEnd };
   }
 
   public async reapStale(subject: { organizationId: string; userId: string }, cutoff: Date, _now: Date) {

@@ -226,12 +226,18 @@ and a partial last day: the whole days are read out of that table as a handful o
 small rows, and only the two ragged edges still read segments.
 The current UTC day is never folded, because it is still being written to.
 
-The table is a cache and nothing depends on it existing.
-A day with no row is read live, so an environment that has not run the migration
-yet is slower rather than wrong, and a failed fold leaves its days unfolded rather
-than stating stale numbers.
+The table is a cache, so no *row* has to exist: a day with no row is read live, a
+half-built table is slower rather than wrong, and a failed fold leaves its days
+unfolded rather than stating stale numbers.
 The fold is also cleared before it is rebuilt, so a crash halfway through can only
 lose the cache, never corrupt it.
+
+The *table* is another matter, because `server.ts` wires the rollup repository
+unconditionally and every unscoped board asks it what it holds.
+An API built without that repository wired reads everything live and is merely
+slower; the API as shipped, pointed at a database that has not run `0022`, answers
+`500` on the leaderboard.
+That is why the migration goes first - see DEPLOY.md.
 
 Two things still read raw segments on purpose: a **project-scoped** range, because
 active time under a project is presence intersected with that project's sessions
