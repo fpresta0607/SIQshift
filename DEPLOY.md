@@ -422,7 +422,59 @@ Neon → SIQshift → Auth → Configuration:
 
 ---
 
-## 4. Desktop installers
+## 4. Neon usage quotas, and the outage that hit one
+
+On 2026-09-11 production began refusing every query with `Your project has
+exceeded the data transfer quota.` The Neon console showed 5.54 GB of transfer
+against a 5 GB allowance and 52.49 of 100 CU-hours, both for the period
+beginning 1 September, so on that trend compute was on course to exhaust before
+the period ended as well: two meters were failing at once, not one. The
+outage looked nothing like a quota from the outside: no client surface named
+the cause. The API answered `5xx` with its generic "An unexpected error
+occurred.", and the desktop app showed "The server is unavailable. Retrying
+shortly." (`api.rs`'s mapping for any `5xx`). Neither says anything about a
+quota. The one surface carrying Neon's sentence verbatim was the Railway API
+log, because `handleAppError` in `apps/api/src/errors.ts` logs the raw driver
+error before returning that generic 500. So for a total, uniform database
+failure, read the API log first, then the Neon usage page, and only then the
+code.
+
+None of it was about how much data SIQshift stores. The whole database is about
+8 MB. It was the same small answers fetched over and over, so the two things to
+watch are how often a client asks and how many rows an answer reads:
+
+- **A poll on a short clock stops compute ever suspending.** Autosuspend needs
+  an idle window, and a client asking every minute never leaves one. Setting
+  autosuspend is worth nothing on its own while any surface still polls on a
+  timer; it starts paying only as those surfaces move to refreshing on change.
+- **A read that returns rows costs transfer even when the answer is one
+  number.** The report path in `drizzle-repositories.ts` is where that happens:
+  the interval reads exist to be folded into totals in JavaScript, so the bytes
+  Neon ships are larger than the bytes the client receives and much larger than
+  the numbers drawn. An unbounded range makes it worse, because "all time"
+  sends no bounds and reads the whole history on every refresh.
+
+Set these in the Neon console for the SIQshift project:
+
+| Setting | Value | Why |
+|---|---|---|
+| Compute autosuspend | 5 minutes | The shortest window that does not cold-start an ordinary working session |
+| History retention | The minimum the team needs | Retention is storage that grows with write volume, and buys nothing once a branch is older than any restore anyone would take |
+| Usage alert, data transfer | 3 GB | 60% of the allowance, which leaves time to act before queries start failing |
+| Usage alert, compute | 60 CU-hours | The same margin against the 100 CU-hour allowance |
+
+The alerts matter most, because the failure has no warning of its own and no
+graceful degradation: every query fails at once.
+
+**Stale branches count against the project's branch limit.** `migrate-dryrun-0015`
+and `docker-verify` are both idle. A dry-run branch has served its purpose the
+moment the migration it rehearsed is applied, so delete them once nobody needs
+the schema they hold. Deleting a branch is not reversible, so confirm with the
+person who made it rather than treating idle as abandoned.
+
+---
+
+## 5. Desktop installers
 
 The repo is public, so release assets are downloadable by anyone. Until code
 signing exists, the site's **Download for Windows** button does not point here:
@@ -607,7 +659,7 @@ launch.
 
 ---
 
-## 5. Browser extension stores
+## 6. Browser extension stores
 
 Chrome on Windows stable does not sideload extensions, so the extension ships
 through the stores: Chrome Web Store (unlisted) and Edge Add-ons. Every CI
