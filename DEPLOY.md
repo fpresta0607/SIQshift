@@ -420,16 +420,23 @@ Neon → SIQshift → Auth → Configuration:
 - **Turn off "Allow localhost"** once you stop developing against it. Leaving it
   on in production widens what may redirect through your auth instance.
 
-### Keeping the project inside its plan
+---
+
+## 4. Neon usage quotas, and the outage that hit one
 
 On 2026-09-11 production stopped answering every query with `Your project has
 exceeded the data transfer quota.` Transfer was 5.54 GB against a 5 GB monthly
 allowance, and compute was 52.49 of 100 CU-hours in the same eleven days, so the
 endpoint would have paused around the 20th even if transfer had held. The
-outage looked nothing like a quota: the API answered `5xx`, the desktop app
-showed "The server is unavailable. Retrying shortly." (`api.rs`'s mapping for
-any `5xx`), and nothing anywhere said the word quota. Check the Neon usage page
-before debugging a total, uniform database failure.
+outage looked nothing like a quota from the outside: no client surface named
+the cause. The API answered `5xx` with its generic "An unexpected error
+occurred.", and the desktop app showed "The server is unavailable. Retrying
+shortly." (`api.rs`'s mapping for any `5xx`). Neither says anything about a
+quota. The one surface carrying Neon's sentence verbatim was the Railway API
+log, because `handleAppError` in `apps/api/src/errors.ts` logs the raw driver
+error before returning that generic 500. So for a total, uniform database
+failure, read the API log first, then the Neon usage page, and only then the
+code.
 
 None of it was about how much data SIQshift stores. The whole database is about
 8 MB. It was the same small answers fetched over and over, so the two things to
@@ -466,7 +473,7 @@ person who made it rather than treating idle as abandoned.
 
 ---
 
-## 4. Desktop installers
+## 5. Desktop installers
 
 The repo is public, so release assets are downloadable by anyone. Until code
 signing exists, the site's **Download for Windows** button does not point here:
@@ -651,7 +658,7 @@ launch.
 
 ---
 
-## 5. Browser extension stores
+## 6. Browser extension stores
 
 Chrome on Windows stable does not sideload extensions, so the extension ships
 through the stores: Chrome Web Store (unlisted) and Edge Add-ons. Every CI
