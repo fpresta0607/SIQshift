@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { AccountSnapshot, SignedInAccount } from "./account.js";
@@ -58,6 +58,11 @@ const QUOTA_POLL_MS = 120_000;
 /// poll would leave the dial saying "checking" for two minutes on every
 /// launch, so a pending answer is followed up promptly.
 const QUOTA_PENDING_POLL_MS = 3_000;
+
+/// How often the Today panel refreshes while someone is looking at it, and
+/// the floor a focus refresh honours: one tick's worth of reading a minute is
+/// the budget, whether the window was shown once or alt-tabbed ten times.
+const STATS_TICK_MS = 60_000;
 
 /// The reading for one agent source (`claude_code` → the `claude` provider).
 const quotaFor = (snapshot: QuotaSnapshot | undefined, source: string): AgentQuota | undefined =>
@@ -542,11 +547,54 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   }, [bridge, signedIn?.user.id]);
 
   // Keeps the Today panel close to live: a slow tick refreshes the totals.
+  //
+  // This app spends most of its life in the tray, where the tick was still
+  // reading the roster, the intervals and every report the overlay had open,
+  // once a minute, for nobody. The window itself is the signal rather than
+  // `document.visibilityState`: a webview hidden with its window does not
+  // reliably say so, while the window knows whether it is on screen. Showing
+  // it refreshes at once, so what appears is current rather than a minute old.
+  //
+  // A window that cannot answer the question is assumed to be on screen:
+  // skipping is the optimisation, showing the day is the job, and a probe that
+  // threw must not leave the panel frozen on a stale reading forever. The
+  // focus refresh keeps the tick's floor, since one bump fans out to the
+  // roster, the leaderboard and the whole agent-shifts map: alt-tabbing in and
+  // out would otherwise read more than the unconditional tick it replaced.
+  //
+  // Every path that moves the tick goes through this one function, so the
+  // clock it stamps answers for all of them.
+  const lastStatsRefreshAt = useRef(Date.now());
+  const refreshStats = useCallback((): void => {
+    lastStatsRefreshAt.current = Date.now();
+    setStatsTick((tick) => tick + 1);
+  }, []);
   useEffect(() => {
     if (signedIn === undefined) return undefined;
-    const timer = window.setInterval(() => setStatsTick((tick) => tick + 1), 60_000);
-    return () => window.clearInterval(timer);
-  }, [signedIn?.user.id]);
+    const appWindow = getCurrentWindow();
+    let cancelled = false;
+    const canBeSeen = async (): Promise<boolean> => {
+      try {
+        const [shown, minimized] = await Promise.all([appWindow.isVisible(), appWindow.isMinimized()]);
+        return shown && !minimized;
+      } catch {
+        return true;
+      }
+    };
+    const timer = window.setInterval(() => {
+      void canBeSeen().then((seen) => { if (!cancelled && seen) refreshStats(); });
+    }, STATS_TICK_MS);
+    const unlisten = appWindow.onFocusChanged((event: { payload: boolean }) => {
+      if (cancelled || !event.payload) return;
+      if (Date.now() - lastStatsRefreshAt.current < STATS_TICK_MS) return;
+      refreshStats();
+    });
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      void unlisten.then((stop) => stop(), () => {});
+    };
+  }, [refreshStats, signedIn?.user.id]);
 
   // One immediate refresh follows each finished stretch, delayed a beat so
   // the host's own upload of that session has landed before the refetch.
@@ -556,9 +604,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     const ended = lastSessionSince.current !== null && since === null;
     lastSessionSince.current = since;
     if (!ended) return undefined;
-    const timer = window.setTimeout(() => setStatsTick((tick) => tick + 1), 3_000);
+    const timer = window.setTimeout(refreshStats, 3_000);
     return () => window.clearTimeout(timer);
-  }, [monitorStatus?.currentSession?.since]);
+  }, [refreshStats, monitorStatus?.currentSession?.since]);
 
   // OS icons for the app rows on screen. Missing answers stay null so each
   // executable is looked up once per launch.
