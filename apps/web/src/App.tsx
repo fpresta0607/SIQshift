@@ -305,10 +305,13 @@ export const App = ({ client }: AppProps) => {
 
   // The home screen's day. It follows the filing header's project and nothing
   // else: the All-stats range picker used to move it, which quietly turned the
-  // heading's own date into a month's total.
+  // heading's own date into a month's total. Every ask for the day passes
+  // through here, whatever prompted it, so here is where it is timed.
+  const todayAskedAt = useRef(0);
   useEffect(() => {
     if (!signedIn || !preferencesReady) return undefined;
     let cancelled = false;
+    todayAskedAt.current = Date.now();
     client.meStats(scopeParams(rangeQuery("today"))).then(
       (result) => {
         if (cancelled) return;
@@ -330,25 +333,29 @@ export const App = ({ client }: AppProps) => {
   }, [client, signedIn, preferencesReady, scopeParams, expireSession, todayTick]);
 
   // A tab nobody is looking at asks nothing: the tick is skipped while the
-  // document is hidden, and becoming visible asks again, so the panel is
-  // current the moment it is read rather than current all night. Both paths
-  // share one clock, because a question asked again inside an upload interval
-  // cannot come back with a different answer however it came to be asked.
-  const todayAskedAt = useRef(0);
+  // document is hidden, and being looked at again asks, so the panel is current
+  // the moment it is read rather than current all night. Only the looking-again
+  // path is timed, because it is the one a person can fire as often as they can
+  // alt-tab, and a day asked for twice inside one upload interval comes back
+  // the same both times. The tick keeps its own fixed cadence: timing it too
+  // would let one ask of any kind swallow the next tick and leave a tab someone
+  // is reading twice as stale as the interval promises.
   useEffect(() => {
     if (!signedIn) return undefined;
-    todayAskedAt.current = Date.now();
-    const refreshWhenVisible = (): void => {
+    const refreshOnTick = (): void => {
       if (document.visibilityState !== "visible") return;
-      if (Date.now() - todayAskedAt.current < TODAY_REFRESH_MS) return;
-      todayAskedAt.current = Date.now();
       setTodayTick((tick) => tick + 1);
     };
-    const timer = window.setInterval(refreshWhenVisible, TODAY_REFRESH_MS);
-    document.addEventListener("visibilitychange", refreshWhenVisible);
+    const refreshWhenLookedAt = (): void => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - todayAskedAt.current < TODAY_REFRESH_MS) return;
+      setTodayTick((tick) => tick + 1);
+    };
+    const timer = window.setInterval(refreshOnTick, TODAY_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenLookedAt);
     return () => {
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenLookedAt);
     };
   }, [signedIn]);
 

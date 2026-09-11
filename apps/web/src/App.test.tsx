@@ -626,6 +626,76 @@ describe("dashboard", () => {
     }
   });
 
+  it("keeps the tick on its own cadence when a look-again lands mid-interval", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      const meStats = vi.fn().mockResolvedValue(memberStats);
+      await signIn(clientFor({ meStats }));
+      await screen.findByTestId("session-app-list");
+      const afterSignIn = meStats.mock.calls.length;
+
+      // Away across one whole tick and half of the next, then looked at again
+      // half an interval before the tick that follows.
+      visibility.mockReturnValue("hidden");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS * 1.5);
+      });
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(meStats).toHaveBeenCalledTimes(afterSignIn + 1));
+
+      // That ask is recent, but a tab being read is owed the cadence it was
+      // promised: the tick is not the path anything is allowed to swallow.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS / 2);
+      });
+      expect(meStats).toHaveBeenCalledTimes(afterSignIn + 2);
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts a project switch as an ask, so looking away and back adds nothing", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      const meStats = vi.fn().mockResolvedValue(memberStats);
+      const person = await signIn(clientFor({
+        projects: vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null }),
+        meStats,
+      }));
+      await screen.findByTestId("session-app-list");
+
+      // Long enough that the day is due, then a switch asks for it anyway.
+      visibility.mockReturnValue("visible");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS * 2);
+      });
+      await person.click(screen.getByTestId("filing-change"));
+      await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
+      await waitFor(() => expect(meStats.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+      const afterSwitch = meStats.mock.calls.length;
+
+      // The rows on screen are seconds old, so looking away and back at them
+      // has nothing to learn however overdue the tick was before the switch.
+      visibility.mockReturnValue("hidden");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS / 5);
+      });
+      visibility.mockReturnValue("visible");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS / 5);
+      });
+      expect(meStats).toHaveBeenCalledTimes(afterSwitch);
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("still refreshes on its own clock while the tab is being looked at", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
