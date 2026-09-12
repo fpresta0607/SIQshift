@@ -219,7 +219,11 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   finds nothing and the day reports zero rather than missing. Before adding anything to the
   report path that reads `activity_segments`, check whether a rollup row can answer it past
   90 days; if it cannot, that surface silently reports zero for expired ranges, which is how
-  `readAppTotalsForMember` and the project scope already behave by decision.
+  `readAppTotalsForMember`, `/me/stats`'s per-agent breakdown and hourly series, and the
+  project scope already behave by decision. A **member-scoped** measurement does spend
+  stored days - `readForRange` takes the same `userId` predicate the live reads take - so
+  the board and that person's card stay in agreement past the window. Dropping that filter
+  would put the whole workspace's hours on one person's row.
 - The sweep is the **only** thing that extends coverage downward. Uploads fill upward from
   the bootstrap day and refuse anything below it, so history older than where coverage
   started exists only because `RollupService.backfill` walked down to it.

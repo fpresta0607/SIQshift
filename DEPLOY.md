@@ -386,13 +386,16 @@ downward.
 
 A `failed=` line is one organization's pass throwing. The sweep carries on with
 the rest of the night's budget rather than dropping every organization behind it,
-so one workspace whose backfill times out cannot block the others.
+so one workspace whose backfill times out cannot block the others - and the
+command exits non-zero when any pass failed, so the scheduler's own status says
+so without anyone reading the log.
 
 **What the deletion costs** is in README's *Raw evidence is kept for 90 days*.
-The short of it: unscoped active, agent and concurrency numbers are answered by
-the fold at any age, while a project-scoped range and a member's app breakdown
-read raw segments and report zero for the expired part of a range. Sessions,
-agent sessions and shift commits are untouched.
+The short of it: active, agent and concurrency numbers are answered by the fold
+at any age, on the board and on a member's own card, while a project-scoped
+range, a member's app and per-agent breakdowns and the hourly chart read raw
+segments and report zero for the expired part of a range. Sessions, agent
+sessions and shift commits are untouched.
 
 ---
 

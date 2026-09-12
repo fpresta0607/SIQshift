@@ -90,10 +90,12 @@ export const FOLD_MAX_DAYS = 31;
  * fold's job in the retention change.
  *
  * `cutoff` is that sweep's retention boundary, passed in rather than imported,
- * because the fold must not depend on the sweep. A named day at or below it is
+ * because the fold must not depend on the sweep. A named day below it is
  * declined however far coverage reaches: its raw rows may already be deleted,
  * and refolding a day from evidence that is gone writes zeros over a row that
- * was right.
+ * was right. The cutoff day itself is admitted - the sweep deletes strictly
+ * below it, so its rows are still there, and it is the oldest day the ingest
+ * still accepts.
  */
 export function foldTargetDays(
   named: readonly Date[],
@@ -115,15 +117,21 @@ export function foldTargetDays(
   // the window itself is the floor.
   //
   // The retention cutoff is the second floor, and it is the one that matters
-  // once the scheduled sweep has run. A day at or below it may already have had
-  // its raw rows deleted, so clearing and refolding it reads evidence that no
+  // once the scheduled sweep has run. A day below it may already have had its
+  // raw rows deleted, so clearing and refolding it reads evidence that no
   // longer exists and replaces a correct stored row with zeros - permanently,
   // because the fresher `computedAt` wins the upsert. Coverage alone does not
   // decline it: the sweep drags `earliest` down as it backfills, which is
   // exactly what widens this floor past the expired days. The frontier window
   // above needs no such guard, because the sweep never deletes above
   // `coverage.latest`.
-  const floor = Math.max(coverage?.earliest.getTime() ?? from, cutoff.getTime() + DAY_MS);
+  //
+  // The cutoff day itself is admitted, because the sweep deletes strictly below
+  // it and so that day still has its segments. The two bounds have to name the
+  // same day: the ingest accepts evidence for the cutoff day, and a day
+  // accepted, stored, then never folded is a day whose row goes stale and is
+  // then swept - an undercount nothing recovers from.
+  const floor = Math.max(coverage?.earliest.getTime() ?? from, cutoff.getTime());
   for (const day of named) {
     const at = day.getTime();
     if (at < floor || at > toInclusive) continue;

@@ -2172,6 +2172,7 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
     subject: AuthenticatedSubject,
     from: Date,
     toExclusive: Date,
+    userId?: string,
   ): Promise<UserDailyRollupRecord[]> {
     const rows = await this.db
       .select({
@@ -2189,6 +2190,7 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
       .from(userDailyRollups)
       .where(and(
         eq(userDailyRollups.organizationId, subject.organizationId),
+        ...(userId === undefined ? [] : [eq(userDailyRollups.userId, userId)]),
         gte(userDailyRollups.day, from),
         lt(userDailyRollups.day, toExclusive),
       ))

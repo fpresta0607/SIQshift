@@ -20,7 +20,7 @@ import type {
 import { createReportService } from "./reports.js";
 import { isSpentDay, planRollupRange, rollupWindow } from "./rollup-ranges.js";
 import { FOLD_MAX_DAYS, createRollupService, foldDay, foldableDays } from "./rollups.js";
-import { DAY_MS, utcDayStart, utcDaysBetween } from "./utc-days.js";
+import { DAY_MS, RETENTION_DAYS, utcDayStart, utcDaysBetween } from "./utc-days.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -72,14 +72,17 @@ class Reports implements Partial<ReportRepository> {
 
   public async readPresenceIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<PresenceIntervalRecord[]> {
     this.presenceReads.push(query);
-    return this.presenceIntervals.filter((row) => overlaps(row.startedAt, row.endedAt, query));
+    return this.presenceIntervals
+      .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.endedAt, query));
   }
   public async readAgentIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentIntervalRecord[]> {
     this.agentReads.push(query);
-    return this.agentIntervals.filter((row) => overlaps(row.startedAt, row.endedAt, query));
+    return this.agentIntervals
+      .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.endedAt, query));
   }
   public async readSessionIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<SessionIntervalRecord[]> {
-    return this.sessionIntervals.filter((row) => overlaps(row.startedAt, row.stoppedAt, query));
+    return this.sessionIntervals
+      .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.stoppedAt, query));
   }
   public async readLeaderboardForOrganization(): Promise<LeaderboardRowRecord[]> {
     return this.leaderboardRows;
@@ -94,8 +97,8 @@ class Reports implements Partial<ReportRepository> {
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string): Promise<ReportLookupRecord | null> {
     return projectId === ids.project ? { id: ids.project, name: "Ledger" } : null;
   }
-  public async findUserForOrganization(): Promise<null> {
-    return null;
+  public async findUserForOrganization(_subject: AuthenticatedSubject, userId: string): Promise<ReportLookupRecord | null> {
+    return this.roster.find((member) => member.id === userId) ?? null;
   }
   public async readProjectTotalsForMember(): Promise<ProjectTotalRecord[]> {
     return [];
@@ -114,15 +117,26 @@ function overlaps(start: Date, end: Date, query: ReportQuery): boolean {
   return true;
 }
 
+/** The user predicate every interval read in the repository applies. */
+function matchesUser(userId: string, query: ReportQuery): boolean {
+  return query.userId === undefined || query.userId === userId;
+}
+
 class Rollups implements UserDailyRollupRepository {
   public rows: UserDailyRollupRecord[] = [];
   public readonly calls: string[] = [];
   public failWrite = false;
   public failLatestDay = false;
 
-  public async readForRange(_subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]> {
+  public async readForRange(
+    _subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+    userId?: string,
+  ): Promise<UserDailyRollupRecord[]> {
     this.calls.push("read");
-    return this.rows.filter((row) => row.day >= from && row.day < toExclusive);
+    return this.rows.filter((row) => row.day >= from && row.day < toExclusive
+      && (userId === undefined || row.userId === userId));
   }
   public async coverage(): Promise<RollupCoverage | null> {
     if (this.failLatestDay) throw new Error("latest day read failed");
@@ -752,6 +766,44 @@ describe("extending the fold downward", () => {
 
 describe("the retention cutoff as a floor under a named day", () => {
   /**
+   * The ingest and the fold have to name the same day, or there is a band where
+   * evidence is accepted, stored, never folded, and then swept - an undercount
+   * on a day whose stale row the report path spends in preference to reading
+   * live. The sweep deletes strictly below the cutoff, so the cutoff day still
+   * has its segments and is the oldest day both bounds admit.
+   */
+  it("admits a day standing exactly on the cutoff", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-RETENTION_DAYS, 9), at(-RETENTION_DAYS, 11))];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(-200)), storedDay(day(-RETENTION_DAYS)), storedDay(day(-1))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
+
+    await service.refresh(subject, [at(-RETENTION_DAYS, 9)]);
+
+    const cutoffDay = rollups.rows.find((row) => row.day.getTime() === day(-RETENTION_DAYS).getTime());
+    expect(cutoffDay?.activeMs).toBe(2 * 60 * 60 * 1_000);
+  });
+
+  it("declines the day immediately below it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [
+      storedDay(day(-200)),
+      storedDay(day(-RETENTION_DAYS - 1), 3_600_000),
+      storedDay(day(-1)),
+    ];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
+
+    await service.refresh(subject, [at(-RETENTION_DAYS - 1, 9)]);
+
+    const expired = rollups.rows.find((row) => row.day.getTime() === day(-RETENTION_DAYS - 1).getTime());
+    expect(expired?.activeMs).toBe(3_600_000);
+  });
+
+  /**
    * The regression the sweep made possible. `backfill` drags `coverage.earliest`
    * down to the oldest evidence, which is exactly what widens the floor a named
    * day is measured against - so a day whose raw rows the sweep has already
@@ -1007,6 +1059,73 @@ describe("the board with and without the fold", () => {
     // all - which is the compute this table exists to take off the report path.
     expect(reports.agentReads).toEqual([]);
     expect(reports.presenceReads).toEqual([]);
+  });
+
+  /**
+   * The board and a member's own card measure the same person over the same
+   * range, so they may not disagree - and once the sweep has deleted the raw
+   * rows behind the folded days, a card that read live would find nothing there
+   * and report zero while the board still answered in full from the fold.
+   */
+  it("answers a member's card from the fold, so it still matches their board row", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    // The sweep has been past: every folded day's raw evidence is gone.
+    reports.presenceIntervals = reports.presenceIntervals.filter((row) => row.startedAt >= day(3));
+    reports.agentIntervals = reports.agentIntervals.filter((row) => row.startedAt >= day(3));
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    const filters = { fromAt: day(0).toISOString(), toExclusiveAt: day(3).toISOString() };
+
+    const board = await service.leaderboard(subject, filters);
+    const card = await service.meStats(subject, { ...filters, userId: ids.user });
+
+    const row = board.entries.find((entry) => entry.user.id === ids.user);
+    expect(row?.activeSeconds).toBeGreaterThan(0);
+    expect(card.activeSeconds).toBe(row?.activeSeconds);
+    expect(card.agentSeconds).toBe(row?.agentSeconds);
+    // One person's hours, not the workspace's: the stored read carries the same
+    // user predicate the live reads carry.
+    const other = board.entries.find((entry) => entry.user.id === ids.otherUser);
+    expect(other?.activeSeconds).toBeGreaterThan(0);
+    expect(card.activeSeconds).toBeLessThan((row?.activeSeconds ?? 0) + (other?.activeSeconds ?? 0));
+    expect(card.concurrency.t0Seconds + card.concurrency.t1Seconds
+      + card.concurrency.t2Seconds + card.concurrency.t3PlusSeconds).toBe(card.activeSeconds);
+  });
+
+  it("spends a member's stored days rather than measuring their whole range live", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    rollups.calls.length = 0;
+    reports.presenceReads.length = 0;
+
+    await service.meStats(subject, {
+      fromAt: day(0).toISOString(),
+      toExclusiveAt: day(3).toISOString(),
+      userId: ids.user,
+    });
+
+    expect(rollups.calls).toContain("read");
+    // One presence read, not two: the card still reads the intervals the hourly
+    // series and the per-agent breakdown need, but its measurement planned no
+    // live span at all over a range whose every day is folded.
+    expect(reports.presenceReads).toHaveLength(1);
   });
 
   it("falls back to reading live for a project-scoped range, which the fold cannot answer", async () => {

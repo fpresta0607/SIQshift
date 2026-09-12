@@ -371,6 +371,12 @@ type MeasuredMember = { name?: string; measurement: TimeMeasurementMs };
  * scope's sessions were open, which a table with one row per person per day
  * cannot state. Those ranges read live, exactly as they did before.
  *
+ * A scope narrowed to one member is not one of them. The table names a user on
+ * every row, so the stored read carries the same `userId` predicate the live
+ * reads do and a member's own totals come out of the fold exactly as the whole
+ * board's do - which is what keeps the board and that person's card agreeing
+ * once the retention sweep has deleted the raw rows behind the older half.
+ *
  * Returning milliseconds is the point. Seconds round once per group, and a
  * range assembled from pre-rounded days would drift a second a day away from
  * the answer the live path gives for the same range.
@@ -383,12 +389,10 @@ async function measureMembersMs(
 ): Promise<Map<string, MeasuredMember>> {
   const range = queryRange(query);
   const scoped = query.projectId !== undefined || query.unassignedOnly === true;
-  // A stored day carries the whole workspace and names no project, so any
-  // narrowing it cannot restate reads live instead: the project and unassigned
-  // scopes, and equally a scope narrowed to one person - stored rows would
-  // contribute everyone's time while the live spans contributed one person's,
-  // putting other people's hours on their row.
-  const canSpendStoredDays = !scoped && query.userId === undefined;
+  // A stored day names no project, so the narrowings it cannot restate read
+  // live instead: the project and unassigned scopes. A narrowing to one member
+  // it can restate, because every row names its user.
+  const canSpendStoredDays = !scoped;
   const openRange = { start: range.start ?? null, end: range.end ?? null };
 
   const liveSpans: LiveSpan[] = [{ from: query.from ?? null, toExclusive: query.toExclusive ?? null }];
@@ -414,7 +418,7 @@ async function measureMembersMs(
     const window = rollupWindow(openRange, earliestStored, now);
     const stored = window.from.getTime() >= window.toExclusive.getTime()
       ? []
-      : await rollups.readForRange(subject, window.from, window.toExclusive);
+      : await rollups.readForRange(subject, window.from, window.toExclusive, query.userId);
     const plan = planRollupRange(openRange, window, new Set(stored.map((row) => row.day.getTime())));
     for (const row of stored) {
       if (!isSpentDay(row.day.getTime(), plan)) continue;
@@ -843,7 +847,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         ...(query.projectId === undefined ? {} : { projectId: query.projectId }),
       });
       await dependencies.reaper.reapStale(subject);
-      const [projects, apps, sites, presence, sessionIntervals, agentIntervals, usageBuckets, usageByAgent] = await Promise.all([
+      const [projects, apps, sites, presence, sessionIntervals, agentIntervals, usageBuckets, usageByAgent, measured] = await Promise.all([
         dependencies.reports.readProjectTotalsForMember(subject, query).then((rows) => rows.map(asProjectTotal)),
         dependencies.reports.readAppTotalsForMember(subject, query).then((rows) => rows.map(asAppTotal)),
         dependencies.reports.readSiteTotalsForMember(subject, query).then((rows) => rows.map(asSiteTotal)),
@@ -852,9 +856,26 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         dependencies.reports.readAgentIntervals(subject, query),
         dependencies.agentUsage === undefined ? Promise.resolve([]) : dependencies.agentUsage.sumByBucket(subject, query),
         dependencies.agentUsage === undefined ? Promise.resolve([]) : dependencies.agentUsage.sumByAgent(subject, query),
+        measureMembersMs(dependencies, subject, query, now()),
       ]);
       const member = collectMembers(presence, sessionIntervals, agentIntervals).get(query.userId ?? subject.userId);
-      const measurement = member === undefined ? EMPTY_MEASUREMENT : measureMember(member, query);
+      // Active time, agent time and the concurrency split come from the same
+      // path the board measures on, so the two surfaces cannot disagree about
+      // one person's hours - including past the retention window, where the
+      // board would answer from the fold and a live read here would find
+      // nothing and report zero.
+      //
+      // The per-agent breakdown below stays live because a row holding one
+      // person's day states no agent, and the hourly series stays live because
+      // it needs the intervals themselves rather than a day's totals. Both
+      // therefore thin out past the window, which README states.
+      const rounded = measured.get(query.userId ?? subject.userId)?.measurement;
+      const measurement: MemberMeasurement = {
+        ...(member === undefined ? EMPTY_MEASUREMENT : measureMember(member, query)),
+        ...(rounded === undefined
+          ? { activeSeconds: 0, agentSeconds: 0, concurrency: EMPTY_MEASUREMENT.concurrency }
+          : roundTimeMeasurement(rounded)),
+      };
       const hourly = member === undefined
         ? []
         : hourlySeries(workingIntervals(member, query), member.agents.map((agent) => agent.interval), usageBuckets, queryRange(query));

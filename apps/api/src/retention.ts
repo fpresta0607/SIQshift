@@ -47,6 +47,9 @@ async function main(): Promise<void> {
       // night's budget was spent on the organizations behind it, and this line
       // is the only place the failure surfaces.
       if (pass.failed !== undefined) {
+        // A scheduler reads the exit code, not the log. With per-organization
+        // isolation a night where every pass failed would otherwise report green.
+        process.exitCode = 1;
         console.error(`siqshift-retention: org=${pass.organizationId} failed=${pass.failed}`);
         continue;
       }

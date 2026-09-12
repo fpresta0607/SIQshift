@@ -321,11 +321,18 @@ a reason naming the retention window, so the rest of the batch still lands.
 
 **What is given up past the window**, stated plainly because deletion does not
 come back:
-active time, agent time and the concurrency split are answered by the fold and
-are unaffected at any age.
-A **project-scoped** range and a member's **app breakdown** both read raw
-segments live, so past 90 days they have nothing to read and report zero for the
-expired part of a range.
+active time, agent time and the concurrency split are answered by the fold at
+any age, on the leaderboard and on a member's own card alike - the fold holds one
+row per member per day, so a person's totals are exactly the rows carrying their
+id, and the two surfaces cannot disagree about the same person's hours.
+What cannot come from a per-person-per-day row stays live and thins out past the
+window: a member's **app breakdown** and their **per-agent breakdown**, which a
+row stating a day's totals says nothing about, and the **hourly chart**, which
+needs the intervals themselves rather than a day's sum.
+A **project-scoped** range reads live for the reason it always has - active time
+under a project is presence intersected with that project's sessions, which the
+fold cannot state.
+All four report zero for the expired part of a range.
 That is the trade the window is: summary forever, detail for ninety days.
 Sessions, agent sessions and shift commits are not touched by the sweep, so
 `Recorded`, the Agents tab and the CSV export keep their whole history.

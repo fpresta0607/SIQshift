@@ -741,8 +741,21 @@ export interface RollupCoverage {
 }
 
 export interface UserDailyRollupRepository {
-  /** Every folded day in the range, org-wide. Days are whole, so the range is read as [from, toExclusive). */
-  readForRange(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]>;
+  /**
+   * Every folded day in the range, org-wide unless `userId` narrows it to one
+   * member. Days are whole, so the range is read as [from, toExclusive).
+   *
+   * The filter is what lets a member's own card spend stored days: the table
+   * holds one row per member per day, so a person's totals are exactly the rows
+   * carrying their id. Without it a userId-scoped measurement would have to
+   * read live or else sum the whole workspace onto one person's row.
+   */
+  readForRange(
+    subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+    userId?: string,
+  ): Promise<UserDailyRollupRecord[]>;
   /**
    * The stretch of days this organization holds, or null when it holds none.
    *
