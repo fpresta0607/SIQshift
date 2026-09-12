@@ -18,6 +18,7 @@ import type {
 import { createAgentSessionReaper, createAgentSessionService, type AgentSessionEventInput } from "./agent-sessions.js";
 import { identityRepoKey } from "./attribution.js";
 import { foldableDays } from "./rollups.js";
+import { RETENTION_WINDOW_MS } from "./utc-days.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -530,10 +531,31 @@ describe("agent-session service", () => {
     ]);
 
     expect(result.results).toEqual([
-      { externalSessionId: "ancient", accepted: false, reason: "occurredAt is too far in the past" },
+      { externalSessionId: "ancient", accepted: false, reason: "occurredAt is older than the retention window" },
       { externalSessionId: "fine", accepted: true },
     ]);
     expect(agentSessions.records.map((record) => record.externalSessionId)).toEqual(["fine"]);
+  });
+
+  /**
+   * The other half of the same boundary the activity path pins: the ingest
+   * window and the retention window are one number, so an event for a day the
+   * sweep will delete is refused at the door rather than stored and swept.
+   */
+  it("accepts an event just inside the retention window and refuses one just outside", async () => {
+    const { agentSessions, service } = createService();
+    const oldest = now.getTime() - RETENTION_WINDOW_MS;
+
+    const result = await service.ingest(subject, [
+      event({ externalSessionId: "inside", occurredAt: new Date(oldest) }),
+      event({ externalSessionId: "outside", occurredAt: new Date(oldest - 1) }),
+    ]);
+
+    expect(result.results).toEqual([
+      { externalSessionId: "inside", accepted: true },
+      { externalSessionId: "outside", accepted: false, reason: "occurredAt is older than the retention window" },
+    ]);
+    expect(agentSessions.records.map((record) => record.externalSessionId)).toEqual(["inside"]);
   });
 
   it("rejects invalid or far-future events individually without failing the batch", async () => {

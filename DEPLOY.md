@@ -326,11 +326,102 @@ is never refolded, because the fold only fills upward from its latest day, so it
 stays a permanent hole that every range crossing it reads live. And deleting
 *every* row for an organization is a reset: with no coverage left the next upload
 starts a fresh run at the bootstrap anchor, which reaches no further back than a
-month before yesterday, so all the history below that is discarded rather than
-regrown. Clearing the whole table to let it rebuild is therefore the one thing
-not to do on a workspace whose older days matter. Either way the reports stay
-correct and merely slower, and restoring the discarded coverage waits on the
-retention change's scheduled fold.
+month before yesterday. The history below that anchor is regrown by the
+retention sweep's backfill rather than by anything here, and only after a later
+upload has re-anchored coverage, because the backfill extends a run and refuses
+to start one. Clearing the whole table to let it rebuild is therefore still the
+one thing not to do on a workspace whose older days matter. Either way the
+reports stay correct and merely slower until the sweep has walked back down.
+
+### `0023` adds an index, and the sweep that uses it is a scheduled command
+
+`0023_activity_segment_retention_index` adds
+`(organization_id, started_at)` to `activity_segments`. It changes no row, but
+it is the one migration in this chain that takes a **write lock for as long as
+the build runs**: drizzle wraps each migration in a transaction and
+`CREATE INDEX CONCURRENTLY` cannot run inside one. On a table this size that is
+minutes, during which uploads are refused. Run it outside working hours. Nothing
+is lost when it does collide with an upload: the desktop spools and replays.
+
+Unlike `0022` this one has no deploy ordering of its own - the index only makes
+an existing query faster, so the API may ship before or after it.
+
+**The sweep is a command, not an endpoint.** There is no route that deletes
+data, and deliberately so: an HTTP endpoint would need a shared secret, that
+secret kept out of logs and out of the repo, and would be one misconfiguration
+away from being reachable. Whoever can run the command can already read the
+database.
+
+```bash
+pnpm --filter @siqshift/api retention
+```
+
+On Railway, add a **second service from this same repo** with `pnpm --filter
+@siqshift/api retention` as its start command and a cron schedule - daily,
+outside working hours, is the intent. It needs `DATABASE_URL` and `AUTH_BASE_URL`
+(the config parser requires both, though the sweep only uses the first). Any
+other scheduler that can run a command against the production database works
+just as well.
+
+It is safe to run by hand, safe to run twice, and safe to interrupt: each pass
+folds a bounded number of days per organization and deletes only inside what it
+has proved folded, so stopping it early leaves less done rather than anything
+wrong.
+
+Twice is safe because the runs do not overlap. The sweep takes a PostgreSQL
+advisory lock first, and a second run that cannot take it logs `another sweep
+holds the lock; standing down` and exits 0 - so cron firing while a slow first
+run is still converging, or a hand run during the scheduled window, costs a
+no-op rather than two sweeps interleaving. The lock is held on a reserved
+connection and dies with it, so a killed run leaves nothing stuck.
+
+Read its output before trusting a first run. Each line names one organization:
+`backfilled` is how many days of history it folded, `coverageFrom` where the
+fold now starts, and `deleted` how many raw segments went. A `held=` field means
+a rule stopped the delete short and says which. `no expired day is folded yet` is
+the one to expect on the first nights against a workspace with a long history:
+the backfill is still walking down and `deleted` stays 0 until it reaches past the
+cutoff.
+
+A workspace the upload path has never folded is not listed at all rather than
+listed as held - it has no coverage for the backfill to extend, so the sweep
+skips it entirely and it rejoins the moment an upload gives it a fold.
+
+One pass also spends a fixed budget of organizations, and the window it takes
+over the candidates advances by that budget each UTC day rather than always
+starting at the oldest.
+That is why an organization can be absent one night and present the next: with
+more candidates than one pass holds, each is reached every few nights rather
+than every night.
+The rotation is there because an organization the sweep cannot advance keeps its
+place at the head of the ordering, and a window pinned to that head would hide
+every organization behind it indefinitely.
+An organization missing from the output is therefore inside the window, not yet
+bootstrapped, or simply not in this night's slice, and none of the three needs
+acting on.
+
+`coverage has no row for YYYY-MM-DD` is the one to act on. It means a day inside
+the folded stretch has no stored row - an interrupted fold or a partial write -
+and the sweep will not delete across it, so deletion for that workspace stops at
+that day and stays there until the day is folded. It deletes everything below it
+meanwhile, so the sweep is not stuck, only capped. Nothing repairs the hole on
+its own: uploads only fill coverage upward, and the backfill only extends it
+downward.
+
+A `failed=` line is one organization's pass throwing. The sweep carries on with
+the rest of the night's budget rather than dropping every organization behind it,
+so one workspace whose backfill times out cannot block the others - and the
+command exits non-zero when any pass failed, so the scheduler's own status says
+so without anyone reading the log.
+
+**What the deletion costs** is in README's *Raw evidence is kept for 90 days*.
+The short of it: active, agent and concurrency numbers are answered by the fold
+at any age, on the board and on a member's own card. What goes is presence-derived
+detail - a project-scoped range and a member's app breakdown report zero for the
+expired part of a range, and the hourly chart flattens its person line while
+keeping its agent line. Anything drawn from `agent_sessions` is untouched at any
+age, including a member's per-agent breakdown; sessions, agent sessions and shift
+commits are not swept.
 
 ---
 

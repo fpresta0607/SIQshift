@@ -1,0 +1,29 @@
+-- An index the retention sweep can delete by, hand-written for the same reason
+-- 0018 through 0022 are: the generated snapshots under meta/ stop at 0017, so
+-- drizzle-kit generate would re-emit every hand-written migration since as a
+-- diff.
+--
+-- What it is for
+-- --------------
+-- The sweep deletes a whole organization's expired segments at once:
+--
+--   delete from activity_segments
+--    where organization_id = $1 and started_at >= $2 and ended_at < $3
+--
+-- The only index this table had is (organization_id, user_id, started_at),
+-- which leads on the user and so cannot serve a range over started_at for the
+-- organization as a whole - PostgreSQL has no skip scan, so that predicate
+-- falls back to a sequential scan of the largest table in the schema, every
+-- night, exactly the cost the sweep exists to remove.
+--
+-- Why it is safe
+-- --------------
+-- An index is additive: it changes no row, opens no window of the 0015/0016
+-- kind, and the running API neither names it nor depends on it. It is built
+-- without CONCURRENTLY deliberately - drizzle runs each migration inside a
+-- transaction and CREATE INDEX CONCURRENTLY cannot run in one. That takes a
+-- write lock on activity_segments for the duration of the build, which is why
+-- DEPLOY.md schedules this one outside working hours; uploads retry, and the
+-- spools replay whatever the lock refused.
+CREATE INDEX IF NOT EXISTS "activity_segments_organization_started_at_idx"
+  ON "activity_segments" ("organization_id", "started_at");

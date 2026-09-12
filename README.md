@@ -254,11 +254,11 @@ Every other day an upload names is folded: a named day is one whose stored numbe
 that upload has just made wrong, and the days an upload clears are exactly the days
 it goes on to rebuild.
 A fold that fails partway leaves its days cleared and unfolded inside coverage,
-and nothing re-establishes them, because the run only ever fills upward: they read
-live, which is correct, and restoring the coverage is the scheduled fold's job
-rather than a later upload's.
-History older than the day coverage started is read live, and backfilling it is a
-job for the scheduled fold that comes with retention, not something a report does.
+and nothing re-establishes them: uploads only fill upward, and the retention
+sweep stops its deletes at the first such hole rather than refolding it.
+They read live, which is correct.
+History older than the day coverage started is read live, and backfilling it is
+the retention sweep's nightly job, not something a report does.
 The read path assumes none of this in any case: a day with no row is read live
 wherever it sits.
 
@@ -281,6 +281,69 @@ and a per-person-per-day row cannot state it; and the per-agent breakdown on a
 person's own card, which is a different shape entirely.
 **Today** sees no benefit either - a single local day has two partial UTC days and
 no whole day between them.
+
+### Raw evidence is kept for 90 days; the fold is kept for good
+
+A scheduled sweep rolls `activity_segments` older than 90 days into the fold and
+then deletes them.
+Ninety days is not an arbitrary number: it is the longest bounded range either
+dashboard offers, so every range that draws an hourly chart still has the rows
+behind it.
+Only **All time** reaches past the line, and what it reads there is the fold.
+
+The sweep folds first and deletes second, and it deletes strictly inside what it
+has proved folded rather than up to the cutoff on the assumption the fold got
+there.
+That order is the whole of its safety.
+It also stops one day short of the cutoff rather than at it, because the sweep
+and an in-flight upload each read the clock for themselves and can disagree by a
+day across UTC midnight; a day of distance means the newest day the sweep
+deletes is still older than the oldest day a fold will touch.
+So raw rows survive 91 days in practice, and nothing has to coordinate.
+A day with no stored row is read live, which is what makes the fold safe as a
+cache - but delete the rows behind an unfolded day and the same rule turns
+against them: the live read finds nothing, and the day reports as zero,
+indistinguishable from a day nobody worked.
+So a pass that folds nothing deletes nothing, and days below where coverage
+starts keep their rows until a later pass has folded them.
+
+This is also what backfills the history the upload path cannot reach.
+Uploads only ever fill coverage upward from where it started; the sweep is the
+only thing that extends it downward, a bounded number of days per pass, so a
+workspace with years behind it converges over several nights rather than folding
+all of it in one sitting.
+
+The window is also what the upload paths accept.
+Evidence arriving for a day older than 90 days is refused at the door rather
+than stored, because storing it would mean storing rows the sweep is about to
+delete - and, worse, letting a late upload name a day whose rows are already
+gone, which rebuilds a correct stored row out of evidence that no longer exists
+and leaves it reading zero.
+The consequence is real and worth stating rather than discovering: a desktop
+offline for longer than 90 days loses whatever its spool holds beyond that line.
+Both the activity and agent-session batches reject those rows individually, with
+a reason naming the retention window, so the rest of the batch still lands.
+
+**What is given up past the window**, stated plainly because deletion does not
+come back:
+active time, agent time and the concurrency split are answered by the fold at
+any age, on the leaderboard and on a member's own card alike - the fold holds one
+row per member per day, so a person's totals are exactly the rows carrying their
+id, and the two surfaces cannot disagree about the same person's hours.
+What goes is presence-derived detail, because presence is what `activity_segments`
+holds:
+a member's **app breakdown**, which groups those rows by process, and a
+**project-scoped** range, which intersects presence with that project's sessions
+and so cannot be answered by a table with no project in it.
+Both report zero for the expired part of a range.
+The **hourly chart** is the split case: its agent line is drawn from agent
+sessions and survives, while its person line is presence and flattens past the
+window.
+Everything drawn from `agent_sessions` is untouched at any age - the **per-agent
+breakdown** on a member's card still lists every shift with its real durations,
+and so do `Recorded`, the Agents tab and the CSV export, because sessions, agent
+sessions and shift commits are not swept.
+That is the trade the window is: summary forever, presence detail for ninety days.
 
 ### Attributed and unattributed
 

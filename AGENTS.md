@@ -210,6 +210,29 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   intersected with that project's sessions, and a per-person-per-day row cannot state it.
   `measureMembersMs` falls back to reading the whole range live, and that fallback is load
   bearing - do not "optimize" it away.
+- **Retention deletes raw segments, so the fold is the only record of an expired day.** The
+  one rule in `services/retention.ts` is that a day's rows may only be deleted once that day
+  is folded, and every bound in that file exists to keep it: the sweep folds first, deletes
+  strictly inside what it has proved folded, and a pass that folds nothing deletes nothing.
+  A day with no stored row is read live, which is what makes the fold safe as a cache - and
+  is exactly what makes deleting an unfolded day unrecoverable, because the live read then
+  finds nothing and the day reports zero rather than missing. Before adding anything to the
+  report path that reads `activity_segments`, check whether a rollup row can answer it past
+  90 days; if it cannot, that surface silently reports zero for expired ranges, which is how
+  `readAppTotalsForMember`, the project scope and the hourly series' presence line already
+  behave by decision. A read from `agent_sessions` is not affected - `/me/stats`'s per-agent
+  breakdown keeps its whole history, and saying otherwise understates what survives. A
+  **member-scoped** measurement does spend stored days - `readForRange` takes the same
+  `userId` predicate the live reads take - so the board and that person's card stay in
+  agreement past the window. Dropping that filter would put the whole workspace's hours on
+  one person's row.
+- `/me/stats` measures from `planStoredDays` and the intervals it has already read, never
+  from a second set of span reads: it is polled every sixty seconds by the Today card, so a
+  duplicate presence read there is the hot path. `measureMembersMs` is the board's path and
+  does read per span, because it holds no full-range rows to reuse.
+- The sweep is the **only** thing that extends coverage downward. Uploads fill upward from
+  the bootstrap day and refuse anything below it, so history older than where coverage
+  started exists only because `RollupService.backfill` walked down to it.
 - The held rate is client-attested by design: `POST /shift-commits` records the desktop
   app's `verification` and `verified_at` as given and nothing corroborates them
   server-side (GitHub App/webhook corroboration was considered and rejected as a dead

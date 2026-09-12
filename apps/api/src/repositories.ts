@@ -250,6 +250,20 @@ export interface ReportRepository {
   readSessionIntervals(subject: AuthenticatedSubject, query: ReportQuery): Promise<SessionIntervalRecord[]>;
   /** Agent-session runtimes overlapping the range, after project scoping. */
   readAgentIntervals(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentIntervalRecord[]>;
+  /**
+   * The newest `receivedAt` among evidence rows overlapping the range -
+   * activity segments and agent sessions both - or null when the range holds
+   * none.
+   *
+   * The fold's write-time re-check. `receivedAt` is stamped at upload start on
+   * every evidence write, so a stamp past the instant a fold's interval reads
+   * were issued is proof those reads ran against a snapshot without that
+   * evidence. It carries each interval read's own overlap bounds and none of
+   * its filters: the presence read's freshness window decides what a fold may
+   * count, while this decides only what committed, which a late commit is
+   * regardless of whether the fold will use it.
+   */
+  readNewestEvidenceReceivedAt(subject: AuthenticatedSubject, query: ReportQuery): Promise<Date | null>;
   readPageForOrganization(subject: AuthenticatedSubject, query: ReportQuery, options: ReportPageOptions): Promise<ReportPageRead>;
   readExportForOrganization(subject: AuthenticatedSubject, query: ReportQuery, maxRows: number): Promise<ReportExportRead>;
   readLeaderboardForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<LeaderboardRowRecord[]>;
@@ -285,6 +299,42 @@ export interface ActivitySegmentInsert {
 export interface ActivitySegmentRepository {
   /** Inserts segments, ignoring rows whose client id was already uploaded, so replays are safe. */
   insertBatch(segments: ActivitySegmentInsert[]): Promise<void>;
+  /**
+   * Organizations whose oldest segment *started* before this instant, ordered
+   * oldest evidence first, taking at most `limit` of them starting `startAt`
+   * places into that ordering and wrapping around its end.
+   *
+   * `startedAt` and not `endedAt`, deliberately, and unlike `deleteSpansWithin`
+   * below: a segment straddling the bound makes its organization a candidate
+   * here. The difference is one wasted pass slot at worst, where filtering on
+   * the end instant would silently skip an organization whose oldest evidence
+   * happens to cross it.
+   *
+   * `startAt` is what keeps the cap from becoming a permanent cut. The
+   * ordering alone would hand the head slots to the same organizations every
+   * night, and an organization the sweep cannot advance keeps its place in that
+   * ordering forever; rotating the window means every candidate is reached
+   * within a bounded number of passes. It is taken modulo the number of
+   * candidates, so any value is in range.
+   *
+   * Keyed on an organization id rather than on a subject because the caller is
+   * a scheduled operator job with no member to act as. Everything else on this
+   * interface is reached through a request's own subject; these three are the
+   * exception, and they are the reason the sweep never needs to invent one.
+   */
+  organizationsWithSegmentsBefore(toExclusive: Date, limit: number, startAt: number): Promise<string[]>;
+  /** The UTC day of this organization's oldest segment; null when it holds none. */
+  earliestDay(organizationId: string): Promise<Date | null>;
+  /**
+   * Deletes this organization's segments lying wholly inside `[from,
+   * toExclusive)`, returning how many went.
+   *
+   * Both bounds are required and the window is half-open on whole UTC days,
+   * because the caller may only delete days it has already folded: an open
+   * lower bound would delete the unfolded history below coverage too, and a
+   * segment straddling `toExclusive` belongs to a day that is still readable.
+   */
+  deleteSpansWithin(organizationId: string, from: Date, toExclusive: Date): Promise<number>;
 }
 
 export type AgentStatus = "anonymous" | "registered" | "retired";
@@ -719,8 +769,21 @@ export interface RollupCoverage {
 }
 
 export interface UserDailyRollupRepository {
-  /** Every folded day in the range, org-wide. Days are whole, so the range is read as [from, toExclusive). */
-  readForRange(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]>;
+  /**
+   * Every folded day in the range, org-wide unless `userId` narrows it to one
+   * member. Days are whole, so the range is read as [from, toExclusive).
+   *
+   * The filter is what lets a member's own card spend stored days: the table
+   * holds one row per member per day, so a person's totals are exactly the rows
+   * carrying their id. Without it a userId-scoped measurement would have to
+   * read live or else sum the whole workspace onto one person's row.
+   */
+  readForRange(
+    subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+    userId?: string,
+  ): Promise<UserDailyRollupRecord[]>;
   /**
    * The stretch of days this organization holds, or null when it holds none.
    *
@@ -731,6 +794,23 @@ export interface UserDailyRollupRepository {
    * `earliest` as the day below which every range is still read live.
    */
   coverage(subject: AuthenticatedSubject): Promise<RollupCoverage | null>;
+  /**
+   * The earliest day in `[from, toExclusive)` holding no row at all - the first
+   * hole - or null when every day in that window is folded.
+   *
+   * `coverage` proves only its two endpoints. Contiguity between them is an
+   * invariant the fold intends, not one it can promise: `writeDays` chunks its
+   * inserts and is not wrapped in a transaction, and a fold that fails after its
+   * clear leaves its days cleared inside coverage on purpose. Either leaves a
+   * stretch of days with no row strictly inside `[earliest, latest]`. The
+   * retention sweep may not delete across one - a day with no row and no
+   * segments reports zero forever - so it asks this rather than assuming, and
+   * bounds its delete by what comes back.
+   *
+   * Both bounds are required: the caller decides the window, and this only ever
+   * looks inside it.
+   */
+  firstUnfoldedDay(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<Date | null>;
   /**
    * Drops every stored row for these days.
    *

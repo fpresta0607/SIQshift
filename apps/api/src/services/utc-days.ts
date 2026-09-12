@@ -40,22 +40,35 @@ export function utcDaysBetween(from: Date, to: Date): Date[] {
 }
 
 /**
- * How far back an uploaded instant may claim to be.
+ * How long raw evidence is kept, and therefore how far back an uploaded instant
+ * may claim to be.
  *
- * It lives beside the day arithmetic for the same reason that does: both
- * ingest paths feed the fold and neither may depend on the other, and a
- * tolerance kept in two places is a tolerance that stops agreeing. The future
- * side of an upload was always checked by each path and the past side was not,
- * so any authenticated client could post `0000-01-01T00:00:00Z` -
+ * One constant, because these are one boundary said twice. Ninety days is the
+ * longest bounded range either dashboard offers, so every range that draws an
+ * hourly chart still has the segments behind it; only the unbounded All-time
+ * view reaches past this line, and what it reads there is the fold rather than
+ * the rows. Accepting evidence older than that would store rows the sweep is
+ * about to delete, and - worse - would let a late upload name a day whose rows
+ * are already gone, which refolds a correct stored row into zeros. So the
+ * ingest refuses at the door what retention will not keep.
+ *
+ * It lives beside the day arithmetic for the same reason that does: both ingest
+ * paths, the fold and the sweep all need it and none of them may depend on
+ * another, and a window kept in two places is a window that stops agreeing.
+ * The future side of an upload was always checked by each path and the past
+ * side was not, so any authenticated client could post `0000-01-01T00:00:00Z` -
  * `timestampSchema` accepts any four-digit year. On the agent path that stored
  * a session whose known end sat two thousand years back, and the span between
  * a session's old and new known end is expanded one `Date` per day; on the
  * activity path it named a day two thousand years back for the fold, which
  * anchors a fresh table's coverage there.
- *
- * A year is far past any real backlog: the spools replay an outage of weeks,
- * and retention keeps ninety days of raw segments. Anything older is a clock
- * set wrong or a client making things up, and either way it is worth refusing
- * rather than storing.
  */
-export const PAST_UPLOAD_TOLERANCE_MS = 366 * DAY_MS;
+export const RETENTION_DAYS = 90;
+
+/** The same window in milliseconds, as the ingest bounds want it. */
+export const RETENTION_WINDOW_MS = RETENTION_DAYS * DAY_MS;
+
+/** The first day whose raw rows may go: everything before it has expired. */
+export function retentionCutoff(now: Date): Date {
+  return new Date(utcDayStart(now).getTime() - RETENTION_WINDOW_MS);
+}

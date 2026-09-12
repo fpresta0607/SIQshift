@@ -389,6 +389,22 @@ describe("database schema", () => {
     );
   });
 
+  it("indexes activity segments for the retention sweep as well as for a member's own range", () => {
+    const names = getTableConfig(activitySegments).indexes.map((index) => index.config.name);
+    expect(names).toContain("activity_segments_organization_user_started_at_idx");
+    // The sweep deletes a whole organization's expired rows at once, so it needs
+    // a range over startedAt that does not lead on the user: PostgreSQL has no
+    // skip scan, and without this the nightly delete is a sequential scan of the
+    // largest table in the schema.
+    const sweep = getTableConfig(activitySegments).indexes.find(
+      (index) => index.config.name === "activity_segments_organization_started_at_idx",
+    );
+    expect(sweep?.config.columns.map((column) => (column as { name: string }).name)).toEqual([
+      "organization_id",
+      "started_at",
+    ]);
+  });
+
   it("defines per-user project path mappings with unique prefixes", () => {
     expect(projectPathMappings.id.primary).toBe(true);
     expect(projectPathMappings.organizationId.notNull).toBe(true);

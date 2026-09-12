@@ -162,6 +162,13 @@
       "when": 1788032529998,
       "tag": "0022_user_daily_rollups",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788032529999,
+      "tag": "0023_activity_segment_retention_index",
+      "breakpoints": true
     }
   ]
 }

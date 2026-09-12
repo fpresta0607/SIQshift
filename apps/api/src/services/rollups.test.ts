@@ -20,7 +20,7 @@ import type {
 import { createReportService } from "./reports.js";
 import { isSpentDay, planRollupRange, rollupWindow } from "./rollup-ranges.js";
 import { FOLD_MAX_DAYS, createRollupService, foldDay, foldableDays } from "./rollups.js";
-import { DAY_MS, utcDayStart, utcDaysBetween } from "./utc-days.js";
+import { DAY_MS, RETENTION_DAYS, utcDayStart, utcDaysBetween } from "./utc-days.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -72,14 +72,25 @@ class Reports implements Partial<ReportRepository> {
 
   public async readPresenceIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<PresenceIntervalRecord[]> {
     this.presenceReads.push(query);
-    return this.presenceIntervals.filter((row) => overlaps(row.startedAt, row.endedAt, query));
+    return this.presenceIntervals
+      .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.endedAt, query));
   }
   public async readAgentIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentIntervalRecord[]> {
     this.agentReads.push(query);
-    return this.agentIntervals.filter((row) => overlaps(row.startedAt, row.endedAt, query));
+    return this.agentIntervals
+      .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.endedAt, query));
+  }
+  /**
+   * The commit stamp the fold's re-check asks about. Null until the test plays
+   * an upload: every fold before one holds no evidence the probe could name.
+   */
+  public newestEvidenceReceivedAt: Date | null = null;
+  public async readNewestEvidenceReceivedAt(_subject: AuthenticatedSubject, _query: ReportQuery): Promise<Date | null> {
+    return this.newestEvidenceReceivedAt;
   }
   public async readSessionIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<SessionIntervalRecord[]> {
-    return this.sessionIntervals.filter((row) => overlaps(row.startedAt, row.stoppedAt, query));
+    return this.sessionIntervals
+      .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.stoppedAt, query));
   }
   public async readLeaderboardForOrganization(): Promise<LeaderboardRowRecord[]> {
     return this.leaderboardRows;
@@ -94,8 +105,8 @@ class Reports implements Partial<ReportRepository> {
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string): Promise<ReportLookupRecord | null> {
     return projectId === ids.project ? { id: ids.project, name: "Ledger" } : null;
   }
-  public async findUserForOrganization(): Promise<null> {
-    return null;
+  public async findUserForOrganization(_subject: AuthenticatedSubject, userId: string): Promise<ReportLookupRecord | null> {
+    return this.roster.find((member) => member.id === userId) ?? null;
   }
   public async readProjectTotalsForMember(): Promise<ProjectTotalRecord[]> {
     return [];
@@ -114,15 +125,26 @@ function overlaps(start: Date, end: Date, query: ReportQuery): boolean {
   return true;
 }
 
+/** The user predicate every interval read in the repository applies. */
+function matchesUser(userId: string, query: ReportQuery): boolean {
+  return query.userId === undefined || query.userId === userId;
+}
+
 class Rollups implements UserDailyRollupRepository {
   public rows: UserDailyRollupRecord[] = [];
   public readonly calls: string[] = [];
   public failWrite = false;
   public failLatestDay = false;
 
-  public async readForRange(_subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]> {
+  public async readForRange(
+    _subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+    userId?: string,
+  ): Promise<UserDailyRollupRecord[]> {
     this.calls.push("read");
-    return this.rows.filter((row) => row.day >= from && row.day < toExclusive);
+    return this.rows.filter((row) => row.day >= from && row.day < toExclusive
+      && (userId === undefined || row.userId === userId));
   }
   public async coverage(): Promise<RollupCoverage | null> {
     if (this.failLatestDay) throw new Error("latest day read failed");
@@ -131,6 +153,13 @@ class Rollups implements UserDailyRollupRepository {
     const latest = days[days.length - 1];
     if (earliest === undefined || latest === undefined) return null;
     return { earliest: new Date(earliest), latest: new Date(latest) };
+  }
+  public async firstUnfoldedDay(_subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<Date | null> {
+    const stored = new Set(this.rows.map((row) => row.day.getTime()));
+    for (let at = from.getTime(); at < toExclusive.getTime(); at += DAY_MS) {
+      if (!stored.has(at)) return new Date(at);
+    }
+    return null;
   }
   public async clearDays(_subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
     this.calls.push("clear");
@@ -684,6 +713,287 @@ describe("maintaining the fold", () => {
   });
 });
 
+describe("extending the fold downward", () => {
+  it("folds below where coverage starts, stopping at the floor it is given", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(10)), storedDay(day(11))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(7), 10);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(7), day(8), day(9)].map((entry) => entry.toISOString()));
+    // One contiguous stretch still, which is what the frontier depends on.
+    const stored = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    for (let index = 1; index < stored.length; index += 1) {
+      expect(stored[index]! - stored[index - 1]!).toBe(DAY_MS);
+    }
+  });
+
+  it("folds at most the days it is allowed, leaving the rest for a later pass", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(10))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(0), 3);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(7), day(8), day(9)].map((entry) => entry.toISOString()));
+  });
+
+  it("refuses to bootstrap, because there is no run to extend", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(0), 10);
+
+    expect(outcome).toEqual({ folded: [] });
+    expect(rollups.rows).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+
+  it("does nothing when coverage already reaches the floor", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(5))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(5), 10);
+
+    expect(outcome.folded).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+});
+
+describe("extending the fold upward", () => {
+  it("folds toward the bound it is given, stopping just below it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(0)), storedDay(day(1))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 10);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(2), day(3), day(4)].map((entry) => entry.toISOString()));
+    // One contiguous stretch still, which is what the frontier depends on.
+    const stored = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    for (let index = 1; index < stored.length; index += 1) {
+      expect(stored[index]! - stored[index - 1]!).toBe(DAY_MS);
+    }
+  });
+
+  it("folds at most the days it is allowed, leaving the rest for a later pass", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(0))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 2);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(1), day(2)].map((entry) => entry.toISOString()));
+  });
+
+  it("refuses to bootstrap, because there is no run to extend", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 10);
+
+    expect(outcome).toEqual({ folded: [] });
+    expect(rollups.rows).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+
+  it("does nothing when coverage already reaches the bound", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(5))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 10);
+
+    expect(outcome.folded).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+});
+
+describe("rebuilding a day the sweep suspects", () => {
+  /**
+   * The race the sweep's refold exists for. The backfill read its snapshot
+   * before a late upload committed evidence for a day it was folding, so the
+   * row it wrote is missing hours that are stored by the time anyone looks.
+   * Once coverage has moved past the day nothing names it again, so the
+   * re-read is the whole difference between a late upload being folded late
+   * and its evidence being lost from the stored row for good.
+   */
+  it("replaces a row built from a snapshot that predates a late upload's evidence", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    // The backfill's snapshot: nothing for the day it is about to fold.
+    reports.presenceIntervals = [];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(-5)), storedDay(day(-1))];
+    let atNow = at(0, 12);
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => atNow });
+
+    await service.backfill(subject, day(-10), 5);
+
+    // The row the sweep just wrote: measured before the upload committed.
+    const stale = rollups.rows.find((row) => row.day.getTime() === day(-7).getTime());
+    expect(stale?.activeMs).toBe(0);
+
+    // The upload commits evidence for that day, after the snapshot.
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-7, 9), at(-7, 11))];
+
+    atNow = at(0, 13);
+    await service.refold(subject, [day(-7)]);
+
+    const refolded = rollups.rows.find((row) => row.day.getTime() === day(-7).getTime());
+    expect(refolded?.activeMs).toBe(2 * 60 * 60 * 1_000);
+  });
+
+  /**
+   * The straddle the write-time re-check exists for. The refold's interval read
+   * snapshots a day empty and is slow; an upload commits evidence for that day
+   * while the read is in flight, and its refresh folds the day correctly and
+   * writes it. When the slow read then returns and stamps a later `computedAt`,
+   * the conditional upsert would let its snapshot-stale row overwrite the
+   * correct one - and once coverage has moved past the day, nothing names it
+   * again, so the undercount would be permanent. The probe is what makes the
+   * refold re-read rather than return its stale snapshot.
+   */
+  it("re-reads a run that lost a late commit, so the stale snapshot never wins the upsert", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    // The backfill has committed rows for day -3 and the days around it, so
+    // day -3 is inside coverage and the upload's own refresh will fold it.
+    rollups.rows = [storedDay(day(-5)), storedDay(day(-4)), storedDay(day(-3)), storedDay(day(-2)), storedDay(day(-1))];
+    let atNow = at(0, 12);
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => atNow });
+
+    // The refold's presence read takes its snapshot where the real one does,
+    // when the query starts, and returns only after the upload below is done.
+    let release = (): void => {};
+    let issued = (): void => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hasIssued = new Promise<void>((resolve) => { issued = resolve; });
+    const read = reports.readPresenceIntervals.bind(reports);
+    let holding = true;
+    reports.readPresenceIntervals = async (forSubject, query): Promise<PresenceIntervalRecord[]> => {
+      if (!holding) return read(forSubject, query);
+      holding = false;
+      const snapshot = await read(forSubject, query);
+      issued();
+      await held;
+      return snapshot;
+    };
+
+    const pending = service.refold(subject, [day(-3)]);
+    await hasIssued;
+
+    // The upload commits two hours for day -3, stamped after the refold's read
+    // was issued, and its refresh folds the day itself.
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-3, 9), at(-3, 11))];
+    reports.newestEvidenceReceivedAt = at(0, 12, 30);
+    atNow = at(0, 13);
+    await service.refresh(subject, [at(-3, 12)]);
+
+    // The slow read returns from its pre-upload snapshot, under a clock later
+    // than the one the refresh folded with.
+    atNow = at(0, 14);
+    release();
+    await pending;
+
+    const stored = rollups.rows.find((row) => row.day.getTime() === day(-3).getTime());
+    expect(stored?.activeMs).toBe(2 * 60 * 60 * 1_000);
+  });
+});
+
+describe("the retention cutoff as a floor under a named day", () => {
+  /**
+   * The ingest and the fold have to name the same day, or there is a band where
+   * evidence is accepted, stored, never folded, and then swept - an undercount
+   * on a day whose stale row the report path spends in preference to reading
+   * live. The sweep stops a day below the cutoff, so the cutoff day still has
+   * its segments and is the oldest day both bounds admit.
+   */
+  it("admits a day standing exactly on the cutoff", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-RETENTION_DAYS, 9), at(-RETENTION_DAYS, 11))];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(-200)), storedDay(day(-RETENTION_DAYS)), storedDay(day(-1))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
+
+    await service.refresh(subject, [at(-RETENTION_DAYS, 9)]);
+
+    const cutoffDay = rollups.rows.find((row) => row.day.getTime() === day(-RETENTION_DAYS).getTime());
+    expect(cutoffDay?.activeMs).toBe(2 * 60 * 60 * 1_000);
+  });
+
+  it("declines the day immediately below it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [
+      storedDay(day(-200)),
+      storedDay(day(-RETENTION_DAYS - 1), 3_600_000),
+      storedDay(day(-1)),
+    ];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
+
+    await service.refresh(subject, [at(-RETENTION_DAYS - 1, 9)]);
+
+    const expired = rollups.rows.find((row) => row.day.getTime() === day(-RETENTION_DAYS - 1).getTime());
+    expect(expired?.activeMs).toBe(3_600_000);
+  });
+
+  /**
+   * The regression the sweep made possible. `backfill` drags `coverage.earliest`
+   * down to the oldest evidence, which is exactly what widens the floor a named
+   * day is measured against - so a day whose raw rows the sweep has already
+   * deleted became eligible to be cleared and rebuilt from evidence that is no
+   * longer there. Its correct stored row would be overwritten with zeros, and
+   * the fresher `computedAt` makes the zeros win.
+   */
+  it("leaves an expired day's stored row alone when a late upload names it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    // The rows behind the expired day are gone - the sweep deleted them.
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-5, 9), at(-5, 11))];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(-200)), storedDay(day(-150), 3_600_000), storedDay(day(-1))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
+
+    await service.refresh(subject, [at(-150, 9), at(-5, 9)]);
+
+    const expired = rollups.rows.find((row) => row.day.getTime() === day(-150).getTime());
+    expect(expired?.activeMs).toBe(3_600_000);
+    // The day inside the window is still folded, so the floor declines only
+    // what it has to.
+    const recent = rollups.rows.find((row) => row.day.getTime() === day(-5).getTime());
+    expect(recent?.activeMs).toBe(2 * 60 * 60 * 1_000);
+    // And nothing read the expired day's evidence at all.
+    expect(reports.presenceReads.map((query) => query.from?.toISOString()))
+      .toEqual([day(-5).toISOString()]);
+  });
+});
+
 describe("planning a range against the fold", () => {
   const now = at(3, 9);
 
@@ -909,6 +1219,137 @@ describe("the board with and without the fold", () => {
     // all - which is the compute this table exists to take off the report path.
     expect(reports.agentReads).toEqual([]);
     expect(reports.presenceReads).toEqual([]);
+  });
+
+  /**
+   * The board and a member's own card measure the same person over the same
+   * range, so they may not disagree - and once the sweep has deleted the raw
+   * rows behind the folded days, a card that read live would find nothing there
+   * and report zero while the board still answered in full from the fold.
+   */
+  it("answers a member's card from the fold, so it still matches their board row", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    // The sweep has been past: every folded day's raw evidence is gone.
+    reports.presenceIntervals = reports.presenceIntervals.filter((row) => row.startedAt >= day(3));
+    reports.agentIntervals = reports.agentIntervals.filter((row) => row.startedAt >= day(3));
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    const filters = { fromAt: day(0).toISOString(), toExclusiveAt: day(3).toISOString() };
+
+    const board = await service.leaderboard(subject, filters);
+    const card = await service.meStats(subject, { ...filters, userId: ids.user });
+
+    const row = board.entries.find((entry) => entry.user.id === ids.user);
+    expect(row?.activeSeconds).toBeGreaterThan(0);
+    expect(card.activeSeconds).toBe(row?.activeSeconds);
+    expect(card.agentSeconds).toBe(row?.agentSeconds);
+    // One person's hours, not the workspace's: the stored read carries the same
+    // user predicate the live reads carry.
+    const other = board.entries.find((entry) => entry.user.id === ids.otherUser);
+    expect(other?.activeSeconds).toBeGreaterThan(0);
+    expect(card.activeSeconds).toBeLessThan((row?.activeSeconds ?? 0) + (other?.activeSeconds ?? 0));
+    expect(card.concurrency.t0Seconds + card.concurrency.t1Seconds
+      + card.concurrency.t2Seconds + card.concurrency.t3PlusSeconds).toBe(card.activeSeconds);
+  });
+
+  it("spends a member's stored days rather than measuring their whole range live", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    rollups.calls.length = 0;
+    reports.presenceReads.length = 0;
+
+    await service.meStats(subject, {
+      fromAt: day(0).toISOString(),
+      toExclusiveAt: day(3).toISOString(),
+      userId: ids.user,
+    });
+
+    expect(rollups.calls).toContain("read");
+    expect(reports.presenceReads).toHaveLength(1);
+  });
+
+  /**
+   * The card reads presence and agent intervals once over its whole range for
+   * the hourly series and the per-agent breakdown, and measures the live part
+   * of its range by clipping those rows rather than reading them again. The
+   * Today card polls this endpoint every sixty seconds and spends no stored day
+   * at all, so a second read there would be the whole cost doubled.
+   */
+  it.each([
+    ["a range whose every day is folded", { fromAt: () => day(0).toISOString(), toExclusiveAt: () => day(3).toISOString() }],
+    ["a range inside the unfinished day, which spends nothing", { fromAt: () => at(3, 0).toISOString(), toExclusiveAt: () => at(3, 10).toISOString() }],
+    ["an all-time range", {}],
+  ])("reads each interval source once for %s", async (_label, bounds) => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    const filters = {
+      ...(bounds.fromAt === undefined ? {} : { fromAt: bounds.fromAt() }),
+      ...(bounds.toExclusiveAt === undefined ? {} : { toExclusiveAt: bounds.toExclusiveAt() }),
+    };
+    reports.presenceReads.length = 0;
+    reports.agentReads.length = 0;
+
+    const card = await service.meStats(subject, { ...filters, userId: ids.user });
+
+    expect(reports.presenceReads).toHaveLength(1);
+    expect(reports.agentReads).toHaveLength(1);
+    // And the totals are still the board's, however the plan was assembled.
+    const board = await service.leaderboard(subject, filters);
+    const row = board.entries.find((entry) => entry.user.id === ids.user);
+    expect(card.activeSeconds).toBe(row?.activeSeconds);
+    expect(card.agentSeconds).toBe(row?.agentSeconds);
+  });
+
+  it("reads each interval source once for a project-scoped card, which spends nothing", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    reports.presenceReads.length = 0;
+    reports.agentReads.length = 0;
+
+    await service.meStats(subject, {
+      scope: ids.project,
+      fromAt: day(0).toISOString(),
+      toExclusiveAt: day(3).toISOString(),
+      userId: ids.user,
+    });
+
+    expect(reports.presenceReads).toHaveLength(1);
+    expect(reports.agentReads).toHaveLength(1);
   });
 
   it("falls back to reading live for a project-scoped range, which the fold cannot answer", async () => {

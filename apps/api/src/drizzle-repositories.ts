@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, max, min, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, max, min, ne, or, sql, sum } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   activitySegments,
@@ -32,6 +32,7 @@ import type {
 } from "./auth.js";
 import { AppError } from "./errors.js";
 import { agentCodebaseLabel, identityRepoKey } from "./services/attribution.js";
+import { DAY_MS, utcDayStart } from "./services/utc-days.js";
 import {
   PathMappingRepositoryError,
   SessionRepositoryError,
@@ -915,6 +916,41 @@ export class DrizzleReportRepository implements ReportRepository {
     }));
   }
 
+  /**
+   * The newest `receivedAt` the range's evidence carries, across both tables
+   * the fold reads. Each half carries its own interval read's overlap bounds
+   * and none of its filters: the fold's re-check wants to know what committed,
+   * not what the reads would return, so the presence read's freshness window
+   * is deliberately absent here.
+   */
+  public async readNewestEvidenceReceivedAt(subject: AuthenticatedSubject, query: ReportQuery): Promise<Date | null> {
+    const segmentRows = await this.db
+      .select({ receivedAt: sql<Date | string | null>`max(${activitySegments.receivedAt})` })
+      .from(activitySegments)
+      .where(and(
+        eq(activitySegments.organizationId, subject.organizationId),
+        ...(query.from === undefined ? [] : [gt(activitySegments.endedAt, query.from)]),
+        ...(query.toExclusive === undefined ? [] : [lt(activitySegments.startedAt, query.toExclusive)]),
+      ));
+    const sessionRows = await this.db
+      .select({ receivedAt: sql<Date | string | null>`max(${agentSessions.receivedAt})` })
+      .from(agentSessions)
+      .where(and(
+        eq(agentSessions.organizationId, subject.organizationId),
+        // A raw fragment on the left strips drizzle's Date mapping from the
+        // right-hand parameter, and postgres-js refuses a bare Date - so the
+        // bound is passed as an ISO string, exactly like the report ranges.
+        ...(query.from === undefined
+          ? []
+          : [sql`coalesce(${agentSessions.endedAt}, ${agentSessions.lastEventAt}) > ${query.from.toISOString()}`]),
+        ...(query.toExclusive === undefined ? [] : [lt(agentSessions.startedAt, query.toExclusive)]),
+      ));
+    const times = [segmentRows[0]?.receivedAt ?? null, sessionRows[0]?.receivedAt ?? null]
+      .map((stamp) => (stamp === null ? null : new Date(stamp).getTime()))
+      .filter((time): time is number => time !== null);
+    return times.length === 0 ? null : new Date(Math.max(...times));
+  }
+
   private async summaryFor(db: Pick<DatabaseConnection["db"], "select">, subject: AuthenticatedSubject, query: ReportQuery): Promise<ReportSummaryRecord> {
     const rows = await db
       .select({ totalRows: count(timeSessions.id), totalDurationSeconds: sum(timeSessions.durationSeconds) })
@@ -1150,6 +1186,93 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
       .onConflictDoNothing({
         target: [activitySegments.organizationId, activitySegments.userId, activitySegments.clientId],
       });
+  }
+
+  public async organizationsWithSegmentsBefore(toExclusive: Date, limit: number, startAt: number): Promise<string[]> {
+    // Candidates come from the fold, never from a scan of the segments.
+    //
+    // Grouping activity_segments by organization reads every expired row in the
+    // schema's largest table, and the index 0023 adds cannot help: it leads on
+    // the organization, so a bare startedAt predicate has nothing to seek on -
+    // which is the very reason that index exists. Doing it nightly, in a change
+    // whose whole purpose is to take load off this table, is backwards.
+    //
+    // user_daily_rollups is small and already lists exactly the organizations
+    // that can be swept at all: one with no stored row has nothing for the
+    // backfill to extend downward, since it refuses to anchor coverage itself,
+    // so it could only ever spend a slot of a capped pass without using it. It
+    // rejoins the rotation the moment the upload path gives it a fold.
+    //
+    // One statement, because the limit has to bound the discovery as well as
+    // the sweeping. Each organization's oldest evidence taken as its own round
+    // trip is an indexed seek either way, but a deployment with five thousand
+    // folded organizations then pays five thousand serial round trips every
+    // night to choose twenty-five. The lateral runs the same seeks server-side,
+    // and ordering before the limit means no work is spent on an organization
+    // this pass will not reach. Oldest evidence first, so the organization
+    // furthest behind is the one a capped pass spends its budget on.
+    //
+    // The window rotates rather than always starting at the head, and that is
+    // not fairness for its own sake: an organization the sweep cannot advance
+    // would otherwise hide every organization behind it, forever. Those states
+    // are real and documented - a hole in coverage the sweep will not delete
+    // across, and a pass that throws - and in both the organization's oldest
+    // evidence never moves, so a strict head-first cut would return it again
+    // every night. Ranking the candidates and taking `limit` of them from
+    // `startAt`, wrapping, reaches every candidate within a bounded number of
+    // passes while still putting the furthest behind first inside the window.
+    const rows = await this.db.execute<{ organization_id: string }>(sql`
+      with candidates as (
+        select
+          folded.organization_id as organization_id,
+          row_number() over (order by evidence.oldest asc) - 1 as position,
+          count(*) over () as total
+        from (select distinct ${userDailyRollups.organizationId} from ${userDailyRollups}) as folded
+        cross join lateral (
+          select min(${activitySegments.startedAt}) as oldest
+          from ${activitySegments}
+          where ${activitySegments.organizationId} = folded.organization_id
+        ) as evidence
+        where evidence.oldest < ${toExclusive.toISOString()}::timestamptz
+      )
+      select organization_id
+      from candidates
+      order by (position - ${startAt}::bigint % total + total) % total asc
+      limit ${limit}
+    `);
+    return [...rows].map((row) => row.organization_id);
+  }
+
+  public async earliestDay(organizationId: string): Promise<Date | null> {
+    const oldest = await this.earliestSegment(organizationId);
+    return oldest === null ? null : utcDayStart(oldest);
+  }
+
+  /** The instant this organization's oldest segment began; one indexed seek. */
+  private async earliestSegment(organizationId: string): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ oldest: min(activitySegments.startedAt) })
+      .from(activitySegments)
+      .where(eq(activitySegments.organizationId, organizationId));
+    return row?.oldest ?? null;
+  }
+
+  public async deleteSpansWithin(organizationId: string, from: Date, toExclusive: Date): Promise<number> {
+    const deleted = await this.db
+      .delete(activitySegments)
+      .where(and(
+        eq(activitySegments.organizationId, organizationId),
+        // startedAt carries the index the sweep deletes by; endedAt is what
+        // makes the window honest, because a span crossing toExclusive belongs
+        // to a day the reports can still be asked about.
+        gte(activitySegments.startedAt, from),
+        lt(activitySegments.startedAt, toExclusive),
+        lte(activitySegments.endedAt, toExclusive),
+      ));
+    // The driver's affected-row count, not `.returning()`: a pass over a large
+    // workspace deletes days of segments in one statement, and every id would
+    // be transferred and allocated in Node only to be counted and dropped.
+    return deleted.count;
   }
 }
 
@@ -2120,6 +2243,7 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
     subject: AuthenticatedSubject,
     from: Date,
     toExclusive: Date,
+    userId?: string,
   ): Promise<UserDailyRollupRecord[]> {
     const rows = await this.db
       .select({
@@ -2137,6 +2261,7 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
       .from(userDailyRollups)
       .where(and(
         eq(userDailyRollups.organizationId, subject.organizationId),
+        ...(userId === undefined ? [] : [eq(userDailyRollups.userId, userId)]),
         gte(userDailyRollups.day, from),
         lt(userDailyRollups.day, toExclusive),
       ))
@@ -2152,6 +2277,32 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
     // Both aggregates come back null together, on an organization with no rows.
     if (row?.earliest == null || row.latest == null) return null;
     return { earliest: row.earliest, latest: row.latest };
+  }
+
+  public async firstUnfoldedDay(
+    subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+  ): Promise<Date | null> {
+    // The distinct days stored inside the window, ascending, walked for the
+    // first one missing. One indexed range read bounded by the caller's own
+    // window, and it carries a day per folded day rather than a row per member.
+    const stored = await this.db
+      .selectDistinct({ day: userDailyRollups.day })
+      .from(userDailyRollups)
+      .where(and(
+        eq(userDailyRollups.organizationId, subject.organizationId),
+        gte(userDailyRollups.day, from),
+        lt(userDailyRollups.day, toExclusive),
+      ))
+      .orderBy(asc(userDailyRollups.day));
+    let expected = utcDayStart(from).getTime();
+    const end = toExclusive.getTime();
+    for (const row of stored) {
+      if (row.day.getTime() > expected) break;
+      expected = row.day.getTime() + DAY_MS;
+    }
+    return expected >= end ? null : new Date(expected);
   }
 
   public async clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
