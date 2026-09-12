@@ -18,7 +18,7 @@ import type {
 } from "../repositories.js";
 import { createReportService } from "./reports.js";
 import { isSpentDay, planRollupRange, rollupWindow } from "./rollup-ranges.js";
-import { createRollupService, foldDay, foldableDays } from "./rollups.js";
+import { FOLD_MAX_DAYS, createRollupService, foldDay, foldableDays } from "./rollups.js";
 import { DAY_MS, utcDayStart, utcDaysBetween } from "./utc-days.js";
 
 const ids = {
@@ -270,20 +270,22 @@ describe("maintaining the fold", () => {
     const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(10, 9) });
 
     // The catch-up shape: a desktop back from a long outage uploads one stale
-    // instant beside a recent one. Two days are folded, so two days are read -
-    // the week between them is not fetched only to be thrown away.
+    // instant beside a recent one. The named days are folded where they fall,
+    // and the week between them is not fetched only to be thrown away.
     await service.refresh(subject, [at(0, 12), at(1, 12), at(8, 12)]);
 
     const spans = (reads: ReportQuery[]): (string | undefined)[][] =>
       reads.map((read) => [read.from?.toISOString(), read.toExclusive?.toISOString()]);
+    // Day 9 comes from the bootstrap - nothing was stored, so this refresh also
+    // folds yesterday, which happens to sit against day 8.
     const expected = [
       [day(0).toISOString(), day(2).toISOString()],
-      [day(8).toISOString(), day(9).toISOString()],
+      [day(8).toISOString(), day(10).toISOString()],
     ];
     expect(spans(reports.presenceReads)).toEqual(expected);
     expect(spans(reports.agentReads)).toEqual(expected);
     expect(rollups.rows.map((row) => row.day.toISOString()))
-      .toEqual([day(0).toISOString(), day(1).toISOString(), day(8).toISOString()]);
+      .toEqual([day(0), day(1), day(8), day(9)].map((entry) => entry.toISOString()));
   });
 
   /**
@@ -355,7 +357,7 @@ describe("maintaining the fold", () => {
     expect(rollups.rows).toEqual([]);
   });
 
-  it("fills the days between the latest day it already holds and the newest it is folding", async () => {
+  it("fills forward to yesterday, so a quiet weekend folds as zeros rather than staying live", async () => {
     const reports = new Reports();
     reports.roster = [{ id: ids.user, name: "Alex" }];
     reports.presenceIntervals = [
@@ -363,33 +365,133 @@ describe("maintaining the fold", () => {
       presence(ids.user, "Alex", at(3, 9), at(3, 10)),
     ];
     const rollups = new Rollups();
-    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(4, 9) });
+    let current = at(1, 9);
+    const service = createRollupService({
+      reports: reports as unknown as ReportRepository,
+      rollups,
+      now: () => current,
+    });
+    const storedDays = (): string[] => rollups.rows.map((row) => row.day.toISOString()).sort();
 
-    // Friday's upload folds Friday, and nothing is stored to be contiguous with.
+    // Friday's upload bootstraps on Friday, which is yesterday as it runs.
     await service.refresh(subject, [at(0, 9)]);
-    expect(rollups.rows.map((row) => row.day.toISOString())).toEqual([day(0).toISOString()]);
+    expect(storedDays()).toEqual([day(0).toISOString()]);
 
     // Monday's upload names Monday alone, and the quiet weekend between gets
     // its all-zero rows rather than staying a live span for good.
+    current = at(4, 9);
     await service.refresh(subject, [at(3, 9)]);
-    expect(rollups.rows.map((row) => row.day.toISOString()).sort())
-      .toEqual([day(0), day(1), day(2), day(3)].map((entry) => entry.toISOString()));
-    expect(rollups.rows.filter((row) => row.day.getTime() === day(1).getTime())[0])
+    expect(storedDays()).toEqual([day(0), day(1), day(2), day(3)].map((entry) => entry.toISOString()));
+    expect(rollups.rows.find((row) => row.day.getTime() === day(1).getTime()))
       .toMatchObject({ activeMs: 0, agentMs: 0 });
-    // Contiguous now, so the whole stretch reads as one span of stored days.
-    expect(rollups.rows.filter((row) => row.day.getTime() === day(3).getTime())[0]?.activeMs)
+    expect(rollups.rows.find((row) => row.day.getTime() === day(3).getTime())?.activeMs)
       .toBe(60 * 60 * 1_000);
   });
 
-  it("folds nothing for a day that is still being written", async () => {
+  /**
+   * A table left far behind must not hand one upload the whole gap: the read
+   * that would close it is exactly the raw-interval read this cache exists to
+   * retire, and running it here would only relocate the cost onto ingest.
+   */
+  it("catches up by at most a month per refresh, reading no wider span than that", async () => {
     const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [{
+      userId: ids.user,
+      day: day(0),
+      activeMs: 0,
+      agentMs: 0,
+      concurrency0Ms: 0,
+      concurrency1Ms: 0,
+      concurrency2Ms: 0,
+      concurrency3PlusMs: 0,
+      awayMs: 0,
+      computedAt: readAt,
+    }];
+    // A year on from the only day the table holds.
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(365, 9) });
+
+    await service.refresh(subject, []);
+
+    const folded = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    // The day already held, plus a month of catch-up straight after it: the
+    // leading edge moves forward and the gap behind it shrinks each time.
+    expect(folded).toHaveLength(FOLD_MAX_DAYS + 1);
+    expect(folded[folded.length - 1]).toBe(day(FOLD_MAX_DAYS).getTime());
+    // And the read that folded them is bounded by that same month, so no single
+    // query drags a year of raw intervals through the upload's request.
+    expect(reports.presenceReads).toHaveLength(1);
+    expect(reports.presenceReads[0]?.from?.toISOString()).toBe(day(1).toISOString());
+    expect(reports.presenceReads[0]?.toExclusive?.toISOString()).toBe(day(1 + FOLD_MAX_DAYS).toISOString());
+  });
+
+  it("splits a contiguous stretch longer than a month into bounded reads", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(60, 9) });
+
+    // Forty named days in a row, which the fold must not pull in one read.
+    await service.refresh(subject, Array.from({ length: 40 }, (_, index) => at(index, 12)));
+
+    const widths = reports.presenceReads.map((read) => (read.toExclusive!.getTime() - read.from!.getTime()) / DAY_MS);
+    // Thirty-one, then the nine left over, then the bootstrapped yesterday on
+    // its own - the same forty-one days, in reads no wider than the cap.
+    expect(widths).toEqual([FOLD_MAX_DAYS, 40 - FOLD_MAX_DAYS, 1]);
+    expect(new Set(rollups.rows.map((row) => row.day.getTime())).size).toBe(41);
+  });
+
+  it("gives each day of a run only the intervals that day touches, without changing what it measures", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    // One span across the midnight inside the run, and one wholly inside day 1.
+    reports.presenceIntervals = [
+      presence(ids.user, "Alex", at(0, 22), at(1, 2)),
+      presence(ids.user, "Alex", at(1, 9), at(1, 10)),
+    ];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(2, 9) });
+
+    await service.refresh(subject, [at(0, 12), at(1, 12)]);
+
+    const activeMs = (offset: number): number | undefined =>
+      rollups.rows.find((row) => row.day.getTime() === day(offset).getTime())?.activeMs;
+    // Day 0 keeps its two hours of the overnight span and day 1 the other two
+    // plus its own hour - exactly what folding from the run's whole arrays
+    // gives, because the clipping to [day, day + 1) is unchanged.
+    expect(activeMs(0)).toBe(2 * 60 * 60 * 1_000);
+    expect(activeMs(1)).toBe(3 * 60 * 60 * 1_000);
+  });
+
+  /**
+   * The bootstrap. A workspace whose members sit near UTC, work inside one UTC
+   * day and upload promptly never hands `refresh` an instant from a finished
+   * day, so a fold that only ever wrote the days it was named would leave the
+   * table empty for good and the feature would never engage at all.
+   */
+  it("folds yesterday on an upload that names no finished day, and never today", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.presenceIntervals = [
+      presence(ids.user, "Alex", at(-1, 9), at(-1, 10)),
+      presence(ids.user, "Alex", at(0, 9), at(0, 11)),
+    ];
     const rollups = new Rollups();
     const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
 
     await service.refresh(subject, [at(0, 9)]);
 
+    expect(rollups.rows.map((row) => row.day.toISOString())).toEqual([day(-1).toISOString()]);
+    expect(rollups.rows[0]?.activeMs).toBe(60 * 60 * 1_000);
+
+    // The next upload of the same day has nothing left to do, and pays only the
+    // one indexed lookup that tells it so.
+    rollups.calls.length = 0;
+    await service.refresh(subject, [at(0, 11)]);
+
     expect(rollups.calls).toEqual([]);
-    expect(rollups.rows).toEqual([]);
+    expect(rollups.rows.map((row) => row.day.toISOString())).toEqual([day(-1).toISOString()]);
   });
 });
 

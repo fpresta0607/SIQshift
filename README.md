@@ -218,20 +218,25 @@ partition of the timeline: measure a week day by day, add the days, and you get
 the same numbers a single sweep over the week gives.
 That is what lets the leaderboard stop re-reading raw evidence.
 
-Every upload folds the finished UTC days it touched into `user_daily_rollups` -
-one row per member per day, carrying active milliseconds, agent milliseconds, the
-four concurrency buckets and away time.
+Every upload folds into `user_daily_rollups` the finished UTC days it touched,
+together with the days needed to bring coverage up toward yesterday - one row per
+member per day, carrying active milliseconds, agent milliseconds, the four
+concurrency buckets and away time.
 A report then splits its range into the whole days it can spend and the pieces it
 cannot: the spent days are read out of that table as a handful of small rows, and
 what is left still reads segments.
 The current UTC day is never folded, because it is still being written to.
 
-The fold covers from the first day it ever wrote, forwards, and nothing below that.
-Coverage above that day is contiguous: a fold extends the days it was handed down
-to the latest day already stored, so a workspace that rests at weekends gets its
-all-zero weekend rows from Monday's upload rather than leaving a gap a week.
-History older than the first folded day is read live, and backfilling it is a job
-for the scheduled fold that comes with retention, not something a report does.
+Coverage runs from the day it started, forwards, and is contiguous: the first
+upload to reach an empty table folds yesterday, and every upload after that fills
+the days between the latest day stored and yesterday.
+A workspace that rests at weekends therefore gets its all-zero weekend rows from
+Monday's upload rather than leaving a gap a week.
+Each upload fills at most a month, so a table left far behind catches up over the
+next several uploads instead of paying the whole stretch on one request, and no
+single interval read spans more than that month either.
+History older than the day coverage started is read live, and backfilling it is a
+job for the scheduled fold that comes with retention, not something a report does.
 The read path assumes none of this in any case: a day with no row is read live
 wherever it sits.
 

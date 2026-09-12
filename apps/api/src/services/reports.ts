@@ -440,12 +440,12 @@ async function measureMembersMs(
   //
   // The spans are walked one at a time, for the reason the fold walks its runs
   // one at a time: the ingest path and the read path should behave alike. The
-  // count stays small because the fold fills forward to the latest day it
-  // already holds, so coverage from the first day ever folded onwards has no
-  // holes and a range above it plans a partial head and a partial tail.
-  // Below that first folded day nothing is stored, and a run of uncovered days
-  // merges into one span rather than one per day. Backfilling that history is
-  // the scheduled fold's job in the retention change, not a report's.
+  // count stays small because the fold brings coverage up toward yesterday on
+  // every upload, so coverage from the day it started onwards has no holes and
+  // a range above that day plans a partial head and a partial tail. Below it
+  // nothing is stored, and a run of uncovered days merges into one span rather
+  // than one per day. Backfilling that history is the scheduled fold's job in
+  // the retention change, not a report's.
   const reads: { span: LiveSpan; members: Map<string, MemberIntervals> }[] = [];
   for (const span of liveSpans) {
     // The bounds are replaced rather than narrowed: an open side of a span is
