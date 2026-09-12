@@ -684,6 +684,66 @@ describe("maintaining the fold", () => {
   });
 });
 
+describe("extending the fold downward", () => {
+  it("folds below where coverage starts, stopping at the floor it is given", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(10)), storedDay(day(11))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(7), 10);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(7), day(8), day(9)].map((entry) => entry.toISOString()));
+    expect(outcome.reached?.toISOString()).toBe(day(7).toISOString());
+    // One contiguous stretch still, which is what the frontier depends on.
+    const stored = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    for (let index = 1; index < stored.length; index += 1) {
+      expect(stored[index]! - stored[index - 1]!).toBe(DAY_MS);
+    }
+  });
+
+  it("folds at most the days it is allowed, leaving the rest for a later pass", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(10))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(0), 3);
+
+    expect(outcome.folded).toHaveLength(3);
+    expect(outcome.reached?.toISOString()).toBe(day(7).toISOString());
+  });
+
+  it("refuses to bootstrap, because there is no run to extend", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(0), 10);
+
+    expect(outcome).toEqual({ folded: [], reached: null });
+    expect(rollups.rows).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+
+  it("does nothing when coverage already reaches the floor", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(5))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.backfill(subject, day(5), 10);
+
+    expect(outcome.folded).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+});
+
 describe("planning a range against the fold", () => {
   const now = at(3, 9);
 

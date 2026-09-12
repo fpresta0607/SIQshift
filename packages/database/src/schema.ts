@@ -269,6 +269,9 @@ export const activitySegments = pgTable(
       sql`${table.processName} is null or char_length(${table.processName}) <= 200`,
     ),
     index("activity_segments_organization_user_started_at_idx").on(table.organizationId, table.userId, table.startedAt),
+    // The retention sweep deletes a whole organization's expired segments at
+    // once, so it needs a range over startedAt that does not lead on the user.
+    index("activity_segments_organization_started_at_idx").on(table.organizationId, table.startedAt),
   ],
 );
 

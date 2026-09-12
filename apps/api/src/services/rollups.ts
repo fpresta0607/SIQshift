@@ -171,12 +171,32 @@ export interface RollupServiceDependencies {
   now?: () => Date;
 }
 
+/** What one backfill pass managed, so a sweep can tell progress from arrival. */
+export interface BackfillOutcome {
+  /** The days it folded, oldest first; empty when there was nothing to do. */
+  folded: Date[];
+  /** Where coverage now starts, or null when the table holds nothing at all. */
+  reached: Date | null;
+}
+
 export interface RollupService {
   /**
    * Folds every finished UTC day these instants touch, for the whole
    * workspace, and replaces whatever was stored for those days.
    */
   refresh(subject: AuthenticatedSubject, instants: readonly Date[]): Promise<void>;
+  /**
+   * Extends coverage downward, at most `maxDays` per call, stopping at
+   * `downTo`.
+   *
+   * The upload path only ever fills upward, so this is the one thing that can
+   * reach history older than where coverage started - which is what the
+   * retention sweep needs before it may delete the raw rows behind those days.
+   * It refuses to bootstrap: with nothing stored there is no run to extend, and
+   * anchoring one here would start coverage at whatever the oldest evidence
+   * happens to be.
+   */
+  backfill(subject: AuthenticatedSubject, downTo: Date, maxDays: number): Promise<BackfillOutcome>;
 }
 
 const asInterval = (start: Date, end: Date): Interval => ({ start: start.getTime(), end: end.getTime() });
@@ -259,53 +279,97 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // window only ever fills upward, so nothing re-establishes them. They read
       // live, which is correct; restoring the coverage is the retention change's
       // scheduled fold, not a later upload.
-      await dependencies.rollups.clearDays(subject, days);
-      // Awaited here rather than left running across the loop below. A promise
-      // in flight that nothing is watching, rejecting while the loop awaits
-      // something else, is an unhandled rejection - and Node's default on one
-      // is to kill the process, which is exactly the outcome `foldAfterUpload`
-      // exists to keep an upload safe from.
-      const members = await dependencies.reports.readMembersForOrganization(subject);
-      // One read per run rather than one read spanning them all: a backlog
-      // carrying one instant from ninety days ago and one from yesterday folds
-      // two days, and reading the ninety between them would be interval rows
-      // fetched only to be discarded. The runs are walked one at a time because
-      // the upload is waiting on this: a catch-up batch landing on thirty
-      // scattered days must not open sixty connections at once.
-      //
-      // A pathologically scattered backlog therefore costs a read per
-      // non-adjacent day on the upload's own request. That is the deliberate
-      // trade against permanent holes, and moving catch-up off the upload
-      // request altogether is the retention change's scheduled fold.
-      const rows: UserDailyRollupRecord[] = [];
-      for (const run of foldRuns(days)) {
-        const from = run[0]!;
-        const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
-        const [presence, agents] = await Promise.all([
-          dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
-          dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
-        ]);
-        // Stamped where the reads returned, never where they were issued. A
-        // stored row yields to the fold that read later, and issue time is only
-        // a lower bound on what a read saw: a slow read issued first can return
-        // last holding strictly more rows, and would then lose to the staler
-        // fold it overtook.
-        const computedAt = now();
-        const presenceByDay = indexByDay(presence, run);
-        const agentsByDay = indexByDay(agents, run);
-        for (const day of run) {
-          rows.push(...foldDay(
-            members,
-            presenceByDay.get(day.getTime()) ?? [],
-            agentsByDay.get(day.getTime()) ?? [],
-            day,
-            computedAt,
-          ));
-        }
+      await foldDays(dependencies, subject, days, now);
+    },
+
+    async backfill(subject: AuthenticatedSubject, downTo: Date, maxDays: number): Promise<BackfillOutcome> {
+      const stored = await dependencies.rollups.coverage(subject);
+      // Nothing stored means nothing to extend downward from. The upload path
+      // owns the bootstrap, and inventing one here would anchor coverage at
+      // whatever the oldest evidence happens to be, which is exactly the long
+      // climb the bootstrap clamp exists to prevent.
+      if (stored === null) return { folded: [], reached: null };
+      const floor = utcDayStart(downTo).getTime();
+      const firstStored = stored.earliest.getTime();
+      if (firstStored <= floor) return { folded: [], reached: stored.earliest };
+      // Downward a day at a time, bounded the way the upward fill is bounded.
+      // Contiguity holds at either end: this extends the one stretch rather
+      // than starting a second, so coverage stays a single run and
+      // `coverage.latest` stays a frontier.
+      const days: Date[] = [];
+      for (let day = firstStored - DAY_MS; day >= floor && days.length < maxDays; day -= DAY_MS) {
+        days.push(new Date(day));
       }
-      await dependencies.rollups.writeDays(subject, rows);
+      if (days.length === 0) return { folded: [], reached: stored.earliest };
+      days.reverse();
+      await foldDays(dependencies, subject, days, now);
+      return { folded: days, reached: days[0]! };
     },
   };
+}
+
+/**
+ * Clears these days and rebuilds them, in that order.
+ *
+ * Shared by the upload path's fill and the retention sweep's backfill, because
+ * the ordering here is the whole safety story and there must be exactly one
+ * copy of it: a day with no row is read live and so is always correct, while a
+ * day whose row outlived the numbers behind it is wrong and stays wrong.
+ *
+ * The days are expected sorted ascending. `foldRuns` decides how many reads
+ * they cost, so folding a contiguous stretch is one read per month of it.
+ */
+async function foldDays(
+  dependencies: RollupServiceDependencies,
+  subject: AuthenticatedSubject,
+  days: readonly Date[],
+  now: () => Date,
+): Promise<void> {
+  await dependencies.rollups.clearDays(subject, days);
+  // Awaited here rather than left running across the loop below. A promise
+  // in flight that nothing is watching, rejecting while the loop awaits
+  // something else, is an unhandled rejection - and Node's default on one
+  // is to kill the process, which is exactly the outcome `foldAfterUpload`
+  // exists to keep an upload safe from.
+  const members = await dependencies.reports.readMembersForOrganization(subject);
+  // One read per run rather than one read spanning them all: a backlog
+  // carrying one instant from ninety days ago and one from yesterday folds
+  // two days, and reading the ninety between them would be interval rows
+  // fetched only to be discarded. The runs are walked one at a time because
+  // the upload is waiting on this: a catch-up batch landing on thirty
+  // scattered days must not open sixty connections at once.
+  //
+  // A pathologically scattered backlog therefore costs a read per
+  // non-adjacent day on the upload's own request. That is the deliberate
+  // trade against permanent holes, and moving catch-up off the upload
+  // request altogether is the retention change's scheduled fold.
+  const rows: UserDailyRollupRecord[] = [];
+  for (const run of foldRuns(days)) {
+    const from = run[0]!;
+    const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
+    const [presence, agents] = await Promise.all([
+      dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
+      dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
+    ]);
+    // Stamped where the reads returned, never where they were issued. A
+    // stored row yields to the fold that read later, and issue time is only
+    // a lower bound on what a read saw: a slow read issued first can return
+    // last holding strictly more rows, and would then lose to the staler
+    // fold it overtook.
+    const computedAt = now();
+    const presenceByDay = indexByDay(presence, run);
+    const agentsByDay = indexByDay(agents, run);
+    for (const day of run) {
+      rows.push(...foldDay(
+        members,
+        presenceByDay.get(day.getTime()) ?? [],
+        agentsByDay.get(day.getTime()) ?? [],
+        day,
+        computedAt,
+      ));
+    }
+  }
+  await dependencies.rollups.writeDays(subject, rows);
 }
 
 /**

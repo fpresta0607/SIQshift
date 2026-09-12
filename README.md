@@ -282,6 +282,43 @@ person's own card, which is a different shape entirely.
 **Today** sees no benefit either - a single local day has two partial UTC days and
 no whole day between them.
 
+### Raw evidence is kept for 90 days; the fold is kept for good
+
+A scheduled sweep rolls `activity_segments` older than 90 days into the fold and
+then deletes them.
+Ninety days is not an arbitrary number: it is the longest bounded range either
+dashboard offers, so every range that draws an hourly chart still has the rows
+behind it.
+Only **All time** reaches past the line, and what it reads there is the fold.
+
+The sweep folds first and deletes second, and it deletes strictly inside what it
+has proved folded rather than up to the cutoff on the assumption the fold got
+there.
+That order is the whole of its safety.
+A day with no stored row is read live, which is what makes the fold safe as a
+cache - but delete the rows behind an unfolded day and the same rule turns
+against them: the live read finds nothing, and the day reports as zero,
+indistinguishable from a day nobody worked.
+So a pass that folds nothing deletes nothing, and days below where coverage
+starts keep their rows until a later pass has folded them.
+
+This is also what backfills the history the upload path cannot reach.
+Uploads only ever fill coverage upward from where it started; the sweep is the
+only thing that extends it downward, a bounded number of days per pass, so a
+workspace with years behind it converges over several nights rather than folding
+all of it in one sitting.
+
+**What is given up past the window**, stated plainly because deletion does not
+come back:
+active time, agent time and the concurrency split are answered by the fold and
+are unaffected at any age.
+A **project-scoped** range and a member's **app breakdown** both read raw
+segments live, so past 90 days they have nothing to read and report zero for the
+expired part of a range.
+That is the trade the window is: summary forever, detail for ninety days.
+Sessions, agent sessions and shift commits are not touched by the sweep, so
+`Recorded`, the Agents tab and the CSV export keep their whole history.
+
 ### Attributed and unattributed
 
 `time_sessions.attribution` records which of those answers applied, and reporting

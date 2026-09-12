@@ -332,6 +332,56 @@ not to do on a workspace whose older days matter. Either way the reports stay
 correct and merely slower, and restoring the discarded coverage waits on the
 retention change's scheduled fold.
 
+### `0023` adds an index, and the sweep that uses it is a scheduled command
+
+`0023_activity_segment_retention_index` adds
+`(organization_id, started_at)` to `activity_segments`. It changes no row, but
+it is the one migration in this chain that takes a **write lock for as long as
+the build runs**: drizzle wraps each migration in a transaction and
+`CREATE INDEX CONCURRENTLY` cannot run inside one. On a table this size that is
+minutes, during which uploads are refused. Run it outside working hours. Nothing
+is lost when it does collide with an upload: the desktop spools and replays.
+
+Unlike `0022` this one has no deploy ordering of its own - the index only makes
+an existing query faster, so the API may ship before or after it.
+
+**The sweep is a command, not an endpoint.** There is no route that deletes
+data, and deliberately so: an HTTP endpoint would need a shared secret, that
+secret kept out of logs and out of the repo, and would be one misconfiguration
+away from being reachable. Whoever can run the command can already read the
+database.
+
+```bash
+pnpm --filter @siqshift/api retention
+```
+
+On Railway, add a **second service from this same repo** with `pnpm --filter
+@siqshift/api retention` as its start command and a cron schedule - daily,
+outside working hours, is the intent. It needs `DATABASE_URL` and `AUTH_BASE_URL`
+(the config parser requires both, though the sweep only uses the first). Any
+other scheduler that can run a command against the production database works
+just as well.
+
+It is safe to run by hand, safe to run twice, and safe to interrupt: each pass
+folds a bounded number of days per organization and deletes only inside what it
+has proved folded, so stopping it early leaves less done rather than anything
+wrong.
+
+Read its output before trusting a first run. Each line names one organization:
+`backfilled` is how many days of history it folded, `coverageFrom` where the
+fold now starts, and `deleted` how many raw segments went. A `held=` field means
+the pass deliberately deleted nothing and says which rule stopped it - `nothing
+folded` on a workspace the upload path has not bootstrapped yet, or `no expired
+day is folded yet` while the backfill is still walking down. Both are expected
+on the first nights against a workspace with a long history; `deleted` stays 0
+until the fold has reached past the cutoff.
+
+**What the deletion costs** is in README's *Raw evidence is kept for 90 days*.
+The short of it: unscoped active, agent and concurrency numbers are answered by
+the fold at any age, while a project-scoped range and a member's app breakdown
+read raw segments and report zero for the expired part of a range. Sessions,
+agent sessions and shift commits are untouched.
+
 ---
 
 ## 1. API on Railway

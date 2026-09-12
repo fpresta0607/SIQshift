@@ -285,6 +285,28 @@ export interface ActivitySegmentInsert {
 export interface ActivitySegmentRepository {
   /** Inserts segments, ignoring rows whose client id was already uploaded, so replays are safe. */
   insertBatch(segments: ActivitySegmentInsert[]): Promise<void>;
+  /**
+   * Organizations still holding a segment that ended before this instant,
+   * oldest evidence first, at most `limit` of them.
+   *
+   * Keyed on an organization id rather than on a subject because the caller is
+   * a scheduled operator job with no member to act as. Everything else on this
+   * interface is reached through a request's own subject; these three are the
+   * exception, and they are the reason the sweep never needs to invent one.
+   */
+  organizationsWithSegmentsBefore(toExclusive: Date, limit: number): Promise<string[]>;
+  /** The UTC day of this organization's oldest segment; null when it holds none. */
+  earliestDay(organizationId: string): Promise<Date | null>;
+  /**
+   * Deletes this organization's segments lying wholly inside `[from,
+   * toExclusive)`, returning how many went.
+   *
+   * Both bounds are required and the window is half-open on whole UTC days,
+   * because the caller may only delete days it has already folded: an open
+   * lower bound would delete the unfolded history below coverage too, and a
+   * segment straddling `toExclusive` belongs to a day that is still readable.
+   */
+  deleteSpansWithin(organizationId: string, from: Date, toExclusive: Date): Promise<number>;
 }
 
 export type AgentStatus = "anonymous" | "registered" | "retired";

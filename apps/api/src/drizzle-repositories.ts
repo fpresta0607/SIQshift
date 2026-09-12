@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, max, min, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, max, min, ne, or, sql, sum } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   activitySegments,
@@ -32,6 +32,7 @@ import type {
 } from "./auth.js";
 import { AppError } from "./errors.js";
 import { agentCodebaseLabel, identityRepoKey } from "./services/attribution.js";
+import { utcDayStart } from "./services/utc-days.js";
 import {
   PathMappingRepositoryError,
   SessionRepositoryError,
@@ -1150,6 +1151,43 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
       .onConflictDoNothing({
         target: [activitySegments.organizationId, activitySegments.userId, activitySegments.clientId],
       });
+  }
+
+  public async organizationsWithSegmentsBefore(toExclusive: Date, limit: number): Promise<string[]> {
+    const rows = await this.db
+      .select({ organizationId: activitySegments.organizationId, oldest: min(activitySegments.startedAt) })
+      .from(activitySegments)
+      .where(lt(activitySegments.startedAt, toExclusive))
+      .groupBy(activitySegments.organizationId)
+      // Oldest evidence first, so the organization furthest behind is the one a
+      // capped sweep spends its budget on rather than the one it reaches last.
+      .orderBy(asc(min(activitySegments.startedAt)))
+      .limit(limit);
+    return rows.map((row) => row.organizationId);
+  }
+
+  public async earliestDay(organizationId: string): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ oldest: min(activitySegments.startedAt) })
+      .from(activitySegments)
+      .where(eq(activitySegments.organizationId, organizationId));
+    return row?.oldest == null ? null : utcDayStart(row.oldest);
+  }
+
+  public async deleteSpansWithin(organizationId: string, from: Date, toExclusive: Date): Promise<number> {
+    const deleted = await this.db
+      .delete(activitySegments)
+      .where(and(
+        eq(activitySegments.organizationId, organizationId),
+        // startedAt carries the index the sweep deletes by; endedAt is what
+        // makes the window honest, because a span crossing toExclusive belongs
+        // to a day the reports can still be asked about.
+        gte(activitySegments.startedAt, from),
+        lt(activitySegments.startedAt, toExclusive),
+        lte(activitySegments.endedAt, toExclusive),
+      ))
+      .returning({ id: activitySegments.id });
+    return deleted.length;
   }
 }
 
