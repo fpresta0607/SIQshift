@@ -247,8 +247,6 @@ for it.
 A day named from *below* where coverage starts waits too, and permanently: it is
 read live rather than folded, because storing it would drag the run's first day
 backwards and leave a hole behind it that nothing grows back into.
-Backfilling history older than the day coverage started is the retention change's
-scheduled job, not an upload's.
 Every other day an upload names is folded: a named day is one whose stored numbers
 that upload has just made wrong, and the days an upload clears are exactly the days
 it goes on to rebuild.
