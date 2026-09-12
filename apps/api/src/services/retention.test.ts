@@ -9,6 +9,7 @@ import type {
 } from "../repositories.js";
 import {
   BACKFILL_DAYS_PER_PASS,
+  ORGANIZATIONS_PER_PASS,
   RETENTION_DAYS,
   SWEEP_SLACK_DAYS,
   createRetentionService,
@@ -36,7 +37,15 @@ class Segments implements Partial<ActivitySegmentRepository> {
   /** Set to make this organization's delete throw, the way a timeout would. */
   public failFor: string | null = null;
 
-  public async organizationsWithSegmentsBefore(_toExclusive: Date, _limit: number): Promise<string[]> {
+  /** Every candidate request the sweep made, so a test can read the window it asked for. */
+  public readonly candidateRequests: { toExclusive: Date; limit: number; startAt: number }[] = [];
+
+  public async organizationsWithSegmentsBefore(
+    toExclusive: Date,
+    limit: number,
+    startAt: number,
+  ): Promise<string[]> {
+    this.candidateRequests.push({ toExclusive, limit, startAt });
     return this.organizations;
   }
   public async earliestDay(organizationId: string): Promise<Date | null> {
@@ -90,12 +99,17 @@ class Fold implements RollupService {
   }
 }
 
-const sweepWith = async (segments: Segments, rollups: Rollups, fold: Fold): Promise<RetentionPass[]> =>
+const sweepWith = async (
+  segments: Segments,
+  rollups: Rollups,
+  fold: Fold,
+  at: Date = now,
+): Promise<RetentionPass[]> =>
   createRetentionService({
     segments: segments as unknown as ActivitySegmentRepository,
     rollups: rollups as unknown as UserDailyRollupRepository,
     fold,
-    now: () => now,
+    now: () => at,
   }).sweep();
 
 describe("the retention window", () => {
@@ -361,6 +375,42 @@ describe("proving the days between coverage's endpoints", () => {
 
     expect(segments.deletes[0]?.toExclusive).toEqual(day(-SWEEP_FLOOR_DAYS));
     expect(pass?.held).toBeUndefined();
+  });
+});
+
+describe("the pass window over the candidate list", () => {
+  /** The candidate window the sweep asked for, standing on the given day. */
+  const windowAskedFor = async (at: Date): Promise<{ limit: number; startAt: number }> => {
+    const segments = new Segments();
+    const rollups = new Rollups();
+    await sweepWith(segments, rollups, new Fold(rollups), at);
+    const [request] = segments.candidateRequests;
+    if (request === undefined) throw new Error("the sweep asked for no candidates");
+    return { limit: request.limit, startAt: request.startAt };
+  };
+
+  it("asks for one pass width and moves the window on by exactly that much each day", async () => {
+    // Why it moves at all: an organization the sweep cannot advance keeps its
+    // oldest evidence, so it keeps its place at the head of the ordering. A
+    // window pinned to that head would return the same stuck organizations
+    // every night and never reach the ones behind them.
+    const first = await windowAskedFor(new Date(today + 3 * 60 * 60 * 1_000));
+    const second = await windowAskedFor(new Date(today + DAY_MS + 3 * 60 * 60 * 1_000));
+    const third = await windowAskedFor(new Date(today + 2 * DAY_MS + 21 * 60 * 60 * 1_000));
+
+    expect(first.limit).toBe(ORGANIZATIONS_PER_PASS);
+    expect(second.startAt - first.startAt).toBe(ORGANIZATIONS_PER_PASS);
+    expect(third.startAt - second.startAt).toBe(ORGANIZATIONS_PER_PASS);
+  });
+
+  it("asks for the same window twice in one UTC day, so a re-run repeats rather than skips", async () => {
+    // Two runs on one night are ordinary - cron and an operator - and the
+    // second must not step the window past organizations the first never
+    // reached because it was turned away by the lock.
+    const early = await windowAskedFor(new Date(today + 1_000));
+    const late = await windowAskedFor(new Date(today + DAY_MS - 1_000));
+
+    expect(late.startAt).toBe(early.startAt);
   });
 });
 

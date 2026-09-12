@@ -286,15 +286,29 @@ export interface ActivitySegmentRepository {
   /** Inserts segments, ignoring rows whose client id was already uploaded, so replays are safe. */
   insertBatch(segments: ActivitySegmentInsert[]): Promise<void>;
   /**
-   * Organizations still holding a segment that ended before this instant,
-   * oldest evidence first, at most `limit` of them.
+   * Organizations whose oldest segment *started* before this instant, ordered
+   * oldest evidence first, taking at most `limit` of them starting `startAt`
+   * places into that ordering and wrapping around its end.
+   *
+   * `startedAt` and not `endedAt`, deliberately, and unlike `deleteSpansWithin`
+   * below: a segment straddling the bound makes its organization a candidate
+   * here. The difference is one wasted pass slot at worst, where filtering on
+   * the end instant would silently skip an organization whose oldest evidence
+   * happens to cross it.
+   *
+   * `startAt` is what keeps the cap from becoming a permanent cut. The
+   * ordering alone would hand the head slots to the same organizations every
+   * night, and an organization the sweep cannot advance keeps its place in that
+   * ordering forever; rotating the window means every candidate is reached
+   * within a bounded number of passes. It is taken modulo the number of
+   * candidates, so any value is in range.
    *
    * Keyed on an organization id rather than on a subject because the caller is
    * a scheduled operator job with no member to act as. Everything else on this
    * interface is reached through a request's own subject; these three are the
    * exception, and they are the reason the sweep never needs to invent one.
    */
-  organizationsWithSegmentsBefore(toExclusive: Date, limit: number): Promise<string[]>;
+  organizationsWithSegmentsBefore(toExclusive: Date, limit: number, startAt: number): Promise<string[]>;
   /** The UTC day of this organization's oldest segment; null when it holds none. */
   earliestDay(organizationId: string): Promise<Date | null>;
   /**

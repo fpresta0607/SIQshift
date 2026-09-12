@@ -384,9 +384,20 @@ cutoff.
 
 A workspace the upload path has never folded is not listed at all rather than
 listed as held - it has no coverage for the backfill to extend, so the sweep
-skips it entirely and it rejoins the moment an upload gives it a fold. An
-organization missing from the output is therefore either inside the window or
-not yet bootstrapped, and neither needs acting on.
+skips it entirely and it rejoins the moment an upload gives it a fold.
+
+One pass also spends a fixed budget of organizations, and the window it takes
+over the candidates advances by that budget each UTC day rather than always
+starting at the oldest.
+That is why an organization can be absent one night and present the next: with
+more candidates than one pass holds, each is reached every few nights rather
+than every night.
+The rotation is there because an organization the sweep cannot advance keeps its
+place at the head of the ordering, and a window pinned to that head would hide
+every organization behind it indefinitely.
+An organization missing from the output is therefore inside the window, not yet
+bootstrapped, or simply not in this night's slice, and none of the three needs
+acting on.
 
 `coverage has no row for YYYY-MM-DD` is the one to act on. It means a day inside
 the folded stretch has no stored row - an interrupted fold or a partial write -

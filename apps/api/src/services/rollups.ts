@@ -93,9 +93,13 @@ export const FOLD_MAX_DAYS = 31;
  * because the fold must not depend on the sweep. A named day below it is
  * declined however far coverage reaches: its raw rows may already be deleted,
  * and refolding a day from evidence that is gone writes zeros over a row that
- * was right. The cutoff day itself is admitted - the sweep deletes strictly
- * below it, so its rows are still there, and it is the oldest day the ingest
- * still accepts.
+ * was right. The cutoff day itself is admitted: it is the oldest day the ingest
+ * still accepts, and the sweep stops a whole day below it, so its rows are
+ * still there. Those two bounds are deliberately a day apart - the sweep's
+ * extra day is slack against the two processes disagreeing about which day the
+ * cutoff is, and is not an off-by-one to be closed. This floor stays at the
+ * cutoff itself; widening it would reopen the band where evidence is accepted,
+ * stored and then never folded.
  */
 export function foldTargetDays(
   named: readonly Date[],

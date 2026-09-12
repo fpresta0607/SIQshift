@@ -769,8 +769,8 @@ describe("the retention cutoff as a floor under a named day", () => {
    * The ingest and the fold have to name the same day, or there is a band where
    * evidence is accepted, stored, never folded, and then swept - an undercount
    * on a day whose stale row the report path spends in preference to reading
-   * live. The sweep deletes strictly below the cutoff, so the cutoff day still
-   * has its segments and is the oldest day both bounds admit.
+   * live. The sweep stops a day below the cutoff, so the cutoff day still has
+   * its segments and is the oldest day both bounds admit.
    */
   it("admits a day standing exactly on the cutoff", async () => {
     const reports = new Reports();

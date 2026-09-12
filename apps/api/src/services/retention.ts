@@ -1,7 +1,7 @@
 import type { AuthenticatedSubject } from "../auth.js";
 import type { ActivitySegmentRepository, UserDailyRollupRepository } from "../repositories.js";
 import type { RollupService } from "./rollups.js";
-import { DAY_MS, retentionCutoff } from "./utc-days.js";
+import { DAY_MS, retentionCutoff, utcDayStart } from "./utc-days.js";
 
 // The window itself lives beside the day arithmetic, because the ingest paths
 // bound on it too: evidence for a day this sweep will not keep is refused at
@@ -44,6 +44,29 @@ export const SWEEP_SLACK_DAYS = 1;
 /** The first day the sweep will not delete at or above; a day below the cutoff. */
 export function sweepCutoff(now: Date): Date {
   return new Date(retentionCutoff(now).getTime() - SWEEP_SLACK_DAYS * DAY_MS);
+}
+
+/**
+ * Where in the candidate ordering tonight's pass starts.
+ *
+ * The candidates are ordered oldest evidence first and cut at
+ * `ORGANIZATIONS_PER_PASS`, and on its own that cut is permanent rather than
+ * merely a budget: an organization the sweep cannot advance keeps the same
+ * oldest evidence, so it keeps the same place at the head of that ordering and
+ * is chosen again every night. Both ways of being stuck are real and already
+ * documented - a hole in coverage the sweep will not delete across, and a pass
+ * that throws - so twenty-five of them would hide every other organization in
+ * the deployment indefinitely, while the command still exits 0.
+ *
+ * Advancing the window by one pass width per UTC day means every candidate is
+ * reached within `ceil(candidates / ORGANIZATIONS_PER_PASS)` nights however
+ * stuck the ones ahead of it are, and the furthest behind still comes first
+ * inside the night's own window. The UTC day number needs no stored state:
+ * every process that knows what day it is already agrees on it, which is the
+ * same reason the cutoff is derived from it.
+ */
+export function passRotation(now: Date): number {
+  return Math.floor(utcDayStart(now).getTime() / DAY_MS) * ORGANIZATIONS_PER_PASS;
 }
 
 export interface RetentionServiceDependencies {
@@ -110,17 +133,20 @@ export function createRetentionService(dependencies: RetentionServiceDependencie
   const now = dependencies.now ?? ((): Date => new Date());
   return {
     async sweep(): Promise<RetentionPass[]> {
-      const deleteBefore = sweepCutoff(now());
+      const at = now();
+      const deleteBefore = sweepCutoff(at);
       const organizations = await dependencies.segments.organizationsWithSegmentsBefore(
         deleteBefore,
         ORGANIZATIONS_PER_PASS,
+        passRotation(at),
       );
       const passes: RetentionPass[] = [];
       for (const organizationId of organizations) {
-        // One organization's failure is its own. The ordering here is
-        // deterministic - oldest evidence first - so letting a rejection out of
-        // this loop would drop every organization behind it from every pass,
-        // indefinitely, on a workspace whose backfill happens to time out.
+        // One organization's failure is its own. Letting a rejection out of this
+        // loop would drop every organization behind it from tonight's pass, on a
+        // workspace whose backfill happens to time out. Across nights the
+        // rotation is what stops a workspace that keeps failing from holding the
+        // same slot for good.
         try {
           passes.push(await sweepOrganization(dependencies, organizationId, deleteBefore));
         } catch (error: unknown) {

@@ -1153,7 +1153,7 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
       });
   }
 
-  public async organizationsWithSegmentsBefore(toExclusive: Date, limit: number): Promise<string[]> {
+  public async organizationsWithSegmentsBefore(toExclusive: Date, limit: number, startAt: number): Promise<string[]> {
     // Candidates come from the fold, never from a scan of the segments.
     //
     // Grouping activity_segments by organization reads every expired row in the
@@ -1176,16 +1176,33 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
     // and ordering before the limit means no work is spent on an organization
     // this pass will not reach. Oldest evidence first, so the organization
     // furthest behind is the one a capped pass spends its budget on.
+    //
+    // The window rotates rather than always starting at the head, and that is
+    // not fairness for its own sake: an organization the sweep cannot advance
+    // would otherwise hide every organization behind it, forever. Those states
+    // are real and documented - a hole in coverage the sweep will not delete
+    // across, and a pass that throws - and in both the organization's oldest
+    // evidence never moves, so a strict head-first cut would return it again
+    // every night. Ranking the candidates and taking `limit` of them from
+    // `startAt`, wrapping, reaches every candidate within a bounded number of
+    // passes while still putting the furthest behind first inside the window.
     const rows = await this.db.execute<{ organization_id: string }>(sql`
-      select folded.organization_id
-      from (select distinct ${userDailyRollups.organizationId} from ${userDailyRollups}) as folded
-      cross join lateral (
-        select min(${activitySegments.startedAt}) as oldest
-        from ${activitySegments}
-        where ${activitySegments.organizationId} = folded.organization_id
-      ) as evidence
-      where evidence.oldest < ${toExclusive.toISOString()}::timestamptz
-      order by evidence.oldest asc
+      with candidates as (
+        select
+          folded.organization_id as organization_id,
+          row_number() over (order by evidence.oldest asc) - 1 as position,
+          count(*) over () as total
+        from (select distinct ${userDailyRollups.organizationId} from ${userDailyRollups}) as folded
+        cross join lateral (
+          select min(${activitySegments.startedAt}) as oldest
+          from ${activitySegments}
+          where ${activitySegments.organizationId} = folded.organization_id
+        ) as evidence
+        where evidence.oldest < ${toExclusive.toISOString()}::timestamptz
+      )
+      select organization_id
+      from candidates
+      order by (position - ${startAt}::bigint % total + total) % total asc
       limit ${limit}
     `);
     return [...rows].map((row) => row.organization_id);

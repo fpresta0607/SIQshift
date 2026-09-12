@@ -234,11 +234,11 @@ integration("the retention sweep's SQL", () => {
         segment(otherOrganizationId, otherUserId, at(1, 9), at(1, 10)),
       ]);
 
-      await expect(segments.organizationsWithSegmentsBefore(day(5), 10))
+      await expect(segments.organizationsWithSegmentsBefore(day(5), 10, 0))
         .resolves.toEqual([otherOrganizationId, organizationId]);
       // The limit bounds the discovery, not only the sweeping: the organization
       // furthest behind is the one a capped pass spends its budget on.
-      await expect(segments.organizationsWithSegmentsBefore(day(5), 1))
+      await expect(segments.organizationsWithSegmentsBefore(day(5), 1, 0))
         .resolves.toEqual([otherOrganizationId]);
     });
 
@@ -248,20 +248,88 @@ integration("the retention sweep's SQL", () => {
       // using it. It rejoins the moment an upload gives it a fold.
       await segments.insertBatch([segment(organizationId, userId, at(1, 9), at(1, 10))]);
 
-      await expect(segments.organizationsWithSegmentsBefore(day(5), 10)).resolves.toEqual([]);
+      await expect(segments.organizationsWithSegmentsBefore(day(5), 10, 0)).resolves.toEqual([]);
     });
 
     it("leaves out a folded organization whose evidence has not expired yet", async () => {
       await writeFolds([fold(organizationId, userId, day(1))]);
       await segments.insertBatch([segment(organizationId, userId, at(6, 9), at(6, 10))]);
 
-      await expect(segments.organizationsWithSegmentsBefore(day(5), 10)).resolves.toEqual([]);
+      await expect(segments.organizationsWithSegmentsBefore(day(5), 10, 0)).resolves.toEqual([]);
     });
 
     it("leaves out a folded organization whose segments are all gone", async () => {
       await writeFolds([fold(organizationId, userId, day(1))]);
 
-      await expect(segments.organizationsWithSegmentsBefore(day(5), 10)).resolves.toEqual([]);
+      await expect(segments.organizationsWithSegmentsBefore(day(5), 10, 0)).resolves.toEqual([]);
+    });
+  });
+
+  describe("rotating the pass window over more candidates than one pass holds", () => {
+    // Five workspaces and a pass that holds two. The first of them is the one
+    // the sweep can never advance - a hole it will not delete across, or a pass
+    // that throws - so its oldest evidence never moves and it stays at the head
+    // of the oldest-first ordering every single night. A window pinned to that
+    // head would return the same two forever and the other three would never be
+    // swept at all, while the command still exits 0.
+    const workspaces: { organization: string; user: string }[] = [];
+
+    beforeEach(async () => {
+      if (disposable === undefined) return;
+      if (workspaces.length === 0) {
+        for (let index = 0; index < 5; index += 1) {
+          const organization = randomUUID();
+          const user = randomUUID();
+          await database.client`
+            insert into organizations (id, name, invite_code)
+            values (${organization}, ${`Rotation ${index}`}, ${randomUUID().slice(0, 11)})
+          `;
+          await database.client`
+            insert into users (id, organization_id, email, name, role)
+            values (${user}, ${organization}, ${`${user}@siqshift.test`}, 'Member', 'member')
+          `;
+          workspaces.push({ organization, user });
+        }
+      }
+      await writeFolds(workspaces.map((workspace) => fold(workspace.organization, workspace.user, day(1))));
+      // Ascending oldest evidence, so the ordering is the array's own order and
+      // index 0 is the stuck one at the head.
+      await segments.insertBatch(workspaces.map((workspace, index) =>
+        segment(workspace.organization, workspace.user, at(index + 1, 9), at(index + 1, 10))));
+    });
+
+    it("reaches every candidate across consecutive days despite the head never moving", async () => {
+      const passWidth = 2;
+      const reached = new Set<string>();
+      const windows: string[][] = [];
+      // Three nights is ceil(5 / 2): the bound the rotation promises.
+      for (let night = 0; night < 3; night += 1) {
+        const window = await segments.organizationsWithSegmentsBefore(day(9), passWidth, night * passWidth);
+        windows.push(window);
+        for (const organization of window) reached.add(organization);
+      }
+
+      expect(reached).toEqual(new Set(workspaces.map((workspace) => workspace.organization)));
+      // Each night still spends its budget, and still oldest evidence first
+      // inside its own window.
+      expect(windows.map((window) => window.length)).toEqual([2, 2, 2]);
+      expect(windows[0]).toEqual([workspaces[0]!.organization, workspaces[1]!.organization]);
+      expect(windows[1]).toEqual([workspaces[2]!.organization, workspaces[3]!.organization]);
+      // The last night wraps back past the end of the list.
+      expect(windows[2]).toEqual([workspaces[4]!.organization, workspaces[0]!.organization]);
+    });
+
+    it("takes any starting offset modulo the candidate count, so the day number needs no bound", async () => {
+      // The sweep derives its offset from the UTC day number, which is far
+      // larger than any candidate list and grows forever.
+      const rotations = [0, 5, 20_700 * 25];
+
+      for (const startAt of rotations) {
+        const window = await segments.organizationsWithSegmentsBefore(day(9), 2, startAt);
+        expect(window).toHaveLength(2);
+      }
+      await expect(segments.organizationsWithSegmentsBefore(day(9), 2, 5))
+        .resolves.toEqual(await segments.organizationsWithSegmentsBefore(day(9), 2, 0));
     });
   });
 });
