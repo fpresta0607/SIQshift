@@ -410,7 +410,7 @@ async function measureMembersMs(
     // spend a round trip on a value the window discards.
     const earliestStored = openRange.start !== null
       ? null
-      : (await rollups.earliestDay(subject))?.getTime() ?? null;
+      : (await rollups.coverage(subject))?.earliest.getTime() ?? null;
     const window = rollupWindow(openRange, earliestStored, now);
     const stored = window.from.getTime() >= window.toExclusive.getTime()
       ? []

@@ -5,6 +5,7 @@ import type {
   AgentIntervalRecord,
   PresenceIntervalRecord,
   ReportRepository,
+  RollupCoverage,
   UserDailyRollupRecord,
   UserDailyRollupRepository,
 } from "../repositories.js";
@@ -37,6 +38,13 @@ export function foldableDays(instants: readonly Date[], now: Date): Date[] {
 export const FOLD_MAX_DAYS = 31;
 
 /**
+ * How many of the days an upload named one refresh will fold, on top of the
+ * frontier window. A batch may name hundreds of distinct finished days and each
+ * one costs an interval read, so the rest are left cleared and read live.
+ */
+export const FOLD_NAMED_MAX_DAYS = 31;
+
+/**
  * The days a refresh folds: a contiguous frontier window, plus the finished
  * days the upload named that fall at or below it. `named` is expected oldest
  * first, as `foldableDays` returns it.
@@ -48,15 +56,23 @@ export const FOLD_MAX_DAYS = 31;
  * through yesterday, so stored coverage grows contiguously upward and every
  * refresh moves its leading edge closer to yesterday.
  *
- * That contiguity is what makes `latestDay` a frontier rather than a bare
- * maximum, and it is why a named day ABOVE the window is left out. Folding one
- * would push the maximum past a stretch the window could not reach this time,
- * and since the next window starts from the new maximum, those days would never
- * be folded by any later upload. A deferred day is not lost: the frontier
- * arrives at it within a few uploads, and until then it is read live, which is
- * the rule the table already lives under. A named day at or below the window is
- * kept - it cannot move the maximum past anything - so a late upload still
- * invalidates the day it landed in.
+ * That contiguity is the invariant, and both bounds on a named day exist to
+ * keep it. A named day ABOVE the window is left out: folding one would push the
+ * frontier past a stretch the window could not reach this time, and since the
+ * next window starts from the new frontier, those days would never be folded by
+ * any later upload. A named day BELOW the stretch already stored is left out
+ * for the mirror reason: folding one would drag the earliest stored day
+ * backwards and leave a permanent hole behind it, which no later refresh fills
+ * either, because the window only ever grows upward. Between those bounds a
+ * named day is kept, so a late upload still invalidates the day it landed in.
+ *
+ * A deferred day is not lost and not stale. The upload's own days were cleared
+ * before this was called, so whatever is left out here has no stored row to be
+ * wrong - it is read live, which is the rule the table already lives under.
+ * That is also what makes `FOLD_NAMED_MAX_DAYS` safe: one batch may name
+ * hundreds of distinct finished days, each of which would be its own interval
+ * read on the upload's own request, so only the oldest few are taken and the
+ * rest simply stay live.
  *
  * With nothing stored the window starts at the oldest finished day named, or at
  * yesterday when none was. That second case is the bootstrap, and it is what
@@ -69,16 +85,24 @@ export const FOLD_MAX_DAYS = 31;
  * day coverage started is never filled here - backfilling that is the scheduled
  * fold's job in the retention change.
  */
-export function foldTargetDays(named: readonly Date[], latestStored: Date | null, now: Date): Date[] {
+export function foldTargetDays(named: readonly Date[], coverage: RollupCoverage | null, now: Date): Date[] {
   const yesterday = utcDayStart(now).getTime() - DAY_MS;
-  const from = latestStored === null
+  const from = coverage === null
     ? named[0]?.getTime() ?? yesterday
-    : latestStored.getTime() + DAY_MS;
+    : coverage.latest.getTime() + DAY_MS;
   const toInclusive = Math.min(from + (FOLD_MAX_DAYS - 1) * DAY_MS, yesterday);
   const targets = new Set<number>();
   for (let day = from; day <= toInclusive; day += DAY_MS) targets.add(day);
+  // Below this nothing is folded, so coverage can only ever grow upward from
+  // where it started. With nothing stored the window itself is the floor.
+  const floor = coverage?.earliest.getTime() ?? from;
+  let taken = 0;
   for (const day of named) {
-    if (day.getTime() <= toInclusive) targets.add(day.getTime());
+    if (taken >= FOLD_NAMED_MAX_DAYS) break;
+    const at = day.getTime();
+    if (at < floor || at > toInclusive) continue;
+    if (!targets.has(at)) taken += 1;
+    targets.add(at);
   }
   return [...targets].sort((a, b) => a - b).map((day) => new Date(day));
 }
@@ -207,8 +231,8 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // which is correct, rather than standing on numbers taken before the rows
       // the upload just committed existed.
       if (named.length > 0) await dependencies.rollups.clearDays(subject, named);
-      const latestStored = await dependencies.rollups.latestDay(subject);
-      const days = foldTargetDays(named, latestStored, at);
+      const stored = await dependencies.rollups.coverage(subject);
+      const days = foldTargetDays(named, stored, at);
       // An upload with nothing to fold costs that one lookup and no more: it is
       // the common case, because coverage already reaching yesterday is what
       // every earlier upload of the day left behind.

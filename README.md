@@ -240,6 +240,14 @@ A day named by an upload that sits beyond that month waits for the run to reach
 it rather than being folded on its own: folding it early would move the latest
 stored day past the stretch still to be filled, and nothing would ever come back
 for it.
+A day named from *below* where coverage starts waits too, and permanently: it is
+read live rather than folded, because storing it would drag the run's first day
+backwards and leave a hole behind it that nothing grows back into.
+Backfilling history older than the day coverage started is the retention change's
+scheduled job, not an upload's.
+An upload also folds only so many of the days it names at once, so a desktop back
+from a long outage cannot turn one request into hundreds of reads; what it names
+and does not fold is simply read live.
 History older than the day coverage started is read live, and backfilling it is a
 job for the scheduled fold that comes with retention, not something a report does.
 The read path assumes none of this in any case: a day with no row is read live

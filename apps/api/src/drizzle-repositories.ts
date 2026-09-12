@@ -69,6 +69,7 @@ import {
   type InsertEndedAgentSession,
   type LeaderboardRowRecord,
   type ObservedSessionInsert,
+  type RollupCoverage,
   type UserDailyRollupRecord,
   type UserDailyRollupRepository,
   type PathMappingRecord,
@@ -2140,20 +2141,14 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
     return rows;
   }
 
-  public async earliestDay(subject: AuthenticatedSubject): Promise<Date | null> {
+  public async coverage(subject: AuthenticatedSubject): Promise<RollupCoverage | null> {
     const [row] = await this.db
-      .select({ day: min(userDailyRollups.day) })
+      .select({ earliest: min(userDailyRollups.day), latest: max(userDailyRollups.day) })
       .from(userDailyRollups)
       .where(eq(userDailyRollups.organizationId, subject.organizationId));
-    return row?.day ?? null;
-  }
-
-  public async latestDay(subject: AuthenticatedSubject): Promise<Date | null> {
-    const [row] = await this.db
-      .select({ day: max(userDailyRollups.day) })
-      .from(userDailyRollups)
-      .where(eq(userDailyRollups.organizationId, subject.organizationId));
-    return row?.day ?? null;
+    // Both aggregates come back null together, on an organization with no rows.
+    if (row?.earliest == null || row.latest == null) return null;
+    return { earliest: row.earliest, latest: row.latest };
   }
 
   public async clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {

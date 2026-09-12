@@ -712,19 +712,25 @@ export interface UserDailyRollupRecord {
   computedAt: Date;
 }
 
+/** The contiguous stretch of folded days an organization holds, both ends inclusive. */
+export interface RollupCoverage {
+  earliest: Date;
+  latest: Date;
+}
+
 export interface UserDailyRollupRepository {
   /** Every folded day in the range, org-wide. Days are whole, so the range is read as [from, toExclusive). */
   readForRange(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]>;
-  /** The earliest folded day this organization holds, for a range with no lower bound; null when nothing is folded. */
-  earliestDay(subject: AuthenticatedSubject): Promise<Date | null>;
   /**
-   * The latest folded day this organization holds; null when nothing is folded.
+   * The stretch of days this organization holds, or null when it holds none.
    *
-   * A fold extends the days it was given down to this one, so coverage from the
-   * first day ever folded onwards stays contiguous instead of leaving a live
-   * span for every day nobody happened to upload on.
+   * Both edges in one read because both are wanted together: the fold never
+   * stores a day outside `[earliest, latest]` or immediately above it, so the
+   * stretch is contiguous and these two days bound the whole of it. That is
+   * what lets `latest` be read as a frontier rather than a bare maximum, and
+   * `earliest` as the day below which every range is still read live.
    */
-  latestDay(subject: AuthenticatedSubject): Promise<Date | null>;
+  coverage(subject: AuthenticatedSubject): Promise<RollupCoverage | null>;
   /**
    * Drops every stored row for these days.
    *
