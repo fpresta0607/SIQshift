@@ -367,6 +367,13 @@ folds a bounded number of days per organization and deletes only inside what it
 has proved folded, so stopping it early leaves less done rather than anything
 wrong.
 
+Twice is safe because the runs do not overlap. The sweep takes a PostgreSQL
+advisory lock first, and a second run that cannot take it logs `another sweep
+holds the lock; standing down` and exits 0 - so cron firing while a slow first
+run is still converging, or a hand run during the scheduled window, costs a
+no-op rather than two sweeps interleaving. The lock is held on a reserved
+connection and dies with it, so a killed run leaves nothing stuck.
+
 Read its output before trusting a first run. Each line names one organization:
 `backfilled` is how many days of history it folded, `coverageFrom` where the
 fold now starts, and `deleted` how many raw segments went. A `held=` field means
@@ -392,10 +399,12 @@ so without anyone reading the log.
 
 **What the deletion costs** is in README's *Raw evidence is kept for 90 days*.
 The short of it: active, agent and concurrency numbers are answered by the fold
-at any age, on the board and on a member's own card, while a project-scoped
-range, a member's app and per-agent breakdowns and the hourly chart read raw
-segments and report zero for the expired part of a range. Sessions, agent
-sessions and shift commits are untouched.
+at any age, on the board and on a member's own card. What goes is presence-derived
+detail - a project-scoped range and a member's app breakdown report zero for the
+expired part of a range, and the hourly chart flattens its person line while
+keeping its agent line. Anything drawn from `agent_sessions` is untouched at any
+age, including a member's per-agent breakdown; sessions, agent sessions and shift
+commits are not swept.
 
 ---
 

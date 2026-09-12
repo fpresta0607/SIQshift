@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { AuthenticatedSubject } from "../auth.js";
 import type { ActivitySegmentInsert, ActivitySegmentRepository } from "../repositories.js";
 import { createActivityService, type ActivitySegmentInput } from "./activity.js";
+import { RETENTION_WINDOW_MS } from "./utc-days.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -57,6 +58,33 @@ describe("activity service", () => {
       processName: "Code.exe",
       receivedAt: now,
     });
+  });
+
+  /**
+   * The ingest bound and the retention sweep are one boundary said twice. A
+   * segment accepted for a day the sweep will delete is stored, swept, and can
+   * refold a correct row to zeros in between; a year-0001 fixture proves
+   * nothing about where the line sits, because every plausible bound rejects it.
+   */
+  it("accepts an instant just inside the retention window and refuses one just outside", async () => {
+    const { segments, service } = createService();
+    const oldest = new Date(now.getTime() - RETENTION_WINDOW_MS);
+    const inside = segment({
+      startedAt: new Date(oldest.getTime() - 60_000),
+      endedAt: new Date(oldest.getTime() + 1),
+    });
+    const outside = segment({
+      startedAt: new Date(oldest.getTime() - 60_000),
+      endedAt: new Date(oldest.getTime() - 1),
+    });
+
+    const result = await service.upload(subject, [inside, outside]);
+
+    expect(result.accepted).toBe(1);
+    expect(result.rejected).toEqual([
+      { clientId: outside.clientId, reason: "endedAt is older than the retention window" },
+    ]);
+    expect(segments.records.map((record) => record.clientId)).toEqual([inside.clientId]);
   });
 
   it("counts a replayed batch as accepted without duplicating rows", async () => {

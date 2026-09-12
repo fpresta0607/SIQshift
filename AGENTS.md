@@ -219,11 +219,17 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   finds nothing and the day reports zero rather than missing. Before adding anything to the
   report path that reads `activity_segments`, check whether a rollup row can answer it past
   90 days; if it cannot, that surface silently reports zero for expired ranges, which is how
-  `readAppTotalsForMember`, `/me/stats`'s per-agent breakdown and hourly series, and the
-  project scope already behave by decision. A **member-scoped** measurement does spend
-  stored days - `readForRange` takes the same `userId` predicate the live reads take - so
-  the board and that person's card stay in agreement past the window. Dropping that filter
-  would put the whole workspace's hours on one person's row.
+  `readAppTotalsForMember`, the project scope and the hourly series' presence line already
+  behave by decision. A read from `agent_sessions` is not affected - `/me/stats`'s per-agent
+  breakdown keeps its whole history, and saying otherwise understates what survives. A
+  **member-scoped** measurement does spend stored days - `readForRange` takes the same
+  `userId` predicate the live reads take - so the board and that person's card stay in
+  agreement past the window. Dropping that filter would put the whole workspace's hours on
+  one person's row.
+- `/me/stats` measures from `planStoredDays` and the intervals it has already read, never
+  from a second set of span reads: it is polled every sixty seconds by the Today card, so a
+  duplicate presence read there is the hot path. `measureMembersMs` is the board's path and
+  does read per span, because it holds no full-range rows to reuse.
 - The sweep is the **only** thing that extends coverage downward. Uploads fill upward from
   the bootstrap day and refuse anything below it, so history older than where coverage
   started exists only because `RollupService.backfill` walked down to it.

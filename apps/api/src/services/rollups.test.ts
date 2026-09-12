@@ -1122,10 +1122,74 @@ describe("the board with and without the fold", () => {
     });
 
     expect(rollups.calls).toContain("read");
-    // One presence read, not two: the card still reads the intervals the hourly
-    // series and the per-agent breakdown need, but its measurement planned no
-    // live span at all over a range whose every day is folded.
     expect(reports.presenceReads).toHaveLength(1);
+  });
+
+  /**
+   * The card reads presence and agent intervals once over its whole range for
+   * the hourly series and the per-agent breakdown, and measures the live part
+   * of its range by clipping those rows rather than reading them again. The
+   * Today card polls this endpoint every sixty seconds and spends no stored day
+   * at all, so a second read there would be the whole cost doubled.
+   */
+  it.each([
+    ["a range whose every day is folded", { fromAt: () => day(0).toISOString(), toExclusiveAt: () => day(3).toISOString() }],
+    ["a range inside the unfinished day, which spends nothing", { fromAt: () => at(3, 0).toISOString(), toExclusiveAt: () => at(3, 10).toISOString() }],
+    ["an all-time range", {}],
+  ])("reads each interval source once for %s", async (_label, bounds) => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    const filters = {
+      ...(bounds.fromAt === undefined ? {} : { fromAt: bounds.fromAt() }),
+      ...(bounds.toExclusiveAt === undefined ? {} : { toExclusiveAt: bounds.toExclusiveAt() }),
+    };
+    reports.presenceReads.length = 0;
+    reports.agentReads.length = 0;
+
+    const card = await service.meStats(subject, { ...filters, userId: ids.user });
+
+    expect(reports.presenceReads).toHaveLength(1);
+    expect(reports.agentReads).toHaveLength(1);
+    // And the totals are still the board's, however the plan was assembled.
+    const board = await service.leaderboard(subject, filters);
+    const row = board.entries.find((entry) => entry.user.id === ids.user);
+    expect(card.activeSeconds).toBe(row?.activeSeconds);
+    expect(card.agentSeconds).toBe(row?.agentSeconds);
+  });
+
+  it("reads each interval source once for a project-scoped card, which spends nothing", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      reaper: silentReaper,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    reports.presenceReads.length = 0;
+    reports.agentReads.length = 0;
+
+    await service.meStats(subject, {
+      scope: ids.project,
+      fromAt: day(0).toISOString(),
+      toExclusiveAt: day(3).toISOString(),
+      userId: ids.user,
+    });
+
+    expect(reports.presenceReads).toHaveLength(1);
+    expect(reports.agentReads).toHaveLength(1);
   });
 
   it("falls back to reading live for a project-scoped range, which the fold cannot answer", async () => {

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { createDatabase } from "@siqshift/database";
+import { createDatabase, type DatabaseConnection } from "@siqshift/database";
 
 import {
   DrizzleActivitySegmentRepository,
@@ -25,19 +25,66 @@ import { createRollupService } from "./services/rollups.js";
  * function, so if a route is ever wanted instead this file is the only thing
  * that has to change.
  */
+/**
+ * The advisory lock two sweeps serialize on.
+ *
+ * An arbitrary but fixed key; PostgreSQL advisory locks share one namespace per
+ * database, so it only has to differ from whatever else takes one here.
+ */
+const SWEEP_LOCK_KEY = 8_150_923_041_772_113;
+
+/**
+ * Runs `work` holding the sweep lock, or returns null when another sweep holds
+ * it.
+ *
+ * Two sweeps overlapping is an ordinary operational event - cron fires while a
+ * slow first run is still converging, or an operator runs one by hand during the
+ * window - and interleaving them is not safe. One run's `backfill` can clear the
+ * days the other has just proved folded and is about to delete behind, which
+ * leaves those days with neither segments nor a correct row. Nothing recovers
+ * that: uploads fill coverage only upward and `backfill` extends it only below
+ * where coverage starts.
+ *
+ * The lock is taken on a connection reserved out of the pool, so it is held for
+ * the whole run rather than for one statement, and it is a session lock rather
+ * than a transaction one because the sweep is many statements. It dies with its
+ * connection, so a killed run leaves nothing stuck.
+ */
+async function withSweepLock<T>(
+  { client }: Pick<DatabaseConnection, "client">,
+  work: () => Promise<T>,
+): Promise<T | null> {
+  const reserved = await client.reserve();
+  try {
+    const [row] = await reserved<{ locked: boolean }[]>`select pg_try_advisory_lock(${SWEEP_LOCK_KEY}) as locked`;
+    if (row?.locked !== true) return null;
+    try {
+      return await work();
+    } finally {
+      await reserved`select pg_advisory_unlock(${SWEEP_LOCK_KEY})`;
+    }
+  } finally {
+    reserved.release();
+  }
+}
+
 async function main(): Promise<void> {
   const config = parseEnv(process.env);
   const { client, db } = createDatabase(config.databaseUrl);
   try {
-    const passes = await createRetentionService({
+    const passes = await withSweepLock({ client }, () => createRetentionService({
       segments: new DrizzleActivitySegmentRepository(db),
       rollups: new DrizzleUserDailyRollupRepository(db),
       fold: createRollupService({
         reports: new DrizzleReportRepository(db),
         rollups: new DrizzleUserDailyRollupRepository(db),
       }),
-    }).sweep();
+    }).sweep());
 
+    if (passes === null) {
+      console.info("siqshift-retention: another sweep holds the lock; standing down.");
+      return;
+    }
     if (passes.length === 0) {
       console.info(`siqshift-retention: nothing older than ${RETENTION_DAYS} days.`);
       return;
@@ -74,4 +121,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   });
 }
 
-export { main };
+export { main, withSweepLock, SWEEP_LOCK_KEY };
