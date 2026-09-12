@@ -31,9 +31,10 @@ export function foldableDays(instants: readonly Date[], now: Date): Date[] {
 }
 
 /**
- * How much catching up one refresh may do, and how wide any one interval read
- * it issues may be. An upload is waiting on this, so the work it can be handed
- * needs a ceiling however far behind the table has fallen.
+ * How far one refresh may fill forward from the latest day stored, and how wide
+ * any one interval read it issues may be. The fill is the part that grows on its
+ * own while nothing uploads, so it is the part that needs a ceiling; the days an
+ * upload names are bounded by what one batch can carry and are all folded.
  */
 export const FOLD_MAX_DAYS = 31;
 
@@ -197,8 +198,9 @@ const asInterval = (start: Date, end: Date): Interval => ({ start: start.getTime
  * quiet member left out would read as a measured zero rather than as a day the
  * report still has to read live.
  *
- * It grows coverage upward contiguously, by a bounded amount per run, so a long
- * range plans a handful of live spans rather than one per quiet weekend. That
+ * It grows coverage upward contiguously, filling forward by at most
+ * `FOLD_MAX_DAYS` a run, so a long range plans a handful of live spans rather
+ * than one per quiet weekend. That
  * contiguity is load bearing: it is what lets the next run resume from the
  * latest stored day and know nothing below it was skipped, which is why a day
  * named above the window waits for the frontier rather than being folded early.

@@ -57,6 +57,13 @@ export function rollupWindow(range: OpenRange, earliestStored: number | null, no
  * range before it lands: no span can name an instant the caller did not ask
  * for, whatever the window says. A null bound on either side is that side
  * unbounded, so intersecting against it is a no-op.
+ *
+ * The gaps are found by walking the days the table holds, not the days the
+ * window spans. The window's lower bound is the caller's own, and a leaderboard
+ * may be asked for a range that starts in year one, so a walk over the window
+ * would cost hundreds of thousands of steps on a request that stores almost
+ * nothing. `coveredDays` came from a single read over that same window, so it
+ * is as small as the table is however wide the caller asked.
  */
 export function planRollupRange(
   range: OpenRange,
@@ -99,9 +106,16 @@ export function planRollupRange(
   };
 
   push(range.start, windowStart);
-  for (let day = windowStart; day < windowEnd; day += DAY_MS) {
-    if (!coveredDays.has(day)) push(day, day + DAY_MS);
+  // Each gap between two stored days is exactly what a day-by-day walk would
+  // have pushed one day at a time and merged, and so are the stretches before
+  // the first stored day and after the last.
+  const stored = [...coveredDays].filter((day) => day >= windowStart && day < windowEnd).sort((a, b) => a - b);
+  let unstoredFrom = windowStart;
+  for (const day of stored) {
+    if (day > unstoredFrom) push(unstoredFrom, day);
+    unstoredFrom = day + DAY_MS;
   }
+  if (unstoredFrom < windowEnd) push(unstoredFrom, windowEnd);
   push(windowEnd, range.end);
   return { window, live };
 }

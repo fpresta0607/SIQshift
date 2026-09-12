@@ -678,6 +678,43 @@ describe("planning a range against the fold", () => {
   });
 
   /**
+   * The window's lower bound is the caller's own: `leaderboardFiltersSchema`
+   * accepts a `from` with no `to`, and the range-length check only fires when
+   * both are present, so a client can ask the board for a range starting in year
+   * one. A planner that tested every day of that window against the covered set
+   * burned a lookup and an allocation per day on every such request.
+   */
+  it("costs what the table holds rather than how wide the window is", () => {
+    class CountingDays extends Set<number> {
+      public lookups = 0;
+      public has(value: number): boolean {
+        this.lookups += 1;
+        return super.has(value);
+      }
+    }
+
+    // Eleven years of window, four stored days in it.
+    const range = { start: day(-4_000).getTime(), end: at(3, 5).getTime() };
+    const covered = new CountingDays([
+      day(-4_000).getTime(),
+      day(-3_999).getTime(),
+      day(1).getTime(),
+      day(2).getTime(),
+    ]);
+    const plan = planRollupRange(range, rollupWindow(range, null, now), covered);
+
+    expect(liveBounds(plan)).toEqual([
+      [day(-3_998).toISOString(), day(1).toISOString()],
+      [day(3).toISOString(), at(3, 5).toISOString()],
+    ]);
+    expect(isSpentDay(day(-4_000).getTime(), plan)).toBe(true);
+    expect(isSpentDay(day(1).getTime(), plan)).toBe(true);
+    expect(isSpentDay(day(0).getTime(), plan)).toBe(false);
+    // The four thousand days it does not hold are never asked about.
+    expect(covered.lookups).toBeLessThanOrEqual(covered.size);
+  });
+
+  /**
    * A range holding no whole finished day collapses the window onto today's
    * midnight, which can sit outside the range on either side. The spans still
    * have to be the range and nothing more: anything wider is time the caller

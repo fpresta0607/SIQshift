@@ -233,11 +233,15 @@ upload to reach an empty table starts that run at the oldest finished day it
 names, or at yesterday when it names none.
 A workspace that rests at weekends therefore gets its all-zero weekend rows from
 Monday's upload rather than leaving a gap a week.
-Each upload folds at most a month, so a table left far behind catches up over the
-next several uploads instead of paying the whole stretch on one request, and no
-single interval read spans more than that month either.
-A day named by an upload that sits beyond that month waits for the run to reach
-it rather than being folded on its own: folding it early would move the latest
+Each upload fills forward by at most a month, so a table left far behind closes
+the gap over the next several uploads instead of paying the whole stretch on one
+request.
+On top of that fill an upload folds every day its own batch names, however many
+that is, so what bounds a catch-up upload's work is what the batch carried.
+No single interval read spans more than a month either, because adjacent days are
+read as one run.
+A day named by an upload that sits beyond that month's fill waits for the run to
+reach it rather than being folded on its own: folding it early would move the latest
 stored day past the stretch still to be filled, and nothing would ever come back
 for it.
 A day named from *below* where coverage starts waits too, and permanently: it is
@@ -245,11 +249,9 @@ read live rather than folded, because storing it would drag the run's first day
 backwards and leave a hole behind it that nothing grows back into.
 Backfilling history older than the day coverage started is the retention change's
 scheduled job, not an upload's.
-Every other day an upload names is folded, however many there are: a named day is
-one whose stored numbers that upload has just made wrong, and the days an upload
-clears are exactly the days it goes on to rebuild.
-Adjacent days share one interval read, so a desktop back from a long outage pays a
-handful of reads rather than one per day.
+Every other day an upload names is folded: a named day is one whose stored numbers
+that upload has just made wrong, and the days an upload clears are exactly the days
+it goes on to rebuild.
 A fold that fails partway leaves its days cleared and unfolded inside coverage,
 and nothing re-establishes them, because the run only ever fills upward: they read
 live, which is correct, and restoring the coverage is the scheduled fold's job
