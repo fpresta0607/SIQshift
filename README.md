@@ -295,6 +295,11 @@ The sweep folds first and deletes second, and it deletes strictly inside what it
 has proved folded rather than up to the cutoff on the assumption the fold got
 there.
 That order is the whole of its safety.
+It also stops one day short of the cutoff rather than at it, because the sweep
+and an in-flight upload each read the clock for themselves and can disagree by a
+day across UTC midnight; a day of distance means the newest day the sweep
+deletes is still older than the oldest day a fold will touch.
+So raw rows survive 91 days in practice, and nothing has to coordinate.
 A day with no stored row is read live, which is what makes the fold safe as a
 cache - but delete the rows behind an unfolded day and the same rule turns
 against them: the live read finds nothing, and the day reports as zero,

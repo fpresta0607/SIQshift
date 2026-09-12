@@ -10,6 +10,7 @@ import type {
 import {
   BACKFILL_DAYS_PER_PASS,
   RETENTION_DAYS,
+  SWEEP_SLACK_DAYS,
   createRetentionService,
   retentionCutoff,
   type RetentionPass,
@@ -23,6 +24,8 @@ const other = "1e59dfd6-3d1f-4795-9420-3ab65f0df843";
 const now = new Date(Date.UTC(2026, 8, 12, 3, 0));
 const today = utcDayStart(now).getTime();
 const day = (offsetFromToday: number): Date => new Date(today + offsetFromToday * DAY_MS);
+/** The newest day the sweep will delete below: the cutoff, less its slack. */
+const SWEEP_FLOOR_DAYS = RETENTION_DAYS + SWEEP_SLACK_DAYS;
 
 /** A segment store that remembers what it was asked to delete. */
 class Segments implements Partial<ActivitySegmentRepository> {
@@ -126,7 +129,7 @@ describe("deleting only what is folded", () => {
     expect(segments.deletes).toEqual([{
       organizationId: organization,
       from: day(-200),
-      toExclusive: day(-RETENTION_DAYS),
+      toExclusive: day(-SWEEP_FLOOR_DAYS),
     }]);
     expect(pass?.deleted).toBe(7);
   });
@@ -169,8 +172,35 @@ describe("deleting only what is folded", () => {
 
     await sweepWith(segments, rollups, fold);
 
-    // The upper bound is the cutoff, never coverage's own top edge.
-    expect(segments.deletes[0]?.toExclusive).toEqual(day(-RETENTION_DAYS));
+    // The upper bound is the sweep's own floor, never coverage's top edge.
+    expect(segments.deletes[0]?.toExclusive).toEqual(day(-SWEEP_FLOOR_DAYS));
+  });
+
+  it("stays clear of the oldest day a refresh on the other side of midnight still folds", async () => {
+    // The failure this rules out: two processes evaluating the window against
+    // their own clocks disagree by a day across UTC midnight, the sweep deletes
+    // a day the in-flight refresh still admits as a named day, and the refold
+    // then writes zeros over a correct row with a `computedAt` that wins.
+    const justBeforeMidnight = new Date(today - 1_000);
+    const justAfterMidnight = new Date(today + 1_000);
+    const segments = new Segments();
+    segments.organizations = [organization];
+    segments.oldest.set(organization, day(-400));
+    const rollups = new Rollups();
+    rollups.covered.set(organization, { earliest: day(-400), latest: day(-1) });
+
+    const [pass] = await createRetentionService({
+      segments: segments as unknown as ActivitySegmentRepository,
+      rollups: rollups as unknown as UserDailyRollupRepository,
+      fold: new Fold(rollups),
+      now: () => justAfterMidnight,
+    }).sweep();
+
+    // The refresh's floor is its own cutoff, and the sweep's window ends at or
+    // below it, so no day can be both deleted here and refolded there.
+    const refreshFloor = retentionCutoff(justBeforeMidnight);
+    expect(pass?.deletedBefore).toEqual(segments.deletes[0]?.toExclusive);
+    expect(segments.deletes[0]!.toExclusive.getTime()).toBeLessThanOrEqual(refreshFloor.getTime());
   });
 
   it("holds off entirely for an organization with no segments left", async () => {
@@ -232,8 +262,8 @@ describe("folding before deleting", () => {
     await sweepWith(segments, rollups, new Fold(rollups));
 
     expect(segments.deletes).toEqual([
-      { organizationId: organization, from: day(-300), toExclusive: day(-RETENTION_DAYS) },
-      { organizationId: other, from: day(-120), toExclusive: day(-RETENTION_DAYS) },
+      { organizationId: organization, from: day(-300), toExclusive: day(-SWEEP_FLOOR_DAYS) },
+      { organizationId: other, from: day(-120), toExclusive: day(-SWEEP_FLOOR_DAYS) },
     ]);
   });
 });
@@ -302,7 +332,7 @@ describe("proving the days between coverage's endpoints", () => {
     }]);
     expect(pass?.held).toBe("coverage has no row for " + day(-150).toISOString().slice(0, 10));
     // And the proof read only ever looks inside the window the sweep bounded.
-    expect(rollups.proofReads).toEqual([{ from: day(-300), toExclusive: day(-RETENTION_DAYS) }]);
+    expect(rollups.proofReads).toEqual([{ from: day(-300), toExclusive: day(-SWEEP_FLOOR_DAYS) }]);
   });
 
   it("deletes to the cutoff when every day between the endpoints has a row", async () => {
@@ -314,7 +344,7 @@ describe("proving the days between coverage's endpoints", () => {
 
     const [pass] = await sweepWith(segments, rollups, new Fold(rollups));
 
-    expect(segments.deletes[0]?.toExclusive).toEqual(day(-RETENTION_DAYS));
+    expect(segments.deletes[0]?.toExclusive).toEqual(day(-SWEEP_FLOOR_DAYS));
     expect(pass?.held).toBeUndefined();
   });
 
@@ -329,7 +359,7 @@ describe("proving the days between coverage's endpoints", () => {
 
     const [pass] = await sweepWith(segments, rollups, new Fold(rollups));
 
-    expect(segments.deletes[0]?.toExclusive).toEqual(day(-RETENTION_DAYS));
+    expect(segments.deletes[0]?.toExclusive).toEqual(day(-SWEEP_FLOOR_DAYS));
     expect(pass?.held).toBeUndefined();
   });
 });
@@ -353,7 +383,7 @@ describe("one organization's failure", () => {
     expect(segments.deletes).toEqual([{
       organizationId: other,
       from: day(-300),
-      toExclusive: day(-RETENTION_DAYS),
+      toExclusive: day(-SWEEP_FLOOR_DAYS),
     }]);
   });
 });

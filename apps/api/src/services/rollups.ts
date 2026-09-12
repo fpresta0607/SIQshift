@@ -126,11 +126,14 @@ export function foldTargetDays(
   // above needs no such guard, because the sweep never deletes above
   // `coverage.latest`.
   //
-  // The cutoff day itself is admitted, because the sweep deletes strictly below
-  // it and so that day still has its segments. The two bounds have to name the
-  // same day: the ingest accepts evidence for the cutoff day, and a day
-  // accepted, stored, then never folded is a day whose row goes stale and is
-  // then swept - an undercount nothing recovers from.
+  // The cutoff day itself is admitted, because the sweep stops a day below it
+  // and so that day still has its segments. This floor and the ingest bound
+  // have to name the same day: the ingest accepts evidence for the cutoff day,
+  // and a day accepted, stored, then never folded is a day whose row goes stale
+  // and is then swept - an undercount nothing recovers from. The sweep's own
+  // extra day of distance is slack against the two processes disagreeing about
+  // which day the cutoff is; it belongs there rather than here, because
+  // widening this floor would reopen that band.
   const floor = Math.max(coverage?.earliest.getTime() ?? from, cutoff.getTime());
   for (const day of named) {
     const at = day.getTime();

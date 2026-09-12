@@ -1167,25 +1167,28 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
     // backfill to extend downward, since it refuses to anchor coverage itself,
     // so it could only ever spend a slot of a capped pass without using it. It
     // rejoins the rotation the moment the upload path gives it a fold.
-    const candidates = await this.db
-      .selectDistinct({ organizationId: userDailyRollups.organizationId })
-      .from(userDailyRollups);
-
-    // Each organization's oldest evidence is then one indexed seek on
-    // (organization_id, started_at), which is what that index is for.
-    const oldest: { organizationId: string; at: Date }[] = [];
-    for (const candidate of candidates) {
-      const at = await this.earliestSegment(candidate.organizationId);
-      if (at !== null && at.getTime() < toExclusive.getTime()) {
-        oldest.push({ organizationId: candidate.organizationId, at });
-      }
-    }
-    // Oldest evidence first, so the organization furthest behind is the one a
-    // capped sweep spends its budget on rather than the one it reaches last.
-    return oldest
-      .sort((left, right) => left.at.getTime() - right.at.getTime())
-      .slice(0, limit)
-      .map((entry) => entry.organizationId);
+    //
+    // One statement, because the limit has to bound the discovery as well as
+    // the sweeping. Each organization's oldest evidence taken as its own round
+    // trip is an indexed seek either way, but a deployment with five thousand
+    // folded organizations then pays five thousand serial round trips every
+    // night to choose twenty-five. The lateral runs the same seeks server-side,
+    // and ordering before the limit means no work is spent on an organization
+    // this pass will not reach. Oldest evidence first, so the organization
+    // furthest behind is the one a capped pass spends its budget on.
+    const rows = await this.db.execute<{ organization_id: string }>(sql`
+      select folded.organization_id
+      from (select distinct ${userDailyRollups.organizationId} from ${userDailyRollups}) as folded
+      cross join lateral (
+        select min(${activitySegments.startedAt}) as oldest
+        from ${activitySegments}
+        where ${activitySegments.organizationId} = folded.organization_id
+      ) as evidence
+      where evidence.oldest < ${toExclusive.toISOString()}::timestamptz
+      order by evidence.oldest asc
+      limit ${limit}
+    `);
+    return [...rows].map((row) => row.organization_id);
   }
 
   public async earliestDay(organizationId: string): Promise<Date | null> {

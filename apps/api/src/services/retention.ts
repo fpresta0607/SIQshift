@@ -20,6 +20,32 @@ export const BACKFILL_DAYS_PER_PASS = 120;
 /** Organizations one pass will touch, for the same reason. */
 export const ORGANIZATIONS_PER_PASS = 25;
 
+/**
+ * Days the sweep holds back below the retention cutoff before deleting.
+ *
+ * This is slack for clock and midnight drift between two processes, not an
+ * off-by-one to be tightened away later. The fold and the sweep each evaluate
+ * `retentionCutoff` against their own `now`, and nothing serializes a sweep
+ * against an upload - the advisory lock covers sweep against sweep only. A
+ * refresh that computed its cutoff just before UTC midnight still admits day D
+ * as a named day while a sweep that computed its cutoff just after would treat
+ * day D as expired; the refold then reads evidence the delete has removed and
+ * writes zeros over a correct row, with a fresher `computedAt` that wins the
+ * upsert. That is the unrecoverable outcome this file exists to prevent.
+ *
+ * One day of slack rules it out with no coordination at all, because the newest
+ * day the sweep will delete is a whole day older than the oldest day the fold
+ * will touch, and the two cutoffs can disagree by at most a day. The fold's own
+ * floor stays at the cutoff: widening it instead would reopen the band where
+ * evidence is accepted, stored and then never folded.
+ */
+export const SWEEP_SLACK_DAYS = 1;
+
+/** The first day the sweep will not delete at or above; a day below the cutoff. */
+export function sweepCutoff(now: Date): Date {
+  return new Date(retentionCutoff(now).getTime() - SWEEP_SLACK_DAYS * DAY_MS);
+}
+
 export interface RetentionServiceDependencies {
   segments: ActivitySegmentRepository;
   rollups: UserDailyRollupRepository;
@@ -67,7 +93,9 @@ export interface RetentionService {
  * So a pass folds first and deletes second, and it deletes strictly inside
  * what it has proven folded - never up to the cutoff on the assumption that
  * the fold got there, and never across a day inside coverage that has no
- * stored row. A pass that folds nothing deletes nothing.
+ * stored row. A pass that folds nothing deletes nothing. Its upper bound is
+ * `sweepCutoff` rather than the retention cutoff itself, which is where the
+ * fold's floor stays; see `SWEEP_SLACK_DAYS` for why they are a day apart.
  *
  * What deletion costs, stated plainly because it is not recoverable: beyond
  * the window, `activity_segments` no longer answers. Unscoped active time,
@@ -82,8 +110,11 @@ export function createRetentionService(dependencies: RetentionServiceDependencie
   const now = dependencies.now ?? ((): Date => new Date());
   return {
     async sweep(): Promise<RetentionPass[]> {
-      const cutoff = retentionCutoff(now());
-      const organizations = await dependencies.segments.organizationsWithSegmentsBefore(cutoff, ORGANIZATIONS_PER_PASS);
+      const deleteBefore = sweepCutoff(now());
+      const organizations = await dependencies.segments.organizationsWithSegmentsBefore(
+        deleteBefore,
+        ORGANIZATIONS_PER_PASS,
+      );
       const passes: RetentionPass[] = [];
       for (const organizationId of organizations) {
         // One organization's failure is its own. The ordering here is
@@ -91,7 +122,7 @@ export function createRetentionService(dependencies: RetentionServiceDependencie
         // this loop would drop every organization behind it from every pass,
         // indefinitely, on a workspace whose backfill happens to time out.
         try {
-          passes.push(await sweepOrganization(dependencies, organizationId, cutoff));
+          passes.push(await sweepOrganization(dependencies, organizationId, deleteBefore));
         } catch (error: unknown) {
           passes.push({
             organizationId,
@@ -111,7 +142,7 @@ export function createRetentionService(dependencies: RetentionServiceDependencie
 async function sweepOrganization(
   dependencies: RetentionServiceDependencies,
   organizationId: string,
-  cutoff: Date,
+  deleteBefore: Date,
 ): Promise<RetentionPass> {
   // A subject is how every report read is scoped, and a scheduled job has no
   // member to act as. The reads below use the organization alone, so the user
@@ -123,7 +154,7 @@ async function sweepOrganization(
     return { organizationId, backfilled: 0, coverageFrom: null, deleted: 0, deletedBefore: null, held: "no segments" };
   }
 
-  // Fold downward toward the oldest evidence and no further. The cutoff is not
+  // Fold downward toward the oldest evidence and no further. The bound is not
   // a floor here: the days that must be folded before anything can be deleted
   // are precisely the ones older than it, and coverage has to stay one
   // contiguous stretch, so the days between are folded on the way past.
@@ -151,7 +182,7 @@ async function sweepOrganization(
   // starts, because the days below coverage are the ones the fold has not
   // reached yet - a later pass will, and their rows must still be there for it.
   const from = coverage.earliest;
-  const expiring = new Date(Math.min(cutoff.getTime(), coverage.latest.getTime() + DAY_MS));
+  const expiring = new Date(Math.min(deleteBefore.getTime(), coverage.latest.getTime() + DAY_MS));
   if (expiring.getTime() <= from.getTime()) {
     return {
       organizationId,
