@@ -418,4 +418,86 @@ describe("defaultBridge", () => {
     invoke.mockResolvedValueOnce({});
     await expect(defaultBridge.agentShiftRows("siqshift", null)).resolves.toEqual({ shifts: [], nextCursor: null });
   });
+
+  it("round-trips the project tie on a shift row and its cursor, and reads absence as untied", async () => {
+    const cursor = {
+      startedAt: "2026-08-06T15:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000601",
+      projectTied: true,
+    };
+    invoke.mockResolvedValueOnce({
+      shifts: [{
+        id: "00000000-0000-4000-8000-000000000601",
+        source: "claude_code",
+        owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
+        model: null,
+        startedAt: "2026-08-06T15:00:00.000Z",
+        endedAt: "2026-08-06T16:00:00.000Z",
+        agentSeconds: 5_400,
+        commitCount: 0,
+        project: { id: "00000000-0000-4000-8000-000000000010", name: "Field work" },
+      }],
+      nextCursor: cursor,
+    });
+    const page = await defaultBridge.agentShiftRows("siqshift", null);
+    // The tie reads off the row (the drawer prints the project's name) and the
+    // cursor round-trips it, so the next page is cut under the same ordering.
+    expect(page.shifts[0]).toMatchObject({ project: { name: "Field work" } });
+    expect(page.nextCursor).toEqual(cursor);
+    // The tie rides with the pair, as one value split across three arguments.
+    expect(invoke).toHaveBeenLastCalledWith("agent_shift_rows", expect.objectContaining({
+      afterStartedAt: undefined,
+      afterId: undefined,
+      projectTied: undefined,
+    }));
+
+    // Absence on an older API is untied, never a crash: the rows that were
+    // ordered before the tie existed already sat in the untied partition.
+    invoke.mockResolvedValueOnce({ shifts: [{
+      id: "00000000-0000-4000-8000-000000000602",
+      source: "pi",
+      owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
+      model: null,
+      startedAt: "2026-08-06T15:00:00.000Z",
+      endedAt: "2026-08-06T16:00:00.000Z",
+      agentSeconds: 1_800,
+      commitCount: 0,
+    }], nextCursor: null });
+    const untied = await defaultBridge.agentShiftRows("siqshift", null);
+    expect(untied.shifts[0]!.project).toBeNull();
+  });
+
+  it("decodes the live sessions read and pins the command name", async () => {
+    invoke.mockResolvedValueOnce({
+      people: [{
+        owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
+        sessions: [{
+          id: "00000000-0000-4000-8000-000000000601",
+          source: "claude_code",
+          description: "Claude Code in siqshift, running 12m",
+          repo: "siqshift",
+          aFieldFromTheFuture: true,
+        }],
+      }],
+    });
+    await expect(defaultBridge.liveAgentSessions()).resolves.toEqual({
+      people: [{
+        owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
+        sessions: [{
+          id: "00000000-0000-4000-8000-000000000601",
+          source: "claude_code",
+          description: "Claude Code in siqshift, running 12m",
+          repo: "siqshift",
+        }],
+      }],
+    });
+    // The command name and argument keys are the same seam the other polls
+    // pin: a typo on either side compiles fine and leaves the live view dark.
+    expect(invoke).toHaveBeenLastCalledWith("agent_live_sessions", undefined);
+
+    // An API older than this build sends no people at all: nobody running, an
+    // honest empty state, not an error.
+    invoke.mockResolvedValueOnce({});
+    await expect(defaultBridge.liveAgentSessions()).resolves.toEqual({ people: [] });
+  });
 });

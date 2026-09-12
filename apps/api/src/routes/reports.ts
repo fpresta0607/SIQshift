@@ -1,4 +1,4 @@
-import { agentShiftRowsFiltersSchema, agentShiftRowsResponseSchema, agentShiftsFiltersSchema, agentShiftsResponseSchema, agentsReportFiltersSchema, agentsReportResponseSchema, leaderboardFiltersSchema, leaderboardResponseSchema, reportFiltersSchema, reportResponseSchema } from "@siqshift/shared";
+import { agentShiftRowsFiltersSchema, agentShiftRowsResponseSchema, agentShiftsFiltersSchema, agentShiftsResponseSchema, agentsReportFiltersSchema, agentsReportResponseSchema, leaderboardFiltersSchema, leaderboardResponseSchema, liveAgentSessionsFiltersSchema, liveAgentSessionsResponseSchema, reportFiltersSchema, reportResponseSchema } from "@siqshift/shared";
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 
@@ -47,6 +47,15 @@ export function createReportRoutes(service: ReportService): Hono<ApiEnvironment>
     if (!parsed.success) throw new AppError("validation_error", "Invalid agent shift row filters.");
     return context.json(agentShiftRowsResponseSchema.parse(
       await service.agentShiftRows(getAuthenticatedSubject(context), parsed.data),
+    ));
+  });
+  // Who is running an agent right now. Sessions running right now have no
+  // range, so the only filter is the dashboard's project scope.
+  routes.get("/agent-sessions/live", async (context) => {
+    const parsed = liveAgentSessionsFiltersSchema.safeParse(context.req.query());
+    if (!parsed.success) throw new AppError("validation_error", "Invalid live session filters.");
+    return context.json(liveAgentSessionsResponseSchema.parse(
+      await service.liveAgentSessions(getAuthenticatedSubject(context), parsed.data),
     ));
   });
   routes.get("/export.csv", async (context) => {

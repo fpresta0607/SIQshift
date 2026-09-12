@@ -61,6 +61,19 @@ answered rather than forgotten:
 The desktop gets the drawers, not the board: its All-stats modal is 440px wide and its Humans tab
 already lists every member with their agent time one click away.
 
+**The Agents tab also answers "who is running an agent right now", from `GET
+/reports/agent-sessions/live`.** The live view is one group per person with at least one running
+session; a person with none is absent, never a stale row, and browser spans are excluded by the
+same `rosterEligibleSource` rule as everywhere else. Each row's `description` is composed once,
+server-side, from captured facts alone (runtime, attested model, the project or codebase the
+directory resolved to, how long the session has been up): there is no summary field behind it, and
+none may be invented on the client. Stale running rows close through the reaper before the read, so
+a session the 30-minute staleness window ended can never appear live. In the All Stats agents view
+the ordering is project-tie first: group heads keep the label-less group last, and within a drawer
+the project-tied shifts read above the untied ones (which stay visible below, sorted not hidden);
+the drawer cursor therefore carries `projectTied` beside its `startedAt`/`id` pair, and a cursor
+sent without it reads as untied.
+
 **The web page is the desktop app's screen, not a second design.** It opens on the same filing
 header, clock card and Today card, and files the board, the breakdowns, the Agents map and the
 session history behind the same **All stats** button; projects, the invite code and signing out

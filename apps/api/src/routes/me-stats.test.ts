@@ -278,6 +278,10 @@ class MemoryReports implements ReportRepository {
     throw new Error("not used by me/stats");
   }
 
+  public async readRunningAgentSessions() {
+    return [];
+  }
+
   public async findProjectForOrganization(): Promise<never> {
     throw new Error("not used by me/stats");
   }

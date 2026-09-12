@@ -1,5 +1,6 @@
 import {
   addTimeMeasurementsMs,
+  agentRuntimeLabel,
   clipInterval,
   intersectIntervals,
   isAttributed,
@@ -20,6 +21,9 @@ import {
   type Interval,
   type LeaderboardFilters,
   type LeaderboardResponse,
+  type LiveAgentSession,
+  type LiveAgentSessionsFilters,
+  type LiveAgentSessionsResponse,
   type MeStatsAgent,
   type MeStatsFilters,
   type MeStatsResponse,
@@ -47,6 +51,7 @@ import type {
   ReportRepository,
   ReportRowRecord,
   ReportSummaryRecord,
+  RunningAgentSessionRecord,
   SessionIntervalRecord,
   ShiftCommitCountsRecord,
   ShiftCommitRecord,
@@ -69,6 +74,7 @@ export interface ReportService {
   agentsReport(subject: AuthenticatedSubject, filters: AgentsReportFilters): Promise<AgentsReportResponse>;
   agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse>;
   agentShiftRows(subject: AuthenticatedSubject, filters: AgentShiftRowsFilters): Promise<AgentShiftRowsResponse>;
+  liveAgentSessions(subject: AuthenticatedSubject, filters: LiveAgentSessionsFilters): Promise<LiveAgentSessionsResponse>;
 }
 
 export interface ReportExport {
@@ -1037,7 +1043,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
     },
 
     async agentShiftRows(subject: AuthenticatedSubject, filters: AgentShiftRowsFilters): Promise<AgentShiftRowsResponse> {
-      const { groupKey, pageSize, afterStartedAt, afterId, ...boardFilters } = filters;
+      const { groupKey, pageSize, afterStartedAt, afterId, projectTied, ...boardFilters } = filters;
       const board = await readShiftBoard(dependencies, subject, boardFilters);
       // A key the range no longer holds is an empty page, not an error: the
       // aggregate a drawer was opened from can be a minute old, and a group
@@ -1049,18 +1055,71 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       // drawer already holds. No cursor asks for the head of the list.
       const start = afterStartedAt === undefined || afterId === undefined
         ? 0
-        : shifts.findIndex((shift) => isAfterShiftCursor(shift, afterStartedAt, afterId));
+        : shifts.findIndex((shift) => isAfterShiftCursor(shift, afterStartedAt, afterId, projectTied));
       const page = start === -1 ? [] : shifts.slice(start, start + pageSize);
       const last = page.at(-1);
       return {
         filters,
         shifts: page,
-        // The last row's own ordering pair while rows remain behind it. Null
+        // The last row's own ordering triple while rows remain behind it. Null
         // says the group is exhausted, which is the whole of what a drawer
         // needs to decide whether to offer another page.
         nextCursor: last === undefined || start + page.length >= shifts.length
           ? null
-          : { startedAt: last.startedAt, id: last.id },
+          : {
+            startedAt: last.startedAt,
+            id: last.id,
+            ...(last.project === null ? {} : { projectTied: true }),
+          },
+      };
+    },
+
+    async liveAgentSessions(subject: AuthenticatedSubject, filters: LiveAgentSessionsFilters): Promise<LiveAgentSessionsResponse> {
+      const scope = scopeQuery(filters.scope);
+      if (scope.projectId !== undefined && await dependencies.reports.findProjectForOrganization(subject, scope.projectId) === null) {
+        throw new AppError("not_found", "Project not found.");
+      }
+      await dependencies.reaper.reapStale(subject);
+      const rows = await dependencies.reports.readRunningAgentSessions(subject);
+      const at = now();
+      const people = new Map<string, { owner: LiveAgentSessionsResponse["people"][number]["owner"]; sessions: LiveAgentSession[] }>();
+      for (const row of rows) {
+        // Browser spans are attention, not workers, the roster's own rule.
+        if (!rosterEligibleSource(row.source)) continue;
+        if (scope.unassignedOnly === true && row.projectId !== null) continue;
+        if (scope.projectId !== undefined && row.projectId !== scope.projectId) continue;
+        const person = people.get(row.user.id)
+          ?? { owner: { id: row.user.id, name: row.user.name }, sessions: [] };
+        const repo = (row.cwd === null ? null : repoLabel(row.cwd)) ?? agentCodebaseLabel(row.agentRepoRoot, row.agentRepoKey);
+        const project = row.projectId === null || row.projectName == null
+          ? null
+          : { id: row.projectId, name: row.projectName };
+        person.sessions.push({
+          id: row.sessionId,
+          source: row.source,
+          owner: person.owner,
+          model: row.model,
+          startedAt: row.startedAt.toISOString(),
+          lastEventAt: row.lastEventAt.toISOString(),
+          repo,
+          project,
+          description: liveSessionDescription(row, at),
+        });
+        people.set(row.user.id, person);
+      }
+      // A person with no running session is absent, not zero: this view is
+      // "who is running an agent right now", and an empty group would answer
+      // a question nobody asked. Within a person, project-tied sessions read
+      // first - the same affinity the shifts drawers order by - then newest.
+      return {
+        people: [...people.values()]
+          .map((person) => ({
+            ...person,
+            sessions: [...person.sessions].sort((a, b) =>
+              Number(b.project !== null) - Number(a.project !== null)
+              || b.startedAt.localeCompare(a.startedAt)),
+          }))
+          .sort((a, b) => runningSecondsOf(b, at) - runningSecondsOf(a, at) || a.owner.id.localeCompare(b.owner.id)),
       };
     },
   };
@@ -1073,8 +1132,16 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
  * string where `...:00Z` and `...:00.000Z` name the same moment but do not
  * compare as the same string.
  */
-function isAfterShiftCursor(shift: AgentShiftRow, afterStartedAt: string, afterId: string): boolean {
+function isAfterShiftCursor(shift: AgentShiftRow, afterStartedAt: string, afterId: string, afterProjectTied: "true" | "false" | undefined): boolean {
   const cursorStartedAt = new Date(afterStartedAt).toISOString();
+  // A cursor from before the tie existed reads as untied, which is the
+  // position an untied row already holds in the ordering.
+  const cursorTied = afterProjectTied === "true";
+  const tied = shift.project !== null;
+  // The partitions decide first: a tied shift sits above an untied cursor and
+  // an untied shift below a tied one, so an equal pair across the boundary is
+  // still ordered without an extra cursor field.
+  if (tied !== cursorTied) return !tied;
   if (shift.startedAt !== cursorStartedAt) return shift.startedAt < cursorStartedAt;
   return shift.id > afterId;
 }
@@ -1171,6 +1238,9 @@ async function readShiftBoard(
       ? (root === null || root === undefined ? "no-working-directory" : "unidentified-run-directory")
       : null;
     const key = repo ?? `null:${nullCause}`;
+    const project = interval.projectId === null || interval.projectName == null
+      ? null
+      : { id: interval.projectId, name: interval.projectName };
     const group = groups.get(key)
       ?? { key, repo, nullCause, agentSeconds: 0, commits: [], shifts: [] };
     group.agentSeconds += shiftSeconds;
@@ -1184,15 +1254,21 @@ async function readShiftBoard(
       endedAt: interval.endedAt.toISOString(),
       agentSeconds: shiftSeconds,
       commitCount: shiftCommitList.length,
+      project,
     });
     groups.set(key, group);
   }
 
   for (const group of groups.values()) {
-    // Newest first, the id breaking ties: a page boundary falling between two
-    // shifts that share a start instant would otherwise be free to repeat one
-    // of them and drop the other across two page reads.
-    group.shifts.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id));
+    // Project-tied shifts read first - the affinity the All Stats agents view
+    // orders by - then newest first, the id breaking ties: a page boundary
+    // falling between two shifts that share a start instant would otherwise be
+    // free to repeat one of them and drop the other across two page reads.
+    // Untied shifts stay visible below; they are sorted, not hidden.
+    group.shifts.sort((a, b) =>
+      Number(b.project !== null) - Number(a.project !== null)
+      || b.startedAt.localeCompare(a.startedAt)
+      || a.id.localeCompare(b.id));
   }
   return {
     groups: [...groups.values()]
@@ -1254,4 +1330,42 @@ function heldRateOf(commits: readonly ShiftCommitRecord[]): number | null {
   const decided = commits.filter((commit) => commit.verification !== "pending");
   if (decided.length === 0) return null;
   return decided.filter((commit) => commit.verification === "merged").length / decided.length;
+}
+
+/** How long a live session has been up, short enough for a row: seconds, minutes, then hours and minutes. */
+export function liveElapsedSeconds(startedAt: Date, now: Date): string {
+  const seconds = Math.max(0, Math.floor((now.getTime() - startedAt.getTime()) / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * The one sentence a live session row says, composed here so both surfaces
+ * render the same line. Every clause is a captured fact: the runtime that
+ * registered the session, the model it attested when it did, the codebase or
+ * project its working directory resolved to, and how long it has been up.
+ * There is no summary field behind it, and none is invented: a session the
+ * data cannot describe further reads exactly as long as its facts reach.
+ */
+export function liveSessionDescription(
+  session: Pick<RunningAgentSessionRecord, "source" | "model" | "cwd" | "agentRepoRoot" | "agentRepoKey" | "startedAt" | "projectName">,
+  now: Date,
+): string {
+  const runtime = agentRuntimeLabel(session.source);
+  const where = session.projectName
+    ?? (session.cwd === null ? null : repoLabel(session.cwd))
+    ?? agentCodebaseLabel(session.agentRepoRoot, session.agentRepoKey)
+    ?? "no codebase recorded";
+  const model = session.model === null ? "" : ` on ${session.model}`;
+  return `${runtime}${model} in ${where}, running ${liveElapsedSeconds(session.startedAt, now)}`;
+}
+
+/** A person's total live agent seconds, the measure the live board ranks by. */
+function runningSecondsOf(person: { sessions: readonly { startedAt: string }[] }, now: Date): number {
+  return person.sessions.reduce(
+    (total, session) => total + Math.max(0, now.getTime() - Date.parse(session.startedAt)),
+    0,
+  );
 }

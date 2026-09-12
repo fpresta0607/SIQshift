@@ -265,6 +265,12 @@ pub struct AgentShiftRow {
     /// How many commits the shift recorded; the subjects stay off this wire.
     #[serde(default)]
     pub commit_count: u32,
+    /// The project tie the drawer is ordered by: set when the shift's
+    /// attribution resolved to a project, `None` when its time landed in the
+    /// default one. Absent on an API that predates the tie, which reads as
+    /// untied - the position those rows already sat in.
+    #[serde(default)]
+    pub project: Option<LeaderboardMember>,
 }
 
 /// One page of one group's shifts, newest first, and where the next page
@@ -288,6 +294,43 @@ pub struct AgentShiftRows {
 pub struct AgentShiftCursor {
     pub started_at: String,
     pub id: String,
+    /// The cursor's partition in the project-tie ordering. Absent on a cursor
+    /// from before the tie existed, which reads as the untied partition.
+    #[serde(default)]
+    pub project_tied: Option<bool>,
+}
+
+/// One agent session running at the moment the read answered, as the live
+/// view renders it. The description is the server's own sentence, composed
+/// once from captured facts; the webview renders it verbatim and never
+/// re-derives it. Every field is tolerant the way every response here is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveAgentSessionRow {
+    pub id: String,
+    pub source: AgentSource,
+    pub description: String,
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// One person's running sessions. Only people with at least one arrive, so
+/// nobody stale can appear here; an empty list is the honest empty state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveAgentPerson {
+    pub owner: LeaderboardMember,
+    #[serde(default)]
+    pub sessions: Vec<LiveAgentSessionRow>,
+}
+
+/// Who is running an agent right now, grouped by person. An absent list
+/// decodes as none, never an error - the API deploys before any installer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveAgentSessions {
+    #[serde(default)]
+    pub people: Vec<LiveAgentPerson>,
 }
 
 #[derive(Deserialize)]
@@ -925,12 +968,25 @@ impl ApiClient {
         if let Some(after) = after {
             pairs.push(("afterStartedAt", after.started_at.as_str()));
             pairs.push(("afterId", after.id.as_str()));
+            // The cursor's partition travels only when the cursor carries one: a
+            // cursor from before the tie existed reads as untied, which is the
+            // position its rows already sat in.
+            if let Some(project_tied) = after.project_tied {
+                pairs.push(("projectTied", if project_tied { "true" } else { "false" }));
+            }
         }
         if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
             pairs.push(("fromAt", from_at));
             pairs.push(("toExclusiveAt", to_exclusive_at));
         }
         self.get_json_query(access_token, "/reports/agent-shifts/rows", &pairs)
+            .await
+    }
+
+    /// Who is running an agent right now, grouped by person. No bounds: the
+    /// live view reads now, and the desktop reads it for everyone.
+    pub async fn live_agent_sessions(&self, access_token: &str) -> ApiResult<LiveAgentSessions> {
+        self.get_json(access_token, "/reports/agent-sessions/live")
             .await
     }
 
@@ -1422,8 +1478,20 @@ mod tests {
             Some(AgentShiftCursor {
                 started_at: "2026-08-06T15:00:00.000Z".to_string(),
                 id: "s1".to_string(),
+                project_tied: None,
             })
         );
+
+        // A cursor that carries the tie round-trips it, so the next page is
+        // cut under the same ordering this one was built under.
+        let tied: AgentShiftRows = serde_json::from_str(
+            r#"{
+                "shifts": [],
+                "nextCursor": {"startedAt": "2026-08-06T15:00:00.000Z", "id": "s1", "projectTied": true}
+            }"#,
+        )
+        .expect("a tied cursor decodes");
+        assert_eq!(tied.next_cursor.unwrap().project_tied, Some(true));
 
         // Spent, and absent, both read as nowhere further to go.
         let spent: AgentShiftRows = serde_json::from_str(r#"{"shifts": [], "nextCursor": null}"#)
@@ -1845,6 +1913,7 @@ mod tests {
         let cursor = AgentShiftCursor {
             started_at: "2026-08-06T14:00:00.000Z".to_string(),
             id: "s0".to_string(),
+            project_tied: Some(true),
         };
         let page = client
             .agent_shift_rows(
@@ -1884,6 +1953,7 @@ mod tests {
                     "2026-08-06T14:00:00.000Z".to_string()
                 ),
                 ("afterId".to_string(), "s0".to_string()),
+                ("projectTied".to_string(), "true".to_string()),
                 ("fromAt".to_string(), "2026-08-06T00:00:00.000Z".to_string()),
                 (
                     "toExclusiveAt".to_string(),
@@ -1894,5 +1964,35 @@ mod tests {
         assert_eq!(page.shifts.len(), 1);
         assert_eq!(page.shifts[0].commit_count, 2);
         assert!(page.next_cursor.is_none());
+    }
+
+    #[test]
+    fn decodes_the_live_sessions_read_tolerantly() {
+        // The whole shape, decoded whole: person, session, the server's own
+        // description, and the codebase label beside it.
+        let full: LiveAgentSessions = serde_json::from_str(
+            r#"{
+                "people": [{
+                    "owner": {"id": "u1", "name": "Alex"},
+                    "sessions": [{
+                        "id": "s1",
+                        "source": "claude_code",
+                        "description": "Claude Code in siqshift, running 12m",
+                        "repo": "siqshift",
+                        "aFieldFromTheFuture": true
+                    }]
+                }]
+            }"#,
+        )
+        .expect("a live roster decodes");
+        assert_eq!(full.people.len(), 1);
+        assert_eq!(full.people[0].owner.name, "Alex");
+        assert_eq!(full.people[0].sessions.len(), 1);
+        assert_eq!(full.people[0].sessions[0].repo.as_deref(), Some("siqshift"));
+
+        // Absence on an older API decodes as nobody running, never an error -
+        // the exact bridge rule the rest of this file keeps.
+        let empty: LiveAgentSessions = serde_json::from_str("{}").expect("absence decodes");
+        assert!(empty.people.is_empty());
     }
 }

@@ -432,3 +432,18 @@ a.download-secondary:hover { color: #ffffff; }
 @media (forced-colors: active) {
   input, select, textarea { forced-color-adjust: auto; }
 }
+
+/* The live view at the top of the Agents tab: who is running an agent now.
+   A breathing dot marks each running session; the description is the server's
+   own sentence and is never re-derived here. */
+.live-sessions { margin: 0 0 14px; }
+.live-sessions-title { margin: 0 0 6px; font-size: .72rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+.live-person { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
+.live-person-name { flex: none; width: 8.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: .84rem; }
+.live-session-list { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0; padding: 0; list-style: none; }
+.live-session { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: .82rem; }
+.live-pulse { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--mint, #6ee7b7); animation: live-pulse 2.4s ease-in-out infinite; }
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.live-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-repo { flex: none; color: var(--text-secondary); font-size: .76rem; }
+.live-sessions-empty { margin: 0 0 14px; }

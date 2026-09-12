@@ -39,8 +39,8 @@ use tokio::sync::Mutex;
 
 use api::{
     AgentShiftCursor, AgentShiftRows, AgentShifts, ApiClient, ApiResult, BridgeError, ErrorKind,
-    LeaderboardEntry, MeStats, Organization, ProjectUsage, TimerProject, TimerUser,
-    ViewPreferences,
+    LeaderboardEntry, LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject,
+    TimerUser, ViewPreferences,
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
@@ -590,6 +590,7 @@ async fn agent_shift_rows(
     group_key: String,
     after_started_at: Option<String>,
     after_id: Option<String>,
+    project_tied: Option<bool>,
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
 ) -> ApiResult<AgentShiftRows> {
@@ -598,7 +599,11 @@ async fn agent_shift_rows(
     // for something the API would have to invent a meaning for.
     let after = after_started_at
         .zip(after_id)
-        .map(|(started_at, id)| AgentShiftCursor { started_at, id });
+        .map(|(started_at, id)| AgentShiftCursor {
+            started_at,
+            id,
+            project_tied,
+        });
     state
         .client
         .agent_shift_rows(
@@ -609,6 +614,14 @@ async fn agent_shift_rows(
             to_exclusive_at.as_deref(),
         )
         .await
+}
+
+/// Who is running an agent right now, grouped by person, for the live view at
+/// the top of the Agents tab. No bounds: the view reads now.
+#[tauri::command]
+async fn agent_live_sessions(state: State<'_, AppState>) -> ApiResult<LiveAgentSessions> {
+    let access_token = state.access_token().await?;
+    state.client.live_agent_sessions(&access_token).await
 }
 
 /// How much of each coding agent's plan is left, read from what those CLIs
@@ -1008,6 +1021,7 @@ pub fn run() {
             me_stats,
             agent_shifts,
             agent_shift_rows,
+            agent_live_sessions,
             app_icons,
             project_create,
             project_update,

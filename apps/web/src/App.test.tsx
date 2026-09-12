@@ -193,6 +193,7 @@ function clientFor(overrides: Partial<Client> = {}): Client {
         : { ...agentShiftsResponse, hourly: [] },
     )),
     agentShiftRows: vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query))),
+    liveAgentSessions: vi.fn().mockResolvedValue({ people: [] }),
     ...overrides,
   } as unknown as Client;
 }
@@ -1609,6 +1610,66 @@ describe("the agents tab", () => {
     // asserts the omission, because adding one back would otherwise pass
     // every suite silently.
     expect(rows.every((row) => row.querySelector(".meter-bar") === null)).toBe(true);
+  });
+
+  it("shows who is running an agent right now, with the server's own description", async () => {
+    const person = await signIn(clientFor({
+      liveAgentSessions: vi.fn().mockResolvedValue({
+        people: [
+          {
+            owner: { id: "u2", name: "Alex" },
+            sessions: [
+              { id: "00000000-0000-4000-8000-000000000701", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
+              { id: "00000000-0000-4000-8000-000000000702", source: "pi", repo: null, description: "Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m" },
+            ],
+          },
+          {
+            owner: { id: "u3", name: "Sam" },
+            sessions: [
+              { id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" },
+            ],
+          },
+        ],
+      }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+
+    const live = await screen.findByTestId("live-sessions");
+    // The description renders verbatim, never re-derived: every clause is a
+    // captured fact, and the codebase label rides beside it.
+    expect(live).toHaveTextContent("Claude Code in siqshift, running 12m");
+    expect(live).toHaveTextContent("Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m");
+    expect(live).toHaveTextContent("siqshift");
+    expect(live).toHaveTextContent("Sam");
+    expect(live).toHaveTextContent("Codex in quartermaster, running 45s");
+    expect(live).toHaveTextContent("quartermaster");
+  });
+
+  it("narrows the live view to whoever is picked, with an honest empty state", async () => {
+    const person = await signIn(clientFor({
+      liveAgentSessions: vi.fn().mockResolvedValue({
+        people: [
+          {
+            owner: { id: "u2", name: "Alex" },
+            sessions: [
+              { id: "00000000-0000-4000-8000-000000000704", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
+            ],
+          },
+        ],
+      }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await screen.findByTestId("live-sessions");
+    // Sam has no live session, so picking him reads as "nobody", never as
+    // Alex's rows filed under the wrong name.
+    await person.click(within(screen.getByTestId("agent-people")).getByRole("button", { name: /Sam/ }));
+    expect(await screen.findByTestId("live-sessions-empty")).toHaveTextContent("No agent is running right now.");
   });
 
   it("keeps the way out of a filter even when the filtered request fails", async () => {

@@ -237,8 +237,30 @@ export interface AgentIntervalRecord {
    */
   agentRepoRoot: string | null;
   agentRepoKey: string | null;
+  /**
+   * The project the session's attribution resolved to, as a name for the
+   * shifts board's project tie. Null when nothing named a project; absent
+   * from a read that did not join the project table, which the board reads
+   * exactly as untied.
+   */
+  projectName?: string | null;
   startedAt: Date;
   endedAt: Date;
+}
+
+/** One agent session still running, as the live view reads it. */
+export interface RunningAgentSessionRecord {
+  sessionId: string;
+  user: ReportLookupRecord;
+  source: string;
+  model: string | null;
+  cwd: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  agentRepoRoot: string | null;
+  agentRepoKey: string | null;
+  startedAt: Date;
+  lastEventAt: Date;
 }
 
 export interface ReportRepository {
@@ -264,6 +286,12 @@ export interface ReportRepository {
    * regardless of whether the fold will use it.
    */
   readNewestEvidenceReceivedAt(subject: AuthenticatedSubject, query: ReportQuery): Promise<Date | null>;
+  /**
+   * Every agent session still running, with its person, project name and codebase
+   * evidence. Stale rows close before this read - the live view must never show
+   * a session the staleness window has already ended - so the caller reaps first.
+   */
+  readRunningAgentSessions(subject: AuthenticatedSubject): Promise<RunningAgentSessionRecord[]>;
   readPageForOrganization(subject: AuthenticatedSubject, query: ReportQuery, options: ReportPageOptions): Promise<ReportPageRead>;
   readExportForOrganization(subject: AuthenticatedSubject, query: ReportQuery, maxRows: number): Promise<ReportExportRead>;
   readLeaderboardForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<LeaderboardRowRecord[]>;
