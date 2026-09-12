@@ -79,6 +79,8 @@ class Rollups implements Partial<UserDailyRollupRepository> {
 
 class Fold implements RollupService {
   public readonly calls: { organizationId: string; downTo: Date; maxDays: number }[] = [];
+  public readonly forwardCalls: { organizationId: string; upTo: Date; maxDays: number }[] = [];
+  public readonly refolds: { organizationId: string; days: Date[] }[] = [];
   public constructor(private readonly rollups: Rollups, private readonly foldsPerCall = 0) {}
   public async refresh(): Promise<void> {
     throw new Error("the sweep never uploads");
@@ -96,6 +98,24 @@ class Fold implements RollupService {
       this.rollups.covered.set(subject.organizationId, { earliest: new Date(target), latest: current.latest });
     }
     return { folded: folded.reverse() };
+  }
+  public async fillForward(subject: AuthenticatedSubject, upTo: Date, maxDays: number): Promise<BackfillOutcome> {
+    this.forwardCalls.push({ organizationId: subject.organizationId, upTo, maxDays });
+    const current = this.rollups.covered.get(subject.organizationId);
+    if (current === undefined) return { folded: [] };
+    // Walks coverage up by however many days this fake was told to manage,
+    // never above the bound, the way the real fillForward does.
+    const ceiling = utcDayStart(upTo).getTime() - DAY_MS;
+    const target = Math.min(ceiling, current.latest.getTime() + this.foldsPerCall * DAY_MS);
+    const folded: Date[] = [];
+    for (let at = current.latest.getTime() + DAY_MS; at <= target; at += DAY_MS) folded.push(new Date(at));
+    if (folded.length > 0) {
+      this.rollups.covered.set(subject.organizationId, { earliest: current.earliest, latest: new Date(target) });
+    }
+    return { folded };
+  }
+  public async refold(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
+    this.refolds.push({ organizationId: subject.organizationId, days: [...days] });
   }
 }
 
@@ -279,6 +299,75 @@ describe("folding before deleting", () => {
       { organizationId: organization, from: day(-300), toExclusive: day(-SWEEP_FLOOR_DAYS) },
       { organizationId: other, from: day(-120), toExclusive: day(-SWEEP_FLOOR_DAYS) },
     ]);
+  });
+});
+
+describe("a dormant organization", () => {
+  it("folds the expired days above its stalled frontier and deletes them", async () => {
+    const segments = new Segments();
+    segments.organizations = [organization];
+    segments.oldest.set(organization, day(-400));
+    const rollups = new Rollups();
+    // The last upload was 200 days ago. Coverage stopped where it left off,
+    // and the expired days above it are folded by nobody - folding upward is
+    // what uploads do, and this workspace has stopped uploading - so the
+    // delete window would stay capped at the stalled frontier forever.
+    rollups.covered.set(organization, { earliest: day(-400), latest: day(-200) });
+    const fold = new Fold(rollups, BACKFILL_DAYS_PER_PASS);
+
+    const [pass] = await sweepWith(segments, rollups, fold);
+
+    // The frontier is carried toward the sweep's own bound, never past it...
+    expect(fold.forwardCalls).toEqual([{
+      organizationId: organization,
+      upTo: day(-SWEEP_FLOOR_DAYS),
+      maxDays: BACKFILL_DAYS_PER_PASS,
+    }]);
+    // ...so the window opens the way every still-uploading organization's does.
+    expect(segments.deletes).toEqual([{
+      organizationId: organization,
+      from: day(-400),
+      toExclusive: day(-SWEEP_FLOOR_DAYS),
+    }]);
+    expect(pass?.held).toBeUndefined();
+  });
+});
+
+describe("the sweep against a concurrent upload", () => {
+  it("rebuilds the days the backfill just folded that an upload can still reach", async () => {
+    const segments = new Segments();
+    segments.organizations = [organization];
+    segments.oldest.set(organization, day(-120));
+    const rollups = new Rollups();
+    // A young table: coverage has not yet reached down to the cutoff, so the
+    // backfill folds days at or above the sweep's own bound - exactly the days
+    // the ingest still accepts, and so the only ones a concurrent upload could
+    // have committed evidence for after the backfill read its snapshot.
+    rollups.covered.set(organization, { earliest: day(-30), latest: day(-1) });
+    const fold = new Fold(rollups, BACKFILL_DAYS_PER_PASS);
+
+    await sweepWith(segments, rollups, fold);
+
+    expect(fold.refolds).toEqual([{
+      organizationId: organization,
+      days: Array.from({ length: 61 }, (_, index) => day(-91 + index)),
+    }]);
+  });
+
+  it("rebuilds nothing when the backfill only folded days no upload can reach", async () => {
+    const segments = new Segments();
+    segments.organizations = [organization];
+    segments.oldest.set(organization, day(-400));
+    const rollups = new Rollups();
+    // Coverage already reaches below the cutoff, so every day the backfill
+    // folds this pass is one the ingest refuses at the door: no upload can
+    // commit for it, and its first fold is the only fold it needs.
+    rollups.covered.set(organization, { earliest: day(-150), latest: day(-1) });
+    const fold = new Fold(rollups, 10);
+
+    await sweepWith(segments, rollups, fold);
+
+    expect(fold.refolds).toEqual([]);
   });
 });
 

@@ -222,8 +222,10 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         // tolerance keeps a fresh event honest, but a session stored before that
         // check existed can still carry an ancient end, and this expands one
         // `Date` per day between the two. Days older than the bound are not
-        // lost by clipping them: the fold declines anything below where
-        // coverage starts anyway, so they are read live either way.
+        // lost by clipping them: the fold declines a day below the retention
+        // cutoff wherever coverage starts, because the sweep may already have
+        // deleted that day's raw rows and a refold from evidence that is gone
+        // would write zeros over a correct stored row.
         const floor = Math.max(from.getTime(), to.getTime() - RETENTION_WINDOW_MS);
         folded.push(...utcDaysBetween(new Date(floor), to));
       };

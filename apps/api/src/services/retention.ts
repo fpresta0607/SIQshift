@@ -186,6 +186,28 @@ async function sweepOrganization(
   // contiguous stretch, so the days between are folded on the way past.
   const backfill = await dependencies.fold.backfill(subject, oldestRaw, BACKFILL_DAYS_PER_PASS);
 
+  // The lock serializes sweeps against sweeps and never against uploads, so a
+  // segment for one of the days the backfill just folded can commit between
+  // the backfill's reads and its write. The row it wrote comes from a snapshot
+  // that predates that evidence, and nothing repairs it afterwards - the
+  // backfill has pulled coverage past the day, so a later upload's refresh
+  // declines it, and declining is what keeps a hole from opening below
+  // coverage. Only a day the ingest can still accept can be raced for, and
+  // every such day sits at or above this sweep's own bound, so only those of
+  // the backfill's days are rebuilt. An upload committing before the rebuild
+  // is seen by it; one committing after folds the day itself, because the day
+  // is inside coverage by then.
+  const raced = backfill.folded.filter((day) => day.getTime() >= deleteBefore.getTime());
+  if (raced.length > 0) await dependencies.fold.refold(subject, raced);
+
+  // A workspace that stops uploading leaves its frontier wherever the last
+  // upload put it, and the window below is capped at that frontier: the days
+  // between it and the cutoff are expired but folded by nobody, because
+  // folding upward is what uploads do and there are none. Fold them here,
+  // toward the sweep's own bound and never past it, so the window opens the
+  // way every still-uploading organization's does.
+  await dependencies.fold.fillForward(subject, deleteBefore, BACKFILL_DAYS_PER_PASS);
+
   // Coverage as it stands after the fold: the outer bounds of the delete
   // window. It is not the proof on its own - these are two endpoints, and the
   // days between them are checked below.

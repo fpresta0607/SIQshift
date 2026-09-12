@@ -238,6 +238,36 @@ export interface RollupService {
    * happens to be.
    */
   backfill(subject: AuthenticatedSubject, downTo: Date, maxDays: number): Promise<BackfillOutcome>;
+  /**
+   * Extends coverage upward toward `upTo`, at most `maxDays` per call, folding
+   * only whole UTC days strictly below it.
+   *
+   * The upload path fills upward only while uploads arrive, so a workspace
+   * that stops uploading leaves its frontier wherever the last one put it.
+   * Once that frontier falls below the retention cutoff, the expired days
+   * above it are folded by nobody and can never be deleted either, because
+   * the sweep's window is capped at the last day stored. This is the one
+   * caller that can open it, and it stops below `upTo` so the caller's own
+   * bound decides how far is far enough - the sweep's bound - rather than
+   * the fold reaching into days the window has not expired.
+   */
+  fillForward(subject: AuthenticatedSubject, upTo: Date, maxDays: number): Promise<BackfillOutcome>;
+  /**
+   * Rebuilds exactly the days given, expected oldest first, through the same
+   * clear-then-read-then-write path every other fold takes.
+   *
+   * The retention sweep calls this for days its own backfill just wrote,
+   * inside its advisory lock. That lock serializes sweeps against sweeps and
+   * never against uploads, so an upload can commit evidence for one of those
+   * days between the backfill's reads and its write, leaving a stored row
+   * built from a snapshot that predates it. Nothing else repairs it: the
+   * backfill has pulled coverage past the day, so a later upload's refresh
+   * declines it, and declining is what keeps a hole from opening below
+   * coverage. The re-read here is what sees the committed evidence; an
+   * upload committing after it folds the day itself, because by then the
+   * day is inside coverage.
+   */
+  refold(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void>;
 }
 
 const asInterval = (start: Date, end: Date): Interval => ({ start: start.getTime(), end: end.getTime() });
@@ -345,6 +375,31 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       days.reverse();
       await foldDays(dependencies, subject, days, now);
       return { folded: days };
+    },
+
+    async fillForward(subject: AuthenticatedSubject, upTo: Date, maxDays: number): Promise<BackfillOutcome> {
+      const stored = await dependencies.rollups.coverage(subject);
+      // Nothing stored means nothing to extend upward from either. The upload
+      // path owns the bootstrap, for the same reason it owns it below.
+      if (stored === null) return { folded: [] };
+      const ceiling = utcDayStart(upTo).getTime();
+      const lastStored = stored.latest.getTime();
+      if (lastStored >= ceiling - DAY_MS) return { folded: [] };
+      // Upward a day at a time, bounded the way the downward walk is bounded,
+      // so a frontier far below the bound converges over passes rather than
+      // folding the whole gap in one sitting.
+      const days: Date[] = [];
+      for (let day = lastStored + DAY_MS; day <= ceiling - DAY_MS && days.length < maxDays; day += DAY_MS) {
+        days.push(new Date(day));
+      }
+      if (days.length === 0) return { folded: [] };
+      await foldDays(dependencies, subject, days, now);
+      return { folded: days };
+    },
+
+    async refold(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
+      if (days.length === 0) return;
+      await foldDays(dependencies, subject, days, now);
     },
   };
 }

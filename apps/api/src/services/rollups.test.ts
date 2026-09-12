@@ -764,6 +764,101 @@ describe("extending the fold downward", () => {
   });
 });
 
+describe("extending the fold upward", () => {
+  it("folds toward the bound it is given, stopping just below it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(0)), storedDay(day(1))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 10);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(2), day(3), day(4)].map((entry) => entry.toISOString()));
+    // One contiguous stretch still, which is what the frontier depends on.
+    const stored = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    for (let index = 1; index < stored.length; index += 1) {
+      expect(stored[index]! - stored[index - 1]!).toBe(DAY_MS);
+    }
+  });
+
+  it("folds at most the days it is allowed, leaving the rest for a later pass", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(0))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 2);
+
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(1), day(2)].map((entry) => entry.toISOString()));
+  });
+
+  it("refuses to bootstrap, because there is no run to extend", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 10);
+
+    expect(outcome).toEqual({ folded: [] });
+    expect(rollups.rows).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+
+  it("does nothing when coverage already reaches the bound", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(5))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(12, 9) });
+
+    const outcome = await service.fillForward(subject, day(5), 10);
+
+    expect(outcome.folded).toEqual([]);
+    expect(reports.presenceReads).toEqual([]);
+  });
+});
+
+describe("rebuilding a day the sweep suspects", () => {
+  /**
+   * The race the sweep's refold exists for. The backfill read its snapshot
+   * before a late upload committed evidence for a day it was folding, so the
+   * row it wrote is missing hours that are stored by the time anyone looks.
+   * Once coverage has moved past the day nothing names it again, so the
+   * re-read is the whole difference between a late upload being folded late
+   * and its evidence being lost from the stored row for good.
+   */
+  it("replaces a row built from a snapshot that predates a late upload's evidence", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    // The backfill's snapshot: nothing for the day it is about to fold.
+    reports.presenceIntervals = [];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(-5)), storedDay(day(-1))];
+    let atNow = at(0, 12);
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => atNow });
+
+    await service.backfill(subject, day(-10), 5);
+
+    // The row the sweep just wrote: measured before the upload committed.
+    const stale = rollups.rows.find((row) => row.day.getTime() === day(-7).getTime());
+    expect(stale?.activeMs).toBe(0);
+
+    // The upload commits evidence for that day, after the snapshot.
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-7, 9), at(-7, 11))];
+
+    atNow = at(0, 13);
+    await service.refold(subject, [day(-7)]);
+
+    const refolded = rollups.rows.find((row) => row.day.getTime() === day(-7).getTime());
+    expect(refolded?.activeMs).toBe(2 * 60 * 60 * 1_000);
+  });
+});
+
 describe("the retention cutoff as a floor under a named day", () => {
   /**
    * The ingest and the fold have to name the same day, or there is a band where
