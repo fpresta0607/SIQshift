@@ -12,6 +12,7 @@ import {
   projectPathMappings,
   projects,
   timeSessions,
+  userDailyRollups,
   userProjectSelections,
   users,
 } from "./schema.js";
@@ -421,5 +422,56 @@ describe("database schema", () => {
         "project_path_mappings_kind_valid",
       ]),
     );
+  });
+
+  it("defines one folded row per member per UTC day, with the split it partitions", () => {
+    expect(userDailyRollups.id.primary).toBe(true);
+    expect(userDailyRollups.organizationId.notNull).toBe(true);
+    expect(userDailyRollups.userId.notNull).toBe(true);
+    expect(userDailyRollups.day.notNull).toBe(true);
+    expect(userDailyRollups.day.withTimezone).toBe(true);
+    for (const column of [
+      userDailyRollups.activeMs,
+      userDailyRollups.agentMs,
+      userDailyRollups.concurrency0Ms,
+      userDailyRollups.concurrency1Ms,
+      userDailyRollups.concurrency2Ms,
+      userDailyRollups.concurrency3PlusMs,
+      userDailyRollups.awayMs,
+    ]) {
+      expect(column.notNull).toBe(true);
+      expect(column.columnType).toBe("PgBigInt53");
+    }
+    expect(userDailyRollups.computedAt.notNull).toBe(true);
+    expect(userDailyRollups.computedAt.hasDefault).toBe(true);
+
+    const config = getTableConfig(userDailyRollups);
+    // One row per person per day is what lets a range spend a day exactly once.
+    const dayUnique = config.uniqueConstraints.find(
+      (constraint) => constraint.name === "user_daily_rollups_organization_user_day_unique",
+    );
+    expect(dayUnique?.columns.map((column) => column.name)).toEqual(["organization_id", "user_id", "day"]);
+    // The fold belongs to the member it folds: delete them and it goes too.
+    expect(config.foreignKeys).toHaveLength(1);
+    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "user_daily_rollups_active_ms_nonnegative",
+        "user_daily_rollups_agent_ms_nonnegative",
+        "user_daily_rollups_concurrency_0_ms_nonnegative",
+        "user_daily_rollups_concurrency_1_ms_nonnegative",
+        "user_daily_rollups_concurrency_2_ms_nonnegative",
+        "user_daily_rollups_concurrency_3_plus_ms_nonnegative",
+        "user_daily_rollups_away_ms_nonnegative",
+        "user_daily_rollups_day_is_utc_midnight",
+        "user_daily_rollups_concurrency_partitions_active",
+      ]),
+    );
+    // Only that the two constraints the read path leans on are declared. What
+    // they actually reject is proven against a real server, in
+    // apps/api/src/rollup-write.integration.test.ts - rendered SQL read back as
+    // text would pass just as happily for a check that rejects nothing.
+    // Every report reads a contiguous window of days for one organization.
+    expect(config.indexes.map((index) => index.config.name)).toContain("user_daily_rollups_organization_day_idx");
   });
 });

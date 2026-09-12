@@ -386,12 +386,19 @@ describe("report and error contracts", () => {
       unattributedSeconds: 1_800,
       activeSeconds: 3_600,
       agentSeconds: 5_400,
-      concurrency: { t0Seconds: 1_800, t1Seconds: 0, t2Seconds: 1_800, t3PlusSeconds: 0, awaySeconds: 1_800 },
-      byAgent: [{ source: "claude_code", model: null, durationSeconds: 5_400, sessionCount: 1, maxConcurrent: 1, medianSeconds: 5_400 }],
     };
     expect(
       leaderboardResponseSchema.parse({ filters: {}, totalDurationSeconds: 3_600, medianSessionSeconds: 1_800, entries: [entry] }),
     ).toMatchObject({ entries: [{ rank: 1, attributedSeconds: 1_800 }] });
+    // A board row carries no concurrency split and no per-agent breakdown: both
+    // are /me/stats' shape, nothing ever read them here, and a board that could
+    // not be folded out of daily rows is a board that reads raw segments.
+    expect(() => leaderboardResponseSchema.parse({
+      filters: {},
+      totalDurationSeconds: 3_600,
+      medianSessionSeconds: 1_800,
+      entries: [{ ...entry, concurrency: { t0Seconds: 1_800, t1Seconds: 0, t2Seconds: 1_800, t3PlusSeconds: 0, awaySeconds: 1_800 } }],
+    })).toThrow();
     const { attributedSeconds: _droppedFromEntry, ...unattributedEntry } = entry;
     expect(() => leaderboardResponseSchema.parse({ filters: {}, totalDurationSeconds: 0, medianSessionSeconds: null, entries: [unattributedEntry] })).toThrow();
     expect(() => leaderboardResponseSchema.parse({ filters: {}, totalDurationSeconds: 0, medianSessionSeconds: null, entries: [{ ...entry, attributedSeconds: 1.5 }] })).toThrow();

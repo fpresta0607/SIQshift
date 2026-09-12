@@ -28,6 +28,7 @@ import type {
   ReportRepository,
   SessionRepository,
   ShiftCommitRepository,
+  UserDailyRollupRepository,
   ViewPreferencesRepository,
 } from "./repositories.js";
 import { createActivityRoutes } from "./routes/activity.js";
@@ -47,6 +48,7 @@ import { createAgentUsageService } from "./services/agent-usage.js";
 import { createAgentService } from "./services/agents.js";
 import { createPathMappingService } from "./services/path-mappings.js";
 import { createReportService } from "./services/reports.js";
+import { createRollupService, foldAfterUpload } from "./services/rollups.js";
 import { createSessionService } from "./services/sessions.js";
 import { createShiftCommitService } from "./services/shift-commits.js";
 
@@ -75,6 +77,16 @@ export interface CreateAppDependencies {
   agentUsageRepository?: AgentUsageRepository;
   pathMappingRepository?: PathMappingRepository;
   viewPreferencesRepository?: ViewPreferencesRepository;
+  /**
+   * The folded-day cache. Absent, every report reads its intervals live, which
+   * is exactly what this API did before the table existed - slower, and correct.
+   *
+   * That is not the deployment story, because `server.ts` passes it
+   * unconditionally and the board asks it what it holds on every unscoped
+   * range: wired against a database that has not run `0022`, the leaderboard
+   * answers 500. Which is why the migration goes first - see DEPLOY.md.
+   */
+  userDailyRollupRepository?: UserDailyRollupRepository;
 }
 
 function addSecurityHeaders(context: Context): void {
@@ -279,6 +291,17 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     app.use("/me/preferences", authenticate);
     app.route("/me/preferences", createPreferencesRoutes(dependencies.viewPreferencesRepository, dependencies.projectRepository));
   }
+  // Built once: both upload paths hand the same fold the instants they wrote,
+  // and it is wrapped so a cache-maintenance failure can never turn a
+  // successful upload into a 500 that loses the rows the desktop just sent.
+  const onUploaded = dependencies.reportRepository === undefined || dependencies.userDailyRollupRepository === undefined
+    ? undefined
+    : foldAfterUpload(createRollupService({
+      reports: dependencies.reportRepository,
+      rollups: dependencies.userDailyRollupRepository,
+      ...(dependencies.clock === undefined ? {} : { now: dependencies.clock }),
+    }));
+
   if (dependencies.sessionRepository !== undefined) {
     if (dependencies.projectRepository === undefined) {
       throw new Error("A project repository is required for session routes.");
@@ -306,6 +329,8 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
       agents: dependencies.agentRepository,
       ...(dependencies.shiftCommitRepository === undefined ? {} : { shiftCommits: dependencies.shiftCommitRepository }),
       ...(dependencies.agentUsageRepository === undefined ? {} : { agentUsage: dependencies.agentUsageRepository }),
+      ...(dependencies.userDailyRollupRepository === undefined ? {} : { rollups: dependencies.userDailyRollupRepository }),
+      ...(dependencies.clock === undefined ? {} : { now: dependencies.clock }),
     });
     app.use("/reports", authenticate);
     app.use("/reports/*", authenticate);
@@ -314,7 +339,11 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     app.route("/me/stats", createMeStatsRoutes(reportService));
   }
   if (dependencies.activitySegmentRepository !== undefined) {
-    const activityService = createActivityService({ segments: dependencies.activitySegmentRepository, clock });
+    const activityService = createActivityService({
+      segments: dependencies.activitySegmentRepository,
+      ...(onUploaded === undefined ? {} : { onUploaded }),
+      clock,
+    });
     app.use("/activity", authenticate);
     app.use("/activity/*", authenticate);
     app.route("/activity", createActivityRoutes(activityService));
@@ -328,6 +357,7 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
       pathMappings: dependencies.pathMappingRepository,
       sessions: dependencies.sessionRepository,
       ...(dependencies.agentRepository === undefined ? {} : { agents: dependencies.agentRepository }),
+      ...(onUploaded === undefined ? {} : { onUploaded }),
       clock,
     });
     app.use("/agent-sessions", authenticate);

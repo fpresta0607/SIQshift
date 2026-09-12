@@ -31,6 +31,12 @@ const integration = databaseUrl ? describe : describe.skip;
 // serializes the bound as an ISO string, like every other report range bound.
 // This runs the real leaderboard endpoint against a real PostgreSQL server so
 // the driver-level serialization is actually exercised.
+//
+// It guards the class, not the one line: every raw-fragment range bound the
+// board touches has to survive the same request. `readMedianSessionSeconds`
+// clips its lengths with `greatest`/`least` over the same two bounds and made
+// the same mistake, and a unit test cannot see it because a faked repository
+// never reaches a driver.
 integration("leaderboard agent-interval range binding", () => {
   let disposable: DisposableTestDatabase | undefined;
   let database = undefined as unknown as DatabaseConnection;
@@ -80,6 +86,28 @@ integration("leaderboard agent-interval range binding", () => {
 
     const endedAt = new Date(Date.now() - 30_000);
     const startedAt = new Date(endedAt.getTime() - 3_600_000);
+    // A stopped session inside the range, so the board's median is measured
+    // rather than null - the median clips with its own raw-fragment bounds.
+    const projectId = randomUUID();
+    await database.client`
+      insert into projects (id, organization_id, name)
+      values (${projectId}, ${user.organizationId}, 'Median Test')
+    `;
+    await database.client`
+      insert into project_memberships (organization_id, project_id, user_id)
+      values (${user.organizationId}, ${projectId}, ${user.id})
+    `;
+    const sessionStoppedAt = new Date(Date.now() - 60_000);
+    const sessionStartedAt = new Date(sessionStoppedAt.getTime() - 1_800_000);
+    await database.client`
+      insert into time_sessions (
+        id, organization_id, user_id, project_id, client_id, status,
+        started_at, stopped_at, idle_seconds, duration_seconds, attribution
+      ) values (
+        ${randomUUID()}, ${user.organizationId}, ${user.id}, ${projectId}, ${randomUUID()}, 'stopped',
+        ${sessionStartedAt.toISOString()}, ${sessionStoppedAt.toISOString()}, 0, 1800, 'manual'
+      )
+    `;
     await database.client`
       insert into agent_sessions (
         id, organization_id, user_id, source, external_session_id, model,
@@ -105,5 +133,7 @@ integration("leaderboard agent-interval range binding", () => {
       user: { id: user.id, name: user.name },
       agentSeconds: 3_600,
     }));
+    // The whole half-hour sits inside the range, so clipping leaves it whole.
+    expect(body.medianSessionSeconds).toBe(1_800);
   }, 60_000);
 });

@@ -253,6 +253,13 @@ export interface ReportRepository {
   readPageForOrganization(subject: AuthenticatedSubject, query: ReportQuery, options: ReportPageOptions): Promise<ReportPageRead>;
   readExportForOrganization(subject: AuthenticatedSubject, query: ReportQuery, maxRows: number): Promise<ReportExportRead>;
   readLeaderboardForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<LeaderboardRowRecord[]>;
+  /**
+   * Median completed-session length in the range, in whole seconds; null when
+   * the range holds no session. Computed in SQL because the board shows one
+   * number and reading every session row to find its middle was the last
+   * full-range row read the leaderboard made.
+   */
+  readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null>;
   /** Every member of the workspace, so the board can list them all - zeros included. */
   readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]>;
   /** Per-project totals for one member — the reporting math scoped to the caller for /me/stats. */
@@ -426,23 +433,43 @@ export interface InsertEndedAgentSession {
   receivedAt: Date;
 }
 
+/**
+ * A write, reported as what it did to the session's *known end* -
+ * `coalesce(endedAt, lastEventAt)`, the instant the report path stops
+ * measuring the session at.
+ *
+ * Every mutating write returns this because the known end is the only thing
+ * about a session that can change a day that is already over: while a session
+ * is open its measured end follows its last event, so a day it was still
+ * reaching into is not final until that end moves past the day's midnight.
+ * The days between the two ends are exactly the days whose stored fold can now
+ * be stale, and reporting the pair is the only way the caller can name them
+ * without guessing at this repository's update rules.
+ */
+export interface AgentSessionEndShift {
+  /** The row as it stands after the write. */
+  session: AgentSessionRecord;
+  /** Where the known end stood before the write; null when the write created the row. */
+  previousEnd: Date | null;
+}
+
 export interface AgentSessionRepository {
   findByExternalKey(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string): Promise<AgentSessionRecord | null>;
   /** Inserts a running row; a replayed start only refreshes lastEventAt and never reopens an ended row. */
-  upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionRecord>;
+  upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift>;
   /** Closes a running row at endedAt; returns null when no running row matches the key. */
-  closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionRecord | null>;
+  closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionEndShift | null>;
   /** Tolerated end-before-start: stores the row directly as ended at occurredAt. */
   insertEnded(input: InsertEndedAgentSession): Promise<void>;
   /**
-   * Advances lastEventAt on a running row; false when nothing matched (unknown).
+   * Advances lastEventAt on a running row; null when nothing matched (unknown).
    * A heartbeat naming a model fills a still-null model; an existing model is
    * never overwritten (first assignment wins). A model-bearing heartbeat also
    * fills a still-null model on an already-ended row - the transcript reader's
    * backfill can land after the end that closed a short session - without
-   * advancing lastEventAt or reopening it.
+   * advancing lastEventAt or reopening it, which is a shift of nothing.
    */
-  advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<boolean>;
+  advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionEndShift | null>;
   /** Closes running rows whose lastEventAt is older than cutoff, ending them at lastEventAt. Returns the reaped count. */
   reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number>;
   /**
@@ -659,4 +686,71 @@ export interface PathMappingRepository {
   create(input: CreatePathMapping): Promise<PathMappingRecord>;
   update(subject: AuthenticatedSubject, mappingId: string, input: UpdatePathMapping): Promise<PathMappingRecord | null>;
   remove(subject: AuthenticatedSubject, mappingId: string): Promise<boolean>;
+}
+
+/**
+ * One member's folded UTC day. Milliseconds, because the reporting module
+ * rounds to seconds once per group and a stored second would drift.
+ */
+export interface UserDailyRollupRecord {
+  userId: string;
+  /** Midnight UTC; the row covers [day, day + 1). */
+  day: Date;
+  activeMs: number;
+  agentMs: number;
+  concurrency0Ms: number;
+  concurrency1Ms: number;
+  concurrency2Ms: number;
+  concurrency3PlusMs: number;
+  awayMs: number;
+  /**
+   * When the intervals behind these numbers were READ, not when the row was
+   * written. Two refreshes of one day can interleave, and the one that read
+   * last holds the truer picture however late its write lands - so this, not
+   * arrival order, is what decides which fold stands.
+   */
+  computedAt: Date;
+}
+
+/** The contiguous stretch of folded days an organization holds, both ends inclusive. */
+export interface RollupCoverage {
+  earliest: Date;
+  latest: Date;
+}
+
+export interface UserDailyRollupRepository {
+  /** Every folded day in the range, org-wide. Days are whole, so the range is read as [from, toExclusive). */
+  readForRange(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<UserDailyRollupRecord[]>;
+  /**
+   * The stretch of days this organization holds, or null when it holds none.
+   *
+   * Both edges in one read because both are wanted together: the fold never
+   * stores a day outside `[earliest, latest]` or immediately above it, so the
+   * stretch is contiguous and these two days bound the whole of it. That is
+   * what lets `latest` be read as a frontier rather than a bare maximum, and
+   * `earliest` as the day below which every range is still read live.
+   */
+  coverage(subject: AuthenticatedSubject): Promise<RollupCoverage | null>;
+  /**
+   * Drops every stored row for these days.
+   *
+   * Deliberately separate from the write, and deliberately first. A day with no
+   * row is always correct - the report path reads it live - so clearing before
+   * folding means a fold that fails leaves the day merely unfolded rather than
+   * stating numbers that no longer match the rows underneath it.
+   */
+  clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void>;
+  /**
+   * Writes freshly folded rows.
+   *
+   * The caller passes a row for every member it folded, zeros included: the
+   * read path treats any row for a day as proof the whole workspace's day is
+   * folded, so a quiet member left out would read as a measured zero rather
+   * than as a day the report still has to read live.
+   *
+   * A row already present is overwritten only by a fold that read later than
+   * it did, so an older fold whose write lands last cannot stand over rows it
+   * never saw.
+   */
+  writeDays(subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void>;
 }

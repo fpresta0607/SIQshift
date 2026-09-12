@@ -3,11 +3,13 @@ import { agentRuntimeLabel, type AgentSessionEventBatchResponse, type AgentSourc
 import type { AuthenticatedSubject } from "../auth.js";
 import type {
   AgentRepository,
+  AgentSessionEndShift,
   AgentSessionRepository,
   PathMappingRepository,
   SessionRepository,
 } from "../repositories.js";
 import { identityRepoKey, resolveProjectForCwd, resolveProjectForRemote, resolveProjectForRule, type PathMappingCandidate } from "./attribution.js";
+import { PAST_UPLOAD_TOLERANCE_MS, utcDaysBetween } from "./utc-days.js";
 
 const futureEventToleranceMs = 30_000;
 /**
@@ -83,6 +85,16 @@ export interface AgentSessionServiceDependencies {
   sessions: SessionRepository;
   /** Optional so older wirings keep working; without it no identity is stamped. */
   agents?: AgentRepository;
+  /**
+   * Called with the instants a successful upload touched, so the finished UTC
+   * days among them can be folded.
+   *
+   * A plain callback rather than the rollup service itself: the fold reads
+   * agent-session intervals, and importing it here would make this module and
+   * that one import each other. The composition root supplies it and owns the
+   * decision that a cache-maintenance failure must not fail an upload.
+   */
+  onUploaded?: (subject: AuthenticatedSubject, instants: readonly Date[]) => Promise<void>;
   clock?: () => Date;
   staleThresholdMs?: number;
 }
@@ -192,6 +204,29 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         if (fromCwd !== null) return fromCwd;
         return resolveProjectForRemote(event.repoRemote, mappings);
       };
+      const folded: Date[] = [];
+      // A finished day's agent share can move only when a session's known end -
+      // where the report path stops measuring it - crosses that day. So every
+      // write reports where that end was and where it now is, and the days
+      // between the two are the days whose stored fold this batch invalidated.
+      // A heartbeat on a session already reporting inside today moves both
+      // instants within today and names nothing foldable, which is why the
+      // steady state costs nothing; the first heartbeat after a midnight names
+      // the day that just became final.
+      const recordEndShift = (shift: AgentSessionEndShift | null): void => {
+        if (shift === null) return;
+        const to = shift.session.endedAt ?? shift.session.lastEventAt;
+        const from = shift.previousEnd ?? to;
+        if (from.getTime() === to.getTime()) return;
+        // Bounded independently of the event that moved the end. The shared
+        // tolerance keeps a fresh event honest, but a session stored before that
+        // check existed can still carry an ancient end, and this expands one
+        // `Date` per day between the two. Days older than the bound are not
+        // lost by clipping them: the fold declines anything below where
+        // coverage starts anyway, so they are read live either way.
+        const floor = Math.max(from.getTime(), to.getTime() - PAST_UPLOAD_TOLERANCE_MS);
+        folded.push(...utcDaysBetween(new Date(floor), to));
+      };
       for (const event of events) {
         const occurredAt = event.occurredAt.getTime();
         if (!Number.isFinite(occurredAt)) {
@@ -202,6 +237,10 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the future" });
           continue;
         }
+        if (occurredAt < now.getTime() - PAST_UPLOAD_TOLERANCE_MS) {
+          results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the past" });
+          continue;
+        }
 
         if (event.event === "started") {
           const projectId = resolveProject(event, await loadMappings());
@@ -210,7 +249,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             const running = await dependencies.sessions.findRunning(subject);
             if (running !== null && running.projectId === projectId) linkedSessionId = running.id;
           }
-          await dependencies.agentSessions.upsertStarted({
+          recordEndShift(await dependencies.agentSessions.upsertStarted({
             organizationId: subject.organizationId,
             userId: subject.userId,
             source: event.source,
@@ -223,7 +262,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             linkedSessionId,
             occurredAt: event.occurredAt,
             receivedAt: now,
-          });
+          }));
         } else if (event.event === "ended") {
           const existing = await dependencies.agentSessions.findByExternalKey(subject, event.source, event.externalSessionId);
           if (existing === null) {
@@ -243,7 +282,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
               receivedAt: now,
             });
           } else if (existing.status === "running") {
-            await dependencies.agentSessions.closeRunning(subject, event.source, event.externalSessionId, event.occurredAt, now);
+            recordEndShift(await dependencies.agentSessions.closeRunning(subject, event.source, event.externalSessionId, event.occurredAt, now));
           }
           // An end for an already-ended session is a no-op replay.
         } else {
@@ -253,17 +292,19 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           // running or an already-ended row alike (the transcript reader's
           // backfill can land after the end that closed a short session); an
           // existing model is never overwritten (first assignment wins).
-          await dependencies.agentSessions.advanceLastEvent(
+          recordEndShift(await dependencies.agentSessions.advanceLastEvent(
             subject,
             event.source,
             event.externalSessionId,
             attestedModel(event.model),
             event.occurredAt,
             now,
-          );
+          ));
         }
         results.push({ externalSessionId: event.externalSessionId, accepted: true });
+        folded.push(event.occurredAt);
       }
+      await dependencies.onUploaded?.(subject, folded);
       return { results };
     },
   };

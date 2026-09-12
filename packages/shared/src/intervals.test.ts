@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addTimeMeasurementsMs,
   clipInterval,
   intersectIntervals,
   leverage,
   measureTime,
+  measureTimeMs,
   mergeIntervals,
+  roundTimeMeasurement,
   summedSeconds,
   unionSeconds,
   type Interval,
@@ -148,6 +151,37 @@ describe("bucket invariant under rounding", () => {
     );
     const { t0Seconds, t1Seconds, t2Seconds, t3PlusSeconds } = measurement.concurrency;
     expect(t0Seconds + t1Seconds + t2Seconds + t3PlusSeconds).toBe(measurement.activeSeconds);
+  });
+});
+
+describe("measuring in pieces", () => {
+  // Overlapping working intervals, agents that straddle every cut, and a span
+  // that runs the whole width: if the pieces were measured independently in any
+  // way that double-counted or dropped time, one of these would drift.
+  const working = [span(0, 25), span(20, 50), span(70, 100)];
+  const agents = [span(5, 35), span(18, 24), span(30, 95), span(75, 80)];
+  const whole = { start: at(0), end: at(100) };
+
+  it.each([
+    ["one cut", [0, 40, 100]],
+    ["cuts that land inside an agent and inside a gap", [0, 22, 60, 78, 100]],
+    ["a cut on every ten minutes", [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]],
+  ])("adds back to the whole when the timeline is split at %s", (_label, minutes) => {
+    const pieces = minutes.slice(0, -1).map((start, index) => measureTimeMs(
+      working,
+      agents,
+      { start: at(start), end: at(minutes[index + 1]!) },
+    ));
+    expect(addTimeMeasurementsMs(pieces)).toEqual(measureTimeMs(working, agents, whole));
+  });
+
+  it("rounds once at the end, so a day-by-day total reads like a single sweep", () => {
+    const days = [measureTimeMs(working, agents, { start: at(0), end: at(37) }), measureTimeMs(working, agents, { start: at(37), end: at(100) })];
+    expect(roundTimeMeasurement(addTimeMeasurementsMs(days))).toEqual(measureTime(working, agents, whole));
+  });
+
+  it("adds nothing to nothing", () => {
+    expect(addTimeMeasurementsMs([])).toEqual(measureTimeMs([], [], whole));
   });
 });
 

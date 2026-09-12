@@ -4,6 +4,7 @@ import type { AuthenticatedSubject } from "../auth.js";
 import type {
   AgentRecord,
   AgentRepository,
+  AgentSessionEndShift,
   AgentSessionRecord,
   AgentSessionRepository,
   InsertEndedAgentSession,
@@ -16,6 +17,7 @@ import type {
 } from "../repositories.js";
 import { createAgentSessionReaper, createAgentSessionService, type AgentSessionEventInput } from "./agent-sessions.js";
 import { identityRepoKey } from "./attribution.js";
+import { foldableDays } from "./rollups.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -27,6 +29,9 @@ const ids = {
 };
 const subject: AuthenticatedSubject = { organizationId: ids.organization, userId: ids.user, role: "member" };
 const now = new Date("2026-08-06T14:00:00.000Z");
+
+/** Where the report path stops measuring a session, as the repository defines it. */
+const knownEnd = (row: AgentSessionRecord): Date => row.endedAt ?? row.lastEventAt;
 
 class MemoryAgentSessions implements AgentSessionRepository {
   public readonly records: AgentSessionRecord[] = [];
@@ -43,13 +48,14 @@ class MemoryAgentSessions implements AgentSessionRepository {
   }
 
   /** Mirrors the upsert: insert running; on replay refresh lastEventAt only, never reopen. */
-  public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionRecord> {
+  public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift> {
     const existing = this.find({ organizationId: input.organizationId, userId: input.userId, role: "member" }, input.source, input.externalSessionId);
     if (existing !== undefined) {
+      const previousEnd = knownEnd(existing);
       if (input.occurredAt > existing.lastEventAt) existing.lastEventAt = input.occurredAt;
       // Mirrors coalesce(agent_id, $new): the first assignment wins.
       existing.agentId ??= input.agentId;
-      return existing;
+      return { session: existing, previousEnd };
     }
     const record: AgentSessionRecord = {
       id: crypto.randomUUID(),
@@ -69,16 +75,17 @@ class MemoryAgentSessions implements AgentSessionRepository {
       linkedSessionId: input.linkedSessionId,
     };
     this.records.push(record);
-    return record;
+    return { session: record, previousEnd: null };
   }
 
-  public async closeRunning(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date): Promise<AgentSessionRecord | null> {
+  public async closeRunning(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date): Promise<AgentSessionEndShift | null> {
     const existing = this.find(current, source, externalSessionId);
     if (existing === undefined || existing.status !== "running") return null;
+    const previousEnd = knownEnd(existing);
     existing.status = "ended";
     existing.endedAt = endedAt;
     if (endedAt > existing.lastEventAt) existing.lastEventAt = endedAt;
-    return existing;
+    return { session: existing, previousEnd };
   }
 
   /** Mirrors the tolerated end-before-start insert (ON CONFLICT DO NOTHING). */
@@ -104,19 +111,20 @@ class MemoryAgentSessions implements AgentSessionRepository {
     });
   }
 
-  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date): Promise<boolean> {
+  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date): Promise<AgentSessionEndShift | null> {
     const existing = this.find(current, source, externalSessionId);
-    if (existing === undefined) return false;
+    if (existing === undefined) return null;
+    const previousEnd = knownEnd(existing);
     if (existing.status === "running") {
       if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
       // Mirrors coalesce(model, $new): the first assignment wins.
       existing.model ??= model;
-      return true;
+      return { session: existing, previousEnd };
     }
-    if (model === null) return false;
+    if (model === null) return null;
     // A model-bearing heartbeat also fills a still-null model on an ended row.
     existing.model ??= model;
-    return true;
+    return { session: existing, previousEnd };
   }
 
   /** Mirrors staleness reaping: running rows older than the cutoff end at lastEventAt. */
@@ -219,6 +227,8 @@ function createService(options: {
   runningTimer?: SessionRecord | null;
   staleThresholdMs?: number;
   agents?: AgentRepository;
+  onUploaded?: (subject: AuthenticatedSubject, instants: readonly Date[]) => Promise<void>;
+  clock?: () => Date;
 } = {}) {
   const agentSessions = new MemoryAgentSessions();
   const timers = new MemoryTimers();
@@ -227,9 +237,10 @@ function createService(options: {
     agentSessions,
     pathMappings: new MemoryPathMappings(options.mappings ?? []),
     sessions: timers as SessionRepository,
-    clock: () => now,
+    clock: options.clock ?? (() => now),
     ...(options.staleThresholdMs === undefined ? {} : { staleThresholdMs: options.staleThresholdMs }),
     ...(options.agents === undefined ? {} : { agents: options.agents }),
+    ...(options.onUploaded === undefined ? {} : { onUploaded: options.onUploaded }),
   });
   return { agentSessions, service };
 }
@@ -378,6 +389,56 @@ describe("agent-session service", () => {
     expect(agentSessions.records[0]).toMatchObject({ lastEventAt: new Date("2026-08-06T13:40:00.000Z") });
   });
 
+  /**
+   * A day is folded from the intervals stored for it, and an open session is
+   * measured up to its last event - so a day it was still reaching into is not
+   * final until that end moves past the day's midnight. The fold therefore has
+   * to be told the days each write moved that end across, which is neither the
+   * days the events landed in nor the day the session began in.
+   *
+   * The shape below is the one the review walked: a session opened on day A,
+   * still reporting on day B, folded at B's midnight by some other upload, and
+   * reporting again just after it. Day B is the day that just became final and
+   * the day nothing else will ever name again.
+   */
+  it("names the day a session's end just crossed, and nothing once it is past", async () => {
+    // Each upload is judged against the clock it happened at, because which of
+    // the days it names are foldable is exactly what "already over" means.
+    const handed: string[][] = [];
+    // The staleness window is widened rather than simulated: this session has
+    // been reporting all along, and reaping it is not what is under test.
+    let current = new Date("2026-08-05T22:00:00.000Z");
+    const { service } = createService({
+      clock: () => current,
+      staleThresholdMs: 7 * 24 * 60 * 60 * 1_000,
+      onUploaded: async (_subject, instants) => {
+        handed.push(foldableDays(instants, current).map((entry) => entry.toISOString()));
+      },
+    });
+    const ingestAt = async (moment: string, kind: AgentSessionEventInput["event"]): Promise<void> => {
+      current = new Date(moment);
+      await service.ingest(subject, [event({ event: kind, occurredAt: current })]);
+    };
+    const dayA = "2026-08-05T00:00:00.000Z";
+    const dayB = "2026-08-06T00:00:00.000Z";
+
+    await ingestAt("2026-08-05T22:00:00.000Z", "started");
+    await ingestAt("2026-08-06T23:50:00.000Z", "heartbeat");
+    await ingestAt("2026-08-07T00:05:00.000Z", "heartbeat");
+    await ingestAt("2026-08-07T00:20:00.000Z", "heartbeat");
+
+    expect(handed).toEqual([
+      // Day A is still being written when the session opens in it.
+      [],
+      // The end crossed out of A and into B, so A is final and refolded.
+      [dayA],
+      // And now out of B: the intermediate day, which no event ever names.
+      [dayB],
+      // The end is past B's midnight for good, so there is nothing left to fold.
+      [],
+    ]);
+  });
+
   it("fills a still-null model from a heartbeat that names one", async () => {
     const { agentSessions, service } = createService();
     await service.ingest(subject, [event()]);
@@ -454,6 +515,25 @@ describe("agent-session service", () => {
     await expect(service.reapStale(subject)).resolves.toBe(1);
     await expect(service.reapStale(subject)).resolves.toBe(0);
     expect(agentSessions.records[0]).toMatchObject({ status: "ended", endedAt: new Date("2026-08-06T07:30:00.000Z") });
+  });
+
+  it("refuses an event from the distant past, so one cannot be expanded into a day per year", async () => {
+    const { agentSessions, service } = createService();
+
+    // `timestampSchema` accepts any four-digit year, and the day span between a
+    // session's old and new known end is expanded one Date per day. Year zero
+    // is roughly three quarters of a million of them, allocated on the upload's
+    // own request, so the past bound is what keeps that unreachable.
+    const result = await service.ingest(subject, [
+      event({ externalSessionId: "ancient", occurredAt: new Date("0000-01-01T00:00:00.000Z") }),
+      event({ externalSessionId: "fine" }),
+    ]);
+
+    expect(result.results).toEqual([
+      { externalSessionId: "ancient", accepted: false, reason: "occurredAt is too far in the past" },
+      { externalSessionId: "fine", accepted: true },
+    ]);
+    expect(agentSessions.records.map((record) => record.externalSessionId)).toEqual(["fine"]);
   });
 
   it("rejects invalid or far-future events individually without failing the batch", async () => {

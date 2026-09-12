@@ -184,6 +184,32 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   someone declares it emits an `ADD COLUMN` that fails on every database `0019` already
   reached. The chain replay cannot catch this - it only proves the SQL applies, never
   that the snapshots describe it - so hand-written DDL owes a matching snapshot.
+  `0022_user_daily_rollups` is hand-written for the same reason the snapshots stop at
+  `0017`: `generate` would re-emit `0018`-`0021` as a diff.
+- `user_daily_rollups` is a **cache**, and every read path must keep treating it as one.
+  A missing row means "read this day live", never "this day was zero", which is why the
+  fold writes a row for every member including the quiet ones: any row for a day proves
+  the whole organization's day is folded. `planRollupRange` pushes an uncovered day back
+  into a live span rather than counting it. Maintenance reads coverage first - the floor a
+  named day is measured against has to be the stretch as it stood before anything was
+  cleared - and then clears exactly the days it is about to fold, so a failure leaves them
+  unfolded rather than stale, and the fold is wrapped so a cache failure can never fail the
+  upload that triggered it.
+- The rollup boundary is **midnight UTC** and can only be UTC: no timezone is stored
+  anywhere, and clients send local-midnight instants as range bounds. A range therefore
+  decomposes into a partial head, whole stored days, and a partial tail, which is exact
+  only because union, sum and the concurrency sweep are all additive over disjoint pieces
+  (`measureTimeMs` + `addTimeMeasurementsMs`, proven in `intervals.test.ts`). Rounding
+  happens once at the end, via `roundTimeMeasurement`.
+- **Order statistics are not additive and can never be folded.** Median session length and
+  `maxConcurrent` cannot be summed out of daily rows, which is why the median moved into
+  SQL as `readMedianSessionSeconds` (`percentile_cont`) rather than into the rollup. If you
+  ever find yourself adding a median or a max to `user_daily_rollups`, the answer will be
+  wrong for every range wider than one day.
+- A **project-scoped** report cannot read the fold: active time under a project is presence
+  intersected with that project's sessions, and a per-person-per-day row cannot state it.
+  `measureMembersMs` falls back to reading the whole range live, and that fallback is load
+  bearing - do not "optimize" it away.
 - The held rate is client-attested by design: `POST /shift-commits` records the desktop
   app's `verification` and `verified_at` as given and nothing corroborates them
   server-side (GitHub App/webhook corroboration was considered and rejected as a dead

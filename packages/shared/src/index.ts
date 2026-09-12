@@ -193,13 +193,16 @@ export {
 } from "./invite-code.js";
 export { friendlyAppName } from "./app-names.js";
 export {
+  addTimeMeasurementsMs,
   clipInterval,
   intersectIntervals,
   leverage,
   measureTime,
+  measureTimeMs,
   mergeIntervals,
+  roundTimeMeasurement,
   summedSeconds,
   unionSeconds,
 } from "./intervals.js";
-export type { ConcurrencyBreakdown, Interval, TimeMeasurement } from "./intervals.js";
+export type { ConcurrencyBreakdown, ConcurrencyMs, Interval, TimeMeasurement, TimeMeasurementMs } from "./intervals.js";
 export { formatDuration, formatHumanDuration } from "./time.js";

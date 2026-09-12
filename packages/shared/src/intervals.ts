@@ -106,20 +106,47 @@ export type TimeMeasurement = {
 };
 
 /**
- * Sweep-line over one person's working intervals and agent-runtime intervals.
+ * The same measurement in milliseconds, before any rounding.
  *
- * Invariants, asserted here because a silent drift would quietly misstate
- * someone's work:
- *   activeSeconds = t0 + t1 + t2 + t3plus
- *   agentSeconds  = Σ (n × tn measured exactly) + awaySeconds
- * The histogram buckets round independently, so the assertion tolerates only
- * sub-second rounding.
+ * This is what a stored rollup holds. Seconds round once per group, so a table
+ * of pre-rounded day-seconds would drift by up to a second a day against the
+ * answer the live path gives; milliseconds add exactly and round at the end.
  */
-export function measureTime(
+export type ConcurrencyMs = {
+  t0Ms: number;
+  t1Ms: number;
+  t2Ms: number;
+  t3PlusMs: number;
+  awayMs: number;
+};
+
+export type TimeMeasurementMs = {
+  activeMs: number;
+  agentMs: number;
+  concurrency: ConcurrencyMs;
+};
+
+export const ZERO_TIME_MEASUREMENT_MS: TimeMeasurementMs = {
+  activeMs: 0,
+  agentMs: 0,
+  concurrency: { t0Ms: 0, t1Ms: 0, t2Ms: 0, t3PlusMs: 0, awayMs: 0 },
+};
+
+/**
+ * Sweep-line over one person's working intervals and agent-runtime intervals,
+ * in milliseconds.
+ *
+ * Every number here is additive over a partition of the timeline, which is the
+ * whole reason a daily rollup can exist: a union counted inside disjoint pieces
+ * sums to the union over their whole, the concurrency buckets partition each
+ * piece's active time, and `awayMs` is a difference of two sums. Splitting a
+ * range at midnight and adding the pieces is exact, not an approximation.
+ */
+export function measureTimeMs(
   workingIntervals: readonly Interval[],
   agentIntervals: readonly Interval[],
   range: Partial<Interval> = {},
-): TimeMeasurement {
+): TimeMeasurementMs {
   const active = mergeIntervals(
     workingIntervals
       .map((interval) => clipInterval(interval, range))
@@ -151,14 +178,60 @@ export function measureTime(
     coveredAgentMs += running * ms;
   }
 
-  const activeSeconds = Math.round(active.reduce((sum, interval) => sum + (interval.end - interval.start), 0) / 1_000);
   const agentMs = agents.reduce((sum, interval) => sum + (interval.end - interval.start), 0);
+  return {
+    activeMs: active.reduce((sum, interval) => sum + (interval.end - interval.start), 0),
+    agentMs,
+    concurrency: {
+      t0Ms: buckets.t0,
+      t1Ms: buckets.t1,
+      t2Ms: buckets.t2,
+      t3PlusMs: buckets.t3plus,
+      // Agent runtime nothing active covered. Never negative: `coveredAgentMs`
+      // counts n x ms only inside active time, so it cannot exceed `agentMs`.
+      awayMs: Math.max(0, agentMs - coveredAgentMs),
+    },
+  };
+}
+
+/**
+ * Adds measurements of pieces that do not overlap in time - a range split at
+ * midnight into stored days and the live partial day at each end.
+ *
+ * Only sound for disjoint pieces. Two measurements of overlapping ranges would
+ * double-count the union, which is exactly the mistake this function exists to
+ * make legible at the call site.
+ */
+export function addTimeMeasurementsMs(pieces: readonly TimeMeasurementMs[]): TimeMeasurementMs {
+  return pieces.reduce((total, piece) => ({
+    activeMs: total.activeMs + piece.activeMs,
+    agentMs: total.agentMs + piece.agentMs,
+    concurrency: {
+      t0Ms: total.concurrency.t0Ms + piece.concurrency.t0Ms,
+      t1Ms: total.concurrency.t1Ms + piece.concurrency.t1Ms,
+      t2Ms: total.concurrency.t2Ms + piece.concurrency.t2Ms,
+      t3PlusMs: total.concurrency.t3PlusMs + piece.concurrency.t3PlusMs,
+      awayMs: total.concurrency.awayMs + piece.concurrency.awayMs,
+    },
+  }), ZERO_TIME_MEASUREMENT_MS);
+}
+
+/**
+ * Rounds a millisecond measurement to the seconds every surface reports.
+ *
+ * Invariants, restored here because a silent drift would quietly misstate
+ * someone's work:
+ *   activeSeconds = t0 + t1 + t2 + t3plus
+ *   agentSeconds  = Σ (n × tn measured exactly) + awaySeconds
+ */
+export function roundTimeMeasurement(measurement: TimeMeasurementMs): TimeMeasurement {
+  const activeSeconds = Math.round(measurement.activeMs / 1_000);
   const concurrency: ConcurrencyBreakdown = {
-    t0Seconds: Math.round(buckets.t0 / 1_000),
-    t1Seconds: Math.round(buckets.t1 / 1_000),
-    t2Seconds: Math.round(buckets.t2 / 1_000),
-    t3PlusSeconds: Math.round(buckets.t3plus / 1_000),
-    awaySeconds: Math.round(Math.max(0, agentMs - coveredAgentMs) / 1_000),
+    t0Seconds: Math.round(measurement.concurrency.t0Ms / 1_000),
+    t1Seconds: Math.round(measurement.concurrency.t1Ms / 1_000),
+    t2Seconds: Math.round(measurement.concurrency.t2Ms / 1_000),
+    t3PlusSeconds: Math.round(measurement.concurrency.t3PlusMs / 1_000),
+    awaySeconds: Math.round(measurement.concurrency.awayMs / 1_000),
   };
 
   // The invariant, restored rather than asserted. Each of the four buckets
@@ -174,7 +247,25 @@ export function measureTime(
     if (largest !== undefined && concurrency[largest] + drift >= 0) concurrency[largest] += drift;
   }
 
-  return { activeSeconds, agentSeconds: Math.round(agentMs / 1_000), concurrency };
+  return { activeSeconds, agentSeconds: Math.round(measurement.agentMs / 1_000), concurrency };
+}
+
+/**
+ * Sweep-line over one person's working intervals and agent-runtime intervals.
+ *
+ * Invariants, restored in `roundTimeMeasurement` because a silent drift would
+ * quietly misstate someone's work:
+ *   activeSeconds = t0 + t1 + t2 + t3plus
+ *   agentSeconds  = Σ (n × tn measured exactly) + awaySeconds
+ * The histogram buckets round independently, so only sub-second drift is
+ * absorbed.
+ */
+export function measureTime(
+  workingIntervals: readonly Interval[],
+  agentIntervals: readonly Interval[],
+  range: Partial<Interval> = {},
+): TimeMeasurement {
+  return roundTimeMeasurement(measureTimeMs(workingIntervals, agentIntervals, range));
 }
 
 /** `agent time ÷ active time`, rounded to one decimal; null when there is no active time. */

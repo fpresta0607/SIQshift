@@ -289,6 +289,49 @@ header. It keys on `attribution_backfilled_at`, not on `original_project_id`:
 a row moved out of *unattributed* has a null original value and is otherwise
 indistinguishable from a row no pass ever touched.
 
+### `0022_user_daily_rollups` is additive, and still has to go first
+
+`0022` creates one empty table and touches no existing row, so it opens no
+window of the `0015`/`0016` kind and takes no meaningful time on a database of
+any size.
+
+It is still bound by "migrate first, then deploy", because `server.ts` wires the
+rollup repository unconditionally: an API build that carries this change and
+talks to a database without the table answers `500` on the leaderboard, which
+reads the table for every unscoped range. Apply it, then `railway up`:
+
+```bash
+DATABASE_URL='<the same direct URL>' pnpm --filter @siqshift/database migrate
+```
+
+Rolling the API *back* is safe with the table in place - the older build simply
+never looks at it - so there is nothing to undo.
+
+The table fills itself. Each upload folds the finished UTC days it touched, so
+the cache warms as people work rather than needing a backfill, and until a day
+is folded its range is read live exactly as it was before.
+
+A day that reads wrong is repaired by deleting a *suffix* of coverage that still
+leaves rows below it. That `WHERE` clause is the repair rather than decoration:
+dropping everything from a midnight onward lowers the latest day stored, and the
+next upload's fill climbs back over what it dropped.
+
+```sql
+-- Repair: keeps the days below this midnight, and the fold regrows over the rest.
+DELETE FROM user_daily_rollups WHERE organization_id = '<org>' AND day >= '<utc midnight>';
+```
+
+Two other shapes are not repairs. A single day cut out of the middle of coverage
+is never refolded, because the fold only fills upward from its latest day, so it
+stays a permanent hole that every range crossing it reads live. And deleting
+*every* row for an organization is a reset: with no coverage left the next upload
+starts a fresh run at the bootstrap anchor, which reaches no further back than a
+month before yesterday, so all the history below that is discarded rather than
+regrown. Clearing the whole table to let it rebuild is therefore the one thing
+not to do on a workspace whose older days matter. Either way the reports stay
+correct and merely slower, and restoring the discarded coverage waits on the
+retention change's scheduled fold.
+
 ---
 
 ## 1. API on Railway
@@ -452,7 +495,10 @@ watch are how often a client asks and how many rows an answer reads:
   the interval reads exist to be folded into totals in JavaScript, so the bytes
   Neon ships are larger than the bytes the client receives and much larger than
   the numbers drawn. An unbounded range makes it worse, because "all time"
-  sends no bounds and reads the whole history on every refresh.
+  sends no bounds and reads the whole history on every refresh - which is what
+  `0022`'s folded-day cache took off the unscoped leaderboard, and off nothing
+  else: every other report path, and any project-scoped range, still reads
+  those intervals.
 
 Set these in the Neon console for the SIQshift project:
 

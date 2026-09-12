@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, max, min, ne, or, sql, sum } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   activitySegments,
   agents,
@@ -14,6 +15,7 @@ import {
   projects,
   shiftCommits,
   timeSessions,
+  userDailyRollups,
   userProjectSelections,
   users,
   userViewPreferences,
@@ -36,6 +38,7 @@ import {
   type ActivitySegmentInsert,
   type ActivitySegmentRepository,
   type AgentIntervalRecord,
+  type AgentSessionEndShift,
   type AgentRecord,
   type AgentRepository,
   type AgentSessionRecord,
@@ -66,6 +69,9 @@ import {
   type InsertEndedAgentSession,
   type LeaderboardRowRecord,
   type ObservedSessionInsert,
+  type RollupCoverage,
+  type UserDailyRollupRecord,
+  type UserDailyRollupRepository,
   type PathMappingRecord,
   type PathMappingRepository,
   type ProjectRecord,
@@ -774,6 +780,43 @@ export class DrizzleReportRepository implements ReportRepository {
     }));
   }
 
+  /**
+   * Median in-range session length, in whole seconds; null with no sessions.
+   *
+   * The same overlap predicates and the same clipping `readSessionIntervals`
+   * feeds the JavaScript fold, so the number does not move: each session's
+   * in-range length is rounded to seconds first, zero-length ones drop out, and
+   * `percentile_cont` averages the middle pair exactly as the fold did.
+   */
+  public async readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null> {
+    // A raw fragment on the left strips drizzle's Date mapping from the
+    // right-hand parameter, and postgres-js refuses a bare Date - so the
+    // bound is passed as an ISO string, exactly like the report ranges.
+    const lower = query.from === undefined ? timeSessions.startedAt : sql`greatest(${timeSessions.startedAt}, ${query.from.toISOString()})`;
+    const upper = query.toExclusive === undefined ? timeSessions.stoppedAt : sql`least(${timeSessions.stoppedAt}, ${query.toExclusive.toISOString()})`;
+    const lengths = this.db
+      .select({ seconds: sql<number>`round(extract(epoch from (${upper} - ${lower})))`.as("seconds") })
+      .from(timeSessions)
+      .where(and(
+        eq(timeSessions.organizationId, subject.organizationId),
+        or(eq(timeSessions.status, "stopped"), eq(timeSessions.status, "needs_review")),
+        isNotNull(timeSessions.stoppedAt),
+        ...(query.userId === undefined ? [] : [eq(timeSessions.userId, query.userId)]),
+        ...(query.projectId === undefined ? [] : [eq(timeSessions.projectId, query.projectId)]),
+        ...(query.unassignedOnly === true ? [eq(timeSessions.attribution, "default")] : []),
+        ...(query.from === undefined ? [] : [gt(timeSessions.stoppedAt, query.from)]),
+        ...(query.toExclusive === undefined ? [] : [lt(timeSessions.startedAt, query.toExclusive)]),
+      ))
+      .as("lengths");
+    const [row] = await this.db
+      .select({ median: sql<string | null>`percentile_cont(0.5) within group (order by ${lengths.seconds})` })
+      .from(lengths)
+      .where(sql`${lengths.seconds} > 0`);
+    if (row?.median === null || row?.median === undefined) return null;
+    const median = Math.round(Number(row.median));
+    return Number.isFinite(median) ? median : null;
+  }
+
   /** Completed sessions overlapping the range, with the scope predicates applied. */
   public async readSessionIntervals(subject: AuthenticatedSubject, query: ReportQuery): Promise<SessionIntervalRecord[]> {
     // The shared predicates bound startedAt inside the range; interval reads
@@ -1133,6 +1176,21 @@ function asAgentSessionRecord(row: typeof agentSessions.$inferSelect): AgentSess
   };
 }
 
+/**
+ * Where the report path stops measuring a session. A closed session ends where
+ * it ended; an open one is only known to have run as far as its last event.
+ */
+const agentSessionKnownEnd = (row: { endedAt: Date | null; lastEventAt: Date }): Date => row.endedAt ?? row.lastEventAt;
+
+/**
+ * The pre-update row, captured in the same statement. `UPDATE t ... FROM t AS
+ * prior WHERE t.id = prior.id` reads `prior` from the snapshot the statement
+ * started with, so its columns are the old values while `RETURNING` over the
+ * updated table gives the new ones - which is how a write can report where the
+ * known end moved from without a second round trip to go and look.
+ */
+const priorAgentSession = alias(agentSessions, "prior_agent_session");
+
 const agentSessionKey = [
   agentSessions.organizationId,
   agentSessions.userId,
@@ -1153,7 +1211,17 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
     return rows[0] === undefined ? null : asAgentSessionRecord(rows[0]);
   }
 
-  public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionRecord> {
+  public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift> {
+    // `ON CONFLICT` cannot see the row it replaces, so where the known end stood
+    // is read first. A data-modifying CTE would return both in one round trip,
+    // which is the change to make if this ever shows up in a profile; a plain
+    // indexed lookup on session start - not on the heartbeats that carry almost
+    // all of this endpoint's traffic - is not worth hand-written SQL until then.
+    const prior = await this.findByExternalKey(
+      { organizationId: input.organizationId, userId: input.userId, role: "member" },
+      input.source,
+      input.externalSessionId,
+    );
     const rows = await this.db
       .insert(agentSessions)
       .values({
@@ -1188,10 +1256,13 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         },
       })
       .returning();
-    return asAgentSessionRecord(rows[0]!);
+    return {
+      session: asAgentSessionRecord(rows[0]!),
+      previousEnd: prior === null ? null : agentSessionKnownEnd(prior),
+    };
   }
 
-  public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionRecord | null> {
+  public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionEndShift | null> {
     const rows = await this.db
       .update(agentSessions)
       .set({
@@ -1200,15 +1271,22 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         lastEventAt: sql`greatest(${agentSessions.lastEventAt}, ${endedAt.toISOString()}::timestamptz)`,
         updatedAt: now,
       })
+      .from(priorAgentSession)
       .where(and(
+        eq(agentSessions.id, priorAgentSession.id),
         eq(agentSessions.organizationId, subject.organizationId),
         eq(agentSessions.userId, subject.userId),
         eq(agentSessions.source, source),
         eq(agentSessions.externalSessionId, externalSessionId),
         eq(agentSessions.status, "running"),
       ))
-      .returning();
-    return rows[0] === undefined ? null : asAgentSessionRecord(rows[0]);
+      .returning({
+        ...getTableColumns(agentSessions),
+        priorEndedAt: priorAgentSession.endedAt,
+        priorLastEventAt: priorAgentSession.lastEventAt,
+      });
+    const row = rows[0];
+    return row === undefined ? null : { session: asAgentSessionRecord(row), previousEnd: agentSessionKnownEnd({ endedAt: row.priorEndedAt, lastEventAt: row.priorLastEventAt }) };
   }
 
   public async insertEnded(input: InsertEndedAgentSession): Promise<void> {
@@ -1233,13 +1311,19 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       .onConflictDoNothing({ target: agentSessionKey });
   }
 
-  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<boolean> {
+  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionEndShift | null> {
     const key = and(
+      eq(agentSessions.id, priorAgentSession.id),
       eq(agentSessions.organizationId, subject.organizationId),
       eq(agentSessions.userId, subject.userId),
       eq(agentSessions.source, source),
       eq(agentSessions.externalSessionId, externalSessionId),
     );
+    const returning = {
+      ...getTableColumns(agentSessions),
+      priorEndedAt: priorAgentSession.endedAt,
+      priorLastEventAt: priorAgentSession.lastEventAt,
+    };
     const running = await this.db
       .update(agentSessions)
       .set({
@@ -1250,23 +1334,30 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         model: sql`coalesce(${agentSessions.model}, ${model})`,
         updatedAt: now,
       })
+      .from(priorAgentSession)
       .where(and(key, eq(agentSessions.status, "running")))
-      .returning({ id: agentSessions.id });
-    if (running.length > 0) return true;
+      .returning(returning);
+    const advanced = running[0];
+    if (advanced !== undefined) {
+      return { session: asAgentSessionRecord(advanced), previousEnd: agentSessionKnownEnd({ endedAt: advanced.priorEndedAt, lastEventAt: advanced.priorLastEventAt }) };
+    }
     // A model-bearing heartbeat can arrive after the end that closed a short
     // session (start and end inside one upload interval), so the still-null
     // model is filled on an ended row too - without touching lastEventAt or
     // resurrecting it, and never when the heartbeat itself names no model.
-    if (model === null) return false;
+    if (model === null) return null;
     const ended = await this.db
       .update(agentSessions)
       .set({
         model: sql`coalesce(${agentSessions.model}, ${model})`,
         updatedAt: now,
       })
+      .from(priorAgentSession)
       .where(and(key, eq(agentSessions.status, "ended")))
-      .returning({ id: agentSessions.id });
-    return ended.length > 0;
+      .returning(returning);
+    const backfilled = ended[0];
+    if (backfilled === undefined) return null;
+    return { session: asAgentSessionRecord(backfilled), previousEnd: agentSessionKnownEnd({ endedAt: backfilled.priorEndedAt, lastEventAt: backfilled.priorLastEventAt }) };
   }
 
   public async reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number> {
@@ -1974,5 +2065,151 @@ export class DrizzlePathMappingRepository implements PathMappingRepository {
       ))
       .returning({ id: projectPathMappings.id });
     return rows.length > 0;
+  }
+}
+
+/**
+ * Rows per insert. Each row binds twelve parameters, so this leaves the
+ * statement an order of magnitude clear of Postgres's 65535-parameter ceiling.
+ */
+const ROLLUP_INSERT_MAX_ROWS = 1_000;
+
+/**
+ * Folded rows split into statements small enough to be accepted.
+ *
+ * A desktop back from a long outage names a finished day per day it was gone,
+ * and a row per member of each: one statement's worth of that clears the bind
+ * parameter ceiling, and every retry of the same backlog would fail the same
+ * way, so those days would never fold at all.
+ *
+ * A day is never split across two chunks. The read path treats any row for a
+ * day as proof the whole workspace's day is folded, so a day left half-written
+ * by a chunk that failed would read its missing members as measured zeros -
+ * whereas a day not written at all is merely unfolded, which is always correct.
+ * That holds even for a workspace big enough that one of its days exceeds the
+ * limit on its own: that statement is rejected and the day stays live.
+ */
+function dayAlignedChunks(rows: readonly UserDailyRollupRecord[]): UserDailyRollupRecord[][] {
+  const byDay = new Map<number, UserDailyRollupRecord[]>();
+  for (const row of rows) {
+    const existing = byDay.get(row.day.getTime());
+    if (existing === undefined) byDay.set(row.day.getTime(), [row]);
+    else existing.push(row);
+  }
+  const chunks: UserDailyRollupRecord[][] = [];
+  for (const dayRows of byDay.values()) {
+    const current = chunks[chunks.length - 1];
+    if (current !== undefined && current.length + dayRows.length <= ROLLUP_INSERT_MAX_ROWS) current.push(...dayRows);
+    else chunks.push([...dayRows]);
+  }
+  return chunks;
+}
+
+/**
+ * The folded-day cache behind the leaderboard.
+ *
+ * Nothing here is a source of truth: every row restates rows that are still in
+ * `activity_segments`, `time_sessions` and `agent_sessions`. A missing row is
+ * always correct, because the report path reads that day live instead - which
+ * is what lets the fold decline a day it cannot state honestly.
+ */
+export class DrizzleUserDailyRollupRepository implements UserDailyRollupRepository {
+  public constructor(private readonly db: DatabaseConnection["db"]) {}
+
+  public async readForRange(
+    subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+  ): Promise<UserDailyRollupRecord[]> {
+    const rows = await this.db
+      .select({
+        userId: userDailyRollups.userId,
+        day: userDailyRollups.day,
+        activeMs: userDailyRollups.activeMs,
+        agentMs: userDailyRollups.agentMs,
+        concurrency0Ms: userDailyRollups.concurrency0Ms,
+        concurrency1Ms: userDailyRollups.concurrency1Ms,
+        concurrency2Ms: userDailyRollups.concurrency2Ms,
+        concurrency3PlusMs: userDailyRollups.concurrency3PlusMs,
+        awayMs: userDailyRollups.awayMs,
+        computedAt: userDailyRollups.computedAt,
+      })
+      .from(userDailyRollups)
+      .where(and(
+        eq(userDailyRollups.organizationId, subject.organizationId),
+        gte(userDailyRollups.day, from),
+        lt(userDailyRollups.day, toExclusive),
+      ))
+      .orderBy(asc(userDailyRollups.day), asc(userDailyRollups.userId));
+    return rows;
+  }
+
+  public async coverage(subject: AuthenticatedSubject): Promise<RollupCoverage | null> {
+    const [row] = await this.db
+      .select({ earliest: min(userDailyRollups.day), latest: max(userDailyRollups.day) })
+      .from(userDailyRollups)
+      .where(eq(userDailyRollups.organizationId, subject.organizationId));
+    // Both aggregates come back null together, on an organization with no rows.
+    if (row?.earliest == null || row.latest == null) return null;
+    return { earliest: row.earliest, latest: row.latest };
+  }
+
+  public async clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
+    if (days.length === 0) return;
+    await this.db
+      .delete(userDailyRollups)
+      .where(and(
+        eq(userDailyRollups.organizationId, subject.organizationId),
+        inArray(userDailyRollups.day, [...days]),
+      ));
+  }
+
+  public async writeDays(subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void> {
+    const now = new Date();
+    for (const chunk of dayAlignedChunks(rows)) await this.insertDays(subject, chunk, now);
+  }
+
+  private async insertDays(
+    subject: AuthenticatedSubject,
+    rows: readonly UserDailyRollupRecord[],
+    now: Date,
+  ): Promise<void> {
+    await this.db.insert(userDailyRollups).values(rows.map((row) => ({
+      organizationId: subject.organizationId,
+      userId: row.userId,
+      day: row.day,
+      activeMs: row.activeMs,
+      agentMs: row.agentMs,
+      concurrency0Ms: row.concurrency0Ms,
+      concurrency1Ms: row.concurrency1Ms,
+      concurrency2Ms: row.concurrency2Ms,
+      concurrency3PlusMs: row.concurrency3PlusMs,
+      awayMs: row.awayMs,
+      computedAt: row.computedAt,
+    })))
+      // Two refreshes of one day can interleave - the desktop posts activity
+      // and agent events concurrently, and teammates upload on their own - and
+      // neither the order they clear in nor the order they write in says which
+      // of them saw more. What they read does. So a conflict is resolved by
+      // read time: the fold that read later overwrites, the fold that read
+      // earlier steps aside, and the day ends on the truer picture whichever
+      // write lands last. A plain insert instead raised a unique violation on
+      // the loser, which abandoned the rest of its write and left the day
+      // standing on numbers taken before the newer rows existed.
+      .onConflictDoUpdate({
+        target: [userDailyRollups.organizationId, userDailyRollups.userId, userDailyRollups.day],
+        setWhere: lt(userDailyRollups.computedAt, sql`excluded.computed_at`),
+        set: {
+          activeMs: sql`excluded.active_ms`,
+          agentMs: sql`excluded.agent_ms`,
+          concurrency0Ms: sql`excluded.concurrency_0_ms`,
+          concurrency1Ms: sql`excluded.concurrency_1_ms`,
+          concurrency2Ms: sql`excluded.concurrency_2_ms`,
+          concurrency3PlusMs: sql`excluded.concurrency_3_plus_ms`,
+          awayMs: sql`excluded.away_ms`,
+          computedAt: sql`excluded.computed_at`,
+          updatedAt: now,
+        },
+      });
   }
 }

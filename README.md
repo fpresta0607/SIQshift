@@ -211,6 +211,77 @@ teammate whose range has no evidence reads as `0s`, never as missing.
 The desktop app's **What's recorded** panel and the web dashboard's **How SIQshift works**
 dialog state these rules word for word.
 
+### The board reads folded days, not raw segments
+
+Active time, agent time and the concurrency split are all additive over a
+partition of the timeline: measure a week day by day, add the days, and you get
+the same numbers a single sweep over the week gives.
+That is what lets the leaderboard stop re-reading raw evidence.
+
+Every upload folds into `user_daily_rollups` the finished UTC days it touched,
+together with the days needed to bring coverage up toward yesterday - one row per
+member per day, carrying active milliseconds, agent milliseconds, the four
+concurrency buckets and away time.
+A report then splits its range into the whole days it can spend and the pieces it
+cannot: the spent days are read out of that table as a handful of small rows, and
+what is left still reads segments.
+The current UTC day is never folded, because it is still being written to.
+
+Coverage runs from the day it started, forwards, and grows contiguously: each
+upload folds the days from the latest day stored through yesterday, and the first
+upload to reach an empty table starts that run at the oldest finished day it
+names, no further back than a month before yesterday, or at yesterday when it
+names none.
+That last bound is what stops one old segment from stranding a fresh table in a
+long climb, since the fill only ever moves upward and only a month at a time.
+A workspace that rests at weekends therefore gets its all-zero weekend rows from
+Monday's upload rather than leaving a gap a week.
+Each upload fills forward by at most a month, so a table left far behind closes
+the gap over the next several uploads instead of paying the whole stretch on one
+request.
+On top of that fill an upload folds every day its own batch names, however many
+that is, so what bounds a catch-up upload's work is what the batch carried.
+No single interval read spans more than a month either, because adjacent days are
+read as one run.
+A day named by an upload that sits beyond that month's fill waits for the run to
+reach it rather than being folded on its own: folding it early would move the latest
+stored day past the stretch still to be filled, and nothing would ever come back
+for it.
+A day named from *below* where coverage starts waits too, and permanently: it is
+read live rather than folded, because storing it would drag the run's first day
+backwards and leave a hole behind it that nothing grows back into.
+Every other day an upload names is folded: a named day is one whose stored numbers
+that upload has just made wrong, and the days an upload clears are exactly the days
+it goes on to rebuild.
+A fold that fails partway leaves its days cleared and unfolded inside coverage,
+and nothing re-establishes them, because the run only ever fills upward: they read
+live, which is correct, and restoring the coverage is the scheduled fold's job
+rather than a later upload's.
+History older than the day coverage started is read live, and backfilling it is a
+job for the scheduled fold that comes with retention, not something a report does.
+The read path assumes none of this in any case: a day with no row is read live
+wherever it sits.
+
+The table is a cache, so no *row* has to exist: a day with no row is read live, a
+half-built table is slower rather than wrong, and a failed fold leaves its days
+unfolded rather than stating stale numbers.
+The fold is also cleared before it is rebuilt, so a crash halfway through can only
+lose the cache, never corrupt it.
+
+The *table* is another matter, because `server.ts` wires the rollup repository
+unconditionally and every unscoped board asks it what it holds.
+An API built without that repository wired reads everything live and is merely
+slower; the API as shipped, pointed at a database that has not run `0022`, answers
+`500` on the leaderboard.
+That is why the migration goes first - see DEPLOY.md.
+
+Two things still read raw segments on purpose: a **project-scoped** range, because
+active time under a project is presence intersected with that project's sessions
+and a per-person-per-day row cannot state it; and the per-agent breakdown on a
+person's own card, which is a different shape entirely.
+**Today** sees no benefit either - a single local day has two partial UTC days and
+no whole day between them.
+
 ### Attributed and unattributed
 
 `time_sessions.attribution` records which of those answers applied, and reporting
@@ -278,6 +349,9 @@ wakes the uploader at once (`upload_now`), so rows land within a poll of the wor
 happening, and the five-minute tick is only the ceiling for whatever nothing woke.
 A session older than the **seven-day** freshness bound is refused rather than
 backfilled, and per-row refusals never fail a batch.
+Both ingest paths bound the clock on either side as well: an activity segment or
+an agent event dated more than a year back, or more than thirty seconds ahead, is
+refused with its own reason rather than stored.
 
 ### Roster: agents as identities
 

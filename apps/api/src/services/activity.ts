@@ -2,6 +2,7 @@ import type { ActivitySegmentBatchResponse, ActivitySegmentKind } from "@siqshif
 
 import type { AuthenticatedSubject } from "../auth.js";
 import type { ActivitySegmentInsert, ActivitySegmentRepository } from "../repositories.js";
+import { PAST_UPLOAD_TOLERANCE_MS } from "./utc-days.js";
 
 const futureEndToleranceMs = 30_000;
 const maxSegmentSpanMs = 24 * 60 * 60 * 1_000;
@@ -17,6 +18,16 @@ export interface ActivitySegmentInput {
 
 export interface ActivityServiceDependencies {
   segments: ActivitySegmentRepository;
+  /**
+   * Called with the instants a successful upload touched, so the finished UTC
+   * days among them can be folded.
+   *
+   * A plain callback rather than the rollup service itself: the fold reads
+   * agent-session intervals, and importing it here would make this module and
+   * that one import each other. The composition root supplies it and owns the
+   * decision that a cache-maintenance failure must not fail an upload.
+   */
+  onUploaded?: (subject: AuthenticatedSubject, instants: readonly Date[]) => Promise<void>;
   clock?: () => Date;
 }
 
@@ -30,6 +41,7 @@ function rejectionReason(segment: ActivitySegmentInput, now: Date): string | nul
   if (!Number.isFinite(start) || !Number.isFinite(end)) return "timestamps are invalid";
   if (end <= start) return "endedAt must be after startedAt";
   if (end > now.getTime() + futureEndToleranceMs) return "endedAt is too far in the future";
+  if (end < now.getTime() - PAST_UPLOAD_TOLERANCE_MS) return "endedAt is too far in the past";
   if (end - start > maxSegmentSpanMs) return "segment spans more than 24 hours";
   return null;
 }
@@ -62,6 +74,7 @@ export function createActivityService(dependencies: ActivityServiceDependencies)
       }
       // Replayed client ids are ignored by the repository, so a replay counts as accepted.
       await dependencies.segments.insertBatch(valid);
+      await dependencies.onUploaded?.(subject, valid.flatMap((segment) => [segment.startedAt, segment.endedAt]));
       return { accepted: valid.length, rejected };
     },
   };

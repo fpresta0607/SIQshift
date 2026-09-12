@@ -75,10 +75,15 @@ describe("activity service", () => {
     const future = segment({ endedAt: new Date("2026-08-06T14:00:30.001Z") });
     const tolerated = segment({ startedAt: new Date("2026-08-06T13:59:00.000Z"), endedAt: new Date("2026-08-06T14:00:30.000Z") });
     const tooLong = segment({ startedAt: new Date("2026-08-05T13:00:00.000Z"), endedAt: new Date("2026-08-06T13:00:00.001Z") });
+    // `timestampSchema` accepts any four-digit year, so a client with an
+    // invented clock can date a segment two thousand years back. Nothing can
+    // read it - the presence query bounds on receivedAt - but the day it names
+    // is the day a fresh rollup table would anchor its coverage at.
+    const ancient = segment({ startedAt: new Date("0001-01-01T00:00:00.000Z"), endedAt: new Date("0001-01-02T00:00:00.000Z") });
     const broken = segment({ startedAt: new Date("not-a-date") });
     const good = segment();
 
-    const result = await service.upload(subject, [inverted, equal, future, tolerated, tooLong, broken, good]);
+    const result = await service.upload(subject, [inverted, equal, future, tolerated, tooLong, ancient, broken, good]);
 
     expect(result.accepted).toBe(2);
     expect(result.rejected).toEqual([
@@ -86,9 +91,26 @@ describe("activity service", () => {
       { clientId: equal.clientId, reason: "endedAt must be after startedAt" },
       { clientId: future.clientId, reason: "endedAt is too far in the future" },
       { clientId: tooLong.clientId, reason: "segment spans more than 24 hours" },
+      { clientId: ancient.clientId, reason: "endedAt is too far in the past" },
       { clientId: broken.clientId, reason: "timestamps are invalid" },
     ]);
     expect(segments.records.map((record) => record.clientId).sort()).toEqual([good.clientId, tolerated.clientId].sort());
+  });
+
+  it("names the fold only the instants it stored, so a refused segment cannot anchor a day", async () => {
+    const segments = new MemorySegments();
+    const named: Date[] = [];
+    const service = createActivityService({
+      segments,
+      clock: () => now,
+      onUploaded: async (_subject, instants) => { named.push(...instants); },
+    });
+    const ancient = segment({ startedAt: new Date("0001-01-01T00:00:00.000Z"), endedAt: new Date("0001-01-02T00:00:00.000Z") });
+    const good = segment();
+
+    await service.upload(subject, [ancient, good]);
+
+    expect(named).toEqual([good.startedAt, good.endedAt]);
   });
 
   it("scopes rows to the uploading subject", async () => {
