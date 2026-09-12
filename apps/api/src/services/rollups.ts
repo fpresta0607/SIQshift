@@ -281,11 +281,16 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       for (const run of foldRuns(days)) {
         const from = run[0]!;
         const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
-        const computedAt = now();
         const [presence, agents] = await Promise.all([
           dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
           dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
         ]);
+        // Stamped where the reads returned, never where they were issued. A
+        // stored row yields to the fold that read later, and issue time is only
+        // a lower bound on what a read saw: a slow read issued first can return
+        // last holding strictly more rows, and would then lose to the staler
+        // fold it overtook.
+        const computedAt = now();
         const presenceByDay = indexByDay(presence, run);
         const agentsByDay = indexByDay(agents, run);
         for (const day of run) {

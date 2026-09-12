@@ -420,6 +420,53 @@ describe("maintaining the fold", () => {
   });
 
   /**
+   * `computedAt` decides which of two folds of one day the stored row keeps:
+   * the upsert yields only to a larger stamp. Taking it before the reads made
+   * it the instant the read was issued, which orders two overlapping folds by
+   * who started rather than by who saw more.
+   */
+  it("keeps the fold whose reads returned later, whichever of the two was issued first", async () => {
+    // One tick shared by both folds, so the stamps fall in the order the calls
+    // to it did. Seconds apart, inside the same UTC day the fold is about.
+    let tick = 0;
+    const clock = (): Date => new Date(at(1, 9).getTime() + (tick += 1) * 1_000);
+    const rollups = new Rollups();
+
+    const slow = new Reports();
+    slow.roster = [{ id: ids.user, name: "Alex" }];
+    // The truer picture: this fold's read sees three hours where the other saw one.
+    slow.presenceIntervals = [presence(ids.user, "Alex", at(0, 9), at(0, 12))];
+    let release = (): void => {};
+    let issued = (): void => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hasIssued = new Promise<void>((resolve) => { issued = resolve; });
+    const read = slow.readPresenceIntervals.bind(slow);
+    slow.readPresenceIntervals = async (forSubject, query): Promise<PresenceIntervalRecord[]> => {
+      issued();
+      await held;
+      return read(forSubject, query);
+    };
+
+    const prompt = new Reports();
+    prompt.roster = [{ id: ids.user, name: "Alex" }];
+    prompt.presenceIntervals = [presence(ids.user, "Alex", at(0, 9), at(0, 10))];
+
+    const first = createRollupService({ reports: slow as unknown as ReportRepository, rollups, now: clock });
+    const second = createRollupService({ reports: prompt as unknown as ReportRepository, rollups, now: clock });
+
+    // The slow fold issues its read first; the prompt one then runs start to
+    // finish; only afterwards does the slow read return.
+    const pending = first.refresh(subject, [at(0, 9)]);
+    await hasIssued;
+    await second.refresh(subject, [at(0, 9)]);
+    release();
+    await pending;
+
+    expect(rollups.rows.find((row) => row.day.getTime() === day(0).getTime())?.activeMs)
+      .toBe(3 * 60 * 60 * 1_000);
+  });
+
+  /**
    * An instant inside the upload tolerance but well back in history is still
    * legitimate evidence, and anchoring a fresh table at the day it names leaves
    * the fill climbing a month a refresh to reach yesterday - at a year back

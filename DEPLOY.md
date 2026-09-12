@@ -309,18 +309,28 @@ never looks at it - so there is nothing to undo.
 
 The table fills itself. Each upload folds the finished UTC days it touched, so
 the cache warms as people work rather than needing a backfill, and until a day
-is folded its range is read live exactly as it was before. A day that reads
-wrong can be deleted, but delete a *suffix* rather than a day
-out of the middle. Dropping everything from a day onward lowers the latest day
-stored, and the fold grows back over it from there. A single day cut out of the
-middle of coverage is not refolded by any later upload - the fold only fills
-upward from its latest day - so it stays a permanent hole that every range
-crossing it reads live, until the retention change's scheduled fold lands.
-Either way the reports stay correct and merely slower:
+is folded its range is read live exactly as it was before.
+
+A day that reads wrong is repaired by deleting a *suffix* of coverage that still
+leaves rows below it. That `WHERE` clause is the repair rather than decoration:
+dropping everything from a midnight onward lowers the latest day stored, and the
+next upload's fill climbs back over what it dropped.
 
 ```sql
+-- Repair: keeps the days below this midnight, and the fold regrows over the rest.
 DELETE FROM user_daily_rollups WHERE organization_id = '<org>' AND day >= '<utc midnight>';
 ```
+
+Two other shapes are not repairs. A single day cut out of the middle of coverage
+is never refolded, because the fold only fills upward from its latest day, so it
+stays a permanent hole that every range crossing it reads live. And deleting
+*every* row for an organization is a reset: with no coverage left the next upload
+starts a fresh run at the bootstrap anchor, which reaches no further back than a
+month before yesterday, so all the history below that is discarded rather than
+regrown. Clearing the whole table to let it rebuild is therefore the one thing
+not to do on a workspace whose older days matter. Either way the reports stay
+correct and merely slower, and restoring the discarded coverage waits on the
+retention change's scheduled fold.
 
 ---
 
