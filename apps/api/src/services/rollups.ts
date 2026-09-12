@@ -443,10 +443,36 @@ async function foldDays(
   for (const run of foldRuns(days)) {
     const from = run[0]!;
     const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
-    const [presence, agents] = await Promise.all([
-      dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
-      dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
-    ]);
+    // The write-time re-check. Nothing serializes a fold against an upload,
+    // so evidence for one of these days can commit while its reads are in
+    // flight, and `computedAt` is stamped where the reads returned: a fold
+    // that returns last holding a pre-commit snapshot would win the upsert
+    // over a fold that read the committed rows and returned first, writing
+    // a stale row over the correct one with nothing left to name the day
+    // again. So before anything is built from them, the reads are proven
+    // against `receivedAt` - stamped at upload start on every evidence
+    // write, so a stamp past the read's own issue instant is proof the read
+    // ran against a snapshot without that evidence, and the run is read
+    // again. Sound in the one direction that matters: an upload started
+    // before the read issued can still commit inside it, and stays
+    // undetectable, which is the residual this accepts rather than hold
+    // the upload path hostage to the fold. The loop is unbounded because
+    // exiting on a counter is exiting with exactly the stale snapshot it
+    // exists to catch, and it is quiet in steady state, because the stamps
+    // it compares against are fixed stored instants while the instant it
+    // compares them to moves forward.
+    let presence: PresenceIntervalRecord[];
+    let agents: AgentIntervalRecord[];
+    let stale = false;
+    do {
+      const readAt = now();
+      [presence, agents] = await Promise.all([
+        dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
+        dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
+      ]);
+      const newestReceivedAt = await dependencies.reports.readNewestEvidenceReceivedAt(subject, { from, toExclusive });
+      stale = newestReceivedAt !== null && newestReceivedAt.getTime() > readAt.getTime();
+    } while (stale);
     // Stamped where the reads returned, never where they were issued. A
     // stored row yields to the fold that read later, and issue time is only
     // a lower bound on what a read saw: a slow read issued first can return

@@ -87,6 +87,9 @@ class Reports implements ReportRepository {
   public async readAgentIntervals() {
     return this.agentIntervals;
   }
+  public async readNewestEvidenceReceivedAt(): Promise<null> {
+    throw new Error("not used by these routes");
+  }
 }
 
 /** Report routes reap stale agent sessions before report aggregation; nothing else is used. */

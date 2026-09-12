@@ -250,6 +250,20 @@ export interface ReportRepository {
   readSessionIntervals(subject: AuthenticatedSubject, query: ReportQuery): Promise<SessionIntervalRecord[]>;
   /** Agent-session runtimes overlapping the range, after project scoping. */
   readAgentIntervals(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentIntervalRecord[]>;
+  /**
+   * The newest `receivedAt` among evidence rows overlapping the range -
+   * activity segments and agent sessions both - or null when the range holds
+   * none.
+   *
+   * The fold's write-time re-check. `receivedAt` is stamped at upload start on
+   * every evidence write, so a stamp past the instant a fold's interval reads
+   * were issued is proof those reads ran against a snapshot without that
+   * evidence. It carries each interval read's own overlap bounds and none of
+   * its filters: the presence read's freshness window decides what a fold may
+   * count, while this decides only what committed, which a late commit is
+   * regardless of whether the fold will use it.
+   */
+  readNewestEvidenceReceivedAt(subject: AuthenticatedSubject, query: ReportQuery): Promise<Date | null>;
   readPageForOrganization(subject: AuthenticatedSubject, query: ReportQuery, options: ReportPageOptions): Promise<ReportPageRead>;
   readExportForOrganization(subject: AuthenticatedSubject, query: ReportQuery, maxRows: number): Promise<ReportExportRead>;
   readLeaderboardForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<LeaderboardRowRecord[]>;

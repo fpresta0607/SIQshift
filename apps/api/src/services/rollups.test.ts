@@ -80,6 +80,14 @@ class Reports implements Partial<ReportRepository> {
     return this.agentIntervals
       .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.endedAt, query));
   }
+  /**
+   * The commit stamp the fold's re-check asks about. Null until the test plays
+   * an upload: every fold before one holds no evidence the probe could name.
+   */
+  public newestEvidenceReceivedAt: Date | null = null;
+  public async readNewestEvidenceReceivedAt(_subject: AuthenticatedSubject, _query: ReportQuery): Promise<Date | null> {
+    return this.newestEvidenceReceivedAt;
+  }
   public async readSessionIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<SessionIntervalRecord[]> {
     return this.sessionIntervals
       .filter((row) => matchesUser(row.user.id, query) && overlaps(row.startedAt, row.stoppedAt, query));
@@ -856,6 +864,63 @@ describe("rebuilding a day the sweep suspects", () => {
 
     const refolded = rollups.rows.find((row) => row.day.getTime() === day(-7).getTime());
     expect(refolded?.activeMs).toBe(2 * 60 * 60 * 1_000);
+  });
+
+  /**
+   * The straddle the write-time re-check exists for. The refold's interval read
+   * snapshots a day empty and is slow; an upload commits evidence for that day
+   * while the read is in flight, and its refresh folds the day correctly and
+   * writes it. When the slow read then returns and stamps a later `computedAt`,
+   * the conditional upsert would let its snapshot-stale row overwrite the
+   * correct one - and once coverage has moved past the day, nothing names it
+   * again, so the undercount would be permanent. The probe is what makes the
+   * refold re-read rather than return its stale snapshot.
+   */
+  it("re-reads a run that lost a late commit, so the stale snapshot never wins the upsert", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    // The backfill has committed rows for day -3 and the days around it, so
+    // day -3 is inside coverage and the upload's own refresh will fold it.
+    rollups.rows = [storedDay(day(-5)), storedDay(day(-4)), storedDay(day(-3)), storedDay(day(-2)), storedDay(day(-1))];
+    let atNow = at(0, 12);
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => atNow });
+
+    // The refold's presence read takes its snapshot where the real one does,
+    // when the query starts, and returns only after the upload below is done.
+    let release = (): void => {};
+    let issued = (): void => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hasIssued = new Promise<void>((resolve) => { issued = resolve; });
+    const read = reports.readPresenceIntervals.bind(reports);
+    let holding = true;
+    reports.readPresenceIntervals = async (forSubject, query): Promise<PresenceIntervalRecord[]> => {
+      if (!holding) return read(forSubject, query);
+      holding = false;
+      const snapshot = await read(forSubject, query);
+      issued();
+      await held;
+      return snapshot;
+    };
+
+    const pending = service.refold(subject, [day(-3)]);
+    await hasIssued;
+
+    // The upload commits two hours for day -3, stamped after the refold's read
+    // was issued, and its refresh folds the day itself.
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-3, 9), at(-3, 11))];
+    reports.newestEvidenceReceivedAt = at(0, 12, 30);
+    atNow = at(0, 13);
+    await service.refresh(subject, [at(-3, 12)]);
+
+    // The slow read returns from its pre-upload snapshot, under a clock later
+    // than the one the refresh folded with.
+    atNow = at(0, 14);
+    release();
+    await pending;
+
+    const stored = rollups.rows.find((row) => row.day.getTime() === day(-3).getTime());
+    expect(stored?.activeMs).toBe(2 * 60 * 60 * 1_000);
   });
 });
 

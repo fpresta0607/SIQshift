@@ -274,6 +274,10 @@ class MemoryReports implements ReportRepository {
       }));
   }
 
+  public async readNewestEvidenceReceivedAt(): Promise<null> {
+    throw new Error("not used by me/stats");
+  }
+
   public async findProjectForOrganization(): Promise<never> {
     throw new Error("not used by me/stats");
   }

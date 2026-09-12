@@ -916,6 +916,41 @@ export class DrizzleReportRepository implements ReportRepository {
     }));
   }
 
+  /**
+   * The newest `receivedAt` the range's evidence carries, across both tables
+   * the fold reads. Each half carries its own interval read's overlap bounds
+   * and none of its filters: the fold's re-check wants to know what committed,
+   * not what the reads would return, so the presence read's freshness window
+   * is deliberately absent here.
+   */
+  public async readNewestEvidenceReceivedAt(subject: AuthenticatedSubject, query: ReportQuery): Promise<Date | null> {
+    const segmentRows = await this.db
+      .select({ receivedAt: sql<Date | string | null>`max(${activitySegments.receivedAt})` })
+      .from(activitySegments)
+      .where(and(
+        eq(activitySegments.organizationId, subject.organizationId),
+        ...(query.from === undefined ? [] : [gt(activitySegments.endedAt, query.from)]),
+        ...(query.toExclusive === undefined ? [] : [lt(activitySegments.startedAt, query.toExclusive)]),
+      ));
+    const sessionRows = await this.db
+      .select({ receivedAt: sql<Date | string | null>`max(${agentSessions.receivedAt})` })
+      .from(agentSessions)
+      .where(and(
+        eq(agentSessions.organizationId, subject.organizationId),
+        // A raw fragment on the left strips drizzle's Date mapping from the
+        // right-hand parameter, and postgres-js refuses a bare Date - so the
+        // bound is passed as an ISO string, exactly like the report ranges.
+        ...(query.from === undefined
+          ? []
+          : [sql`coalesce(${agentSessions.endedAt}, ${agentSessions.lastEventAt}) > ${query.from.toISOString()}`]),
+        ...(query.toExclusive === undefined ? [] : [lt(agentSessions.startedAt, query.toExclusive)]),
+      ));
+    const times = [segmentRows[0]?.receivedAt ?? null, sessionRows[0]?.receivedAt ?? null]
+      .map((stamp) => (stamp === null ? null : new Date(stamp).getTime()))
+      .filter((time): time is number => time !== null);
+    return times.length === 0 ? null : new Date(Math.max(...times));
+  }
+
   private async summaryFor(db: Pick<DatabaseConnection["db"], "select">, subject: AuthenticatedSubject, query: ReportQuery): Promise<ReportSummaryRecord> {
     const rows = await db
       .select({ totalRows: count(timeSessions.id), totalDurationSeconds: sum(timeSessions.durationSeconds) })

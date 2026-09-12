@@ -136,6 +136,9 @@ class Reports implements ReportRepository {
       && (query.unassignedOnly !== true || row.projectId === null)
     );
   }
+  public async readNewestEvidenceReceivedAt(): Promise<null> {
+    return null;
+  }
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string) {
     return this.accessible.has(projectId) ? { id: projectId, name: "Timer" } : null;
   }
