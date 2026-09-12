@@ -230,7 +230,10 @@ The current UTC day is never folded, because it is still being written to.
 Coverage runs from the day it started, forwards, and grows contiguously: each
 upload folds the days from the latest day stored through yesterday, and the first
 upload to reach an empty table starts that run at the oldest finished day it
-names, or at yesterday when it names none.
+names, no further back than a month before yesterday, or at yesterday when it
+names none.
+That last bound is what stops one old segment from stranding a fresh table in a
+long climb, since the fill only ever moves upward and only a month at a time.
 A workspace that rests at weekends therefore gets its all-zero weekend rows from
 Monday's upload rather than leaving a gap a week.
 Each upload fills forward by at most a month, so a table left far behind closes
@@ -346,6 +349,9 @@ wakes the uploader at once (`upload_now`), so rows land within a poll of the wor
 happening, and the five-minute tick is only the ceiling for whatever nothing woke.
 A session older than the **seven-day** freshness bound is refused rather than
 backfilled, and per-row refusals never fail a batch.
+Both ingest paths bound the clock on either side as well: an activity segment or
+an agent event dated more than a year back, or more than thirty seconds ahead, is
+refused with its own reason rather than stored.
 
 ### Roster: agents as identities
 

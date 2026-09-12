@@ -69,20 +69,20 @@ export const FOLD_MAX_DAYS = 31;
  * takes: a named day is one whose stored numbers the upload has just made wrong,
  * so declining it could only leave a stale row or a hole.
  *
- * With nothing stored the window starts at the oldest finished day named, or at
- * yesterday when none was. That second case is the bootstrap, and it is what
- * lets the table start at all: a workspace whose members sit near UTC, work
- * inside one UTC day and upload promptly never names a finished day, so waiting
- * to be handed one would leave the table empty for good.
+ * With nothing stored the window starts at the oldest finished day named but no
+ * further back than the window's own reach, or at yesterday when none was
+ * named. That second case is the bootstrap, and it is what lets the table start
+ * at all: a workspace whose members sit near UTC, work inside one UTC day and
+ * upload promptly never names a finished day, so waiting to be handed one would
+ * leave the table empty for good.
  *
- * That anchor reaches back no further than the window itself does. A day named
- * from well back in history would otherwise pin `earliest` where it landed and
- * leave the fill climbing `FOLD_MAX_DAYS` a refresh to reach yesterday - a year
- * back is a dozen uploads of pure catch-up before the table answers anything,
- * and further back than that it never arrives. Clamped, the first refresh
- * covers the window ending yesterday whatever it was handed, and the history
- * below stays live, which is where the retention change's scheduled fold
- * backfills it from.
+ * The clamp on the first case is what keeps one old instant from stranding a
+ * fresh table. Unclamped, the anchor pins `earliest` wherever that day landed
+ * and leaves the fill climbing `FOLD_MAX_DAYS` a refresh to reach yesterday - a
+ * year back is a dozen uploads of pure catch-up before the table answers
+ * anything, and further back than that it never arrives. Clamped, the first
+ * refresh covers the window ending yesterday whatever it was handed, and the
+ * history below the anchor stays live.
  *
  * The window is capped at `FOLD_MAX_DAYS`, which is what keeps one upload's
  * work bounded however far behind the table has fallen. History older than the

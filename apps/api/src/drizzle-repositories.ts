@@ -1212,8 +1212,11 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
   }
 
   public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift> {
-    // The one write that cannot capture its own prior row: `ON CONFLICT` takes
-    // no `FROM`, so where the known end stood is read first.
+    // `ON CONFLICT` cannot see the row it replaces, so where the known end stood
+    // is read first. A data-modifying CTE would return both in one round trip,
+    // which is the change to make if this ever shows up in a profile; a plain
+    // indexed lookup on session start - not on the heartbeats that carry almost
+    // all of this endpoint's traffic - is not worth hand-written SQL until then.
     const prior = await this.findByExternalKey(
       { organizationId: input.organizationId, userId: input.userId, role: "member" },
       input.source,
