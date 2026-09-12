@@ -29,6 +29,31 @@ export function foldableDays(instants: readonly Date[], now: Date): Date[] {
   return [...days].sort((a, b) => a - b).map((day) => new Date(day));
 }
 
+/**
+ * The days a fold actually writes: the ones the upload named, plus every
+ * finished day between the latest day the table already holds and the newest of
+ * them.
+ *
+ * Coverage is produced by uploads, so without this a day nobody uploaded on
+ * would never be folded at all, and every such hole is a span the report path
+ * reads live - a workspace that rests at weekends would leave one a week, and
+ * an all-time board would plan a read per gap. Filling forward keeps coverage
+ * contiguous from the first day ever folded onwards: a quiet weekend gets its
+ * all-zero rows from Monday's upload.
+ *
+ * It fills forward only. An empty table has nothing to be contiguous with, so
+ * the first fold writes its own days and no more, and history below the first
+ * folded day stays unstored - backfilling that is the scheduled fold's job in
+ * the retention change. The report path reads all of it live until then.
+ */
+export function contiguousFoldDays(days: readonly Date[], latestStored: Date | null): Date[] {
+  const newest = days[days.length - 1];
+  if (newest === undefined || latestStored === null) return [...days];
+  const filled = new Set(days.map((day) => day.getTime()));
+  for (let day = latestStored.getTime() + DAY_MS; day < newest.getTime(); day += DAY_MS) filled.add(day);
+  return [...filled].sort((a, b) => a - b).map((day) => new Date(day));
+}
+
 /** Splits days already sorted ascending into runs of adjacent UTC days. */
 function contiguousRuns(days: readonly Date[]): Date[][] {
   const runs: Date[][] = [];
@@ -85,20 +110,37 @@ const asInterval = (start: Date, end: Date): Interval => ({ start: start.getTime
  * path treats any row for a day as proof that the whole day is folded, so a
  * quiet member left out would read as a measured zero rather than as a day the
  * report still has to read live.
+ *
+ * It also fills forward to the latest day already stored, so coverage from the
+ * first day ever folded onwards has no holes and a long range plans a handful
+ * of live spans rather than one per quiet weekend. History below that first
+ * folded day is the retention change's scheduled job to backfill.
  */
 export function createRollupService(dependencies: RollupServiceDependencies): RollupService {
   const now = dependencies.now ?? ((): Date => new Date());
   return {
     async refresh(subject: AuthenticatedSubject, instants: readonly Date[]): Promise<void> {
-      const days = foldableDays(instants, now());
-      if (days.length === 0) return;
+      const named = foldableDays(instants, now());
+      if (named.length === 0) return;
+      // Asked before the clear, which would otherwise drop the very row that
+      // names the latest stored day. It is the only read that goes first, and
+      // it is one indexed maximum: anything that could stop it answering would
+      // stop the clear below from running either, so putting it here cannot
+      // leave a stale day standing that the clear would have removed.
+      const latestStored = await dependencies.rollups.latestDay(subject);
+      const days = contiguousFoldDays(named, latestStored);
       // Clear before folding, never after. A day with no row is always correct
       // because the report path reads it live, so everything below this line
       // can fail and the worst outcome is a day that has to be read the slow
       // way. Writing the fold first and clearing after would leave the old
       // numbers standing over rows that no longer match them.
       await dependencies.rollups.clearDays(subject, days);
-      const membersRead = dependencies.reports.readMembersForOrganization(subject);
+      // Awaited here rather than left running across the loop below. A promise
+      // in flight that nothing is watching, rejecting while the loop awaits
+      // something else, is an unhandled rejection - and Node's default on one
+      // is to kill the process, which is exactly the outcome `foldAfterUpload`
+      // exists to keep an upload safe from.
+      const members = await dependencies.reports.readMembersForOrganization(subject);
       // One read per contiguous run rather than one read spanning them all: a
       // backlog carrying one instant from ninety days ago and one from
       // yesterday folds two days, and reading the ninety between them would be
@@ -106,7 +148,6 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // a time because the upload is waiting on this: a catch-up batch landing
       // on thirty scattered days must not open sixty connections at once.
       const rows: UserDailyRollupRecord[] = [];
-      const reads: { run: Date[]; presence: PresenceIntervalRecord[]; agents: AgentIntervalRecord[]; computedAt: Date }[] = [];
       for (const run of contiguousRuns(days)) {
         const from = run[0]!;
         const toExclusive = new Date(run[run.length - 1]!.getTime() + DAY_MS);
@@ -115,13 +156,7 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
           dependencies.reports.readPresenceIntervals(subject, { from, toExclusive }),
           dependencies.reports.readAgentIntervals(subject, { from, toExclusive }),
         ]);
-        reads.push({ run, presence, agents, computedAt });
-      }
-      const members = await membersRead;
-      for (const read of reads) {
-        for (const day of read.run) {
-          rows.push(...foldDay(members, read.presence, read.agents, day, read.computedAt));
-        }
+        for (const day of run) rows.push(...foldDay(members, presence, agents, day, computedAt));
       }
       await dependencies.rollups.writeDays(subject, rows);
     },

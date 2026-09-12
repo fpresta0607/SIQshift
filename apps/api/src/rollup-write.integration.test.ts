@@ -95,6 +95,33 @@ integration("daily rollup writes", () => {
     expect(await storedActiveMs()).toBe(7_200_000);
   });
 
+  /**
+   * A desktop back from a long outage names a finished day per day it was gone,
+   * and the fold writes a row per member of each. As one statement that is
+   * twelve bind parameters a row against Postgres's 65535-parameter ceiling,
+   * which rejects the whole write - and every retry of the same backlog would
+   * be rejected identically, so those days would never fold at all.
+   */
+  it("writes a backlog too large for one statement", async () => {
+    const dayCount = 6_000;
+    // Far enough back that the backlog cannot collide with the fixtures the
+    // rest of this file writes around 2026-08.
+    const firstDay = new Date("2000-01-01T00:00:00.000Z");
+    const backlog = Array.from({ length: dayCount }, (_, index) => ({
+      ...fold(60_000, laterRead),
+      day: new Date(firstDay.getTime() + index * 24 * 60 * 60 * 1_000),
+    }));
+
+    await expect(repository.writeDays(subject, backlog)).resolves.toBeUndefined();
+
+    const stored = await repository.readForRange(
+      subject,
+      firstDay,
+      new Date(firstDay.getTime() + dayCount * 24 * 60 * 60 * 1_000),
+    );
+    expect(stored).toHaveLength(dayCount);
+  }, 60_000);
+
   it("folds a day again when the same refresh re-reads it later", async () => {
     await repository.clearDays(subject, [day]);
     await repository.writeDays(subject, [fold(3_600_000, earlierRead)]);

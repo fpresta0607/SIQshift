@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, max, min, ne, or, sql, sum } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   activitySegments,
@@ -2065,6 +2065,43 @@ export class DrizzlePathMappingRepository implements PathMappingRepository {
 }
 
 /**
+ * Rows per insert. Each row binds twelve parameters, so this leaves the
+ * statement an order of magnitude clear of Postgres's 65535-parameter ceiling.
+ */
+const ROLLUP_INSERT_MAX_ROWS = 1_000;
+
+/**
+ * Folded rows split into statements small enough to be accepted.
+ *
+ * A desktop back from a long outage names a finished day per day it was gone,
+ * and a row per member of each: one statement's worth of that clears the bind
+ * parameter ceiling, and every retry of the same backlog would fail the same
+ * way, so those days would never fold at all.
+ *
+ * A day is never split across two chunks. The read path treats any row for a
+ * day as proof the whole workspace's day is folded, so a day left half-written
+ * by a chunk that failed would read its missing members as measured zeros -
+ * whereas a day not written at all is merely unfolded, which is always correct.
+ * That holds even for a workspace big enough that one of its days exceeds the
+ * limit on its own: that statement is rejected and the day stays live.
+ */
+function dayAlignedChunks(rows: readonly UserDailyRollupRecord[]): UserDailyRollupRecord[][] {
+  const byDay = new Map<number, UserDailyRollupRecord[]>();
+  for (const row of rows) {
+    const existing = byDay.get(row.day.getTime());
+    if (existing === undefined) byDay.set(row.day.getTime(), [row]);
+    else existing.push(row);
+  }
+  const chunks: UserDailyRollupRecord[][] = [];
+  for (const dayRows of byDay.values()) {
+    const current = chunks[chunks.length - 1];
+    if (current !== undefined && current.length + dayRows.length <= ROLLUP_INSERT_MAX_ROWS) current.push(...dayRows);
+    else chunks.push([...dayRows]);
+  }
+  return chunks;
+}
+
+/**
  * The folded-day cache behind the leaderboard.
  *
  * Nothing here is a source of truth: every row restates rows that are still in
@@ -2111,6 +2148,14 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
     return row?.day ?? null;
   }
 
+  public async latestDay(subject: AuthenticatedSubject): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ day: max(userDailyRollups.day) })
+      .from(userDailyRollups)
+      .where(eq(userDailyRollups.organizationId, subject.organizationId));
+    return row?.day ?? null;
+  }
+
   public async clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
     if (days.length === 0) return;
     await this.db
@@ -2122,8 +2167,15 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
   }
 
   public async writeDays(subject: AuthenticatedSubject, rows: readonly UserDailyRollupRecord[]): Promise<void> {
-    if (rows.length === 0) return;
     const now = new Date();
+    for (const chunk of dayAlignedChunks(rows)) await this.insertDays(subject, chunk, now);
+  }
+
+  private async insertDays(
+    subject: AuthenticatedSubject,
+    rows: readonly UserDailyRollupRecord[],
+    now: Date,
+  ): Promise<void> {
     await this.db.insert(userDailyRollups).values(rows.map((row) => ({
       organizationId: subject.organizationId,
       userId: row.userId,

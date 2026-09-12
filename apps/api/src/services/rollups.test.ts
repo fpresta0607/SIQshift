@@ -67,6 +67,7 @@ class Reports implements Partial<ReportRepository> {
   public roster: ReportLookupRecord[] = [];
   public presenceReads: ReportQuery[] = [];
   public agentReads: ReportQuery[] = [];
+  public failMembers = false;
 
   public async readPresenceIntervals(_subject: AuthenticatedSubject, query: ReportQuery): Promise<PresenceIntervalRecord[]> {
     this.presenceReads.push(query);
@@ -83,6 +84,7 @@ class Reports implements Partial<ReportRepository> {
     return this.leaderboardRows;
   }
   public async readMembersForOrganization(): Promise<ReportLookupRecord[]> {
+    if (this.failMembers) throw new Error("roster read failed");
     return this.roster;
   }
   public async readMedianSessionSeconds(): Promise<number | null> {
@@ -122,6 +124,10 @@ class Rollups implements UserDailyRollupRepository {
   }
   public async earliestDay(): Promise<Date | null> {
     const days = this.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    return days[0] === undefined ? null : new Date(days[0]);
+  }
+  public async latestDay(): Promise<Date | null> {
+    const days = this.rows.map((row) => row.day.getTime()).sort((a, b) => b - a);
     return days[0] === undefined ? null : new Date(days[0]);
   }
   public async clearDays(_subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
@@ -311,6 +317,68 @@ describe("maintaining the fold", () => {
     await service.refresh(subject, [day(0)]);
 
     expect(storedAgentMs()).toBe(2 * 60 * 60 * 1_000);
+  });
+
+  /**
+   * The roster read used to be started before the run loop and awaited after
+   * it, so for the whole loop it was a promise nothing was watching: a
+   * rejection there was an unhandled rejection, which Node answers by killing
+   * the process rather than by failing the fold.
+   */
+  it("reads the roster before any intervals, so its failure is a failed fold rather than a loose rejection", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.failMembers = true;
+    const rollups = new Rollups();
+    rollups.rows = [{
+      userId: ids.user,
+      day: day(0),
+      activeMs: 60_000,
+      agentMs: 0,
+      concurrency0Ms: 60_000,
+      concurrency1Ms: 0,
+      concurrency2Ms: 0,
+      concurrency3PlusMs: 0,
+      awayMs: 0,
+      computedAt: readAt,
+    }];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(1, 9) });
+
+    await expect(service.refresh(subject, [at(0, 9)])).rejects.toThrow("roster read failed");
+
+    // No interval read was ever issued, so there is nothing for the roster's
+    // rejection to race and nothing left in flight when the fold gives up.
+    expect(reports.presenceReads).toEqual([]);
+    expect(reports.agentReads).toEqual([]);
+    // And the clear still went first, so the day is unfolded rather than stale.
+    expect(rollups.calls).toEqual(["clear"]);
+    expect(rollups.rows).toEqual([]);
+  });
+
+  it("fills the days between the latest day it already holds and the newest it is folding", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.presenceIntervals = [
+      presence(ids.user, "Alex", at(0, 9), at(0, 10)),
+      presence(ids.user, "Alex", at(3, 9), at(3, 10)),
+    ];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(4, 9) });
+
+    // Friday's upload folds Friday, and nothing is stored to be contiguous with.
+    await service.refresh(subject, [at(0, 9)]);
+    expect(rollups.rows.map((row) => row.day.toISOString())).toEqual([day(0).toISOString()]);
+
+    // Monday's upload names Monday alone, and the quiet weekend between gets
+    // its all-zero rows rather than staying a live span for good.
+    await service.refresh(subject, [at(3, 9)]);
+    expect(rollups.rows.map((row) => row.day.toISOString()).sort())
+      .toEqual([day(0), day(1), day(2), day(3)].map((entry) => entry.toISOString()));
+    expect(rollups.rows.filter((row) => row.day.getTime() === day(1).getTime())[0])
+      .toMatchObject({ activeMs: 0, agentMs: 0 });
+    // Contiguous now, so the whole stretch reads as one span of stored days.
+    expect(rollups.rows.filter((row) => row.day.getTime() === day(3).getTime())[0]?.activeMs)
+      .toBe(60 * 60 * 1_000);
   });
 
   it("folds nothing for a day that is still being written", async () => {

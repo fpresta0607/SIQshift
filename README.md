@@ -226,11 +226,14 @@ cannot: the spent days are read out of that table as a handful of small rows, an
 what is left still reads segments.
 The current UTC day is never folded, because it is still being written to.
 
-The folded history is not contiguous, and the read path does not assume it is.
-A day is folded by the upload that lands in it, so a day nobody worked is never
-folded at all, and a workspace that rests at weekends leaves a gap a week.
-Every such gap is read live, which is correct but not free; filling them is a job
+The fold covers from the first day it ever wrote, forwards, and nothing below that.
+Coverage above that day is contiguous: a fold extends the days it was handed down
+to the latest day already stored, so a workspace that rests at weekends gets its
+all-zero weekend rows from Monday's upload rather than leaving a gap a week.
+History older than the first folded day is read live, and backfilling it is a job
 for the scheduled fold that comes with retention, not something a report does.
+The read path assumes none of this in any case: a day with no row is read live
+wherever it sits.
 
 The table is a cache, so no *row* has to exist: a day with no row is read live, a
 half-built table is slower rather than wrong, and a failed fold leaves its days

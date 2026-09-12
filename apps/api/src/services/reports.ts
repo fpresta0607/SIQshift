@@ -405,7 +405,13 @@ async function measureMembersMs(
 
   const rollups = dependencies.rollups;
   if (rollups !== undefined && canSpendStoredDays) {
-    const window = rollupWindow(openRange, (await rollups.earliestDay(subject))?.getTime() ?? null, now);
+    // Only a range with no lower bound has anything to learn from this: a
+    // bounded range starts where it says it starts, and asking anyway would
+    // spend a round trip on a value the window discards.
+    const earliestStored = openRange.start !== null
+      ? null
+      : (await rollups.earliestDay(subject))?.getTime() ?? null;
+    const window = rollupWindow(openRange, earliestStored, now);
     const stored = window.from.getTime() >= window.toExclusive.getTime()
       ? []
       : await rollups.readForRange(subject, window.from, window.toExclusive);
@@ -433,12 +439,13 @@ async function measureMembersMs(
   // pieces is the same union the live path computes in one pass.
   //
   // The spans are walked one at a time, for the reason the fold walks its runs
-  // one at a time: there is no bound on how many there are. A day is folded
-  // only when an upload's instants land in it, so a day nobody worked stays
-  // live for good, and a workspace that rests at weekends accumulates one live
-  // span a week. Filling those gaps is fold coverage, and belongs with the
-  // scheduled job in the retention change rather than here; until then the
-  // stored history is not contiguous and this must not fan out with it.
+  // one at a time: the ingest path and the read path should behave alike. The
+  // count stays small because the fold fills forward to the latest day it
+  // already holds, so coverage from the first day ever folded onwards has no
+  // holes and a range above it plans a partial head and a partial tail.
+  // Below that first folded day nothing is stored, and a run of uncovered days
+  // merges into one span rather than one per day. Backfilling that history is
+  // the scheduled fold's job in the retention change, not a report's.
   const reads: { span: LiveSpan; members: Map<string, MemberIntervals> }[] = [];
   for (const span of liveSpans) {
     // The bounds are replaced rather than narrowed: an open side of a span is

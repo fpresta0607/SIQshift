@@ -718,6 +718,14 @@ export interface UserDailyRollupRepository {
   /** The earliest folded day this organization holds, for a range with no lower bound; null when nothing is folded. */
   earliestDay(subject: AuthenticatedSubject): Promise<Date | null>;
   /**
+   * The latest folded day this organization holds; null when nothing is folded.
+   *
+   * A fold extends the days it was given down to this one, so coverage from the
+   * first day ever folded onwards stays contiguous instead of leaving a live
+   * span for every day nobody happened to upload on.
+   */
+  latestDay(subject: AuthenticatedSubject): Promise<Date | null>;
+  /**
    * Drops every stored row for these days.
    *
    * Deliberately separate from the write, and deliberately first. A day with no
