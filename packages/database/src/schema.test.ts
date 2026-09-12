@@ -467,18 +467,10 @@ describe("database schema", () => {
         "user_daily_rollups_concurrency_partitions_active",
       ]),
     );
-    const dialect = new PgDialect();
-    // Both invariants the read path assumes, held by the database rather than
-    // by whichever code last wrote a row.
-    const midnight = config.checks.find((constraint) => constraint.name === "user_daily_rollups_day_is_utc_midnight");
-    expect(dialect.sqlToQuery(midnight!.value).sql).toContain("date_trunc('day'");
-    const partition = config.checks.find(
-      (constraint) => constraint.name === "user_daily_rollups_concurrency_partitions_active",
-    );
-    const sqlText = dialect.sqlToQuery(partition!.value).sql;
-    for (const column of ["concurrency_0_ms", "concurrency_1_ms", "concurrency_2_ms", "concurrency_3_plus_ms"]) {
-      expect(sqlText).toContain(column);
-    }
+    // Only that the two constraints the read path leans on are declared. What
+    // they actually reject is proven against a real server, in
+    // apps/api/src/rollup-write.integration.test.ts - rendered SQL read back as
+    // text would pass just as happily for a check that rejects nothing.
     // Every report reads a contiguous window of days for one organization.
     expect(config.indexes.map((index) => index.config.name)).toContain("user_daily_rollups_organization_day_idx");
   });

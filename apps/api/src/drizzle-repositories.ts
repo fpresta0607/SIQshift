@@ -788,8 +788,11 @@ export class DrizzleReportRepository implements ReportRepository {
    * `percentile_cont` averages the middle pair exactly as the fold did.
    */
   public async readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null> {
-    const lower = query.from === undefined ? timeSessions.startedAt : sql`greatest(${timeSessions.startedAt}, ${query.from})`;
-    const upper = query.toExclusive === undefined ? timeSessions.stoppedAt : sql`least(${timeSessions.stoppedAt}, ${query.toExclusive})`;
+    // A raw fragment on the left strips drizzle's Date mapping from the
+    // right-hand parameter, and postgres-js refuses a bare Date - so the
+    // bound is passed as an ISO string, exactly like the report ranges.
+    const lower = query.from === undefined ? timeSessions.startedAt : sql`greatest(${timeSessions.startedAt}, ${query.from.toISOString()})`;
+    const upper = query.toExclusive === undefined ? timeSessions.stoppedAt : sql`least(${timeSessions.stoppedAt}, ${query.toExclusive.toISOString()})`;
     const lengths = this.db
       .select({ seconds: sql<number>`round(extract(epoch from (${upper} - ${lower})))`.as("seconds") })
       .from(timeSessions)

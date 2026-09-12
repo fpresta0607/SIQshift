@@ -79,8 +79,12 @@ export interface CreateAppDependencies {
   viewPreferencesRepository?: ViewPreferencesRepository;
   /**
    * The folded-day cache. Absent, every report reads its intervals live, which
-   * is exactly what this API did before the table existed - so an environment
-   * that has not run the migration yet is slow, never broken.
+   * is exactly what this API did before the table existed - slower, and correct.
+   *
+   * That is not the deployment story, because `server.ts` passes it
+   * unconditionally and the board asks it what it holds on every unscoped
+   * range: wired against a database that has not run `0022`, the leaderboard
+   * answers 500. Which is why the migration goes first - see DEPLOY.md.
    */
   userDailyRollupRepository?: UserDailyRollupRepository;
 }

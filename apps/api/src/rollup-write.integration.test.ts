@@ -105,4 +105,44 @@ integration("daily rollup writes", () => {
 
     expect(await storedActiveMs()).toBe(1_800_000);
   });
+
+  /**
+   * The two check constraints the read path leans on, exercised as constraints:
+   * what matters is what the database refuses, and only the database can say.
+   */
+  describe("the invariants the table holds itself to", () => {
+    const insert = (overrides: { day: string; activeMs: number; buckets: [number, number, number, number] }) =>
+      database.client`
+        insert into user_daily_rollups (
+          organization_id, user_id, day, active_ms, agent_ms,
+          concurrency_0_ms, concurrency_1_ms, concurrency_2_ms, concurrency_3_plus_ms, away_ms
+        ) values (
+          ${organizationId}, ${userId}, ${overrides.day}, ${overrides.activeMs}, 0,
+          ${overrides.buckets[0]}, ${overrides.buckets[1]}, ${overrides.buckets[2]}, ${overrides.buckets[3]}, 0
+        )
+      `;
+
+    it("refuses a day that is not midnight UTC, because it would fold against the wrong boundary", async () => {
+      await expect(insert({ day: "2026-08-09T12:00:00.000Z", activeMs: 60_000, buckets: [60_000, 0, 0, 0] }))
+        .rejects.toThrow(/user_daily_rollups_day_is_utc_midnight/);
+
+      // The same row on the boundary is accepted, so the constraint is refusing
+      // the offset rather than the insert.
+      await expect(insert({ day: "2026-08-09T00:00:00.000Z", activeMs: 60_000, buckets: [60_000, 0, 0, 0] }))
+        .resolves.toBeDefined();
+    });
+
+    it("refuses buckets that do not partition the active time they split", async () => {
+      await expect(insert({ day: "2026-08-10T00:00:00.000Z", activeMs: 60_000, buckets: [30_000, 0, 0, 0] }))
+        .rejects.toThrow(/user_daily_rollups_concurrency_partitions_active/);
+
+      // Over-counting is refused too: the buckets must sum to active time, not
+      // merely stay under it.
+      await expect(insert({ day: "2026-08-10T00:00:00.000Z", activeMs: 60_000, buckets: [30_000, 30_000, 1, 0] }))
+        .rejects.toThrow(/user_daily_rollups_concurrency_partitions_active/);
+
+      await expect(insert({ day: "2026-08-10T00:00:00.000Z", activeMs: 60_000, buckets: [30_000, 20_000, 10_000, 0] }))
+        .resolves.toBeDefined();
+    });
+  });
 });

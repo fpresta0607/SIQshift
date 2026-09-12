@@ -431,7 +431,16 @@ async function measureMembersMs(
   // Each span is read on its own and measured against its own bounds. They do
   // not overlap - not each other, and not the days spent above - so adding the
   // pieces is the same union the live path computes in one pass.
-  const reads = await Promise.all(liveSpans.map(async (span) => {
+  //
+  // The spans are walked one at a time, for the reason the fold walks its runs
+  // one at a time: there is no bound on how many there are. A day is folded
+  // only when an upload's instants land in it, so a day nobody worked stays
+  // live for good, and a workspace that rests at weekends accumulates one live
+  // span a week. Filling those gaps is fold coverage, and belongs with the
+  // scheduled job in the retention change rather than here; until then the
+  // stored history is not contiguous and this must not fan out with it.
+  const reads: { span: LiveSpan; members: Map<string, MemberIntervals> }[] = [];
+  for (const span of liveSpans) {
     // The bounds are replaced rather than narrowed: an open side of a span is
     // an absent bound, which is what the repository reads already mean by it.
     const { from: _rangeFrom, toExclusive: _rangeToExclusive, ...scopeOnly } = query;
@@ -445,8 +454,8 @@ async function measureMembersMs(
       scoped ? dependencies.reports.readSessionIntervals(subject, spanQuery) : Promise.resolve([] as SessionIntervalRecord[]),
       dependencies.reports.readAgentIntervals(subject, spanQuery),
     ]);
-    return { span, members: collectMembers(presence, sessions, agents) };
-  }));
+    reads.push({ span, members: collectMembers(presence, sessions, agents) });
+  }
 
   for (const read of reads) {
     const spanRange: Partial<Interval> = {

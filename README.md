@@ -221,10 +221,16 @@ That is what lets the leaderboard stop re-reading raw evidence.
 Every upload folds the finished UTC days it touched into `user_daily_rollups` -
 one row per member per day, carrying active milliseconds, agent milliseconds, the
 four concurrency buckets and away time.
-A report then splits its range into a partial first day, the whole days between,
-and a partial last day: the whole days are read out of that table as a handful of
-small rows, and only the two ragged edges still read segments.
+A report then splits its range into the whole days it can spend and the pieces it
+cannot: the spent days are read out of that table as a handful of small rows, and
+what is left still reads segments.
 The current UTC day is never folded, because it is still being written to.
+
+The folded history is not contiguous, and the read path does not assume it is.
+A day is folded by the upload that lands in it, so a day nobody worked is never
+folded at all, and a workspace that rests at weekends leaves a gap a week.
+Every such gap is read live, which is correct but not free; filling them is a job
+for the scheduled fold that comes with retention, not something a report does.
 
 The table is a cache, so no *row* has to exist: a day with no row is read live, a
 half-built table is slower rather than wrong, and a failed fold leaves its days
