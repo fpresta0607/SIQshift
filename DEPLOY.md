@@ -377,11 +377,16 @@ connection and dies with it, so a killed run leaves nothing stuck.
 Read its output before trusting a first run. Each line names one organization:
 `backfilled` is how many days of history it folded, `coverageFrom` where the
 fold now starts, and `deleted` how many raw segments went. A `held=` field means
-a rule stopped the delete short and says which - `nothing folded` on a workspace
-the upload path has not bootstrapped yet, or `no expired day is folded yet` while
-the backfill is still walking down. Both are expected on the first nights against
-a workspace with a long history; `deleted` stays 0 until the fold has reached past
-the cutoff.
+a rule stopped the delete short and says which. `no expired day is folded yet` is
+the one to expect on the first nights against a workspace with a long history:
+the backfill is still walking down and `deleted` stays 0 until it reaches past the
+cutoff.
+
+A workspace the upload path has never folded is not listed at all rather than
+listed as held - it has no coverage for the backfill to extend, so the sweep
+skips it entirely and it rejoins the moment an upload gives it a fold. An
+organization missing from the output is therefore either inside the window or
+not yet bootstrapped, and neither needs acting on.
 
 `coverage has no row for YYYY-MM-DD` is the one to act on. It means a day inside
 the folded stretch has no stored row - an interrupted fold or a partial write -

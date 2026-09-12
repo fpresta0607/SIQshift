@@ -1154,36 +1154,52 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
   }
 
   public async organizationsWithSegmentsBefore(toExclusive: Date, limit: number): Promise<string[]> {
-    const rows = await this.db
-      .select({ organizationId: activitySegments.organizationId, oldest: min(activitySegments.startedAt) })
-      .from(activitySegments)
-      .where(and(
-        lt(activitySegments.startedAt, toExclusive),
-        // Only organizations the upload path has already bootstrapped a fold
-        // for. One with no stored row has nothing for the backfill to extend
-        // downward - it refuses to anchor coverage itself - so its oldest
-        // evidence never moves and it would sit at the head of this ordering
-        // forever, spending a slot of a capped pass it can never use. It
-        // rejoins the rotation the moment it has a fold.
-        exists(this.db
-          .select({ present: sql`1` })
-          .from(userDailyRollups)
-          .where(eq(userDailyRollups.organizationId, activitySegments.organizationId))),
-      ))
-      .groupBy(activitySegments.organizationId)
-      // Oldest evidence first, so the organization furthest behind is the one a
-      // capped sweep spends its budget on rather than the one it reaches last.
-      .orderBy(asc(min(activitySegments.startedAt)))
-      .limit(limit);
-    return rows.map((row) => row.organizationId);
+    // Candidates come from the fold, never from a scan of the segments.
+    //
+    // Grouping activity_segments by organization reads every expired row in the
+    // schema's largest table, and the index 0023 adds cannot help: it leads on
+    // the organization, so a bare startedAt predicate has nothing to seek on -
+    // which is the very reason that index exists. Doing it nightly, in a change
+    // whose whole purpose is to take load off this table, is backwards.
+    //
+    // user_daily_rollups is small and already lists exactly the organizations
+    // that can be swept at all: one with no stored row has nothing for the
+    // backfill to extend downward, since it refuses to anchor coverage itself,
+    // so it could only ever spend a slot of a capped pass without using it. It
+    // rejoins the rotation the moment the upload path gives it a fold.
+    const candidates = await this.db
+      .selectDistinct({ organizationId: userDailyRollups.organizationId })
+      .from(userDailyRollups);
+
+    // Each organization's oldest evidence is then one indexed seek on
+    // (organization_id, started_at), which is what that index is for.
+    const oldest: { organizationId: string; at: Date }[] = [];
+    for (const candidate of candidates) {
+      const at = await this.earliestSegment(candidate.organizationId);
+      if (at !== null && at.getTime() < toExclusive.getTime()) {
+        oldest.push({ organizationId: candidate.organizationId, at });
+      }
+    }
+    // Oldest evidence first, so the organization furthest behind is the one a
+    // capped sweep spends its budget on rather than the one it reaches last.
+    return oldest
+      .sort((left, right) => left.at.getTime() - right.at.getTime())
+      .slice(0, limit)
+      .map((entry) => entry.organizationId);
   }
 
   public async earliestDay(organizationId: string): Promise<Date | null> {
+    const oldest = await this.earliestSegment(organizationId);
+    return oldest === null ? null : utcDayStart(oldest);
+  }
+
+  /** The instant this organization's oldest segment began; one indexed seek. */
+  private async earliestSegment(organizationId: string): Promise<Date | null> {
     const [row] = await this.db
       .select({ oldest: min(activitySegments.startedAt) })
       .from(activitySegments)
       .where(eq(activitySegments.organizationId, organizationId));
-    return row?.oldest == null ? null : utcDayStart(row.oldest);
+    return row?.oldest ?? null;
   }
 
   public async deleteSpansWithin(organizationId: string, from: Date, toExclusive: Date): Promise<number> {

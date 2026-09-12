@@ -1,4 +1,5 @@
 import {
+  createDatabase,
   createDisposableTestDatabase,
   type DatabaseConnection,
   type DisposableTestDatabase,
@@ -34,22 +35,28 @@ integration("the sweep lock", () => {
   });
 
   it("turns a second sweep away while the first is running, and lets it in afterwards", async () => {
-    // A second connection to the same database, which is what a second process
-    // running the command would have.
-    const second = { client: database.client };
+    // A genuinely separate connection, which is what a second process running
+    // the command has. Borrowing the first one proves nothing and cannot even
+    // run: an advisory lock is re-entrant within a session, and the disposable
+    // database's pool holds exactly one connection, so reserving a second from
+    // it while the first is held waits for itself.
+    const second = createDatabase(disposable!.databaseUrl, { max: 1 });
+    try {
+      let secondWhileFirstRuns: string | null = "not attempted";
+      const first = await withSweepLock(database, async () => {
+        secondWhileFirstRuns = await withSweepLock(second, async () => "ran");
+        return "ran";
+      });
 
-    let secondWhileFirstRuns: string | null = "not attempted";
-    const first = await withSweepLock(database, async () => {
-      secondWhileFirstRuns = await withSweepLock(second, async () => "ran");
-      return "ran";
-    });
+      expect(first).toBe("ran");
+      // Turned away rather than queued: the command logs and exits 0.
+      expect(secondWhileFirstRuns).toBeNull();
 
-    expect(first).toBe("ran");
-    // Turned away rather than queued: the command logs and exits 0.
-    expect(secondWhileFirstRuns).toBeNull();
-
-    // The lock is released with the work, so the next run is not blocked by it.
-    await expect(withSweepLock(database, async () => "ran")).resolves.toBe("ran");
+      // Released with the work, so the next run is not blocked by it.
+      await expect(withSweepLock(second, async () => "ran")).resolves.toBe("ran");
+    } finally {
+      await second.client.end();
+    }
   });
 
   it("releases the lock when the work throws, so one failed run does not block the next", async () => {

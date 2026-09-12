@@ -121,4 +121,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   });
 }
 
-export { main, withSweepLock, SWEEP_LOCK_KEY };
+export { main, withSweepLock };
