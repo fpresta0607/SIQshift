@@ -9,26 +9,9 @@ import type {
   SessionRepository,
 } from "../repositories.js";
 import { identityRepoKey, resolveProjectForCwd, resolveProjectForRemote, resolveProjectForRule, type PathMappingCandidate } from "./attribution.js";
-import { utcDaysBetween } from "./utc-days.js";
+import { PAST_UPLOAD_TOLERANCE_MS, utcDaysBetween } from "./utc-days.js";
 
 const futureEventToleranceMs = 30_000;
-/**
- * How far back an event may claim to have happened.
- *
- * The future side of this was always checked and the past side never was, so
- * any authenticated client could post `occurredAt: "0000-01-01T00:00:00Z"` -
- * `timestampSchema` accepts any four-digit year. That stored a session whose
- * known end sat two thousand years back, and the day span between a session's
- * old and new known end is expanded one `Date` per day, so the next event on
- * that session allocated roughly three quarters of a million of them on the
- * upload's own request.
- *
- * A year is far past any real backlog: the spools replay an outage of weeks,
- * and retention keeps ninety days of raw segments. An event older than this is
- * a clock set wrong or a client making things up, and either way it is worth
- * refusing rather than storing.
- */
-const pastEventToleranceMs = 366 * 24 * 60 * 60 * 1_000;
 /**
  * No event for this long ends a running shift at its last event. The hook
  * spools SessionStart, SessionEnd, and a PostToolUse heartbeat - a working
@@ -235,13 +218,13 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         const to = shift.session.endedAt ?? shift.session.lastEventAt;
         const from = shift.previousEnd ?? to;
         if (from.getTime() === to.getTime()) return;
-        // Bounded independently of the event that moved the end. The tolerance
-        // above keeps a fresh event honest, but a session stored before that
+        // Bounded independently of the event that moved the end. The shared
+        // tolerance keeps a fresh event honest, but a session stored before that
         // check existed can still carry an ancient end, and this expands one
         // `Date` per day between the two. Days older than the bound are not
         // lost by clipping them: the fold declines anything below where
         // coverage starts anyway, so they are read live either way.
-        const floor = Math.max(from.getTime(), to.getTime() - pastEventToleranceMs);
+        const floor = Math.max(from.getTime(), to.getTime() - PAST_UPLOAD_TOLERANCE_MS);
         folded.push(...utcDaysBetween(new Date(floor), to));
       };
       for (const event of events) {
@@ -254,7 +237,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the future" });
           continue;
         }
-        if (occurredAt < now.getTime() - pastEventToleranceMs) {
+        if (occurredAt < now.getTime() - PAST_UPLOAD_TOLERANCE_MS) {
           results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the past" });
           continue;
         }

@@ -2,6 +2,7 @@ import type { ActivitySegmentBatchResponse, ActivitySegmentKind } from "@siqshif
 
 import type { AuthenticatedSubject } from "../auth.js";
 import type { ActivitySegmentInsert, ActivitySegmentRepository } from "../repositories.js";
+import { PAST_UPLOAD_TOLERANCE_MS } from "./utc-days.js";
 
 const futureEndToleranceMs = 30_000;
 const maxSegmentSpanMs = 24 * 60 * 60 * 1_000;
@@ -40,6 +41,7 @@ function rejectionReason(segment: ActivitySegmentInput, now: Date): string | nul
   if (!Number.isFinite(start) || !Number.isFinite(end)) return "timestamps are invalid";
   if (end <= start) return "endedAt must be after startedAt";
   if (end > now.getTime() + futureEndToleranceMs) return "endedAt is too far in the future";
+  if (end < now.getTime() - PAST_UPLOAD_TOLERANCE_MS) return "endedAt is too far in the past";
   if (end - start > maxSegmentSpanMs) return "segment spans more than 24 hours";
   return null;
 }

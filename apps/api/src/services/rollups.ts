@@ -75,6 +75,15 @@ export const FOLD_MAX_DAYS = 31;
  * inside one UTC day and upload promptly never names a finished day, so waiting
  * to be handed one would leave the table empty for good.
  *
+ * That anchor reaches back no further than the window itself does. A day named
+ * from well back in history would otherwise pin `earliest` where it landed and
+ * leave the fill climbing `FOLD_MAX_DAYS` a refresh to reach yesterday - a year
+ * back is a dozen uploads of pure catch-up before the table answers anything,
+ * and further back than that it never arrives. Clamped, the first refresh
+ * covers the window ending yesterday whatever it was handed, and the history
+ * below stays live, which is where the retention change's scheduled fold
+ * backfills it from.
+ *
  * The window is capped at `FOLD_MAX_DAYS`, which is what keeps one upload's
  * work bounded however far behind the table has fallen. History older than the
  * day coverage started is never filled here - backfilling that is the scheduled
@@ -83,7 +92,7 @@ export const FOLD_MAX_DAYS = 31;
 export function foldTargetDays(named: readonly Date[], coverage: RollupCoverage | null, now: Date): Date[] {
   const yesterday = utcDayStart(now).getTime() - DAY_MS;
   const from = coverage === null
-    ? named[0]?.getTime() ?? yesterday
+    ? Math.max(named[0]?.getTime() ?? yesterday, yesterday - (FOLD_MAX_DAYS - 1) * DAY_MS)
     : coverage.latest.getTime() + DAY_MS;
   const toInclusive = Math.min(from + (FOLD_MAX_DAYS - 1) * DAY_MS, yesterday);
   const targets = new Set<number>();

@@ -420,6 +420,31 @@ describe("maintaining the fold", () => {
   });
 
   /**
+   * An instant inside the upload tolerance but well back in history is still
+   * legitimate evidence, and anchoring a fresh table at the day it names leaves
+   * the fill climbing a month a refresh to reach yesterday - at a year back
+   * that is a dozen uploads of pure catch-up, and further back it never
+   * arrives at all.
+   */
+  it("anchors a first fold at the window's own reach when the oldest day named is far older", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    const rollups = new Rollups();
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(10, 9) });
+
+    await service.refresh(subject, [at(-400, 12)]);
+
+    // The window ending yesterday, not the year-old day the upload named.
+    const stored = [...new Set(rollups.rows.map((row) => row.day.getTime()))].sort((a, b) => a - b);
+    expect(stored).toEqual(
+      Array.from({ length: FOLD_MAX_DAYS }, (_, index) => day(9 - FOLD_MAX_DAYS + 1 + index).getTime()),
+    );
+    // And it read that window alone: the history below it stays live, which is
+    // what the retention change's scheduled fold backfills.
+    expect(spans(reports.presenceReads)).toEqual([[day(9 - FOLD_MAX_DAYS + 1).toISOString(), day(10).toISOString()]]);
+  });
+
+  /**
    * The review's sequence: a day folded while a session was still running is
    * short by whatever that session went on to claim of it, so the day has to be
    * folded again once the session's end has moved past its midnight.
