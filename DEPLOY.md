@@ -310,8 +310,13 @@ never looks at it - so there is nothing to undo.
 The table fills itself. Each upload folds the finished UTC days it touched, so
 the cache warms as people work rather than needing a backfill, and until a day
 is folded its range is read live exactly as it was before. A day that reads
-wrong for any reason can be deleted; the next upload that touches it refolds it,
-and in the meantime the reports are correct and merely slower:
+wrong can be deleted, but delete a *suffix* rather than a day
+out of the middle. Dropping everything from a day onward lowers the latest day
+stored, and the fold grows back over it from there. A single day cut out of the
+middle of coverage is not refolded by any later upload - the fold only fills
+upward from its latest day - so it stays a permanent hole that every range
+crossing it reads live, until the retention change's scheduled fold lands.
+Either way the reports stay correct and merely slower:
 
 ```sql
 DELETE FROM user_daily_rollups WHERE organization_id = '<org>' AND day >= '<utc midnight>';

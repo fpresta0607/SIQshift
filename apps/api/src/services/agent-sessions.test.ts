@@ -517,6 +517,25 @@ describe("agent-session service", () => {
     expect(agentSessions.records[0]).toMatchObject({ status: "ended", endedAt: new Date("2026-08-06T07:30:00.000Z") });
   });
 
+  it("refuses an event from the distant past, so one cannot be expanded into a day per year", async () => {
+    const { agentSessions, service } = createService();
+
+    // `timestampSchema` accepts any four-digit year, and the day span between a
+    // session's old and new known end is expanded one Date per day. Year zero
+    // is roughly three quarters of a million of them, allocated on the upload's
+    // own request, so the past bound is what keeps that unreachable.
+    const result = await service.ingest(subject, [
+      event({ externalSessionId: "ancient", occurredAt: new Date("0000-01-01T00:00:00.000Z") }),
+      event({ externalSessionId: "fine" }),
+    ]);
+
+    expect(result.results).toEqual([
+      { externalSessionId: "ancient", accepted: false, reason: "occurredAt is too far in the past" },
+      { externalSessionId: "fine", accepted: true },
+    ]);
+    expect(agentSessions.records.map((record) => record.externalSessionId)).toEqual(["fine"]);
+  });
+
   it("rejects invalid or far-future events individually without failing the batch", async () => {
     const { agentSessions, service } = createService();
 
