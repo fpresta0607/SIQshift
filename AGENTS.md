@@ -190,9 +190,11 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   A missing row means "read this day live", never "this day was zero", which is why the
   fold writes a row for every member including the quiet ones: any row for a day proves
   the whole organization's day is folded. `planRollupRange` pushes an uncovered day back
-  into a live span rather than counting it. Maintenance clears the affected days *before*
-  it reads, so a failure leaves them unfolded rather than stale, and the fold is wrapped
-  so a cache failure can never fail the upload that triggered it.
+  into a live span rather than counting it. Maintenance reads coverage first - the floor a
+  named day is measured against has to be the stretch as it stood before anything was
+  cleared - and then clears exactly the days it is about to fold, so a failure leaves them
+  unfolded rather than stale, and the fold is wrapped so a cache failure can never fail the
+  upload that triggered it.
 - The rollup boundary is **midnight UTC** and can only be UTC: no timezone is stored
   anywhere, and clients send local-midnight instants as range bounds. A range therefore
   decomposes into a partial head, whole stored days, and a partial tail, which is exact

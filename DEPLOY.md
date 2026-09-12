@@ -495,7 +495,10 @@ watch are how often a client asks and how many rows an answer reads:
   the interval reads exist to be folded into totals in JavaScript, so the bytes
   Neon ships are larger than the bytes the client receives and much larger than
   the numbers drawn. An unbounded range makes it worse, because "all time"
-  sends no bounds and reads the whole history on every refresh.
+  sends no bounds and reads the whole history on every refresh - which is what
+  `0022`'s folded-day cache took off the unscoped leaderboard, and off nothing
+  else: every other report path, and any project-scoped range, still reads
+  those intervals.
 
 Set these in the Neon console for the SIQshift project:
 
