@@ -794,15 +794,14 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         legacyById.set(user.id, empty);
       }
       // Measured evidence can name someone the roster no longer does (a member
-      // deleted mid-range); their work still counts, and the name comes from
-      // the roster read when it still has one.
-      const rosterById = new Map(roster.map((user) => [user.id, user]));
+      // deleted mid-range); their work still counts. Everyone the roster does
+      // name is already on the board from the loop above, so this only ever
+      // runs for the deleted case - and the only name left for it is the one a
+      // live read carried, because a stored day names a user id and nothing
+      // else. Evidence with no name at all is skipped rather than shown blank.
       for (const [userId, member] of measurements) {
         if (legacyById.has(userId)) continue;
-        // The roster names everyone in the workspace, so it answers first; the
-        // name a live read carried is the fallback for evidence the roster no
-        // longer lists, which is the case this loop exists for.
-        const name = rosterById.get(userId)?.name ?? member.name;
+        const name = member.name;
         if (name === undefined) continue;
         const empty = { rank: 0, user: { id: userId, name }, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
         legacy.push(empty);

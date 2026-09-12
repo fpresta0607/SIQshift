@@ -227,14 +227,19 @@ cannot: the spent days are read out of that table as a handful of small rows, an
 what is left still reads segments.
 The current UTC day is never folded, because it is still being written to.
 
-Coverage runs from the day it started, forwards, and is contiguous: the first
-upload to reach an empty table folds yesterday, and every upload after that fills
-the days between the latest day stored and yesterday.
+Coverage runs from the day it started, forwards, and grows contiguously: each
+upload folds the days from the latest day stored through yesterday, and the first
+upload to reach an empty table starts that run at the oldest finished day it
+names, or at yesterday when it names none.
 A workspace that rests at weekends therefore gets its all-zero weekend rows from
 Monday's upload rather than leaving a gap a week.
-Each upload fills at most a month, so a table left far behind catches up over the
+Each upload folds at most a month, so a table left far behind catches up over the
 next several uploads instead of paying the whole stretch on one request, and no
 single interval read spans more than that month either.
+A day named by an upload that sits beyond that month waits for the run to reach
+it rather than being folded on its own: folding it early would move the latest
+stored day past the stretch still to be filled, and nothing would ever come back
+for it.
 History older than the day coverage started is read live, and backfilling it is a
 job for the scheduled fold that comes with retention, not something a report does.
 The read path assumes none of this in any case: a day with no row is read live
