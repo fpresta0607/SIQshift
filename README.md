@@ -245,9 +245,15 @@ read live rather than folded, because storing it would drag the run's first day
 backwards and leave a hole behind it that nothing grows back into.
 Backfilling history older than the day coverage started is the retention change's
 scheduled job, not an upload's.
-An upload also folds only so many of the days it names at once, so a desktop back
-from a long outage cannot turn one request into hundreds of reads; what it names
-and does not fold is simply read live.
+Every other day an upload names is folded, however many there are: a named day is
+one whose stored numbers that upload has just made wrong, and the days an upload
+clears are exactly the days it goes on to rebuild.
+Adjacent days share one interval read, so a desktop back from a long outage pays a
+handful of reads rather than one per day.
+A fold that fails partway leaves its days cleared and unfolded inside coverage,
+and nothing re-establishes them, because the run only ever fills upward: they read
+live, which is correct, and restoring the coverage is the scheduled fold's job
+rather than a later upload's.
 History older than the day coverage started is read live, and backfilling it is a
 job for the scheduled fold that comes with retention, not something a report does.
 The read path assumes none of this in any case: a day with no row is read live

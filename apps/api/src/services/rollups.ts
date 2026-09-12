@@ -38,13 +38,6 @@ export function foldableDays(instants: readonly Date[], now: Date): Date[] {
 export const FOLD_MAX_DAYS = 31;
 
 /**
- * How many of the days an upload named one refresh will fold, on top of the
- * frontier window. A batch may name hundreds of distinct finished days and each
- * one costs an interval read, so the rest are left cleared and read live.
- */
-export const FOLD_NAMED_MAX_DAYS = 31;
-
-/**
  * The days a refresh folds: a contiguous frontier window, plus the finished
  * days the upload named that fall at or below it. `named` is expected oldest
  * first, as `foldableDays` returns it.
@@ -66,13 +59,14 @@ export const FOLD_NAMED_MAX_DAYS = 31;
  * either, because the window only ever grows upward. Between those bounds a
  * named day is kept, so a late upload still invalidates the day it landed in.
  *
- * A deferred day is not lost and not stale. The upload's own days were cleared
- * before this was called, so whatever is left out here has no stored row to be
- * wrong - it is read live, which is the rule the table already lives under.
- * That is also what makes `FOLD_NAMED_MAX_DAYS` safe: one batch may name
- * hundreds of distinct finished days, each of which would be its own interval
- * read on the upload's own request, so only the oldest few are taken and the
- * rest simply stay live.
+ * A deferred day is not lost and not stale. Stored coverage is contiguous, so a
+ * named day outside those two bounds sits outside coverage and has no stored row
+ * to be wrong - it is read live, which is the rule the table already lives
+ * under. Every named day that does have a row lies between them and is folded,
+ * and `refresh` clears exactly the days this returns, so no day is ever cleared
+ * without being rebuilt. There is no cap on how many named days one refresh
+ * takes: a named day is one whose stored numbers the upload has just made wrong,
+ * so declining it could only leave a stale row or a hole.
  *
  * With nothing stored the window starts at the oldest finished day named, or at
  * yesterday when none was. That second case is the bootstrap, and it is what
@@ -94,14 +88,14 @@ export function foldTargetDays(named: readonly Date[], coverage: RollupCoverage 
   const targets = new Set<number>();
   for (let day = from; day <= toInclusive; day += DAY_MS) targets.add(day);
   // Below this nothing is folded, so coverage can only ever grow upward from
-  // where it started. With nothing stored the window itself is the floor.
+  // where it started. The coverage passed in is the stretch as it stood before
+  // this refresh cleared anything, which is what keeps a named day at the
+  // bottom edge inside the floor it is measured against. With nothing stored
+  // the window itself is the floor.
   const floor = coverage?.earliest.getTime() ?? from;
-  let taken = 0;
   for (const day of named) {
-    if (taken >= FOLD_NAMED_MAX_DAYS) break;
     const at = day.getTime();
     if (at < floor || at > toInclusive) continue;
-    if (!targets.has(at)) taken += 1;
     targets.add(at);
   }
   return [...targets].sort((a, b) => a - b).map((day) => new Date(day));
@@ -218,25 +212,42 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
     async refresh(subject: AuthenticatedSubject, instants: readonly Date[]): Promise<void> {
       const at = now();
       const named = foldableDays(instants, at);
-      // Clear before folding, never after. A day with no row is always correct
-      // because the report path reads it live, so everything below this line
-      // can fail and the worst outcome is a day that has to be read the slow
-      // way. Writing the fold first and clearing after would leave the old
-      // numbers standing over rows that no longer match them.
+      // Coverage is read before anything is cleared, so the floor a named day
+      // is measured against is the stretch as it stood before this refresh
+      // touched it. Clearing first drops a named day at the bottom edge out of
+      // coverage and then declines it for sitting below the coverage that very
+      // clear moved, which evicts a covered day for good.
       //
-      // The days the instants named go first, because they are the ones whose
-      // stored numbers this upload has just made wrong, and they are known
-      // without asking the database anything. Nothing that can fail runs ahead
-      // of them: a statement that times out below this leaves them unfolded,
-      // which is correct, rather than standing on numbers taken before the rows
-      // the upload just committed existed.
-      if (named.length > 0) await dependencies.rollups.clearDays(subject, named);
-      const stored = await dependencies.rollups.coverage(subject);
+      // This read is the only thing that can fail ahead of the clear, and the
+      // days the upload named are the ones whose stored numbers it has just
+      // made wrong. If the read gives out they are dropped anyway: unfolded is
+      // read live, which is correct, where stale is numbers taken before the
+      // rows the upload just committed existed.
+      let stored: RollupCoverage | null;
+      try {
+        stored = await dependencies.rollups.coverage(subject);
+      } catch (error: unknown) {
+        if (named.length > 0) await dependencies.rollups.clearDays(subject, named);
+        throw error;
+      }
       const days = foldTargetDays(named, stored, at);
       // An upload with nothing to fold costs that one lookup and no more: it is
       // the common case, because coverage already reaching yesterday is what
-      // every earlier upload of the day left behind.
+      // every earlier upload of the day left behind. Named days left out here
+      // sit outside coverage and so have no row of their own to be wrong.
       if (days.length === 0) return;
+      // One clear, over exactly the days about to be folded, so no day is ever
+      // cleared without being rebuilt. Clear before folding, never after: a day
+      // with no row is always correct because the report path reads it live, so
+      // everything below this line can fail and the worst outcome is a day read
+      // the slow way, where writing the fold first and clearing after would
+      // leave old numbers standing over rows that no longer match them.
+      //
+      // That failure is not self-healing, and is not claimed to be. A fold that
+      // gives out below this leaves its days cleared inside coverage, and the
+      // window only ever fills upward, so nothing re-establishes them. They read
+      // live, which is correct; restoring the coverage is the retention change's
+      // scheduled fold, not a later upload.
       await dependencies.rollups.clearDays(subject, days);
       // Awaited here rather than left running across the loop below. A promise
       // in flight that nothing is watching, rejecting while the loop awaits
@@ -250,6 +261,11 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // fetched only to be discarded. The runs are walked one at a time because
       // the upload is waiting on this: a catch-up batch landing on thirty
       // scattered days must not open sixty connections at once.
+      //
+      // A pathologically scattered backlog therefore costs a read per
+      // non-adjacent day on the upload's own request. That is the deliberate
+      // trade against permanent holes, and moving catch-up off the upload
+      // request altogether is the retention change's scheduled fold.
       const rows: UserDailyRollupRecord[] = [];
       for (const run of foldRuns(days)) {
         const from = run[0]!;
@@ -346,9 +362,9 @@ export function foldDay(
  * Folds after an upload, and never fails the upload.
  *
  * The rollup is a cache of rows that are still here, and `refresh` clears the
- * days it is about to fold before it reads anything, so every failure below
- * that clear leaves those days merely unfolded - which the report path already
- * handles by reading them live. Letting a cache-maintenance error turn a
+ * days it is about to fold before it reads anything that could rebuild them, so
+ * every failure below that clear leaves those days merely unfolded - which the
+ * report path already handles by reading them live. Letting a cache-maintenance error turn a
  * successful upload into a 500 would lose the segments the desktop just handed
  * over, which is the one outcome worth avoiding here.
  */

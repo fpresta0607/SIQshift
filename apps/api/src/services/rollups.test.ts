@@ -19,7 +19,7 @@ import type {
 } from "../repositories.js";
 import { createReportService } from "./reports.js";
 import { isSpentDay, planRollupRange, rollupWindow } from "./rollup-ranges.js";
-import { FOLD_MAX_DAYS, FOLD_NAMED_MAX_DAYS, createRollupService, foldDay, foldableDays } from "./rollups.js";
+import { FOLD_MAX_DAYS, createRollupService, foldDay, foldableDays } from "./rollups.js";
 import { DAY_MS, utcDayStart, utcDaysBetween } from "./utc-days.js";
 
 const ids = {
@@ -267,9 +267,8 @@ describe("maintaining the fold", () => {
     const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(1, 9) });
 
     await service.refresh(subject, [at(0, 9)]);
-    // The days the instants named are cleared first, then the fold's own target
-    // set - which here is the same single day.
-    expect(rollups.calls).toEqual(["clear", "clear", "write"]);
+    // One clear, over exactly the days about to be folded.
+    expect(rollups.calls).toEqual(["clear", "write"]);
     expect(rollups.rows).toHaveLength(1);
 
     // A day that now reads differently, with the write failing on the way back.
@@ -327,7 +326,12 @@ describe("maintaining the fold", () => {
     }
   });
 
-  it("folds only so many of the days one upload names, leaving the rest cleared and live", async () => {
+  /**
+   * A named day the refresh cleared and then declined to fold is a hole, not a
+   * deferral: the frontier window only ever fills upward, so nothing below it is
+   * ever looked at again. Capping the named days therefore ate coverage.
+   */
+  it("refolds every day one upload names, so no day is cleared without being rebuilt", async () => {
     const reports = new Reports();
     reports.roster = [{ id: ids.user, name: "Alex" }];
     const rollups = new Rollups();
@@ -336,16 +340,39 @@ describe("maintaining the fold", () => {
     rollups.rows = Array.from({ length: 40 }, (_, index) => storedDay(day(index)));
     const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(40, 9) });
 
-    // A backlog naming forty finished days, more than one upload should fold.
+    // A backlog naming forty finished days, more than the old cap of thirty-one.
     await service.refresh(subject, Array.from({ length: 40 }, (_, index) => at(index, 12)));
 
-    // Bounded by the cap, not by luck.
-    expect(reports.presenceReads.length).toBeLessThanOrEqual(FOLD_NAMED_MAX_DAYS);
-    expect(rollups.rows).toHaveLength(FOLD_NAMED_MAX_DAYS);
-    // The nine it did not refold were cleared before anything was read, so they
-    // are absent rather than stale: the report path reads those days live.
-    const stored = new Set(rollups.rows.map((row) => row.day.getTime()));
-    expect(stored.has(day(39).getTime())).toBe(false);
+    // Every one of them has rows again, and coverage still has no gap in it.
+    expect(rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 40 }, (_, index) => day(index).getTime()));
+    // Lifting the cap does not cost forty reads: adjacent days share a run, so
+    // the forty are two reads of at most a month apiece.
+    expect(reports.presenceReads).toHaveLength(2);
+  });
+
+  /**
+   * The bottom edge. Reading coverage after the clear measured the named day
+   * against a floor that very clear had just moved up past it, so a late upload
+   * evicted the earliest stored day and no refresh ever put it back.
+   */
+  it("refolds a named day at the bottom of coverage rather than evicting it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(1, 9), at(1, 11))];
+    const rollups = new Rollups();
+    // Coverage runs day 1 through day 5, and the upload lands in its first day.
+    rollups.rows = Array.from({ length: 5 }, (_, index) => storedDay(day(index + 1)));
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(6, 9) });
+
+    await service.refresh(subject, [at(1, 12)]);
+
+    const stored = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
+    expect(stored).toEqual(Array.from({ length: 5 }, (_, index) => day(index + 1).getTime()));
+    // And it was refolded rather than merely left alone: the day carries the
+    // two hours this upload's rows put in it.
+    expect(rollups.rows.find((row) => row.day.getTime() === day(1).getTime())?.activeMs)
+      .toBe(2 * 60 * 60 * 1_000);
   });
 
   /**
@@ -445,17 +472,18 @@ describe("maintaining the fold", () => {
     // rejection to race and nothing left in flight when the fold gives up.
     expect(reports.presenceReads).toEqual([]);
     expect(reports.agentReads).toEqual([]);
-    // And the clears still went first, so the day is unfolded rather than stale.
-    expect(rollups.calls).toEqual(["clear", "clear"]);
+    // And the clear still went first, so the day is unfolded rather than stale.
+    expect(rollups.calls).toEqual(["clear"]);
     expect(rollups.rows).toEqual([]);
   });
 
   /**
-   * The clear is the whole safety story, so nothing that can fail on its own may
-   * run ahead of it. A transient statement failure hits one query and not the
-   * next, and the upload it followed has already committed.
+   * The coverage read is the one lookup that runs ahead of the clear, so its
+   * failure has to drop the days the upload named by hand. A transient statement
+   * failure hits one query and not the next, and the upload it followed has
+   * already committed.
    */
-  it("clears the days the upload named before asking anything, so a failed lookup leaves them unfolded", async () => {
+  it("clears the days the upload named when the coverage read fails, and still rejects", async () => {
     const reports = new Reports();
     reports.roster = [{ id: ids.user, name: "Alex" }];
     const rollups = new Rollups();
