@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { generateInviteCode, type AgentSource } from "@siqshift/shared";
-import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, max, min, ne, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, max, min, ne, or, sql, sum } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   activitySegments,
@@ -32,7 +32,7 @@ import type {
 } from "./auth.js";
 import { AppError } from "./errors.js";
 import { agentCodebaseLabel, identityRepoKey } from "./services/attribution.js";
-import { utcDayStart } from "./services/utc-days.js";
+import { DAY_MS, utcDayStart } from "./services/utc-days.js";
 import {
   PathMappingRepositoryError,
   SessionRepositoryError,
@@ -1157,7 +1157,19 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
     const rows = await this.db
       .select({ organizationId: activitySegments.organizationId, oldest: min(activitySegments.startedAt) })
       .from(activitySegments)
-      .where(lt(activitySegments.startedAt, toExclusive))
+      .where(and(
+        lt(activitySegments.startedAt, toExclusive),
+        // Only organizations the upload path has already bootstrapped a fold
+        // for. One with no stored row has nothing for the backfill to extend
+        // downward - it refuses to anchor coverage itself - so its oldest
+        // evidence never moves and it would sit at the head of this ordering
+        // forever, spending a slot of a capped pass it can never use. It
+        // rejoins the rotation the moment it has a fold.
+        exists(this.db
+          .select({ present: sql`1` })
+          .from(userDailyRollups)
+          .where(eq(userDailyRollups.organizationId, activitySegments.organizationId))),
+      ))
       .groupBy(activitySegments.organizationId)
       // Oldest evidence first, so the organization furthest behind is the one a
       // capped sweep spends its budget on rather than the one it reaches last.
@@ -1185,9 +1197,11 @@ export class DrizzleActivitySegmentRepository implements ActivitySegmentReposito
         gte(activitySegments.startedAt, from),
         lt(activitySegments.startedAt, toExclusive),
         lte(activitySegments.endedAt, toExclusive),
-      ))
-      .returning({ id: activitySegments.id });
-    return deleted.length;
+      ));
+    // The driver's affected-row count, not `.returning()`: a pass over a large
+    // workspace deletes days of segments in one statement, and every id would
+    // be transferred and allocated in Node only to be counted and dropped.
+    return deleted.count;
   }
 }
 
@@ -2190,6 +2204,32 @@ export class DrizzleUserDailyRollupRepository implements UserDailyRollupReposito
     // Both aggregates come back null together, on an organization with no rows.
     if (row?.earliest == null || row.latest == null) return null;
     return { earliest: row.earliest, latest: row.latest };
+  }
+
+  public async firstUnfoldedDay(
+    subject: AuthenticatedSubject,
+    from: Date,
+    toExclusive: Date,
+  ): Promise<Date | null> {
+    // The distinct days stored inside the window, ascending, walked for the
+    // first one missing. One indexed range read bounded by the caller's own
+    // window, and it carries a day per folded day rather than a row per member.
+    const stored = await this.db
+      .selectDistinct({ day: userDailyRollups.day })
+      .from(userDailyRollups)
+      .where(and(
+        eq(userDailyRollups.organizationId, subject.organizationId),
+        gte(userDailyRollups.day, from),
+        lt(userDailyRollups.day, toExclusive),
+      ))
+      .orderBy(asc(userDailyRollups.day));
+    let expected = utcDayStart(from).getTime();
+    const end = toExclusive.getTime();
+    for (const row of stored) {
+      if (row.day.getTime() > expected) break;
+      expected = row.day.getTime() + DAY_MS;
+    }
+    return expected >= end ? null : new Date(expected);
   }
 
   public async clearDays(subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {

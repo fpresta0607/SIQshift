@@ -43,6 +43,13 @@ async function main(): Promise<void> {
       return;
     }
     for (const pass of passes) {
+      // A failed pass is one organization's, not the sweep's: the rest of the
+      // night's budget was spent on the organizations behind it, and this line
+      // is the only place the failure surfaces.
+      if (pass.failed !== undefined) {
+        console.error(`siqshift-retention: org=${pass.organizationId} failed=${pass.failed}`);
+        continue;
+      }
       const held = pass.held === undefined ? "" : ` held=${pass.held}`;
       console.info(
         `siqshift-retention: org=${pass.organizationId} backfilled=${pass.backfilled} `

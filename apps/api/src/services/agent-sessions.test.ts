@@ -530,7 +530,7 @@ describe("agent-session service", () => {
     ]);
 
     expect(result.results).toEqual([
-      { externalSessionId: "ancient", accepted: false, reason: "occurredAt is too far in the past" },
+      { externalSessionId: "ancient", accepted: false, reason: "occurredAt is older than the retention window" },
       { externalSessionId: "fine", accepted: true },
     ]);
     expect(agentSessions.records.map((record) => record.externalSessionId)).toEqual(["fine"]);

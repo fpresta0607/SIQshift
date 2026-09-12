@@ -9,7 +9,7 @@ import type {
   SessionRepository,
 } from "../repositories.js";
 import { identityRepoKey, resolveProjectForCwd, resolveProjectForRemote, resolveProjectForRule, type PathMappingCandidate } from "./attribution.js";
-import { PAST_UPLOAD_TOLERANCE_MS, utcDaysBetween } from "./utc-days.js";
+import { RETENTION_WINDOW_MS, utcDaysBetween } from "./utc-days.js";
 
 const futureEventToleranceMs = 30_000;
 /**
@@ -224,7 +224,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         // `Date` per day between the two. Days older than the bound are not
         // lost by clipping them: the fold declines anything below where
         // coverage starts anyway, so they are read live either way.
-        const floor = Math.max(from.getTime(), to.getTime() - PAST_UPLOAD_TOLERANCE_MS);
+        const floor = Math.max(from.getTime(), to.getTime() - RETENTION_WINDOW_MS);
         folded.push(...utcDaysBetween(new Date(floor), to));
       };
       for (const event of events) {
@@ -237,8 +237,8 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the future" });
           continue;
         }
-        if (occurredAt < now.getTime() - PAST_UPLOAD_TOLERANCE_MS) {
-          results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the past" });
+        if (occurredAt < now.getTime() - RETENTION_WINDOW_MS) {
+          results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is older than the retention window" });
           continue;
         }
 

@@ -132,6 +132,13 @@ class Rollups implements UserDailyRollupRepository {
     if (earliest === undefined || latest === undefined) return null;
     return { earliest: new Date(earliest), latest: new Date(latest) };
   }
+  public async firstUnfoldedDay(_subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<Date | null> {
+    const stored = new Set(this.rows.map((row) => row.day.getTime()));
+    for (let at = from.getTime(); at < toExclusive.getTime(); at += DAY_MS) {
+      if (!stored.has(at)) return new Date(at);
+    }
+    return null;
+  }
   public async clearDays(_subject: AuthenticatedSubject, days: readonly Date[]): Promise<void> {
     this.calls.push("clear");
     const dropped = new Set(days.map((entry) => entry.getTime()));
@@ -696,7 +703,6 @@ describe("extending the fold downward", () => {
 
     expect(outcome.folded.map((entry) => entry.toISOString()))
       .toEqual([day(7), day(8), day(9)].map((entry) => entry.toISOString()));
-    expect(outcome.reached?.toISOString()).toBe(day(7).toISOString());
     // One contiguous stretch still, which is what the frontier depends on.
     const stored = rollups.rows.map((row) => row.day.getTime()).sort((a, b) => a - b);
     for (let index = 1; index < stored.length; index += 1) {
@@ -713,8 +719,8 @@ describe("extending the fold downward", () => {
 
     const outcome = await service.backfill(subject, day(0), 3);
 
-    expect(outcome.folded).toHaveLength(3);
-    expect(outcome.reached?.toISOString()).toBe(day(7).toISOString());
+    expect(outcome.folded.map((entry) => entry.toISOString()))
+      .toEqual([day(7), day(8), day(9)].map((entry) => entry.toISOString()));
   });
 
   it("refuses to bootstrap, because there is no run to extend", async () => {
@@ -725,7 +731,7 @@ describe("extending the fold downward", () => {
 
     const outcome = await service.backfill(subject, day(0), 10);
 
-    expect(outcome).toEqual({ folded: [], reached: null });
+    expect(outcome).toEqual({ folded: [] });
     expect(rollups.rows).toEqual([]);
     expect(reports.presenceReads).toEqual([]);
   });
@@ -741,6 +747,38 @@ describe("extending the fold downward", () => {
 
     expect(outcome.folded).toEqual([]);
     expect(reports.presenceReads).toEqual([]);
+  });
+});
+
+describe("the retention cutoff as a floor under a named day", () => {
+  /**
+   * The regression the sweep made possible. `backfill` drags `coverage.earliest`
+   * down to the oldest evidence, which is exactly what widens the floor a named
+   * day is measured against - so a day whose raw rows the sweep has already
+   * deleted became eligible to be cleared and rebuilt from evidence that is no
+   * longer there. Its correct stored row would be overwritten with zeros, and
+   * the fresher `computedAt` makes the zeros win.
+   */
+  it("leaves an expired day's stored row alone when a late upload names it", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex" }];
+    // The rows behind the expired day are gone - the sweep deleted them.
+    reports.presenceIntervals = [presence(ids.user, "Alex", at(-5, 9), at(-5, 11))];
+    const rollups = new Rollups();
+    rollups.rows = [storedDay(day(-200)), storedDay(day(-150), 3_600_000), storedDay(day(-1))];
+    const service = createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => at(0, 12) });
+
+    await service.refresh(subject, [at(-150, 9), at(-5, 9)]);
+
+    const expired = rollups.rows.find((row) => row.day.getTime() === day(-150).getTime());
+    expect(expired?.activeMs).toBe(3_600_000);
+    // The day inside the window is still folded, so the floor declines only
+    // what it has to.
+    const recent = rollups.rows.find((row) => row.day.getTime() === day(-5).getTime());
+    expect(recent?.activeMs).toBe(2 * 60 * 60 * 1_000);
+    // And nothing read the expired day's evidence at all.
+    expect(reports.presenceReads.map((query) => query.from?.toISOString()))
+      .toEqual([day(-5).toISOString()]);
   });
 });
 

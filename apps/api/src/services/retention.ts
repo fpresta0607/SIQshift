@@ -1,17 +1,12 @@
 import type { AuthenticatedSubject } from "../auth.js";
 import type { ActivitySegmentRepository, UserDailyRollupRepository } from "../repositories.js";
 import type { RollupService } from "./rollups.js";
-import { DAY_MS, utcDayStart } from "./utc-days.js";
+import { DAY_MS, retentionCutoff } from "./utc-days.js";
 
-/**
- * How much raw evidence is kept.
- *
- * Ninety days is the longest bounded range either dashboard offers, so every
- * range that draws an hourly chart still has the segments behind it. Only the
- * unbounded All-time view reaches past this line, and what it reads there is
- * the fold rather than the rows.
- */
-export const RETENTION_DAYS = 90;
+// The window itself lives beside the day arithmetic, because the ingest paths
+// bound on it too: evidence for a day this sweep will not keep is refused at
+// the door rather than stored, swept, and folded to zero in between.
+export { RETENTION_DAYS, retentionCutoff } from "./utc-days.js";
 
 /**
  * Days of history one pass will fold per organization.
@@ -24,11 +19,6 @@ export const BACKFILL_DAYS_PER_PASS = 120;
 
 /** Organizations one pass will touch, for the same reason. */
 export const ORGANIZATIONS_PER_PASS = 25;
-
-/** The first day whose raw rows may go: everything before it has expired. */
-export function retentionCutoff(now: Date): Date {
-  return new Date(utcDayStart(now).getTime() - RETENTION_DAYS * DAY_MS);
-}
 
 export interface RetentionServiceDependencies {
   segments: ActivitySegmentRepository;
@@ -47,8 +37,14 @@ export interface RetentionPass {
   /** Raw segments deleted, and the window they came from. */
   deleted: number;
   deletedBefore: Date | null;
-  /** Set when the pass deliberately deleted nothing, naming which rule stopped it. */
+  /**
+   * Set when a rule stopped the delete short of the cutoff, naming which one.
+   * Usually that means nothing went at all; an unfolded day is the exception,
+   * where the pass deletes up to the hole and holds from there.
+   */
   held?: string;
+  /** Set when the pass threw, so the organizations behind it still get their turn. */
+  failed?: string;
 }
 
 export interface RetentionService {
@@ -70,7 +66,8 @@ export interface RetentionService {
  *
  * So a pass folds first and deletes second, and it deletes strictly inside
  * what it has proven folded - never up to the cutoff on the assumption that
- * the fold got there. A pass that folds nothing deletes nothing.
+ * the fold got there, and never across a day inside coverage that has no
+ * stored row. A pass that folds nothing deletes nothing.
  *
  * What deletion costs, stated plainly because it is not recoverable: beyond
  * the window, `activity_segments` no longer answers. Unscoped active time,
@@ -89,7 +86,22 @@ export function createRetentionService(dependencies: RetentionServiceDependencie
       const organizations = await dependencies.segments.organizationsWithSegmentsBefore(cutoff, ORGANIZATIONS_PER_PASS);
       const passes: RetentionPass[] = [];
       for (const organizationId of organizations) {
-        passes.push(await sweepOrganization(dependencies, organizationId, cutoff));
+        // One organization's failure is its own. The ordering here is
+        // deterministic - oldest evidence first - so letting a rejection out of
+        // this loop would drop every organization behind it from every pass,
+        // indefinitely, on a workspace whose backfill happens to time out.
+        try {
+          passes.push(await sweepOrganization(dependencies, organizationId, cutoff));
+        } catch (error: unknown) {
+          passes.push({
+            organizationId,
+            backfilled: 0,
+            coverageFrom: null,
+            deleted: 0,
+            deletedBefore: null,
+            failed: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
       return passes;
     },
@@ -117,9 +129,9 @@ async function sweepOrganization(
   // contiguous stretch, so the days between are folded on the way past.
   const backfill = await dependencies.fold.backfill(subject, oldestRaw, BACKFILL_DAYS_PER_PASS);
 
-  // Coverage as it stands after the fold. This is the proof the delete needs:
-  // coverage is one contiguous stretch, so every day from here to the cutoff
-  // is folded, and nothing outside it is.
+  // Coverage as it stands after the fold: the outer bounds of the delete
+  // window. It is not the proof on its own - these are two endpoints, and the
+  // days between them are checked below.
   const coverage = await dependencies.rollups.coverage(subject);
   if (coverage === null) {
     // Nothing folded at all. The upload path owns the bootstrap and has not run
@@ -139,8 +151,8 @@ async function sweepOrganization(
   // starts, because the days below coverage are the ones the fold has not
   // reached yet - a later pass will, and their rows must still be there for it.
   const from = coverage.earliest;
-  const toExclusive = new Date(Math.min(cutoff.getTime(), coverage.latest.getTime() + DAY_MS));
-  if (toExclusive.getTime() <= from.getTime()) {
+  const expiring = new Date(Math.min(cutoff.getTime(), coverage.latest.getTime() + DAY_MS));
+  if (expiring.getTime() <= from.getTime()) {
     return {
       organizationId,
       backfilled: backfill.folded.length,
@@ -151,6 +163,27 @@ async function sweepOrganization(
     };
   }
 
+  // Coverage's two endpoints are all `coverage()` proves. Contiguity between
+  // them is what the fold intends, not what it can promise: `writeDays` chunks
+  // its inserts outside any transaction, and a fold that fails after its clear
+  // leaves its days cleared on purpose, so either can leave a stretch with no
+  // row strictly inside the span. Deleting across one is the unrecoverable
+  // case this whole file exists to prevent - the day would have no rollup row
+  // and no segments, and would report zero forever - so the window is proven
+  // day by day rather than assumed, and stops at the first day that has no row.
+  const hole = await dependencies.rollups.firstUnfoldedDay(subject, from, expiring);
+  const toExclusive = hole ?? expiring;
+  if (toExclusive.getTime() <= from.getTime()) {
+    return {
+      organizationId,
+      backfilled: backfill.folded.length,
+      coverageFrom: coverage.earliest,
+      deleted: 0,
+      deletedBefore: null,
+      held: `coverage has no row for ${isoDay(from)}`,
+    };
+  }
+
   const deleted = await dependencies.segments.deleteSpansWithin(organizationId, from, toExclusive);
   return {
     organizationId,
@@ -158,5 +191,13 @@ async function sweepOrganization(
     coverageFrom: coverage.earliest,
     deleted,
     deletedBefore: toExclusive,
+    // Said out loud rather than left to look like a stalled sweep. Repairing
+    // the hole is a separate and larger decision; naming it is not.
+    ...(hole === null ? {} : { held: `coverage has no row for ${isoDay(hole)}` }),
   };
+}
+
+/** The day as an operator reads it in a log line. */
+function isoDay(day: Date): string {
+  return day.toISOString().slice(0, 10);
 }

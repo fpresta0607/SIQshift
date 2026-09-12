@@ -308,6 +308,17 @@ only thing that extends it downward, a bounded number of days per pass, so a
 workspace with years behind it converges over several nights rather than folding
 all of it in one sitting.
 
+The window is also what the upload paths accept.
+Evidence arriving for a day older than 90 days is refused at the door rather
+than stored, because storing it would mean storing rows the sweep is about to
+delete - and, worse, letting a late upload name a day whose rows are already
+gone, which rebuilds a correct stored row out of evidence that no longer exists
+and leaves it reading zero.
+The consequence is real and worth stating rather than discovering: a desktop
+offline for longer than 90 days loses whatever its spool holds beyond that line.
+Both the activity and agent-session batches reject those rows individually, with
+a reason naming the retention window, so the rest of the batch still lands.
+
 **What is given up past the window**, stated plainly because deletion does not
 come back:
 active time, agent time and the concurrency split are answered by the fold and

@@ -754,6 +754,23 @@ export interface UserDailyRollupRepository {
    */
   coverage(subject: AuthenticatedSubject): Promise<RollupCoverage | null>;
   /**
+   * The earliest day in `[from, toExclusive)` holding no row at all - the first
+   * hole - or null when every day in that window is folded.
+   *
+   * `coverage` proves only its two endpoints. Contiguity between them is an
+   * invariant the fold intends, not one it can promise: `writeDays` chunks its
+   * inserts and is not wrapped in a transaction, and a fold that fails after its
+   * clear leaves its days cleared inside coverage on purpose. Either leaves a
+   * stretch of days with no row strictly inside `[earliest, latest]`. The
+   * retention sweep may not delete across one - a day with no row and no
+   * segments reports zero forever - so it asks this rather than assuming, and
+   * bounds its delete by what comes back.
+   *
+   * Both bounds are required: the caller decides the window, and this only ever
+   * looks inside it.
+   */
+  firstUnfoldedDay(subject: AuthenticatedSubject, from: Date, toExclusive: Date): Promise<Date | null>;
+  /**
    * Drops every stored row for these days.
    *
    * Deliberately separate from the write, and deliberately first. A day with no

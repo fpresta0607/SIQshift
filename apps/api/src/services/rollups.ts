@@ -10,7 +10,7 @@ import type {
   UserDailyRollupRepository,
 } from "../repositories.js";
 import { rosterEligibleSource } from "./agent-sessions.js";
-import { DAY_MS, utcDayStart } from "./utc-days.js";
+import { DAY_MS, retentionCutoff, utcDayStart } from "./utc-days.js";
 
 /**
  * The distinct UTC days these instants fall in, oldest first, keeping only days
@@ -88,8 +88,19 @@ export const FOLD_MAX_DAYS = 31;
  * work bounded however far behind the table has fallen. History older than the
  * day coverage started is never filled here - backfilling that is the scheduled
  * fold's job in the retention change.
+ *
+ * `cutoff` is that sweep's retention boundary, passed in rather than imported,
+ * because the fold must not depend on the sweep. A named day at or below it is
+ * declined however far coverage reaches: its raw rows may already be deleted,
+ * and refolding a day from evidence that is gone writes zeros over a row that
+ * was right.
  */
-export function foldTargetDays(named: readonly Date[], coverage: RollupCoverage | null, now: Date): Date[] {
+export function foldTargetDays(
+  named: readonly Date[],
+  coverage: RollupCoverage | null,
+  now: Date,
+  cutoff: Date,
+): Date[] {
   const yesterday = utcDayStart(now).getTime() - DAY_MS;
   const from = coverage === null
     ? Math.max(named[0]?.getTime() ?? yesterday, yesterday - (FOLD_MAX_DAYS - 1) * DAY_MS)
@@ -102,7 +113,17 @@ export function foldTargetDays(named: readonly Date[], coverage: RollupCoverage 
   // this refresh cleared anything, which is what keeps a named day at the
   // bottom edge inside the floor it is measured against. With nothing stored
   // the window itself is the floor.
-  const floor = coverage?.earliest.getTime() ?? from;
+  //
+  // The retention cutoff is the second floor, and it is the one that matters
+  // once the scheduled sweep has run. A day at or below it may already have had
+  // its raw rows deleted, so clearing and refolding it reads evidence that no
+  // longer exists and replaces a correct stored row with zeros - permanently,
+  // because the fresher `computedAt` wins the upsert. Coverage alone does not
+  // decline it: the sweep drags `earliest` down as it backfills, which is
+  // exactly what widens this floor past the expired days. The frontier window
+  // above needs no such guard, because the sweep never deletes above
+  // `coverage.latest`.
+  const floor = Math.max(coverage?.earliest.getTime() ?? from, cutoff.getTime() + DAY_MS);
   for (const day of named) {
     const at = day.getTime();
     if (at < floor || at > toInclusive) continue;
@@ -171,12 +192,17 @@ export interface RollupServiceDependencies {
   now?: () => Date;
 }
 
-/** What one backfill pass managed, so a sweep can tell progress from arrival. */
+/**
+ * What one backfill pass managed.
+ *
+ * The days it folded are the whole contract. There is deliberately nothing here
+ * saying where coverage now starts: that would be a claim about what this pass
+ * attempted rather than proof of what is stored, and the sweep must keep
+ * re-reading `coverage()` for the bound it deletes by.
+ */
 export interface BackfillOutcome {
   /** The days it folded, oldest first; empty when there was nothing to do. */
   folded: Date[];
-  /** Where coverage now starts, or null when the table holds nothing at all. */
-  reached: Date | null;
 }
 
 export interface RollupService {
@@ -261,7 +287,7 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
         if (named.length > 0) await dependencies.rollups.clearDays(subject, named);
         throw error;
       }
-      const days = foldTargetDays(named, stored, at);
+      const days = foldTargetDays(named, stored, at, retentionCutoff(at));
       // An upload with nothing to fold costs that one lookup and no more: it is
       // the common case, because coverage already reaching yesterday is what
       // every earlier upload of the day left behind. Named days left out here
@@ -288,10 +314,10 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       // owns the bootstrap, and inventing one here would anchor coverage at
       // whatever the oldest evidence happens to be, which is exactly the long
       // climb the bootstrap clamp exists to prevent.
-      if (stored === null) return { folded: [], reached: null };
+      if (stored === null) return { folded: [] };
       const floor = utcDayStart(downTo).getTime();
       const firstStored = stored.earliest.getTime();
-      if (firstStored <= floor) return { folded: [], reached: stored.earliest };
+      if (firstStored <= floor) return { folded: [] };
       // Downward a day at a time, bounded the way the upward fill is bounded.
       // Contiguity holds at either end: this extends the one stretch rather
       // than starting a second, so coverage stays a single run and
@@ -300,10 +326,10 @@ export function createRollupService(dependencies: RollupServiceDependencies): Ro
       for (let day = firstStored - DAY_MS; day >= floor && days.length < maxDays; day -= DAY_MS) {
         days.push(new Date(day));
       }
-      if (days.length === 0) return { folded: [], reached: stored.earliest };
+      if (days.length === 0) return { folded: [] };
       days.reverse();
       await foldDays(dependencies, subject, days, now);
-      return { folded: days, reached: days[0]! };
+      return { folded: days };
     },
   };
 }

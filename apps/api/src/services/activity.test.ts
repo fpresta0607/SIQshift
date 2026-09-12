@@ -91,7 +91,7 @@ describe("activity service", () => {
       { clientId: equal.clientId, reason: "endedAt must be after startedAt" },
       { clientId: future.clientId, reason: "endedAt is too far in the future" },
       { clientId: tooLong.clientId, reason: "segment spans more than 24 hours" },
-      { clientId: ancient.clientId, reason: "endedAt is too far in the past" },
+      { clientId: ancient.clientId, reason: "endedAt is older than the retention window" },
       { clientId: broken.clientId, reason: "timestamps are invalid" },
     ]);
     expect(segments.records.map((record) => record.clientId).sort()).toEqual([good.clientId, tolerated.clientId].sort());

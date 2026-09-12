@@ -370,11 +370,23 @@ wrong.
 Read its output before trusting a first run. Each line names one organization:
 `backfilled` is how many days of history it folded, `coverageFrom` where the
 fold now starts, and `deleted` how many raw segments went. A `held=` field means
-the pass deliberately deleted nothing and says which rule stopped it - `nothing
-folded` on a workspace the upload path has not bootstrapped yet, or `no expired
-day is folded yet` while the backfill is still walking down. Both are expected
-on the first nights against a workspace with a long history; `deleted` stays 0
-until the fold has reached past the cutoff.
+a rule stopped the delete short and says which - `nothing folded` on a workspace
+the upload path has not bootstrapped yet, or `no expired day is folded yet` while
+the backfill is still walking down. Both are expected on the first nights against
+a workspace with a long history; `deleted` stays 0 until the fold has reached past
+the cutoff.
+
+`coverage has no row for YYYY-MM-DD` is the one to act on. It means a day inside
+the folded stretch has no stored row - an interrupted fold or a partial write -
+and the sweep will not delete across it, so deletion for that workspace stops at
+that day and stays there until the day is folded. It deletes everything below it
+meanwhile, so the sweep is not stuck, only capped. Nothing repairs the hole on
+its own: uploads only fill coverage upward, and the backfill only extends it
+downward.
+
+A `failed=` line is one organization's pass throwing. The sweep carries on with
+the rest of the night's budget rather than dropping every organization behind it,
+so one workspace whose backfill times out cannot block the others.
 
 **What the deletion costs** is in README's *Raw evidence is kept for 90 days*.
 The short of it: unscoped active, agent and concurrency numbers are answered by
