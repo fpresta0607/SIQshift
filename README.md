@@ -254,11 +254,11 @@ Every other day an upload names is folded: a named day is one whose stored numbe
 that upload has just made wrong, and the days an upload clears are exactly the days
 it goes on to rebuild.
 A fold that fails partway leaves its days cleared and unfolded inside coverage,
-and nothing re-establishes them, because the run only ever fills upward: they read
-live, which is correct, and restoring the coverage is the scheduled fold's job
-rather than a later upload's.
-History older than the day coverage started is read live, and backfilling it is a
-job for the scheduled fold that comes with retention, not something a report does.
+and nothing re-establishes them: uploads only fill upward, and the retention
+sweep stops its deletes at the first such hole rather than refolding it.
+They read live, which is correct.
+History older than the day coverage started is read live, and backfilling it is
+the retention sweep's nightly job, not something a report does.
 The read path assumes none of this in any case: a day with no row is read live
 wherever it sits.
 

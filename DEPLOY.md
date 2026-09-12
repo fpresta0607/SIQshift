@@ -326,11 +326,12 @@ is never refolded, because the fold only fills upward from its latest day, so it
 stays a permanent hole that every range crossing it reads live. And deleting
 *every* row for an organization is a reset: with no coverage left the next upload
 starts a fresh run at the bootstrap anchor, which reaches no further back than a
-month before yesterday, so all the history below that is discarded rather than
-regrown. Clearing the whole table to let it rebuild is therefore the one thing
-not to do on a workspace whose older days matter. Either way the reports stay
-correct and merely slower, and restoring the discarded coverage waits on the
-retention change's scheduled fold.
+month before yesterday. The history below that anchor is regrown by the
+retention sweep's backfill rather than by anything here, and only after a later
+upload has re-anchored coverage, because the backfill extends a run and refuses
+to start one. Clearing the whole table to let it rebuild is therefore still the
+one thing not to do on a workspace whose older days matter. Either way the
+reports stay correct and merely slower until the sweep has walked back down.
 
 ### `0023` adds an index, and the sweep that uses it is a scheduled command
 
