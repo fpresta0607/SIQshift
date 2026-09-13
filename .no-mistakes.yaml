@@ -1,0 +1,15 @@
+# Per-repo no-mistakes configuration for SIQshift.
+#
+# The CFO pipeline driver (cfo pipeline run) requires this file to be readable
+# on the default branch and on every gated task branch before a managed gate
+# run can start. Values mirror the frozen CFO pipeline policy and the
+# machine-level no-mistakes configuration, so this file changes no engine
+# behavior: Claude reviewer with no fallbacks, review auto-fix disabled, one
+# automatic follow-up each for test, lint, rebase and CI.
+agent: claude
+auto_fix:
+  review: 0
+  test: 1
+  lint: 1
+  rebase: 1
+  ci: 1
