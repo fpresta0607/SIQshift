@@ -1216,17 +1216,30 @@ describe("agent shifts contracts", () => {
     const response = {
       people: [{
         owner: { id: ids.user, name: "Alex" },
-        sessions: [{
-          id: shiftRow.id,
-          source: "claude_code",
-          owner: { id: ids.user, name: "Alex" },
-          model: null,
-          startedAt: "2026-08-06T14:00:00.000Z",
-          lastEventAt: "2026-08-06T14:59:00.000Z",
-          repo: "siqshift",
-          project: null,
-          description: "Claude Code in siqshift, running 59m",
-        }],
+        sessions: [
+          {
+            id: shiftRow.id,
+            source: "codex",
+            owner: { id: ids.user, name: "Alex" },
+            model: "gpt-5.6-sol",
+            startedAt: "2026-08-06T14:00:00.000Z",
+            lastEventAt: "2026-08-06T14:59:00.000Z",
+            repo: "siqshift",
+            project: null,
+            description: "Codex on gpt-5.6-sol in siqshift, running 59m",
+          },
+          {
+            id: "00000000-0000-4000-8000-000000000702",
+            source: "codex",
+            owner: { id: ids.user, name: "Alex" },
+            model: "gpt-5.6-sol",
+            startedAt: "2026-08-06T14:30:00.000Z",
+            lastEventAt: "2026-08-06T14:59:30.000Z",
+            repo: "quartermaster",
+            project: null,
+            description: "Codex on gpt-5.6-sol in quartermaster, running 29m",
+          },
+        ],
       }],
     };
     expect(liveAgentSessionsResponseSchema.parse(response)).toEqual(response);

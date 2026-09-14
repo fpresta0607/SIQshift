@@ -1933,7 +1933,16 @@ describe("live agent sessions", () => {
   it("shows who is running an agent right now, and only them", async () => {
     const reports = new Reports();
     reports.runningSessions = [
-      running(),
+      running({ source: "codex", model: "gpt-5.6-sol" }),
+      running({
+        sessionId: "s3",
+        source: "codex",
+        model: "gpt-5.6-sol",
+        cwd: "C:/dev/quartermaster",
+        projectId: null,
+        projectName: null,
+        startedAt: at(11),
+      }),
       // A person whose only running span is a browser tab is not running an
       // agent; attention is not a worker, the roster's own rule.
       running({ sessionId: "s2", user: { id: ids.otherUser, name: "Sam" }, source: "browser", cwd: null, projectId: null, projectName: null, startedAt: at(9) }),
@@ -1944,7 +1953,10 @@ describe("live agent sessions", () => {
     const result = await service.liveAgentSessions(subject, {});
 
     expect(result.people.map((person) => person.owner.name)).toEqual(["Alex"]);
-    expect(result.people[0]!.sessions).toHaveLength(1);
+    expect(result.people[0]!.sessions.map((session) => [session.id, session.source])).toEqual([
+      ["s1", "codex"],
+      ["s3", "codex"],
+    ]);
   });
 
   it("describes a session from captured facts alone, never an invented summary", async () => {

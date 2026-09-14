@@ -692,7 +692,7 @@ describe("settings", () => {
     // The picker says whether a runtime can report a model at all, straight
     // from the roster's own declaration.
     const picker = within(dialog).getByLabelText("Tool to connect");
-    expect(within(picker).getByRole("option", { name: "Codex · cannot name its model" })).toBeInTheDocument();
+    expect(within(picker).getByRole("option", { name: "Codex · can name its model" })).toBeInTheDocument();
   });
 
   it("opens the what's-recorded panel from the recording group", async () => {
@@ -1515,7 +1515,8 @@ describe("the agents tab", () => {
         people: [{
           owner: { id: user.id, name: user.name },
           sessions: [
-            { id: "00000000-0000-4000-8000-000000000701", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
+            { id: "00000000-0000-4000-8000-000000000701", source: "codex", repo: "siqshift", description: "Codex in siqshift, running 12m" },
+            { id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" },
             { id: "00000000-0000-4000-8000-000000000702", source: "pi", repo: null, description: "Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m" },
           ],
         }],
@@ -1528,9 +1529,11 @@ describe("the agents tab", () => {
     // The description renders verbatim, never re-derived: every clause is a
     // captured fact, and the codebase label rides beside it.
     const live = within(panel).getByTestId("live-sessions");
-    expect(live).toHaveTextContent("Claude Code in siqshift, running 12m");
+    expect(live).toHaveTextContent("Codex in siqshift, running 12m");
+    expect(live).toHaveTextContent("Codex in quartermaster, running 45s");
     expect(live).toHaveTextContent("Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m");
     expect(live).toHaveTextContent("siqshift");
+    expect(within(live).getAllByText(/Codex in (siqshift|quartermaster)/)).toHaveLength(2);
   });
 
   it("says nobody is running rather than drawing an empty live board", async () => {

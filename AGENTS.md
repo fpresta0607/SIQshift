@@ -138,9 +138,11 @@ It is a roster, **not an allowlist**: `agent_sessions.source` is text with a sha
 check, so an undeclared runtime is still recorded under its own id. Never reintroduce
 an enum for it, and never map an unknown runtime onto `other`.
 
-A runtime is identified by the registration that fired, never by the payload's shape:
-Codex pipes Claude Code's exact hook payload, so registrations pass `--source`. And
-runtime and model are independent — neither is ever derived from the other.
+A runtime is identified by its capture path, never by a payload's shape or by its model.
+Hook registrations pass `--source` because their payloads are not runtime identities.
+Codex terminal capture instead reconciles held writer locks with local app-server metadata.
+A raw process is evidence that an executable exists, not that an agent session exists, so it never creates a session.
+Runtime and model are independent; neither is ever derived from the other.
 
 ## What actually closes a segment
 
@@ -343,6 +345,12 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   is documented on the statusline JSON, not the session hooks). The payload's
   `transcript_path` is the repair path: every assistant entry in the transcript
   names its own model, so the desktop's transcript reader backfills it.
+- A live Codex terminal is a held `~/.codex/thread-writer-locks/<thread>.lock`, not a
+  `codex.exe` process. `codex_sessions.rs` reads local state-only app-server metadata
+  for held threads and admits only `cli` and `exec`, excluding app-server, editor and
+  subagent threads. The lock's modified time distinguishes terminal lifecycles and
+  resumes; lock disappearance emits the end. Missing metadata defers a start rather
+  than inventing cwd, model, project, or a session.
 - The desktop force-installs the browser extension via the HKCU
   `ExtensionInstallForcelist` policy (`browser::sync_extension_policies`), but only
   when the store ids are compiled in (`SIQSHIFT_CHROME_EXTENSION_ID` /

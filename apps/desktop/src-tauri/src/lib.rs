@@ -11,6 +11,7 @@ mod app_icons;
 // Shared with the `siqshift-browser-host` binary; the host calls these from
 // its own `main`, and the app calls them to register the host and drain spans.
 pub mod browser;
+mod codex_sessions;
 // Shared with the `siqshift-hook` binary; it reads the shift's starting HEAD
 // when a `Started` line is written.
 pub mod git_evidence;

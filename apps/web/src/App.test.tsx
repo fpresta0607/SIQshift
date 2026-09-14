@@ -1627,6 +1627,7 @@ describe("the agents tab", () => {
             owner: { id: "u3", name: "Sam" },
             sessions: [
               { id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" },
+              { id: "00000000-0000-4000-8000-000000000704", source: "codex", repo: "siqshift", description: "Codex in siqshift, running 12m" },
             ],
           },
         ],
@@ -1646,6 +1647,8 @@ describe("the agents tab", () => {
     expect(live).toHaveTextContent("Sam");
     expect(live).toHaveTextContent("Codex in quartermaster, running 45s");
     expect(live).toHaveTextContent("quartermaster");
+    expect(live).toHaveTextContent("Codex in siqshift, running 12m");
+    expect(within(live).getAllByText(/Codex in (quartermaster|siqshift)/)).toHaveLength(2);
   });
 
   it("narrows the live view to whoever is picked, with an honest empty state", async () => {
