@@ -69,14 +69,16 @@ describe("the agent runtime roster", () => {
     }
   });
 
-  it("declares per runtime whether its hook mechanism can name the model", () => {
+  it("declares per runtime whether its capture mechanism can name the model", () => {
     // Claude Code's SessionStart/SessionEnd payloads carry no model key
-    // (verified live), Codex pipes that exact payload, and Cursor's
-    // registration passes only --source/--event with a payload mined for a
-    // session id and cwd: none of the merged mechanisms can name one.
+    // (verified live), and Cursor's registration passes only --source/--event
+    // with a payload mined for a session id and cwd.
     expect(findAgentRuntime("claude_code")?.reportsModel).toBe("never");
-    expect(findAgentRuntime("codex")?.reportsModel).toBe("never");
     expect(findAgentRuntime("cursor")?.reportsModel).toBe("never");
+    // Codex's native thread inventory carries the configured model when one is
+    // available beside the held lifecycle. It is never inferred from source.
+    expect(findAgentRuntime("codex")?.registration).toBe("codex_native");
+    expect(findAgentRuntime("codex")?.reportsModel).toBe("sometimes");
     // Pi's extension passes ctx.model?.id on every event by design.
     expect(findAgentRuntime("pi")?.reportsModel).toBe("always");
     expect(findAgentRuntime("pi_signed")?.reportsModel).toBe("always");

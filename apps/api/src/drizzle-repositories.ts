@@ -87,6 +87,7 @@ import {
   type ReportRepository,
   type ReportRowRecord,
   type ReportSummaryRecord,
+  type RunningAgentSessionRecord,
   type SessionRecord,
   type SessionRepository,
   type StopRunningSession,
@@ -871,6 +872,7 @@ export class DrizzleReportRepository implements ReportRepository {
         model: agentSessions.model,
         cwd: agentSessions.cwd,
         projectId: agentSessions.projectId,
+        projectName: projects.name,
         agentId: agentSessions.agentId,
         agentRepoRoot: agents.repoRoot,
         agentRepoKey: agents.repoKey,
@@ -888,6 +890,13 @@ export class DrizzleReportRepository implements ReportRepository {
       // remote the runtime probed for exactly this shift. Left, because a
       // legacy shift without an identity keeps its null agentId.
       .leftJoin(agents, eq(agents.id, agentSessions.agentId))
+      // The project tie reads a name, so a shift row can name the project it
+      // is pinned by without a second lookup. Left, because the unassigned
+      // sessions have no project to name.
+      .leftJoin(projects, and(
+        eq(projects.organizationId, agentSessions.organizationId),
+        eq(projects.id, agentSessions.projectId),
+      ))
       .where(and(
         eq(agentSessions.organizationId, subject.organizationId),
         ...(query.userId === undefined ? [] : [eq(agentSessions.userId, query.userId)]),
@@ -908,6 +917,7 @@ export class DrizzleReportRepository implements ReportRepository {
       model: row.model,
       cwd: row.cwd,
       projectId: row.projectId,
+      projectName: row.projectName,
       agentId: row.agentId,
       agentRepoRoot: row.agentRepoRoot,
       agentRepoKey: row.agentRepoKey,
@@ -949,6 +959,52 @@ export class DrizzleReportRepository implements ReportRepository {
       .map((stamp) => (stamp === null ? null : new Date(stamp).getTime()))
       .filter((time): time is number => time !== null);
     return times.length === 0 ? null : new Date(Math.max(...times));
+  }
+
+  public async readRunningAgentSessions(subject: AuthenticatedSubject): Promise<RunningAgentSessionRecord[]> {
+    const rows = await this.db
+      .select({
+        sessionId: agentSessions.id,
+        userId: users.id,
+        userName: users.name,
+        source: agentSessions.source,
+        model: agentSessions.model,
+        cwd: agentSessions.cwd,
+        projectId: agentSessions.projectId,
+        projectName: projects.name,
+        agentRepoRoot: agents.repoRoot,
+        agentRepoKey: agents.repoKey,
+        startedAt: agentSessions.startedAt,
+        lastEventAt: agentSessions.lastEventAt,
+      })
+      .from(agentSessions)
+      .innerJoin(users, and(
+        eq(users.organizationId, agentSessions.organizationId),
+        eq(users.id, agentSessions.userId),
+      ))
+      .leftJoin(agents, eq(agents.id, agentSessions.agentId))
+      .leftJoin(projects, and(
+        eq(projects.organizationId, agentSessions.organizationId),
+        eq(projects.id, agentSessions.projectId),
+      ))
+      .where(and(
+        eq(agentSessions.organizationId, subject.organizationId),
+        eq(agentSessions.status, "running"),
+      ))
+      .orderBy(asc(agentSessions.startedAt));
+    return rows.map((row) => ({
+      sessionId: row.sessionId,
+      user: { id: row.userId, name: row.userName },
+      source: row.source,
+      model: row.model,
+      cwd: row.cwd,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      agentRepoRoot: row.agentRepoRoot,
+      agentRepoKey: row.agentRepoKey,
+      startedAt: row.startedAt,
+      lastEventAt: row.lastEventAt,
+    }));
   }
 
   private async summaryFor(db: Pick<DatabaseConnection["db"], "select">, subject: AuthenticatedSubject, query: ReportQuery): Promise<ReportSummaryRecord> {

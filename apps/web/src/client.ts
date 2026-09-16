@@ -2,6 +2,7 @@ import type {
   AgentShiftRowsResponse,
   AgentShiftsResponse,
   LeaderboardResponse,
+  LiveAgentSessionsResponse,
   MeResponse,
   MeStatsResponse,
   OrganizationResponse,
@@ -275,6 +276,9 @@ export function createClient(config: ClientConfig) {
 
     /** One group's shifts, a page at a time; the query names the group and the page. */
     agentShiftRows: (query = "") => json<AgentShiftRowsResponse>(`/reports/agent-shifts/rows${query}`),
+
+    /** Who is running an agent right now, grouped by person; the scope narrows the live view. */
+    liveAgentSessions: (query = "") => json<LiveAgentSessionsResponse>(`/reports/agent-sessions/live${query}`),
 
     leaderboard: (query = "") => json<LeaderboardResponse>(`/reports/leaderboard${query}`),
     report: (query = "") => json<ReportResponse>(`/reports${query}`),

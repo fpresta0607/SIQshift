@@ -949,10 +949,8 @@ impl PlatformEvents {
     }
 }
 
-/// Per-CLI hook registration status, detected by a plain substring check for
-/// the hook binary name inside the CLI's own config file. Cheap and read-only,
-/// and honest about being a heuristic: it cannot tell a live registration
-/// from a commented-out one.
+/// Per-CLI capture status. Hook registrations use a cheap, read-only substring
+/// probe; native Codex capture is available whenever its config directory is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookRegistration {
@@ -982,7 +980,7 @@ const HOOK_BINARY_NAME: &str = "siqshift-hook";
 /// such a config reads as REGISTERED (and gets repaired) rather than as absent.
 const LEGACY_HOOK_BINARY_NAME: &str = "clock-in-hook";
 
-/// Where each CLI keeps the config a hook registration lands in, straight from
+/// Where each CLI keeps the config its capture connection uses, straight from
 /// the runtime roster. Every declared runtime is probed whether or not it is
 /// installed: a missing config simply reads as "not connected", so a machine
 /// that later grows a new CLI needs no code change to see it.
@@ -1023,10 +1021,13 @@ pub fn detect_hooks(probes: &[HookProbe]) -> Vec<HookRegistration> {
     probes
         .iter()
         .map(|probe| {
-            let detected = std::fs::read_to_string(&probe.config_path)
-                .map(|content| mentions_any_hook_binary(&content))
-                .unwrap_or(false);
             let installed = runtime_is_installed(probe);
+            let detected = match probe.registration {
+                agent_runtimes::Registration::CodexNative => installed,
+                _ => std::fs::read_to_string(&probe.config_path)
+                    .map(|content| mentions_any_hook_binary(&content))
+                    .unwrap_or(false),
+            };
             HookRegistration {
                 source: probe.source.to_string(),
                 detected,
@@ -1042,14 +1043,15 @@ pub fn detect_hooks(probes: &[HookProbe]) -> Vec<HookRegistration> {
         .collect()
 }
 
-/// Connects every installed CLI that SIQshift can wire up by itself, and
-/// reports which ones it connected.
+/// Connects every installed CLI whose capture path SIQshift owns, and reports
+/// which configurations it changed.
 ///
 /// This is what makes the connector list report state instead of asking for
 /// clicks. It is deliberately narrow: a runtime is touched only when its own
 /// config directory already exists, so SIQshift never creates configuration
-/// for a tool that is not installed, and only when its hook mechanism is a
-/// config shape the host knows how to merge. Anything else - Kimi, Pi,
+/// for a tool that is not installed. Hook-driven runtimes are touched only
+/// when the host knows how to merge their config shape; native Codex capture
+/// only removes SIQshift's obsolete hooks. Anything else - Kimi, Pi,
 /// opencode, Grok, Muse, Copilot - stays a `needs_you` row carrying the exact
 /// text to paste, because guessing a rewrite of a file SIQshift does not own
 /// is worse than asking.
@@ -1059,6 +1061,14 @@ pub fn auto_connect_hooks(probes: &[HookProbe]) -> Vec<String> {
         if probe.registration == agent_runtimes::Registration::Manual
             || !runtime_is_installed(probe)
         {
+            continue;
+        }
+        if probe.registration == agent_runtimes::Registration::CodexNative {
+            if let Ok(HookRegisterResult::Registered { .. }) =
+                register_codex_native(&probe.config_path)
+            {
+                connected.push(probe.source.to_string());
+            }
             continue;
         }
         let already = std::fs::read_to_string(&probe.config_path)
@@ -1147,22 +1157,93 @@ pub fn register_hook(source: &str) -> ApiResult<HookRegisterResult> {
         .into_iter()
         .find(|probe| probe.source == source)
         .ok_or_else(|| BridgeError::new(ErrorKind::Validation, "Unknown agent CLI."))?;
-    let command = hook_binary_command()?;
     match probe.registration {
         agent_runtimes::Registration::ClaudeJson => {
+            let command = hook_binary_command()?;
             register_claude_shaped(&probe.config_path, &command, source)
         }
-        agent_runtimes::Registration::CursorJson => register_cursor(&probe.config_path, &command),
+        agent_runtimes::Registration::CodexNative => register_codex_native(&probe.config_path),
+        agent_runtimes::Registration::CursorJson => {
+            let command = hook_binary_command()?;
+            register_cursor(&probe.config_path, &command)
+        }
         // A CLI whose hook mechanism is not a JSON array of commands — Pi's and
         // opencode's are JavaScript, and the rest are unconfirmed against any
         // installed version — gets the honest paste-it-yourself text from the
         // roster rather than a guessed rewrite of a file SIQshift does not own.
-        agent_runtimes::Registration::Manual => Ok(HookRegisterResult::Manual {
-            config_path: probe.config_path.to_string_lossy().into_owned(),
-            snippet: agent_runtimes::manual_snippet(source, command.trim_matches('"'))
-                .unwrap_or_else(|| unregistered_snippet(source, command.trim_matches('"'))),
-        }),
+        agent_runtimes::Registration::Manual => {
+            let command = hook_binary_command()?;
+            Ok(HookRegisterResult::Manual {
+                config_path: probe.config_path.to_string_lossy().into_owned(),
+                snippet: agent_runtimes::manual_snippet(source, command.trim_matches('"'))
+                    .unwrap_or_else(|| unregistered_snippet(source, command.trim_matches('"'))),
+            })
+        }
     }
+}
+
+/// Removes SIQshift's obsolete Codex lifecycle hooks. Codex has no terminal
+/// close hook, so keeping the old start-only registration would create rows
+/// that can only expire as stale. Native reconciliation owns Codex instead.
+fn register_codex_native(config_path: &Path) -> ApiResult<HookRegisterResult> {
+    let mut config = read_json_object(config_path)?;
+    let Some(hooks) = config.get_mut("hooks") else {
+        return Ok(HookRegisterResult::AlreadyRegistered {
+            config_path: config_path.to_string_lossy().into_owned(),
+        });
+    };
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or_else(unexpected_settings_shape)?;
+    let mut changed = false;
+    hooks.retain(|_, entries| {
+        let Some(entries) = entries.as_array_mut() else {
+            return true;
+        };
+        entries.retain_mut(|entry| {
+            let Some(entry_object) = entry.as_object_mut() else {
+                return true;
+            };
+            if let Some(commands) = entry_object.get_mut("hooks") {
+                let Some(commands) = commands.as_array_mut() else {
+                    return true;
+                };
+                let before = commands.len();
+                commands.retain(|command| !codex_hook_owned(command));
+                let removed = commands.len() != before;
+                changed |= removed;
+                return !removed || !commands.is_empty();
+            }
+            if codex_hook_owned(entry) {
+                changed = true;
+                return false;
+            }
+            true
+        });
+        !entries.is_empty()
+    });
+    if !changed {
+        return Ok(HookRegisterResult::AlreadyRegistered {
+            config_path: config_path.to_string_lossy().into_owned(),
+        });
+    }
+    write_json_atomically(config_path, &config)?;
+    Ok(HookRegisterResult::Registered {
+        config_path: config_path.to_string_lossy().into_owned(),
+    })
+}
+
+fn codex_hook_owned(value: &serde_json::Value) -> bool {
+    value
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|command| {
+            let arguments = command.split_ascii_whitespace().collect::<Vec<_>>();
+            mentions_any_hook_binary(command)
+                && arguments
+                    .windows(2)
+                    .any(|pair| pair == ["--source", "codex"])
+        })
 }
 
 /// The last-resort snippet for a roster entry that declares no text of its own.
@@ -1557,6 +1638,7 @@ struct MonitorTasks {
     /// No poll task on non-Windows builds (no `ActivitySource` ships there);
     /// the upload task still drains the agent spool.
     poll: Option<tokio::task::JoinHandle<()>>,
+    codex: tokio::task::JoinHandle<()>,
     upload: tokio::task::JoinHandle<()>,
 }
 
@@ -1653,6 +1735,15 @@ impl Monitor {
         #[cfg(not(windows))]
         let poll: Option<tokio::task::JoinHandle<()>> = None;
 
+        let codex = tokio::spawn(codex_loop(
+            Arc::clone(&self.shared),
+            self.agent_path.clone(),
+            self.session_spool_path(),
+            self.recovery_path.clone(),
+            Arc::clone(&self.recovery),
+            Arc::clone(&self.upload_now),
+        ));
+
         let upload = tokio::spawn(crate::uploader::upload_loop(
             Arc::clone(&self.shared),
             self.client.clone(),
@@ -1666,7 +1757,11 @@ impl Monitor {
             },
             Arc::clone(&self.upload_now),
         ));
-        *guard = Some(MonitorTasks { poll, upload });
+        *guard = Some(MonitorTasks {
+            poll,
+            codex,
+            upload,
+        });
     }
 
     /// Stops all polling and uploading, closing the open segment where
@@ -1677,6 +1772,7 @@ impl Monitor {
             if let Some(poll) = tasks.poll {
                 poll.abort();
             }
+            tasks.codex.abort();
             tasks.upload.abort();
         }
         let now = unix_now();
@@ -1810,26 +1906,6 @@ impl Monitor {
                         since: iso8601(active.started_at),
                     })
                     .collect();
-                // A hook says a session started; the process table says one is
-                // here. An agent that was already running when SIQshift
-                // started - or whose start event was uploaded and truncated
-                // long ago - leaves no event to replay, so it is found by its
-                // process instead and keyed by pid so the two never collide.
-                for process in crate::app_icons::running_processes() {
-                    let Some(runtime) = agent_runtimes::runtime_for_binary(&process.process_name)
-                    else {
-                        continue;
-                    };
-                    if sessions.iter().any(|session| session.source == runtime.id) {
-                        continue;
-                    }
-                    sessions.push(AgentSession {
-                        source: runtime.id.clone(),
-                        external_session_id: format!("pid-{}", process.process_id),
-                        project_id: None,
-                        since: iso8601(process.started_at.unwrap_or(now)),
-                    });
-                }
                 sessions.sort_by(|left, right| right.since.cmp(&left.since));
                 sessions
             },
@@ -2068,6 +2144,50 @@ async fn poll_loop(
             open_session,
         )
         .await;
+    }
+}
+
+async fn codex_loop(
+    shared: Arc<Mutex<MonitorShared>>,
+    agent_path: PathBuf,
+    sessions_path: PathBuf,
+    recovery_path: PathBuf,
+    recovery: Arc<tokio::sync::Mutex<RecoveryState>>,
+    upload_now: Arc<Notify>,
+) {
+    let mut tick = tokio::time::interval(Duration::from_secs(
+        crate::codex_sessions::RECONCILE_INTERVAL_SECONDS,
+    ));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        match crate::codex_sessions::reconcile(&agent_path, unix_now()).await {
+            Ok(events) if events.is_empty() => {}
+            Ok(events) => {
+                let finished = crate::uploader::replay_agent_events(&shared, &events);
+                let (account_id, open_session) = {
+                    let shared = lock(&shared);
+                    (
+                        shared.account_id.clone(),
+                        shared.tracker.open_session().cloned(),
+                    )
+                };
+                for session in &finished {
+                    if account_id.is_some() {
+                        append_session_line(&sessions_path, session);
+                    }
+                }
+                persist_open_session(
+                    &recovery_path,
+                    &recovery,
+                    account_id.as_deref(),
+                    open_session,
+                )
+                .await;
+                upload_now.notify_one();
+            }
+            Err(error) => eprintln!("siqshift: could not reconcile Codex terminals: {error}"),
+        }
     }
 }
 
@@ -4427,6 +4547,53 @@ mod tests {
             "a repaired config is not rewritten again"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codex_native_registration_removes_only_owned_legacy_hooks() {
+        let dir = probe_dir("codex-native");
+        let config = dir.join("hooks.json");
+        std::fs::write(
+            &config,
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"lavish-axi"}]},{"hooks":[]},{"hooks":[{"type":"command","command":"\"C:/old/clock-in-hook.exe\" --source codex_other --event session-start"}]},{"hooks":[{"type":"command","command":"\"C:/old/clock-in-hook.exe\" --source codex --event session-start"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"\"C:/old/clock-in-hook.exe\" --source codex --event session-end"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"audit-tool"}]}]}}"#,
+        )
+        .expect("config writes");
+
+        let first = register_codex_native(&config).expect("native registration succeeds");
+        assert!(matches!(first, HookRegisterResult::Registered { .. }));
+        let cleaned: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).expect("config reads"))
+                .expect("cleaned config parses");
+        assert_eq!(
+            cleaned["hooks"]["SessionStart"].as_array().map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            cleaned["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "lavish-axi"
+        );
+        assert_eq!(
+            cleaned["hooks"]["SessionStart"][1]["hooks"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            cleaned["hooks"]["SessionStart"][2]["hooks"][0]["command"],
+            "\"C:/old/clock-in-hook.exe\" --source codex_other --event session-start"
+        );
+        assert!(cleaned["hooks"].get("SessionEnd").is_none());
+        assert_eq!(
+            cleaned["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "audit-tool"
+        );
+
+        let second = register_codex_native(&config).expect("native registration is idempotent");
+        assert!(matches!(
+            second,
+            HookRegisterResult::AlreadyRegistered { .. }
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -84,11 +84,20 @@ class Reports implements ReportRepository {
     throw new Error("not used by these routes");
   }
   public agentIntervals: AgentIntervalRecord[] = [];
+  public runningSessions: {
+    sessionId: string; user: { id: string; name: string }; source: string; model: string | null; cwd: string | null;
+    projectId: string | null; projectName: string | null; agentRepoRoot: string | null; agentRepoKey: string | null;
+    startedAt: Date; lastEventAt: Date;
+  }[] = [];
   public async readAgentIntervals() {
     return this.agentIntervals;
   }
   public async readNewestEvidenceReceivedAt(): Promise<null> {
     throw new Error("not used by these routes");
+  }
+
+  public async readRunningAgentSessions() {
+    return this.runningSessions;
   }
 }
 
@@ -170,6 +179,33 @@ describe("report routes", () => {
         const response = await app().request("http://api.test/reports?pageSize=201", { headers: { authorization: bearerHeader } });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: { code: "validation_error", message: "Invalid report filters." } });
+  });
+
+  it("serves the live sessions read, and refuses a scope from outside the workspace", async () => {
+    const reports = new Reports();
+    reports.runningSessions = [{
+      sessionId: "11c7e513-b094-4d4c-ae55-21790ae019a4",
+      user: { id: ids.user, name: "Alex" },
+      source: "claude_code",
+      model: null,
+      cwd: "C:\\dev\\siqshift",
+      projectId: ids.project,
+      projectName: "Timer",
+      agentRepoRoot: null,
+      agentRepoKey: null,
+      startedAt: new Date("2026-08-06T13:30:00.000Z"),
+      lastEventAt: new Date("2026-08-06T13:59:00.000Z"),
+    }];
+    const headers = { authorization: bearerHeader };
+    const live = await app(reports).request("http://api.test/reports/agent-sessions/live", { headers });
+    expect(live.status).toBe(200);
+    await expect(live.json()).resolves.toMatchObject({
+      people: [{ owner: { name: "Alex" }, sessions: [{ source: "claude_code", repo: "siqshift", project: { name: "Timer" } }] }],
+    });
+
+    const outside = await app(reports).request(`http://api.test/reports/agent-sessions/live?scope=${ids.outsideProject}`, { headers });
+    expect(outside.status).toBe(404);
+    await expect(outside.json()).resolves.toEqual({ error: { code: "not_found", message: "Project not found." } });
   });
 
   it("closes stale agent sessions on the read path before reporting", async () => {

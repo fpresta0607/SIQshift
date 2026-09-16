@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
 import { sourceLabel } from "./agent-sources.js";
-import type { TimerBridge } from "./bridge.js";
+import type { LiveAgentSessions, TimerBridge } from "./bridge.js";
 
 vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
@@ -256,6 +256,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   agentShifts: vi.fn().mockImplementation(async (fromAt?: string) => (
     fromAt === undefined ? { ...agentShifts, hourly: [] } : agentShifts
   )),
+  liveAgentSessions: vi.fn().mockResolvedValue({ people: [] } satisfies LiveAgentSessions),
   agentShiftRows: vi.fn().mockImplementation(async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after)),
   projectCreate: vi.fn().mockResolvedValue(newProject),
   projectUpdate: vi.fn().mockResolvedValue(project),
@@ -691,7 +692,7 @@ describe("settings", () => {
     // The picker says whether a runtime can report a model at all, straight
     // from the roster's own declaration.
     const picker = within(dialog).getByLabelText("Tool to connect");
-    expect(within(picker).getByRole("option", { name: "Codex · cannot name its model" })).toBeInTheDocument();
+    expect(within(picker).getByRole("option", { name: "Codex · can name its model" })).toBeInTheDocument();
   });
 
   it("opens the what's-recorded panel from the recording group", async () => {
@@ -1506,6 +1507,41 @@ describe("the agents tab", () => {
     expect(groups[1]!.textContent).not.toMatch(/held|pending/);
     // There is no leaderboard here: nothing ranks, nothing is clickable.
     expect(within(panel).queryByTestId("agent-roster-list")).not.toBeInTheDocument();
+  });
+
+  it("shows who is running an agent right now, above the range's map", async () => {
+    const bridge = bridgeFor({
+      liveAgentSessions: vi.fn().mockResolvedValue({
+        people: [{
+          owner: { id: user.id, name: user.name },
+          sessions: [
+            { id: "00000000-0000-4000-8000-000000000701", source: "codex", repo: "siqshift", description: "Codex in siqshift, running 12m" },
+            { id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" },
+            { id: "00000000-0000-4000-8000-000000000702", source: "pi", repo: null, description: "Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m" },
+          ],
+        }],
+      }),
+    });
+    render(<App bridge={bridge} />);
+
+    const panel = await openAgentsTab(userEvent.setup());
+
+    // The description renders verbatim, never re-derived: every clause is a
+    // captured fact, and the codebase label rides beside it.
+    const live = within(panel).getByTestId("live-sessions");
+    expect(live).toHaveTextContent("Codex in siqshift, running 12m");
+    expect(live).toHaveTextContent("Codex in quartermaster, running 45s");
+    expect(live).toHaveTextContent("Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m");
+    expect(live).toHaveTextContent("siqshift");
+    expect(within(live).getAllByText(/Codex in (siqshift|quartermaster)/)).toHaveLength(2);
+  });
+
+  it("says nobody is running rather than drawing an empty live board", async () => {
+    render(<App bridge={bridgeFor()} />);
+
+    const panel = await openAgentsTab(userEvent.setup());
+
+    expect(await within(panel).findByTestId("live-sessions-empty")).toHaveTextContent("No agent is running right now.");
   });
 
   it("emits the meter row the layout suite styles, four cells to a row", async () => {

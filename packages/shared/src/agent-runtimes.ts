@@ -6,8 +6,8 @@ import registry from "./agent-runtimes.json" with { type: "json" };
  * The agent-runtime roster, loaded from `agent-runtimes.json`.
  *
  * That file is the *only* place a runtime is declared. The API's ingest path,
- * the desktop's labels and process folding, the hook probes and registration
- * snippets, and the quota dials all read it, so adding a runtime is a
+ * the desktop's labels and process folding, the capture probes and connection
+ * instructions, and the quota dials all read it, so adding a runtime is a
  * configuration change rather than a code change. The Rust host reads the same
  * JSON (`agent_runtimes.rs` embeds it), so the two languages cannot drift.
  *
@@ -15,14 +15,14 @@ import registry from "./agent-runtimes.json" with { type: "json" };
  * canonical shape, so a runtime nobody has declared yet is still recorded under
  * its own name rather than collapsed into `other` or dropped. The roster only
  * decides what SIQshift can say *about* a runtime: its display name, its
- * executables, where its hooks live, and which quota dial it backs.
+ * executables, where its capture config lives, and which quota dial it backs.
  */
 
-/** How SIQshift can switch a runtime's hooks on. */
-export const agentRuntimeRegistrationValues = ["claude_json", "cursor_json", "manual"] as const;
+/** How SIQshift connects a runtime's lifecycle capture. */
+export const agentRuntimeRegistrationValues = ["claude_json", "codex_native", "cursor_json", "manual"] as const;
 export type AgentRuntimeRegistration = (typeof agentRuntimeRegistrationValues)[number];
 
-/** Whether a runtime's own hook mechanism names the model it is driving. */
+/** Whether a runtime's capture mechanism names the model it is driving. */
 export const agentRuntimeReportsModelValues = ["always", "sometimes", "never"] as const;
 export type AgentRuntimeReportsModel = (typeof agentRuntimeReportsModelValues)[number];
 
@@ -36,14 +36,14 @@ const agentRuntimeSchema = z
     binaries: z.array(z.string().min(1)).readonly(),
     /** The `quota-axi` provider backing this runtime, when one does. */
     quotaProvider: z.string().min(1).nullable(),
-    /** Home-relative path to the config a hook registration lands in. */
+    /** Home-relative path to the runtime config SIQshift connects or inspects. */
     configPath: z.string().min(1),
     registration: z.enum(agentRuntimeRegistrationValues),
     /**
-     * Whether the runtime's hook mechanism names the model it is driving:
+     * Whether the runtime's capture mechanism names the model it is driving:
      * `always` by design on every event, `sometimes` when it depends on the
      * user's wiring or an unconfirmed mechanism, `never` when the mechanism
-     * cannot name one. A hook that names no model records none, never a guess.
+     * cannot name one. Missing model evidence records none, never a guess.
      */
     reportsModel: z.enum(agentRuntimeReportsModelValues),
     /**

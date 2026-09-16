@@ -7,6 +7,7 @@ import {
   bridgeError,
   defaultBridge,
   type AgentShifts,
+  type LiveAgentSessions,
   type BrowserHealth,
   type MeStats,
   type MeStatsAgentActivity,
@@ -30,6 +31,7 @@ import {
 } from "@siqshift/shared";
 import {
   HourlyGraph,
+  LiveSessions,
   MemberBreakdown,
   MeterRowItem,
   ShiftGroups,
@@ -217,6 +219,11 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [overlayTab, setOverlayTab] = useState<"humans" | "agents">("humans");
   const [agentShifts, setAgentShifts] = useState<AgentShifts | undefined>();
   const [agentShiftsError, setAgentShiftsError] = useState<string | undefined>();
+  /// Who is running an agent right now, above the shifts map. Undefined until
+  /// the first read lands, so "nothing is running" is never drawn before the
+  /// host has answered; a failed poll keeps the last-good list.
+  const [liveSessions, setLiveSessions] = useState<LiveAgentSessions | undefined>();
+  const [liveSessionsError, setLiveSessionsError] = useState<string | undefined>();
   const [settings, setSettings] = useState<MonitorSettings | undefined>();
   const [settingsError, setSettingsError] = useState<string | undefined>();
   const [quietDraft, setQuietDraft] = useState("");
@@ -252,6 +259,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const overviewFailures = useRef(0);
   const boardStatsFailures = useRef(0);
   const agentShiftsFailures = useRef(0);
+  const liveSessionsFailures = useRef(0);
 
   if (latestBridge.current !== bridge) bridgeGeneration.current += 1;
   latestBridge.current = bridge;
@@ -274,10 +282,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     setBoardStatsError(undefined);
     setAgentShifts(undefined);
     setAgentShiftsError(undefined);
+    setLiveSessions(undefined);
+    setLiveSessionsError(undefined);
     statsFailures.current = 0;
     overviewFailures.current = 0;
     boardStatsFailures.current = 0;
     agentShiftsFailures.current = 0;
+    liveSessionsFailures.current = 0;
     setSettings(undefined);
     setSettingsError(undefined);
     setHookSnippets({});
@@ -516,6 +527,41 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, allStatsOpen, overlayTab, boardRange, signedIn?.user.id, statsTick]);
+
+  // The live view reads "now", not the range: who is running an agent at this
+  // instant. It follows the Agents tab onto the screen and rides the same
+  // minute tick the other polls do, because a live board that only read once
+  // on open would go stale while it sat there. Like every background poll, a
+  // failed read keeps the last-good list; the failure line waits for three in
+  // a row, and only shows when there is nothing good to keep showing.
+  useEffect(() => {
+    if (signedIn === undefined || !allStatsOpen || overlayTab !== "agents") return undefined;
+    let active = true;
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    void service.liveAgentSessions().then(
+      (result) => {
+        if (active && isCurrent(service, generation)) {
+          liveSessionsFailures.current = 0;
+          setLiveSessions(result);
+          setLiveSessionsError(undefined);
+        }
+      },
+      (error: unknown) => {
+        if (!active || !isCurrent(service, generation)) return;
+        const problem = bridgeError(error);
+        if (problem.kind === "auth") return;
+        liveSessionsFailures.current += 1;
+        if (liveSessionsFailures.current >= 3 || liveSessions === undefined) {
+          setLiveSessionsError(problem.message);
+        }
+      },
+    );
+    return () => { active = false; };
+    // `liveSessions` is read only to tell "nothing to show" from "stale";
+    // re-running on its change would refetch after every success.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, allStatsOpen, overlayTab, signedIn?.user.id, statsTick]);
 
   // One page of one group's shifts, asked for when a drawer opens. Its
   // identity tracks the bridge and the range and nothing else - deliberately
@@ -1437,6 +1483,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   <div className="member-stats-head">
                     <h3 id="agent-shifts-title">Agents · {RANGE_LABEL[boardRange]}</h3>
                   </div>
+                  {/* The live view reads now, above everything the range
+                      measures: a stale live board would be worse than none. */}
+                  {liveSessionsError !== undefined && liveSessions === undefined ? (
+                    <p className="subtle" role="alert">Could not tell who is running an agent right now.</p>
+                  ) : liveSessions === undefined ? null : (
+                    <LiveSessions people={liveSessions.people} />
+                  )}
                   <p className="today-total"><strong>{formatHuman(agentShifts.totalAgentSeconds)}</strong> recorded</p>
                   <HourlyGraph buckets={agentShifts.hourly} />
                   {agentShifts.groups.length === 0 ? (

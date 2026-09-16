@@ -24,6 +24,7 @@ import type {
   ShiftCommitCountsRecord,
   ShiftCommitRepository,
   ShiftRepoRootRecord,
+  RunningAgentSessionRecord,
   SiteTotalRecord,
 } from "../repositories.js";
 import { createReportService, normalizedQuery, type ReportService } from "./reports.js";
@@ -81,6 +82,7 @@ class Reports implements ReportRepository {
   public presenceIntervals: PresenceIntervalRecord[] = [];
   public sessionIntervals: SessionIntervalRecord[] = [];
   public agentIntervals: AgentIntervalRecord[] = [];
+  public runningSessions: RunningAgentSessionRecord[] = [];
   public constructor(private readonly rows: ReportRowRecord[] = [], public readonly accessible = new Set([ids.project, ids.user])) {}
   public async readLeaderboardForOrganization(_subject: AuthenticatedSubject, query: ReportQuery) {
     this.lastLeaderboardQuery = query;
@@ -138,6 +140,10 @@ class Reports implements ReportRepository {
   }
   public async readNewestEvidenceReceivedAt(): Promise<null> {
     return null;
+  }
+
+  public async readRunningAgentSessions() {
+    return this.runningSessions;
   }
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string) {
     return this.accessible.has(projectId) ? { id: projectId, name: "Timer" } : null;
@@ -1834,5 +1840,197 @@ describe("agent shifts", () => {
 
     expect(normalizedQuery({ ...bounds, userId: ids.user.toUpperCase() }).userId).toBe(ids.user);
     expect(normalizedQuery({ from: "2026-08-06", to: "2026-08-06", userId: ids.user.toUpperCase() }).userId).toBe(ids.user);
+  });
+
+  it("pins a group's project-tied shifts above its untied ones, without hiding the untied", async () => {
+    const reports = new Reports();
+    reports.agentIntervals = [
+      { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
+      { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: null, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(14), endedAt: at(15) },
+      { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const result = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 50 });
+
+    // The tie reads first, newest within each partition; the untied shift
+    // stays visible below rather than being filtered away.
+    expect(result.shifts.map((shift) => [shift.id, shift.project?.name ?? null])).toEqual([
+      ["s3", "Timer"],
+      ["s1", "Timer"],
+      ["s2", null],
+    ]);
+  });
+
+  it("pages a drawer across the project-tie boundary, and the cursor carries the tie", async () => {
+    const reports = new Reports();
+    reports.agentIntervals = [
+      { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
+      { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: null, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(14), endedAt: at(15) },
+      { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const first = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 2 });
+    expect(first.shifts.map((shift) => shift.id)).toEqual(["s3", "s1"]);
+    expect(first.nextCursor).toMatchObject({ id: "s1", projectTied: true });
+
+    const second = await service.agentShiftRows(subject, {
+      groupKey: "siqshift",
+      pageSize: 2,
+      afterStartedAt: first.nextCursor!.startedAt,
+      afterId: first.nextCursor!.id,
+      projectTied: "true",
+    });
+    // The unpinned partition opens past a pinned cursor, and the untied shift
+    // is still served - sorted below, never hidden. The group is exhausted
+    // after it, so the cursor is null and the drawer stops offering pages.
+    expect(second.shifts.map((shift) => shift.id)).toEqual(["s2"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("answers a cursor without the tie without repeating a row, the way a client from before the tie sends it", async () => {
+    const reports = new Reports();
+    reports.agentIntervals = [
+      { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
+      { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: null, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(14), endedAt: at(15) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const page = await service.agentShiftRows(subject, {
+      groupKey: "siqshift",
+      pageSize: 2,
+      afterStartedAt: at(11).toISOString(),
+      afterId: "s1",
+    });
+    // A legacy cursor reads as untied. The tied shift sits above it and every
+    // untied shift newer than the cursor was already served under the old
+    // ordering, so the honest continuation is an empty page - nothing
+    // repeated, nothing invented.
+    expect(page.shifts).toEqual([]);
+    expect(page.nextCursor).toBeNull();
+  });
+});
+
+describe("live agent sessions", () => {
+  const at = (hour: number, minute = 0) => new Date(Date.UTC(2026, 7, 6, hour, minute));
+
+  const running = (overrides: Partial<RunningAgentSessionRecord> = {}): RunningAgentSessionRecord => ({
+    sessionId: "s1",
+    user: { id: ids.user, name: "Alex" },
+    source: "claude_code",
+    model: null,
+    cwd: "C:/dev/siqshift",
+    projectId: ids.project,
+    projectName: "Timer",
+    agentRepoRoot: null,
+    agentRepoKey: null,
+    startedAt: at(10),
+    lastEventAt: at(12),
+    ...overrides,
+  });
+
+  it("shows who is running an agent right now, and only them", async () => {
+    const reports = new Reports();
+    reports.runningSessions = [
+      running({ source: "codex", model: "gpt-5.6-sol" }),
+      running({
+        sessionId: "s3",
+        source: "codex",
+        model: "gpt-5.6-sol",
+        cwd: "C:/dev/quartermaster",
+        projectId: null,
+        projectName: null,
+        startedAt: at(11),
+      }),
+      // A person whose only running span is a browser tab is not running an
+      // agent; attention is not a worker, the roster's own rule.
+      running({ sessionId: "s2", user: { id: ids.otherUser, name: "Sam" }, source: "browser", cwd: null, projectId: null, projectName: null, startedAt: at(9) }),
+      // A finished shift is history, and the live view never shows history.
+    ];
+    const service = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+
+    const result = await service.liveAgentSessions(subject, {});
+
+    expect(result.people.map((person) => person.owner.name)).toEqual(["Alex"]);
+    expect(result.people[0]!.sessions.map((session) => [session.id, session.source])).toEqual([
+      ["s1", "codex"],
+      ["s3", "codex"],
+    ]);
+  });
+
+  it("describes a session from captured facts alone, never an invented summary", async () => {
+    const reports = new Reports();
+    reports.runningSessions = [
+      running({ model: "claude-opus-5", startedAt: at(12) }),
+      running({ sessionId: "s2", source: "pi", model: "deepseek-v4-pro", cwd: null, projectId: null, projectName: null, agentRepoRoot: "C:/dev/quartermaster", agentRepoKey: "path:C:/dev/quartermaster", startedAt: at(10, 30) }),
+    ];
+    const service = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+
+    const result = await service.liveAgentSessions(subject, {});
+
+    // Runtime, model, the project the attribution resolved to, and how long
+    // it has been up. No clause the data cannot support.
+    expect(result.people[0]!.sessions.map((session) => session.description)).toEqual([
+      "Claude Code on claude-opus-5 in Timer, running 30m",
+      "Pi on deepseek-v4-pro in quartermaster, running 2h 0m",
+    ]);
+    // The codebase label rides beside the description, a name and never a path.
+    expect(result.people[0]!.sessions.map((session) => session.repo)).toEqual(["siqshift", "quartermaster"]);
+  });
+
+  it("orders project-tied sessions above untied ones, then newest, and people by their running time", async () => {
+    const reports = new Reports();
+    reports.runningSessions = [
+      // Sam's single, shorter session.
+      running({ sessionId: "s4", user: { id: ids.otherUser, name: "Sam" }, startedAt: at(12) }),
+      // Alex: untied but newest, tied newer, tied older - in that arrival order.
+      running({ sessionId: "s1", projectId: null, projectName: null, startedAt: at(12, 10) }),
+      running({ sessionId: "s2", startedAt: at(12, 5) }),
+      running({ sessionId: "s3", startedAt: at(11) }),
+    ];
+    const service = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+
+    const result = await service.liveAgentSessions(subject, {});
+
+    expect(result.people.map((person) => person.owner.name)).toEqual(["Alex", "Sam"]);
+    expect(result.people[0]!.sessions.map((session) => [session.id, session.project?.name ?? null])).toEqual([
+      ["s2", "Timer"],
+      ["s3", "Timer"],
+      ["s1", null],
+    ]);
+  });
+
+  it("answers an honest empty roster when nothing is running, and narrows by scope", async () => {
+    const empty = createReportService({ reports: new Reports(), reaper: silentReaper, now: () => at(12, 30) });
+    await expect(empty.liveAgentSessions(subject, {})).resolves.toEqual({ people: [] });
+
+    const reports = new Reports();
+    reports.runningSessions = [
+      running(),
+      running({ sessionId: "s2", cwd: "C:/dev/siqshift", projectId: null, projectName: null, agentRepoRoot: null, agentRepoKey: null, startedAt: at(11) }),
+    ];
+    const scoped = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+    const narrowed = await scoped.liveAgentSessions(subject, { scope: ids.project });
+    expect(narrowed.people[0]!.sessions.map((session) => session.id)).toEqual(["s1"]);
+
+    const unassigned = await scoped.liveAgentSessions(subject, { scope: "unassigned" });
+    expect(unassigned.people[0]!.sessions.map((session) => session.id)).toEqual(["s2"]);
+  });
+
+  it("refuses a scope from outside the workspace, like every report read", async () => {
+    const service = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper });
+
+    await expect(service.liveAgentSessions(subject, { scope: ids.project }))
+      .rejects.toMatchObject({ code: "not_found", message: "Project not found." });
+  });
+
+  it("closes stale sessions before reading, so the live view cannot show one the window ended", async () => {
+    const reaper = new Reaper();
+    const service = createReportService({ reports: new Reports(), reaper, now: () => at(12, 30) });
+
+    await service.liveAgentSessions(subject, {});
+
+    expect(reaper.subjects).toEqual([subject]);
   });
 });

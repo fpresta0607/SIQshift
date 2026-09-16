@@ -15,6 +15,7 @@ import {
   agentShiftRowsResponseSchema,
   agentShiftsFiltersSchema,
   agentShiftsResponseSchema,
+  liveAgentSessionsResponseSchema,
   agentsListResponseSchema,
   agentStatusValues,
   agentUsageBatchRequestSchema,
@@ -1204,6 +1205,48 @@ describe("agent shifts contracts", () => {
     expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", pageSize: 500 })).toThrow();
     // Strict against the live query string, the same as the aggregate's.
     expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", sort: "hours" })).toThrow();
+    // The tie rides with the pair it belongs to: alone it names no shift, so
+    // it is refused rather than read as a position in the ordering.
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", ...cursor, projectTied: "true" })).not.toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", projectTied: "false" })).toThrow();
+    expect(() => agentShiftRowsFiltersSchema.parse({ groupKey: "siqshift", ...cursor, projectTied: "maybe" })).toThrow();
+  });
+
+  it("reads the live-sessions contract as whole people with running sessions", () => {
+    const response = {
+      people: [{
+        owner: { id: ids.user, name: "Alex" },
+        sessions: [
+          {
+            id: shiftRow.id,
+            source: "codex",
+            owner: { id: ids.user, name: "Alex" },
+            model: "gpt-5.6-sol",
+            startedAt: "2026-08-06T14:00:00.000Z",
+            lastEventAt: "2026-08-06T14:59:00.000Z",
+            repo: "siqshift",
+            project: null,
+            description: "Codex on gpt-5.6-sol in siqshift, running 59m",
+          },
+          {
+            id: "00000000-0000-4000-8000-000000000702",
+            source: "codex",
+            owner: { id: ids.user, name: "Alex" },
+            model: "gpt-5.6-sol",
+            startedAt: "2026-08-06T14:30:00.000Z",
+            lastEventAt: "2026-08-06T14:59:30.000Z",
+            repo: "quartermaster",
+            project: null,
+            description: "Codex on gpt-5.6-sol in quartermaster, running 29m",
+          },
+        ],
+      }],
+    };
+    expect(liveAgentSessionsResponseSchema.parse(response)).toEqual(response);
+    // The browser spans that never reach the roster reach nowhere here
+    // either: they are attention, not workers.
+    expect(() => liveAgentSessionsResponseSchema.parse({ people: [] })).not.toThrow();
+    expect(() => liveAgentSessionsResponseSchema.parse({ people: [{}] })).toThrow();
   });
 
   it("answers a page of rows with where the next one starts, and null once the group is spent", () => {

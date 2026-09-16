@@ -297,6 +297,10 @@ export type AgentShiftRow = {
   endedAt: string;
   agentSeconds: number;
   commitCount: number;
+  /// The project tie the drawer is ordered by: set when the shift's
+  /// attribution resolved to a project, null when it landed in the default
+  /// one. Absent on an API that predates the tie, which reads as untied.
+  project: { id: string; name: string } | null;
 };
 
 /// One codebase's group head: its summed runtime and how many shifts made it.
@@ -320,6 +324,27 @@ export type AgentShiftsGroup = {
   heldRate: number | null;
 };
 
+/// One agent session running right now, as the live view reads it. The
+/// description is the server's own sentence, composed once from captured
+/// facts; the webview renders it verbatim and never re-derives it.
+export type LiveAgentSessionRow = {
+  id: string;
+  source: string;
+  description: string;
+  repo: string | null;
+};
+
+/// One person's running sessions. Only people with at least one arrive, so
+/// nobody stale can appear here and absence is the honest empty state.
+export type LiveAgentPerson = {
+  owner: { id: string; name: string };
+  sessions: readonly LiveAgentSessionRow[];
+};
+
+export type LiveAgentSessions = {
+  people: readonly LiveAgentPerson[];
+};
+
 export type AgentShifts = {
   totalAgentSeconds: number;
   /// Agent runtime by the hour for the line graph; empty over an unbounded range.
@@ -327,10 +352,14 @@ export type AgentShifts = {
   groups: readonly AgentShiftsGroup[];
 };
 
-/// Names the last shift a drawer holds, by the pair the rows are ordered on.
+/// Names the last shift a drawer holds, by the triple the rows are ordered
+/// on: project-tied shifts first, then `startedAt` descending, `id` breaking
+/// an equal instant. `projectTied` is absent on a cursor from before the tie
+/// existed, which reads as the untied partition those rows already sat in.
 export type AgentShiftCursor = {
   startedAt: string;
   id: string;
+  projectTied?: boolean | undefined;
 };
 
 /// One page of one group's shifts, newest first, and where the next page
@@ -378,6 +407,9 @@ export interface TimerBridge {
   /// Every shift in the range grouped by the codebase it worked, for the
   /// Agents tab - the group heads alone. Both bounds absent asks for all time.
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
+  /// Who is running an agent right now, grouped by person. No range: the live
+  /// view reads now, and the desktop reads it for everyone.
+  liveAgentSessions(): Promise<LiveAgentSessions>;
   /// One page of one group's shifts. The bounds must be the ones the heads
   /// were read with, or the drawer lists shifts its own head never counted.
   agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
@@ -839,6 +871,14 @@ const decodeTokenTotalsOrNull = (value: unknown): TokenTotals | null => {
 const decodeAgentShiftRow = (value: unknown): AgentShiftRow => {
   const candidate = record(value);
   const owner = record(candidate.owner);
+  // Absent on an older API decodes to null - untied, the position those rows
+  // already sat in - never a crash.
+  const project = candidate.project === undefined || candidate.project === null
+    ? null
+    : (() => {
+      const tie = record(candidate.project);
+      return { id: uuid(tie.id), name: string(tie.name) };
+    })();
   return {
     id: uuid(candidate.id),
     source: string(candidate.source),
@@ -848,6 +888,7 @@ const decodeAgentShiftRow = (value: unknown): AgentShiftRow => {
     endedAt: string(candidate.endedAt),
     agentSeconds: nonnegativeInteger(candidate.agentSeconds),
     commitCount: nonnegativeInteger(candidate.commitCount ?? 0),
+    project,
   };
 };
 
@@ -892,7 +933,43 @@ export const decodeAgentShiftRows = (value: unknown): AgentShiftRows => {
     shifts: (Array.isArray(candidate.shifts) ? candidate.shifts : []).map(decodeAgentShiftRow),
     nextCursor: cursor === undefined || cursor === null
       ? null
-      : { startedAt: string(record(cursor).startedAt), id: uuid(record(cursor).id) },
+      : (() => {
+        const triple = record(cursor);
+        return {
+          startedAt: string(triple.startedAt),
+          id: uuid(triple.id),
+          // Absent on an older API means the cursor predates the tie, which
+          // reads as the untied partition, never a crash.
+          ...(triple.projectTied === undefined || triple.projectTied === null
+            ? {}
+            : { projectTied: boolean(triple.projectTied) }),
+        };
+      })(),
+  };
+};
+
+/// Only the fields the live row renders; the rest of the session is the API's
+/// business. An absent people list decodes to none, never a crash: the
+/// deployed API can be older than this build.
+export const decodeLiveAgentSessions = (value: unknown): LiveAgentSessions => {
+  const candidate = record(value);
+  return {
+    people: (Array.isArray(candidate.people) ? candidate.people : []).map((entry) => {
+      const person = record(entry);
+      const owner = record(person.owner);
+      return {
+        owner: { id: uuid(owner.id), name: string(owner.name) },
+        sessions: (Array.isArray(person.sessions) ? person.sessions : []).map((row) => {
+          const session = record(row);
+          return {
+            id: uuid(session.id),
+            source: string(session.source),
+            description: string(session.description),
+            repo: stringOrNull(session.repo ?? null),
+          };
+        }),
+      };
+    }),
   };
 };
 
@@ -945,11 +1022,13 @@ export const defaultBridge: TimerBridge = {
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
+  liveAgentSessions: () => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions),
   agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>
     invokeDecoded("agent_shift_rows", decodeAgentShiftRows, {
       groupKey,
       afterStartedAt: after?.startedAt,
       afterId: after?.id,
+      projectTied: after?.projectTied,
       fromAt,
       toExclusiveAt,
     }),

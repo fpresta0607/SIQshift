@@ -7,6 +7,7 @@ import {
   leverage,
   type AgentShiftsResponse,
   type LeaderboardEntry,
+  type LiveAgentSessionsResponse,
   type MeStatsAgent,
   type MeStatsResponse,
   type Organization,
@@ -18,6 +19,7 @@ import {
 } from "@siqshift/shared";
 import {
   HourlyGraph,
+  LiveSessions,
   MemberBreakdown,
   MeterRowItem,
   ShiftGroups,
@@ -149,6 +151,11 @@ export const App = ({ client }: AppProps) => {
   const [boardTab, setBoardTab] = useState<"humans" | "agents">("humans");
   const [agentShifts, setAgentShifts] = useState<AgentShiftsResponse | undefined>();
   const [agentShiftsFailed, setAgentShiftsFailed] = useState(false);
+  /// Who is running an agent right now, above the shifts map. Undefined until
+  /// the first read lands, so "nothing is running" is never drawn before the
+  /// server has answered.
+  const [liveSessions, setLiveSessions] = useState<LiveAgentSessionsResponse | undefined>();
+  const [liveSessionsFailed, setLiveSessionsFailed] = useState(false);
   /// The Agents tab's own person selection. Undefined means everyone, which
   /// is why it cannot borrow `member`: that one falls back to the signed-in
   /// user, so "nobody picked" would silently open the tab on yourself.
@@ -214,7 +221,12 @@ export const App = ({ client }: AppProps) => {
     async (groupKey: string, after: ShiftCursor | null): Promise<ShiftPage> => {
       const result = await client.agentShiftRows(withParams(shiftsQuery(), after === null
         ? { groupKey }
-        : { groupKey, afterStartedAt: after.startedAt, afterId: after.id }));
+        : {
+          groupKey,
+          afterStartedAt: after.startedAt,
+          afterId: after.id,
+          ...(after.projectTied === undefined ? {} : { projectTied: String(after.projectTied) }),
+        }));
       return { shifts: result.shifts, nextCursor: result.nextCursor };
     },
     [client, shiftsQuery],
@@ -426,6 +438,34 @@ export const App = ({ client }: AppProps) => {
     };
   }, [client, signedIn, preferencesReady, allStatsOpen, boardTab, shiftsQuery, expireSession]);
 
+  // The live view reads "now", not the range, so it follows the scope alone
+  // and re-asks on the minute tick like the Today panel does - a live board
+  // that only refreshed on tab open would be neither. The person selection is
+  // applied at render, so clearing it never needs a second fetch.
+  useEffect(() => {
+    if (!signedIn || !preferencesReady || !allStatsOpen || boardTab !== "agents") return undefined;
+    let cancelled = false;
+    client.liveAgentSessions(scopeParams("")).then(
+      (result) => {
+        if (!cancelled) {
+          setLiveSessions(result);
+          setLiveSessionsFailed(false);
+        }
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof ClientError && error.kind === "auth") {
+          expireSession();
+          return;
+        }
+        setLiveSessionsFailed(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, signedIn, preferencesReady, allStatsOpen, boardTab, scopeParams, todayTick, expireSession]);
+
   // Recent sessions load only while their drawer is open, one page at a time.
   useEffect(() => {
     if (!signedIn || !preferencesReady || !sessionsOpen) return undefined;
@@ -508,6 +548,8 @@ export const App = ({ client }: AppProps) => {
     setShiftsMember(undefined);
     setAgentShifts(undefined);
     setAgentShiftsFailed(false);
+    setLiveSessions(undefined);
+    setLiveSessionsFailed(false);
     setSessionsOpen(false);
     setSessionRows([]);
   };
@@ -980,6 +1022,8 @@ export const App = ({ client }: AppProps) => {
                 shifts={agentShifts}
                 shiftsFailed={agentShiftsFailed}
                 rangeLabel={rangeSentence[range]}
+                livePeople={liveSessions?.people}
+                liveFailed={liveSessionsFailed}
                 people={agentShifts?.people ?? []}
                 selected={shiftsMember}
                 onSelect={setShiftsMember}
@@ -1259,6 +1303,9 @@ type ShiftsTabProps = {
   shifts: AgentShiftsResponse | undefined;
   shiftsFailed: boolean;
   rangeLabel: string;
+  /** Who is running an agent right now; undefined until the first read lands. */
+  livePeople: LiveAgentSessionsResponse["people"] | undefined;
+  liveFailed: boolean;
   people: AgentShiftsResponse["people"];
   selected: { id: string; name: string } | undefined;
   onSelect: (person: { id: string; name: string } | undefined) => void;
@@ -1276,13 +1323,19 @@ type ShiftsTabProps = {
 /// once rather than one worker's long day. It carries no bar, because the
 /// board is deliberately computed before the filter and a pre-filter
 /// numerator over the post-filter total would read past 100%.
-const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, people, selected, onSelect, selfId, loadShifts }: ShiftsTabProps) => {
+const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, livePeople, liveFailed, people, selected, onSelect, selfId, loadShifts }: ShiftsTabProps) => {
   // The heading names whoever the numbers below it are actually about, which
   // is the request that came back rather than the row last clicked: naming the
   // new person over the old person's total is the one way this tab can lie.
   // The board's own highlight is what acknowledges the click immediately.
   const shownId = shifts?.filters.userId;
   const shown = shownId === undefined ? undefined : people.find((person) => person.owner.id === shownId);
+  // The live board is read for everyone and narrowed here, so "All people"
+  // stays a pure view change and a person picked with nothing running reads
+  // the honest empty state instead of an unanswered request.
+  const liveShown = livePeople === undefined
+    ? undefined
+    : selected === undefined ? livePeople : livePeople.filter((person) => person.owner.id === selected.id);
   return (
     <section className="member-stats" aria-labelledby="agent-shifts-title" data-testid="agent-shifts">
       {/* The head renders before anything can fail, because "All people" is
@@ -1296,6 +1349,11 @@ const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, people, selected, onSelec
           </button>
         )}
       </div>
+      {liveFailed
+        ? <p className="subtle">Could not tell who is running an agent right now.</p>
+        : liveShown === undefined
+          ? <p className="subtle" role="status">Checking what is running…</p>
+          : <LiveSessions people={liveShown} />}
       {shiftsFailed && <p className="subtle">Could not load the shifts for this range.</p>}
       {!shiftsFailed && shifts === undefined && <p className="subtle" role="status">Loading…</p>}
       {!shiftsFailed && shifts !== undefined && (
@@ -1312,7 +1370,7 @@ const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, people, selected, onSelec
   );
 };
 
-type ShiftsTabBodyProps = Omit<ShiftsTabProps, "shifts" | "shiftsFailed" | "rangeLabel"> & { shifts: AgentShiftsResponse };
+type ShiftsTabBodyProps = Omit<ShiftsTabProps, "shifts" | "shiftsFailed" | "rangeLabel" | "livePeople" | "liveFailed"> & { shifts: AgentShiftsResponse };
 
 /// Everything under the head: the board, the total, the graph, the drawers.
 const ShiftsTabBody = ({ shifts, people, selected, onSelect, selfId, loadShifts }: ShiftsTabBodyProps) => (

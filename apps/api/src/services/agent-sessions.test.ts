@@ -354,6 +354,28 @@ describe("agent-session service", () => {
     });
   });
 
+  it("ends one Codex terminal without closing another live lifecycle", async () => {
+    const { agentSessions, service } = createService();
+    await service.ingest(subject, [
+      event({ source: "codex", externalSessionId: "thread-a-lock-1", model: "gpt-5.6-sol" }),
+      event({ source: "codex", externalSessionId: "thread-b-lock-2", model: "gpt-5.6-sol" }),
+    ]);
+
+    await service.ingest(subject, [
+      event({
+        source: "codex",
+        externalSessionId: "thread-a-lock-1",
+        event: "ended",
+        occurredAt: new Date("2026-08-06T13:50:00.000Z"),
+      }),
+    ]);
+
+    expect(agentSessions.records.map((session) => [session.externalSessionId, session.status])).toEqual([
+      ["thread-a-lock-1", "ended"],
+      ["thread-b-lock-2", "running"],
+    ]);
+  });
+
   it("tolerates end-before-start by storing the row directly as ended, attributed from cwd", async () => {
     const { agentSessions, service } = createService({ mappings: [mapped] });
 

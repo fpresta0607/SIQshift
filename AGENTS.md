@@ -61,6 +61,19 @@ answered rather than forgotten:
 The desktop gets the drawers, not the board: its All-stats modal is 440px wide and its Humans tab
 already lists every member with their agent time one click away.
 
+**The Agents tab also answers "who is running an agent right now", from `GET
+/reports/agent-sessions/live`.** The live view is one group per person with at least one running
+session; a person with none is absent, never a stale row, and browser spans are excluded by the
+same `rosterEligibleSource` rule as everywhere else. Each row's `description` is composed once,
+server-side, from captured facts alone (runtime, attested model, the project or codebase the
+directory resolved to, how long the session has been up): there is no summary field behind it, and
+none may be invented on the client. Stale running rows close through the reaper before the read, so
+a session the 30-minute staleness window ended can never appear live. In the All Stats agents view
+the ordering is project-tie first: group heads keep the label-less group last, and within a drawer
+the project-tied shifts read above the untied ones (which stay visible below, sorted not hidden);
+the drawer cursor therefore carries `projectTied` beside its `startedAt`/`id` pair, and a cursor
+sent without it reads as untied.
+
 **The web page is the desktop app's screen, not a second design.** It opens on the same filing
 header, clock card and Today card, and files the board, the breakdowns, the Agents map and the
 session history behind the same **All stats** button; projects, the invite code and signing out
@@ -125,9 +138,11 @@ It is a roster, **not an allowlist**: `agent_sessions.source` is text with a sha
 check, so an undeclared runtime is still recorded under its own id. Never reintroduce
 an enum for it, and never map an unknown runtime onto `other`.
 
-A runtime is identified by the registration that fired, never by the payload's shape:
-Codex pipes Claude Code's exact hook payload, so registrations pass `--source`. And
-runtime and model are independent — neither is ever derived from the other.
+A runtime is identified by its capture path, never by a payload's shape or by its model.
+Hook registrations pass `--source` because their payloads are not runtime identities.
+Codex terminal capture instead reconciles held writer locks with local app-server metadata.
+A raw process is evidence that an executable exists, not that an agent session exists, so it never creates a session.
+Runtime and model are independent; neither is ever derived from the other.
 
 ## What actually closes a segment
 
@@ -330,6 +345,12 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   is documented on the statusline JSON, not the session hooks). The payload's
   `transcript_path` is the repair path: every assistant entry in the transcript
   names its own model, so the desktop's transcript reader backfills it.
+- A live Codex terminal is a held `~/.codex/thread-writer-locks/<thread>.lock`, not a
+  `codex.exe` process. `codex_sessions.rs` reads local state-only app-server metadata
+  for held threads and admits only `cli` and `exec`, excluding app-server, editor and
+  subagent threads. The lock's modified time distinguishes terminal lifecycles and
+  resumes; lock disappearance emits the end. Missing metadata defers a start rather
+  than inventing cwd, model, project, or a session.
 - The desktop force-installs the browser extension via the HKCU
   `ExtensionInstallForcelist` policy (`browser::sync_extension_policies`), but only
   when the store ids are compiled in (`SIQSHIFT_CHROME_EXTENSION_ID` /

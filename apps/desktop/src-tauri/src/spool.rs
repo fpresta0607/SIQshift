@@ -830,10 +830,9 @@ pub enum HookStdin {
 /// and cwd are then extracted from the CLI's own stdin payload.
 ///
 /// The source always wins from here, because the command line is the one place
-/// that *knows* which runtime registered the hook. Codex pipes a payload shaped
-/// exactly like Claude Code's, so without this a Codex session would be filed
-/// as Claude Code — a runtime is identified by its registration, never guessed
-/// from the shape of what it sends.
+/// that *knows* which runtime registered the hook. Legacy Codex hooks piped a
+/// Claude-shaped payload, so the compatibility parser still files one from its
+/// explicit source instead of guessing from the payload shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArgvContext {
     pub source: AgentSource,
@@ -2353,9 +2352,8 @@ mod tests {
 
     #[test]
     fn a_claude_shaped_payload_is_filed_under_the_runtime_that_registered_it() {
-        // Codex pipes Claude Code's payload shape. Without the argv identity a
-        // Codex session would be filed as Claude Code, so the registration —
-        // not the shape — decides the runtime.
+        // Legacy Codex hooks piped Claude Code's payload shape. The compatibility
+        // parser still uses argv identity rather than guessing from that shape.
         let payload = r#"{"hook_event_name":"SessionStart","session_id":"c1","cwd":"/repo","model":"gpt-5.3-codex"}"#;
         let context = ArgvContext {
             source: source("codex"),

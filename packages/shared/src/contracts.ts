@@ -833,7 +833,15 @@ export const agentShiftsFiltersSchema = z
   })
   .strict();
 
-/** One shift: a terminal session, with the facts it attested itself. */
+/**
+ * One shift: a terminal session, with the facts it attested itself.
+ *
+ * `project` is the tie the All Stats agents view orders by: set when the
+ * shift's attribution resolved to a project, null when its time landed in the
+ * default project. Optional, because the API and the dashboards deploy
+ * separately, and a client from before the tie existed must keep reading
+ * rows that do not carry it.
+ */
 export const agentShiftRowSchema = z
   .object({
     id: idSchema,
@@ -847,6 +855,7 @@ export const agentShiftRowSchema = z
     agentSeconds: z.number().int().nonnegative().safe(),
     /** How many commits the shift recorded; the subjects stay off this wire, because nothing renders them. */
     commitCount: z.number().int().nonnegative().safe(),
+    project: z.object({ id: idSchema, name: z.string().min(1) }).strict().nullable().optional(),
   })
   .strict();
 
@@ -931,17 +940,22 @@ export const agentShiftsResponseSchema = z
   .strict();
 
 /**
- * Names the last shift a drawer already holds: the pair the rows are ordered
- * by - `startedAt` descending, `id` ascending to break an equal instant. The
- * pair is unique per shift and does not move when a newer shift appears, which
- * an offset cannot say: the server re-sorts the group on every read, so a
- * shift arriving at the head shifts every window below it by one and an offset
- * page then repeats a row it already served.
+ * Names the last shift a drawer already holds: the triple the rows are ordered
+ * by - project-tied shifts first, then `startedAt` descending, `id` ascending
+ * to break an equal instant. The fields are unique per shift and do not move
+ * when a newer shift appears, which an offset cannot say: the server re-sorts
+ * the group on every read, so a shift arriving at the head shifts every window
+ * below it by one and an offset page then repeats a row it already served.
+ *
+ * `projectTied` is optional because the tie postdates the pair: a cursor from
+ * a client that has never seen it reads as untied, which is the position an
+ * untied row already holds in the ordering.
  */
 export const agentShiftCursorSchema = z
   .object({
     startedAt: timestampSchema,
     id: idSchema,
+    projectTied: z.boolean().optional(),
   })
   .strict();
 
@@ -963,9 +977,16 @@ export const agentShiftRowsFiltersSchema = agentShiftsFiltersSchema
     /** The `nextCursor` of the page before this one; absent asks for the first. */
     afterStartedAt: timestampSchema.optional(),
     afterId: idSchema.optional(),
+    /**
+     * The cursor's project tie, as a query string can carry it. Half of the
+     * ordering the rows are read under: alone it names no shift, so it is
+     * refused without the pair it belongs to.
+     */
+    projectTied: z.enum(["true", "false"]).optional(),
   })
   .strict()
-  .refine((filters) => (filters.afterStartedAt === undefined) === (filters.afterId === undefined));
+  .refine((filters) => (filters.afterStartedAt === undefined) === (filters.afterId === undefined))
+  .refine((filters) => filters.projectTied === undefined || filters.afterId !== undefined);
 
 /**
  * One page of a group's shifts. `nextCursor` is the last row's ordering pair
@@ -979,6 +1000,62 @@ export const agentShiftRowsResponseSchema = z
     filters: agentShiftRowsFiltersSchema,
     shifts: z.array(agentShiftRowSchema),
     nextCursor: agentShiftCursorSchema.nullable(),
+  })
+  .strict();
+
+/**
+ * The filters of the live-sessions read. Sessions running right now have no
+ * range, so the only narrowing is the dashboard's project scope.
+ */
+export const liveAgentSessionsFiltersSchema = z
+  .object({
+    /** Absent means all projects. */
+    scope: projectScopeSchema.optional(),
+  })
+  .strict();
+
+/**
+ * One agent session running at the moment the read answered, with the facts a
+ * live row renders. `description` is composed once, server-side, from those
+ * facts alone - the runtime, the attested model, the codebase or project the
+ * working directory resolved to, and how long the session has been up - so
+ * the two surfaces can only ever render the same honest sentence. Nothing in
+ * it is summarized or invented: every clause names a captured field.
+ */
+export const liveAgentSessionSchema = z
+  .object({
+    id: idSchema,
+    source: agentSourceSchema,
+    owner: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+    model: z.string().min(1).max(200).nullable(),
+    startedAt: timestampSchema,
+    /** The session's last event, so a client can tell a live one from one about to be reaped. */
+    lastEventAt: timestampSchema,
+    /**
+     * The codebase the session works in, as a label - a name, never a path,
+     * under the same rule the shifts map reads. Null when neither its working
+     * directory nor its roster identity names one.
+     */
+    repo: repoLabelSchema.nullable(),
+    /** The project the session's attribution resolved to; null when nothing did. */
+    project: z.object({ id: idSchema, name: z.string().min(1) }).strict().nullable(),
+    description: z.string().min(1).max(500),
+  })
+  .strict();
+
+/**
+ * Who is running agents right now, and what each one is doing. One group per
+ * person with at least one running session, so a person with none is absent
+ * rather than stale - absence is the honest answer for them. Heaviest first.
+ */
+export const liveAgentSessionsResponseSchema = z
+  .object({
+    people: z.array(z
+      .object({
+        owner: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+        sessions: z.array(liveAgentSessionSchema),
+      })
+      .strict()),
   })
   .strict();
 
@@ -1261,6 +1338,9 @@ export type AgentShiftsFilters = z.infer<typeof agentShiftsFiltersSchema>;
 export type AgentShiftsResponse = z.infer<typeof agentShiftsResponseSchema>;
 export type AgentShiftRow = z.infer<typeof agentShiftRowSchema>;
 export type AgentShiftCursor = z.infer<typeof agentShiftCursorSchema>;
+export type LiveAgentSession = z.infer<typeof liveAgentSessionSchema>;
+export type LiveAgentSessionsFilters = z.infer<typeof liveAgentSessionsFiltersSchema>;
+export type LiveAgentSessionsResponse = z.infer<typeof liveAgentSessionsResponseSchema>;
 export type AgentShiftRowsFilters = z.infer<typeof agentShiftRowsFiltersSchema>;
 export type AgentShiftRowsResponse = z.infer<typeof agentShiftRowsResponseSchema>;
 export type AgentsReportSort = z.infer<typeof agentsReportSortSchema>;

@@ -631,6 +631,8 @@ export type ShiftRow = {
   endedAt: string;
   agentSeconds: number;
   commitCount: number;
+  /** The project tie the server ordered the drawer by, when the shift carries one; absent on an older API. */
+  project?: { name: string } | null | undefined;
 };
 
 /** One codebase's head, as both Agents tabs render it. The shifts behind it are a separate read. */
@@ -646,14 +648,17 @@ export type ShiftGroup = {
 };
 
 /**
- * Names the last shift a drawer holds, by the pair the rows are ordered on:
- * newest `startedAt` first, `id` breaking an equal instant. A cursor survives
- * a shift arriving at the head of the list, which is the whole reason the
- * drawer pages on one rather than on a row offset.
+ * Names the last shift a drawer holds, by the triple the rows are ordered on:
+ * project-tied shifts first, then newest `startedAt`, `id` breaking an equal
+ * instant. A cursor survives a shift arriving at the head of the list, which
+ * is the whole reason the drawer pages on one rather than on a row offset.
+ * `projectTied` is optional: a cursor from before the tie existed reads as
+ * untied, which is where an untied row already sits in the ordering.
  */
 export type ShiftCursor = {
   startedAt: string;
   id: string;
+  projectTied?: boolean | undefined;
 };
 
 /** One page of a group's shifts, and where the next one starts - null once the group is exhausted. */
@@ -848,6 +853,7 @@ export const ShiftGroups = ({
                     {agentRuntimeLabel(shift.source)}
                     {` · ${shift.owner.name}`}
                     {shift.model !== null && ` · ${shift.model}`}
+                    {shift.project != null && ` · ${shift.project.name}`}
                     {shift.commitCount > 0 && ` · ${shift.commitCount} commit${shift.commitCount === 1 ? "" : "s"}`}
                   </span>
                   <span className="shift-duration">{formatHumanDuration(shift.agentSeconds)}</span>
@@ -871,5 +877,64 @@ export const ShiftGroups = ({
         );
       })}
     </>
+  );
+};
+
+/** One running agent session as both Agents tabs render it. */
+export type LiveSessionRow = {
+  id: string;
+  /** The honest line the server composed; rendered verbatim, never re-derived. */
+  description: string;
+  /** The codebase the session works in, when one is known. */
+  repo: string | null;
+  source: string;
+};
+
+/** One person's running sessions, as both Agents tabs render them. */
+export type LivePersonGroup = {
+  owner: { id: string; name: string };
+  sessions: readonly LiveSessionRow[];
+};
+
+/**
+ * The live view at the top of the Agents tab: who is running an agent right
+ * now, and what each one is doing. The server sends only people with at least
+ * one running session, so nobody stale can appear here, and an empty roster
+ * is the honest "nothing is running" - not an absence to be papered over.
+ *
+ * The description comes from the server composed from captured facts, so both
+ * surfaces render the same sentence and neither can invent one the data does
+ * not support. The codebase label rides beside it because that is the tie the
+ * tab's map below files the session under once it ends.
+ */
+export const LiveSessions = ({ people }: { people: readonly LivePersonGroup[] }) => {
+  if (people.length === 0) {
+    return (
+      <p className="subtle live-sessions-empty" data-testid="live-sessions-empty">
+        No agent is running right now.
+      </p>
+    );
+  }
+  return (
+    <section className="live-sessions" data-testid="live-sessions" aria-label="Agents running now">
+      <h4 className="live-sessions-title">Live now</h4>
+      {people.map((person) => (
+        <div key={person.owner.id} className="live-person">
+          <span className="live-person-name">
+            {person.owner.name}
+            {person.sessions.length > 1 && <span className="meter-detail"> · {person.sessions.length} agents</span>}
+          </span>
+          <ul className="live-session-list">
+            {person.sessions.map((session) => (
+              <li key={session.id} className="live-session">
+                <span className="live-pulse" aria-hidden="true" />
+                <span className="live-description">{session.description}</span>
+                {session.repo !== null && <span className="live-repo">{session.repo}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
   );
 };
