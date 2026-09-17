@@ -132,9 +132,11 @@ Every session belongs to exactly one project, resolved in this order:
    Three lanes then answer in order, each only when the one before it found nothing: the repository root's path, the working directory's path, and the repository's git remote.
    The two path lanes are `resolveProjectForCwd` matching against the user's path mappings by normalized longest prefix on path-segment boundaries, so `c:/dev/siqshift` matches `c:/dev/siqshift/src` but never `c:/dev/siqshift-extra`.
    The remote lane matches the repository's normalized remote against the `repo_url` a path mapping carries, which is the only lane that reaches a worktree kept outside every mapped root.
+   An agent shift the three lanes leave unplaced takes a fourth on the server: the project this operator's own shifts of the same repository were already placed in, so a no-mistakes gate worktree under `~/.no-mistakes` lands where the checkout it was run from did.
    A lane matching two different projects is ambiguous and resolves to nothing rather than to a guess.
 3. **The default project**, which is the oldest project on the account. Every new workspace
    already starts with `General`, so there is always somewhere for the time to go.
+   Breakdowns list that time as **Unattributed** rather than under the default project's name, because nothing chose the project for it.
 
 The project cannot change under an open session: when the answer changes, the
 session closes at its last active moment and the next one picks up there. No
@@ -508,8 +510,8 @@ Not by policy, but because the code never reads it:
 - **Injection.** SIQshift never reaches inside or controls another app. The monitor is read-only
   Win32 queries plus broadcasts delivered to SIQshift's own hidden window.
 
-What *is* collected: coarse activity segments with timestamps, the foreground process name, agent
-session boundaries with their working directory and - when that directory is in a git repository -
+What *is* collected: coarse activity segments with timestamps, the foreground process name, when
+an agent session starts, is still working, and finishes, with its working directory and - when that directory is in a git repository -
 that repository's root and its `origin` remote URL with any embedded credentials removed, which is
 what names the repository an agent works, browser spans naming which URL rule matched and
 for how long, the start and end of each session the monitor observed, and — for an AI coding shift
@@ -685,7 +687,7 @@ hook that names no model records none rather than a guess.
 
 | CLI | Config | Signal quality | Reports model | Registration |
 |---|---|---|---|---|
-| **Claude Code** | `~/.claude/settings.json` | true session boundaries (`SessionStart`/`SessionEnd`); `PostToolUse` heartbeats available with manual config | never | merged automatically |
+| **Claude Code** | `~/.claude/settings.json` | true session boundaries (`SessionStart`/`SessionEnd`); between them, liveness from the session log the start names, one heartbeat per five minutes of entries | never | merged automatically |
 | **Codex** | `~/.codex/hooks.json` | true boundaries; same hook shape as Claude Code, told apart by the `--source` its registration passes | never | merged automatically |
 | **Cursor** | `~/.cursor/hooks.json` | true boundaries, IDE only — cloud agents never fire them | never | merged automatically |
 | **Pi** / **pi-signed** | `~/.pi/agent/extensions/` | true boundaries (`session_start`/`session_shutdown`); reports its model | always | extension to paste |
@@ -706,8 +708,11 @@ runtime inside its own UI, and need no licence from anyone.
 
 Because `session-end` is never guaranteed (a crash, a `kill -9`), the server reaps agent
 sessions with no event for 30 minutes and closes them at their last-seen timestamp - a working
-agent heartbeats on every tool call, so half an hour of silence means it is gone. An `end` that
-arrives before its `start` is tolerated by upsert, not rejected.
+agent heartbeats while it works, so half an hour of silence means it is gone. The same rule is
+applied in event time as each event arrives, so a backlog uploaded days late measures what it
+would have live: an event more than 30 minutes after a running shift's last one finds that shift
+already over at its last event, instead of stretching it across the gap. An `end` that arrives
+before its `start` is tolerated by upsert, not rejected.
 
 ### Wiring up your own orchestrator
 

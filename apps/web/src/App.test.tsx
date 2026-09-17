@@ -971,7 +971,58 @@ describe("dashboard", () => {
     // claude.exe reads as the tool it is, so the team sees Claude usage plainly.
     expect(stats.getAllByText("Claude Code").length).toBeGreaterThan(0);
     expect(stats.getByText("VS Code")).toBeInTheDocument();
-    expect(stats.getByText(/30m of that landed in the default project/)).toBeInTheDocument();
+    // The half hour nothing named a project for is its own row, in words, not
+    // a share of General's.
+    const projectRows = within(stats.getByTestId("member-project-list")).getAllByRole("listitem");
+    expect(projectRows.map((row) => row.textContent)).toEqual(["General1h 30m", "Unattributed30m"]);
+    expect(stats.getByText(/30m of that is unattributed: nothing named a project for it, so none is claimed/)).toBeInTheDocument();
+  });
+
+  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+    const person = await signIn(clientFor());
+
+    const stats = await openAllStats(person);
+    const board = await stats.findByTestId("board-list");
+    const breakdown = await stats.findByTestId("breakdown");
+    const notes = stats.getAllByTestId("agent-time-limit");
+    expect(notes).toHaveLength(2);
+    expect(board.nextElementSibling).toBe(notes[0]);
+    expect(breakdown).toContainElement(notes[1]!);
+    for (const note of notes) expect(note).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    expect(await panel.findByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+  });
+
+  it("names a session nothing named a project for as unattributed in the history", async () => {
+    const sessionRow = {
+      user: { id: "u2", name: "Alex" },
+      project: { id: "p1", name: "General" },
+      description: null,
+      status: "stopped",
+      startedAt: "2026-08-06T15:00:00.000Z",
+      stoppedAt: "2026-08-06T16:00:00.000Z",
+      idleSeconds: 0,
+      durationSeconds: 3_600,
+    };
+    const person = await signIn(clientFor({
+      report: vi.fn().mockResolvedValue({
+        rows: [
+          { ...sessionRow, id: "00000000-0000-4000-8000-000000000701", attribution: "default", attributedSeconds: 0, unattributedSeconds: 3_600 },
+          { ...sessionRow, id: "00000000-0000-4000-8000-000000000702", attribution: "agent", attributedSeconds: 3_600, unattributedSeconds: 0 },
+        ],
+        totalDurationSeconds: 7_200,
+        filters: {},
+        pagination: { page: 1, pageSize: 25, totalRows: 2, totalPages: 1 },
+      }),
+    }));
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByText(/Recent sessions/));
+    const table = await stats.findByRole("table");
+    const projectCells = within(table).getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("cell")[1]!.textContent);
+    expect(projectCells).toEqual(["Unattributed", "General"]);
   });
 
   it("renders an older API response that lacks the hourly series", async () => {
@@ -1146,8 +1197,9 @@ describe("dashboard", () => {
     // Both lists now close on the same total: 1h 34m + 22m of projects, and
     // 20m + 12m + 5m of apps with the 1h 19m nobody was in front of anything.
     const projects = stats.getByTestId("member-project-list");
-    expect(projects).toHaveTextContent("1h 34m");
-    expect(projects).toHaveTextContent("22m");
+    expect(projects).toHaveTextContent("peakCraftsman1h 34m");
+    expect(projects).toHaveTextContent("Unattributed22m");
+    expect(projects).not.toHaveTextContent("General");
     const apps = stats.getByTestId("member-app-list");
     expect(apps).toHaveTextContent("Quiet time");
     expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
@@ -1297,8 +1349,12 @@ describe("the home screen", () => {
 
     const rows = within(await screen.findByTestId("project-list")).getAllByRole("listitem");
     expect(rows[0]).toHaveTextContent("General");
-    expect(rows[0]).toHaveTextContent("2h 00m");
-    expect(rows[0]!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share")).toBe("100%");
+    expect(rows[0]).toHaveTextContent("1h 30m");
+    expect(rows[0]!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share")).toBe("75%");
+    // What nothing named a project for is not filed under the default project's name.
+    expect(rows[1]).toHaveTextContent("Unattributed");
+    expect(rows[1]).toHaveTextContent("30m");
+    expect(rows[1]!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share")).toBe("25%");
   });
 
   it("plots the day's hours against its agents on the home screen", async () => {

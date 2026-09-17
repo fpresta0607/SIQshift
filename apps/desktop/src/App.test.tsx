@@ -478,6 +478,16 @@ describe("recording", () => {
     expect(screen.queryByLabelText("File my time under")).not.toBeInTheDocument();
   });
 
+  it("says a stretch nothing named a project for is unattributed, rather than naming the default project", async () => {
+    const unattributed = { ...recording, currentSession: { ...recording.currentSession, attribution: "default" as const } };
+    render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(unattributed) })} />);
+
+    const where = await screen.findByTestId("filing-where");
+    await waitFor(() => expect(where).toHaveTextContent("Unattributed"));
+    expect(where).not.toHaveTextContent(project.name);
+    expect(where.querySelector(".monitor-dot")).not.toHaveAttribute("style");
+  });
+
   it("pins time to a project and hands the choice back to the host", async () => {
     const sessionSelectProject = vi.fn().mockResolvedValue({ ...recording, selectedProjectId: otherProject.id });
     const person = userEvent.setup();
@@ -545,7 +555,7 @@ describe("today", () => {
     // The project row underneath repeats the number, so pin the headline.
     expect(await within(panel).findByText("2h 00m", { selector: "strong" })).toBeInTheDocument();
     expect(within(panel).getByTestId("unattributed-foot")).toHaveTextContent(
-      "30m of that landed in the default project, because nothing said which project it was for.",
+      "30m of that is unattributed: nothing named a project for it, so none is claimed.",
     );
   });
 
@@ -803,8 +813,11 @@ describe("the today panel", () => {
     const projects = within(await screen.findByTestId("project-list")).getAllByRole("listitem");
     expect(projects[0]).toHaveTextContent("Field work");
     expect(projects[0]).toHaveTextContent("1h 30m");
-    expect(projects[1]).toHaveTextContent("Client work");
+    // Client work's quarter hour fell back to it because nothing named a
+    // project, so it reads as unattributed rather than under that name.
+    expect(projects[1]).toHaveTextContent("Unattributed");
     expect(projects[1]).toHaveTextContent("15m");
+    expect(screen.getByTestId("project-list")).not.toHaveTextContent("Client work");
 
     const rows = within(screen.getByTestId("session-app-list")).getAllByRole("listitem");
     // Heaviest first, agent CLIs named by their runtime rather than their exe.
@@ -1151,6 +1164,24 @@ describe("the team board", () => {
       "b1c7e513-b094-4d4c-ae55-21790ae019a4",
     ));
     expect(await within(stats).findByText("Blender")).toBeInTheDocument();
+  });
+
+  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+
+    const panel = await openAllStats(person);
+    const board = within(panel).getByTestId("board-list");
+    const breakdown = await within(panel).findByTestId("breakdown");
+    const notes = within(panel).getAllByTestId("agent-time-limit");
+    expect(notes).toHaveLength(2);
+    expect(board.nextElementSibling).toBe(notes[0]);
+    expect(breakdown).toContainElement(notes[1]!);
+    for (const note of notes) expect(note).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+
+    await person.click(within(panel).getByRole("button", { name: "Agents" }));
+    const shifts = await within(panel).findByTestId("agent-shifts");
+    expect(within(shifts).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
   });
 
   it("writes the breakdown in plain words and drops empty agent buckets", async () => {

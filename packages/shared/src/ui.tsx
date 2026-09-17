@@ -76,6 +76,7 @@ export const MemberBreakdown = ({
         <span className="metric-value">{formatHumanDuration(concurrency.t3PlusSeconds)}</span>
       </div>
     )}
+    <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
   </div>
 );
 
@@ -519,6 +520,37 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
     .reduce((sum, row) => sum + row.durationSeconds, 0);
   if (rest === 0) return [...kept, ...quiet];
   return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false }, ...quiet];
+};
+
+/// One row of a project breakdown. `projectId` is null on the unattributed row.
+export type ProjectRow = {
+  key: string;
+  projectId: string | null;
+  name: string;
+  durationSeconds: number;
+};
+
+export const UNATTRIBUTED_ROW_KEY = "unattributed";
+export const UNATTRIBUTED_LABEL = "Unattributed";
+export const AGENT_TIME_LIMIT_NOTE = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
+
+/// A project breakdown, heaviest first, with the time nothing named a project
+/// for pulled out into one "Unattributed" row read last. That time is stored
+/// under the default project because a session row needs a project, but
+/// listing it under that project's name says someone chose the project, and
+/// nobody did: the report that asked for this read "4h 06m of that landed in
+/// the default project" under a row claiming all of it for General.
+export const buildProjectRows = (
+  projects: readonly { project: { id: string; name: string }; attributedSeconds: number; unattributedSeconds: number }[],
+): ProjectRow[] => {
+  const rows = projects
+    .filter((entry) => entry.attributedSeconds > 0)
+    .map((entry) => ({ key: entry.project.id, projectId: entry.project.id, name: entry.project.name, durationSeconds: entry.attributedSeconds }))
+    .sort((a, b) => b.durationSeconds - a.durationSeconds || a.name.localeCompare(b.name));
+  const unattributedSeconds = projects.reduce((sum, entry) => sum + entry.unattributedSeconds, 0);
+  return unattributedSeconds > 0
+    ? [...rows, { key: UNATTRIBUTED_ROW_KEY, projectId: null, name: UNATTRIBUTED_LABEL, durationSeconds: unattributedSeconds }]
+    : rows;
 };
 
 /// One app's share of the day, as the Today surface renders it.

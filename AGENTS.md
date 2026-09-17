@@ -273,9 +273,12 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   named `.git` (submodule, bare repo, custom `GIT_DIR`) falls back to the toplevel answer.
   Attribution resolves in a fixed chain - repoRoot path, then cwd path, then the
   repository's remote against `project_path_mappings.repo_url` through
-  `resolveProjectForRemote` - so a worktree stored outside every mapped root still lands
-  on its repository's project. Never key any of it off the session name or worktree
-  directory name.
+  `resolveProjectForRemote`, then (agent shifts, server-side) the one project this
+  operator's own shifts of that repository key already carry (`listProjectsForRepoKey`) -
+  so a worktree stored outside every mapped root still lands on its repository's project.
+  Never key any of it off the session name or worktree directory name. Time the chain
+  never placed is stored under the default project but renders as **Unattributed**
+  (`buildProjectRows`), never under that project's name.
 - Attribution history was rewritten once by migration `0018_backfill_worktree_attribution`,
   and the audit trail of that rewrite is two columns, not one: `original_project_id` (0017)
   holds what a moved row held before, and `attribution_backfilled_at` (0019) marks that a
@@ -344,7 +347,19 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   `transcript_path`, `cwd`, `hook_event_name`, and `source`/`reason` only; `model`
   is documented on the statusline JSON, not the session hooks). The payload's
   `transcript_path` is the repair path: every assistant entry in the transcript
-  names its own model, so the desktop's transcript reader backfills it.
+  names its own model, so the desktop's transcript reader backfills it. Registration
+  is SessionStart/SessionEnd only, so the transcript is also the shift's liveness:
+  `agent_usage.rs` spools one plain heartbeat per `ACTIVITY_HEARTBEAT_SECONDS` of
+  entries, stamped with the entry's own time. Before it, a live-delivered Claude Code
+  shift never outlived the 30-minute reaper, and only a late upload read longer.
+- `/agent-sessions` must answer a full 500-event batch inside `ApiClient`'s 20-second
+  timeout, because installed desktops older than `AGENT_UPLOAD_BATCH_SIZE` still send
+  500 at a time and a timed-out batch is re-sent forever. Ingest writes a batch's shifts
+  side by side (`concurrentShifts`), each shift's own events in event order. The staleness
+  rule is applied in event time on every write (`lapsedBefore`), so a backlog measures
+  what a live upload would have. Never let a heartbeat reopen or extend an ended row: the
+  transcript reader's model heartbeat and Codex heartbeats are stamped at read time and
+  legitimately arrive after a real end.
 - A live Codex terminal is a held `~/.codex/thread-writer-locks/<thread>.lock`, not a
   `codex.exe` process. `codex_sessions.rs` reads local state-only app-server metadata
   for held threads and admits only `cli` and `exec`, excluding app-server, editor and

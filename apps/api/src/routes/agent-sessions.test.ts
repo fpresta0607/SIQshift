@@ -88,7 +88,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
     return { session: record, previousEnd: null };
   }
 
-  public async closeRunning(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date, _now: Date) {
+  public async closeRunning(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date, _lapsedBefore: Date, _now: Date) {
     const existing = this.find(subject.organizationId, subject.userId, source, externalSessionId);
     if (existing === undefined || existing.status === "ended") return null;
     const previousEnd = existing.endedAt ?? existing.lastEventAt;
@@ -97,6 +97,10 @@ class MemoryAgentSessions implements AgentSessionRepository {
     existing.endedAt = terminalAt;
     existing.lastEventAt = terminalAt;
     return { session: existing, previousEnd };
+  }
+
+  public async listProjectsForRepoKey() {
+    return [];
   }
 
   public async insertEnded(input: InsertEndedAgentSession) {
@@ -120,7 +124,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
     });
   }
 
-  public async advanceLastEvent(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, _now: Date) {
+  public async advanceLastEvent(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, _lapsedBefore: Date, _now: Date) {
     const existing = this.find(subject.organizationId, subject.userId, source, externalSessionId);
     if (existing === undefined) return null;
     const previousEnd = existing.endedAt ?? existing.lastEventAt;

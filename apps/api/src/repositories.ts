@@ -494,6 +494,12 @@ export interface UpsertStartedAgentSession {
   agentId: string | null;
   linkedSessionId: string | null;
   occurredAt: Date;
+  /**
+   * occurredAt minus the staleness window. A start on a running row that has
+   * been silent since before it - a resume or a compaction hours later - finds
+   * that shift already over at its last event, as `advanceLastEvent` does.
+   */
+  lapsedBefore: Date;
   receivedAt: Date;
 }
 
@@ -533,10 +539,24 @@ export interface AgentSessionEndShift {
 
 export interface AgentSessionRepository {
   findByExternalKey(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string): Promise<AgentSessionRecord | null>;
-  /** Inserts a running row; a replayed start only refreshes lastEventAt and never reopens an ended row. */
+  /**
+   * Inserts a running row; a replayed start only refreshes lastEventAt and never
+   * reopens an ended row, and one past `lapsedBefore` closes a running row at
+   * its last event instead.
+   */
   upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift>;
-  /** Closes a running row at endedAt; returns null when no running row matches the key. */
-  closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionEndShift | null>;
+  /**
+   * Closes a running row at endedAt; returns null when no running row matches
+   * the key. A row whose last event is older than `lapsedBefore` closes at that
+   * last event instead: see `advanceLastEvent`.
+   */
+  closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null>;
+  /**
+   * The distinct projects this operator's own shifts of one repository carry,
+   * at most two: the evidence a shift no path or mapping places can borrow,
+   * and two already means that evidence is ambiguous.
+   */
+  listProjectsForRepoKey(subject: AuthenticatedSubject, repoKey: string): Promise<string[]>;
   /** Tolerated end-before-start: stores the row directly as ended at occurredAt. */
   insertEnded(input: InsertEndedAgentSession): Promise<void>;
   /**
@@ -546,8 +566,17 @@ export interface AgentSessionRepository {
    * fills a still-null model on an already-ended row - the transcript reader's
    * backfill can land after the end that closed a short session - without
    * advancing lastEventAt or reopening it, which is a shift of nothing.
+   *
+   * `lapsedBefore` is occurredAt minus the staleness window: the reaper's rule
+   * measured in event time rather than on the server's clock. A running row
+   * whose last event is older than it had already stopped, at that last event,
+   * before this heartbeat happened, so it closes there and the heartbeat
+   * carries nothing forward. Live, the reaper would have closed it first; a
+   * backlog uploaded late never gives the reaper that chance, and a start and
+   * an end a day and a half apart landed in one batch and read as one shift a
+   * day and a half long.
    */
-  advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionEndShift | null>;
+  advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null>;
   /** Closes running rows whose lastEventAt is older than cutoff, ending them at lastEventAt. Returns the reaped count. */
   reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number>;
   /**

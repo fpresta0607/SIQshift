@@ -18,13 +18,16 @@ import {
   type ViewPreferences,
 } from "@siqshift/shared";
 import {
+  AGENT_TIME_LIMIT_NOTE,
   HourlyGraph,
   LiveSessions,
   MemberBreakdown,
   MeterRowItem,
   ShiftGroups,
+  UNATTRIBUTED_LABEL,
   buildAppRows,
   buildMeterRows,
+  buildProjectRows,
   recordedBasis,
   type ShiftCursor,
   type ShiftPage,
@@ -767,16 +770,11 @@ export const App = ({ client }: AppProps) => {
   const scopeName = scope === "all" ? "All projects" : scopeProject?.name ?? "Unknown project";
 
   const todayTotalSeconds = todayStats?.totalDurationSeconds ?? 0;
-  const todayProjectRows = (todayStats?.projects ?? [])
-    .filter((entry) => entry.durationSeconds > 0)
-    .map((entry) => ({
-      key: entry.project.id,
-      name: entry.project.name,
-      color: projects.find((project) => project.id === entry.project.id)?.color ?? null,
-      durationSeconds: entry.durationSeconds,
-      share: todayTotalSeconds === 0 ? 0 : Math.round((entry.durationSeconds / todayTotalSeconds) * 100),
-    }))
-    .sort((a, b) => b.durationSeconds - a.durationSeconds || a.name.localeCompare(b.name));
+  const todayProjectRows = buildProjectRows(todayStats?.projects ?? []).map((row) => ({
+    ...row,
+    color: row.projectId === null ? null : projects.find((project) => project.id === row.projectId)?.color ?? null,
+    share: todayTotalSeconds === 0 ? 0 : Math.round((row.durationSeconds / todayTotalSeconds) * 100),
+  }));
   const todayMeterRows = buildMeterRows(todayStats?.apps ?? []);
   // The app rows measure time spent in front of something; the day's total is
   // session wall-clock, which also counts the gaps too short to end a stretch.
@@ -915,7 +913,7 @@ export const App = ({ client }: AppProps) => {
                   {todayProjectRows.map((row) => (
                     <li key={row.key} className="meter-row">
                       <span
-                        className="project-dot"
+                        className={row.projectId === null ? "project-dot is-unattributed" : "project-dot"}
                         aria-hidden="true"
                         style={row.color === null ? undefined : { background: row.color }}
                       />
@@ -1086,6 +1084,7 @@ export const App = ({ client }: AppProps) => {
                         ))}
                       </ol>
                     )}
+                    {entries.length > 0 && <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>}
                   </>
                 )}
 
@@ -1133,10 +1132,10 @@ export const App = ({ client }: AppProps) => {
                         />
                         {memberStats.projects.length > 0 && (
                           <ul className="app-list" data-testid="member-project-list">
-                            {memberStats.projects.filter((entry) => entry.durationSeconds > 0).map((entry) => (
-                              <li key={entry.project.id} className="app-row">
-                                <span className="app-name">{entry.project.name}</span>
-                                <span className="app-duration">{formatHumanDuration(entry.durationSeconds)}</span>
+                            {buildProjectRows(memberStats.projects).map((row) => (
+                              <li key={row.key} className="app-row">
+                                <span className="app-name">{row.name}</span>
+                                <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
                               </li>
                             ))}
                           </ul>
@@ -1155,8 +1154,8 @@ export const App = ({ client }: AppProps) => {
                         )}
                         {memberStats.unattributedSeconds > 0 && (
                           <p className="verified-foot" data-testid="unattributed-foot">
-                            {formatHumanDuration(memberStats.unattributedSeconds)} of that landed in the default project,
-                            because nothing said which project it was for.
+                            {formatHumanDuration(memberStats.unattributedSeconds)} of that is unattributed: nothing named
+                            a project for it, so none is claimed.
                           </p>
                         )}
                       </>
@@ -1190,7 +1189,7 @@ export const App = ({ client }: AppProps) => {
                       {sessionRows.map((row) => (
                         <tr key={row.id}>
                           <td>{row.user.name}</td>
-                          <td>{row.project.name}</td>
+                          <td>{row.attribution === "default" ? UNATTRIBUTED_LABEL : row.project.name}</td>
                           <td>{new Date(row.startedAt).toLocaleString()}</td>
                           <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
                         </tr>
@@ -1404,6 +1403,7 @@ const ShiftsTabBody = ({ shifts, people, selected, onSelect, selfId, loadShifts 
       </ol>
     )}
     <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
+    <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
     <HourlyGraph buckets={shifts.hourly} />
     {shifts.groups.length === 0 ? (
       <p className="subtle">No agent worked in this range.</p>
