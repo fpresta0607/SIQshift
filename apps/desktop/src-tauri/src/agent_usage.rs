@@ -15,6 +15,14 @@
 //! The reader parses ONLY the numeric usage fields, the model, the timestamp,
 //! and the sidechain flag. Nothing the transcript says is retained, logged,
 //! or uploaded: no line, prompt, tool argument, file path, or branch name.
+//!
+//! The timestamps are also the session's liveness. Claude Code's hooks are
+//! registered for `SessionStart` and `SessionEnd` only, so between the two a
+//! working agent sent nothing, and the server's thirty-minute staleness window
+//! ended every longer shift half an hour after it began. A transcript that
+//! keeps gaining entries is an agent that is still working, so the reader
+//! carries that onto the spool as plain heartbeats, one per
+//! `ACTIVITY_HEARTBEAT_SECONDS` of entries, stamped with the entry's own time.
 //! The registry holds counts, plus the transcript's own path as the tail
 //! pointer (it never leaves the machine). A missing or unreadable file is a
 //! state, not an error: the counters simply do not advance.
@@ -33,6 +41,11 @@ use crate::spool::{self, AgentEventKind, AgentSource, SpoolEvent, TokenCounters}
 /// resumes at the stored offset, so a fast-growing log is caught up with
 /// incrementally rather than in one unbounded read.
 const MAX_FILE_BYTES_PER_PASS: u64 = 4 * 1024 * 1024;
+
+/// The spacing of liveness heartbeats drawn from transcript entries: the Codex
+/// terminal capture's heartbeat interval, and well inside the server's
+/// thirty-minute staleness window, so a working session never reads as a gap.
+const ACTIVITY_HEARTBEAT_SECONDS: u64 = 5 * 60;
 
 fn session_key(source: &AgentSource, external_session_id: &str) -> String {
     format!("{}|{external_session_id}", source.as_str())
@@ -174,6 +187,10 @@ struct SessionUsage {
     /// The one model heartbeat this session ever emits has been emitted.
     #[serde(default)]
     heartbeat_sent: bool,
+    /// Unix seconds of the latest transcript entry a liveness heartbeat was
+    /// stamped with; the next one is due `ACTIVITY_HEARTBEAT_SECONDS` later.
+    #[serde(default)]
+    activity_heartbeat_at: u64,
     /// Cumulative totals the hook itself reported (the `--input-tokens` flag
     /// family), kept as the maximum restatement in the hour of the first
     /// report, per model. Flag totals name no turn, so they cannot follow the
@@ -290,11 +307,12 @@ struct TranscriptUsage {
     cache_read_input_tokens: u64,
 }
 
-/// The outcome of one incremental read: the cursor to persist, and the model
-/// this pass learned if the file named one.
+/// The outcome of one incremental read: the cursor to persist, the model this
+/// pass learned if the file named one, and the time of every entry it read.
 struct FileTail {
     cursor: FileUsage,
     learned_model: Option<String>,
+    activity: Vec<u64>,
 }
 
 /// A transcript entry the CLI wrote about itself rather than one a model
@@ -345,6 +363,7 @@ fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
                     buckets,
                 },
                 learned_model: None,
+                activity: Vec::new(),
             });
         }
         return None;
@@ -375,6 +394,7 @@ fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
                             buckets,
                         },
                         learned_model: None,
+                        activity: Vec::new(),
                     });
                 }
                 return None;
@@ -401,10 +421,12 @@ fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
                 buckets,
             },
             learned_model: None,
+            activity: Vec::new(),
         });
     }
 
     let mut learned_model: Option<String> = None;
+    let mut activity: Vec<u64> = Vec::new();
     for line in content[..complete_len].split(|byte| *byte == b'\n') {
         if line.is_empty() || line.len() > spool::MAX_SPOOL_RECORD_BYTES {
             continue;
@@ -412,6 +434,7 @@ fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
         let Ok(entry) = serde_json::from_slice::<TranscriptLine>(line) else {
             continue;
         };
+        activity.extend(entry.timestamp.as_deref().and_then(parse_iso8601));
         let model = entry
             .message
             .as_ref()
@@ -466,7 +489,26 @@ fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
             buckets,
         },
         learned_model,
+        activity,
     })
+}
+
+/// The entry times, out of those a pass read, that carry a liveness heartbeat:
+/// each one at least `ACTIVITY_HEARTBEAT_SECONDS` after the heartbeat before
+/// it, starting from the last one the session already emitted. Stamped with
+/// the entry's own time rather than the read's, so a pass that catches up on
+/// an hour of transcript lays the hour's liveness down across the hour.
+fn activity_heartbeats(activity: &mut [u64], previous: u64) -> Vec<u64> {
+    activity.sort_unstable();
+    let mut due = previous;
+    let mut beats = Vec::new();
+    for &at in activity.iter() {
+        if at >= due.saturating_add(ACTIVITY_HEARTBEAT_SECONDS) {
+            beats.push(at);
+            due = at;
+        }
+    }
+    beats
 }
 
 /// Folds one spool event into the registry: registers the session, learns
@@ -621,6 +663,14 @@ struct PendingHeartbeat {
     model: String,
 }
 
+/// A transcript entry time that carries the session's liveness onto the spool.
+struct ActivityHeartbeat {
+    source: AgentSource,
+    external_session_id: String,
+    cwd: String,
+    at: u64,
+}
+
 /// Reads pending agent-spool lines without truncating them - the uploader's
 /// own agent-spool drain owns truncation - and tails every known transcript
 /// incrementally. Replay is safe because every step is idempotent: offsets
@@ -684,12 +734,18 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
     }
 
     let mut heartbeats: Vec<PendingHeartbeat> = Vec::new();
+    let mut activity_heartbeats_due: Vec<ActivityHeartbeat> = Vec::new();
     let merged = spool::with_lock(agent_usage_path, || {
         let mut registry = read_registry(agent_usage_path);
+        let mut activity: HashMap<String, Vec<u64>> = HashMap::new();
         for (key, file_key, tail) in tails {
             let Some(session) = registry.sessions.get_mut(&key) else {
                 continue;
             };
+            activity
+                .entry(key.clone())
+                .or_default()
+                .extend(tail.activity);
             if let Some(model) = &tail.learned_model {
                 if !session.heartbeat_sent && !session.model_from_hook {
                     if let Some(cwd) = session.cwd.clone() {
@@ -704,6 +760,27 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
                 }
             }
             session.files.insert(file_key, tail.cursor);
+        }
+        // Main log and sub-agent logs alike: any of them growing is the
+        // session working. The cursor has already moved past these entries, so
+        // a failed append below loses one pass of liveness rather than
+        // repeating it; the next entries the session writes carry it on.
+        for (key, mut times) in activity {
+            let Some(session) = registry.sessions.get_mut(&key) else {
+                continue;
+            };
+            let Some(cwd) = session.cwd.clone() else {
+                continue;
+            };
+            for at in activity_heartbeats(&mut times, session.activity_heartbeat_at) {
+                session.activity_heartbeat_at = at;
+                activity_heartbeats_due.push(ActivityHeartbeat {
+                    source: session.source.clone(),
+                    external_session_id: session.external_session_id.clone(),
+                    cwd: cwd.clone(),
+                    at,
+                });
+            }
         }
         recompute_entries(&mut registry);
         write_registry(agent_usage_path, &registry)
@@ -741,6 +818,28 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
                 write_registry(agent_usage_path, &registry)
             });
         }
+    }
+
+    // Plain heartbeats, no model: the server advances the shift's last event
+    // to each, and the monitor keeps the agent active through them.
+    for heartbeat in activity_heartbeats_due {
+        let _ = spool::append(
+            agent_path,
+            &SpoolEvent {
+                source: heartbeat.source,
+                external_session_id: heartbeat.external_session_id,
+                event: AgentEventKind::Heartbeat,
+                occurred_at: iso8601(heartbeat.at),
+                cwd: Some(heartbeat.cwd),
+                model: None,
+                start_head: None,
+                repo_root: None,
+                repo_remote: None,
+                rule_id: None,
+                transcript_path: None,
+                tokens: None,
+            },
+        );
     }
 }
 
@@ -1419,7 +1518,7 @@ mod tests {
             !pending
                 .events
                 .iter()
-                .any(|event| event.event == AgentEventKind::Heartbeat),
+                .any(|event| event.event == AgentEventKind::Heartbeat && event.model.is_some()),
             "no model heartbeat rides a placeholder"
         );
     }
@@ -1455,7 +1554,7 @@ mod tests {
         let heartbeats: Vec<&SpoolEvent> = pending
             .events
             .iter()
-            .filter(|event| event.event == AgentEventKind::Heartbeat)
+            .filter(|event| event.event == AgentEventKind::Heartbeat && event.model.is_some())
             .collect();
         assert_eq!(heartbeats.len(), 1, "one model heartbeat is appended");
         let heartbeat = heartbeats[0];
@@ -1482,7 +1581,7 @@ mod tests {
             pending
                 .events
                 .iter()
-                .filter(|event| event.event == AgentEventKind::Heartbeat)
+                .filter(|event| event.event == AgentEventKind::Heartbeat && event.model.is_some())
                 .count(),
             1,
             "never twice for a session"
@@ -1522,8 +1621,137 @@ mod tests {
             pending
                 .events
                 .iter()
-                .all(|event| event.event != AgentEventKind::Heartbeat),
-            "the hook already named a model, so no heartbeat fires"
+                .all(|event| event.event != AgentEventKind::Heartbeat || event.model.is_none()),
+            "the hook already named a model, so no model heartbeat fires"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The liveness heartbeats on the spool, as the instants they carry.
+    fn liveness_heartbeats(agent_path: &Path) -> Vec<String> {
+        spool::read_pending(agent_path)
+            .expect("the spool reads")
+            .events
+            .into_iter()
+            .filter(|event| event.event == AgentEventKind::Heartbeat && event.model.is_none())
+            .inspect(|event| {
+                assert_eq!(event.external_session_id, "session-1");
+                assert_eq!(event.cwd.as_deref(), Some("C:/dev/siqshift"));
+            })
+            .map(|event| event.occurred_at)
+            .collect()
+    }
+
+    #[test]
+    fn a_working_transcript_carries_its_session_liveness_onto_the_spool() {
+        // The shape of every goblin session on the operator's machine: the hook
+        // spools a start and, hours later, an end, and nothing between them.
+        // The transcript between the two is the only record that it worked.
+        let dir = temp_dir("liveness");
+        let agent_path = dir.join("agent-spool.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let transcript = dir.join("session-1.jsonl");
+        let line = |timestamp: &str| assistant_line(timestamp, "claude-opus-5", false, 10, 1, 0, 0);
+        write_transcript(
+            &transcript,
+            &[
+                line("2026-09-16T02:43:10.120Z"),
+                line("2026-09-16T02:45:00Z"),
+                line("2026-09-16T02:48:30Z"),
+                line("2026-09-16T03:40:00Z"),
+            ],
+        );
+        spool::append(
+            &agent_path,
+            &started_event(&transcript, "2026-09-16T02:43:09Z", Some("claude-opus-5")),
+        )
+        .expect("append succeeds");
+
+        capture_from_spool(&agent_path, &usage_path);
+
+        // One per five minutes of entries, at the entries' own times; the
+        // hour-long quiet stretch stays a gap the server may end a shift at.
+        assert_eq!(
+            liveness_heartbeats(&agent_path),
+            vec![
+                "2026-09-16T02:43:10Z",
+                "2026-09-16T02:48:30Z",
+                "2026-09-16T03:40:00Z"
+            ]
+        );
+
+        // The next pass reads only what was appended, and spaces it from the
+        // last heartbeat already sent rather than starting over.
+        append_to_transcript(
+            &transcript,
+            &format!(
+                "{}\n{}\n",
+                line("2026-09-16T03:42:00Z"),
+                line("2026-09-16T03:45:00Z")
+            ),
+        );
+        capture_from_spool(&agent_path, &usage_path);
+        assert_eq!(
+            liveness_heartbeats(&agent_path),
+            vec![
+                "2026-09-16T02:43:10Z",
+                "2026-09-16T02:48:30Z",
+                "2026-09-16T03:40:00Z",
+                "2026-09-16T03:45:00Z",
+            ]
+        );
+
+        // A pass with nothing new writes nothing.
+        capture_from_spool(&agent_path, &usage_path);
+        assert_eq!(liveness_heartbeats(&agent_path).len(), 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sub_agent_log_keeps_its_parent_session_live() {
+        let dir = temp_dir("liveness-subagent");
+        let agent_path = dir.join("agent-spool.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let transcript = dir.join("session-1.jsonl");
+        write_transcript(
+            &transcript,
+            &[assistant_line(
+                "2026-09-16T10:00:00Z",
+                "claude-opus-5",
+                false,
+                1,
+                1,
+                0,
+                0,
+            )],
+        );
+        write_transcript(
+            &dir.join("session-1")
+                .join("subagents")
+                .join("agent-a1.jsonl"),
+            &[assistant_line(
+                "2026-09-16T10:20:00Z",
+                "claude-opus-5",
+                true,
+                1,
+                1,
+                0,
+                0,
+            )],
+        );
+        spool::append(
+            &agent_path,
+            &started_event(&transcript, "2026-09-16T09:59:00Z", Some("claude-opus-5")),
+        )
+        .expect("append succeeds");
+
+        capture_from_spool(&agent_path, &usage_path);
+
+        assert_eq!(
+            liveness_heartbeats(&agent_path),
+            vec!["2026-09-16T10:00:00Z", "2026-09-16T10:20:00Z"]
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1562,6 +1790,7 @@ mod tests {
                 cwd: Some("C:/dev/siqshift".to_string()),
                 model_from_hook: true,
                 heartbeat_sent: true,
+                activity_heartbeat_at: 1_786_000_000,
                 hook_buckets: vec![BucketTotals {
                     bucket_start_at: "2026-08-06T10:00:00Z".to_string(),
                     model: Some("claude-opus-4.1".to_string()),

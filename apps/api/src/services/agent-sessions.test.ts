@@ -36,6 +36,8 @@ const knownEnd = (row: AgentSessionRecord): Date => row.endedAt ?? row.lastEvent
 
 class MemoryAgentSessions implements AgentSessionRepository {
   public readonly records: AgentSessionRecord[] = [];
+  /** The repository key an agent id was minted for; the roster fake supplies it. */
+  public repoKeyOf: (agentId: string) => string | null = () => null;
 
   private find(current: AuthenticatedSubject, source: string, externalSessionId: string): AgentSessionRecord | undefined {
     return this.records.find((record) => record.organizationId === current.organizationId
@@ -48,12 +50,17 @@ class MemoryAgentSessions implements AgentSessionRepository {
     return this.find(current, source, externalSessionId) ?? null;
   }
 
-  /** Mirrors the upsert: insert running; on replay refresh lastEventAt only, never reopen. */
+  /** Mirrors the upsert: insert running; on replay refresh lastEventAt only, never reopen; a lapsed running row closes. */
   public async upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift> {
     const existing = this.find({ organizationId: input.organizationId, userId: input.userId, role: "member" }, input.source, input.externalSessionId);
     if (existing !== undefined) {
       const previousEnd = knownEnd(existing);
-      if (input.occurredAt > existing.lastEventAt) existing.lastEventAt = input.occurredAt;
+      if (existing.status === "running" && existing.lastEventAt < input.lapsedBefore) {
+        existing.status = "ended";
+        existing.endedAt = existing.lastEventAt;
+      } else if (input.occurredAt > existing.lastEventAt) {
+        existing.lastEventAt = input.occurredAt;
+      }
       // Mirrors coalesce(agent_id, $new): the first assignment wins.
       existing.agentId ??= input.agentId;
       return { session: existing, previousEnd };
@@ -79,14 +86,28 @@ class MemoryAgentSessions implements AgentSessionRepository {
     return { session: record, previousEnd: null };
   }
 
-  public async closeRunning(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date): Promise<AgentSessionEndShift | null> {
+  /** Mirrors closeRunning: a row silent past the window before the end closes at its own last event. */
+  public async closeRunning(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, endedAt: Date, lapsedBefore: Date): Promise<AgentSessionEndShift | null> {
     const existing = this.find(current, source, externalSessionId);
     if (existing === undefined || existing.status !== "running") return null;
     const previousEnd = knownEnd(existing);
     existing.status = "ended";
+    if (existing.lastEventAt < lapsedBefore) {
+      existing.endedAt = existing.lastEventAt;
+      return { session: existing, previousEnd };
+    }
     existing.endedAt = endedAt;
     if (endedAt > existing.lastEventAt) existing.lastEventAt = endedAt;
     return { session: existing, previousEnd };
+  }
+
+  /** Mirrors the repository lane: the distinct projects this operator's shifts of one repository carry, at most two. */
+  public async listProjectsForRepoKey(current: AuthenticatedSubject, repoKey: string): Promise<string[]> {
+    const projectIds = new Set(this.records
+      .filter((record) => record.organizationId === current.organizationId && record.userId === current.userId)
+      .filter((record) => record.agentId !== null && this.repoKeyOf(record.agentId) === repoKey)
+      .flatMap((record) => (record.projectId === null ? [] : [record.projectId])));
+    return [...projectIds].slice(0, 2);
   }
 
   /** Mirrors the tolerated end-before-start insert (ON CONFLICT DO NOTHING). */
@@ -112,12 +133,17 @@ class MemoryAgentSessions implements AgentSessionRepository {
     });
   }
 
-  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date): Promise<AgentSessionEndShift | null> {
+  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date): Promise<AgentSessionEndShift | null> {
     const existing = this.find(current, source, externalSessionId);
     if (existing === undefined) return null;
     const previousEnd = knownEnd(existing);
     if (existing.status === "running") {
-      if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
+      if (existing.lastEventAt < lapsedBefore) {
+        existing.status = "ended";
+        existing.endedAt = existing.lastEventAt;
+      } else if (occurredAt > existing.lastEventAt) {
+        existing.lastEventAt = occurredAt;
+      }
       // Mirrors coalesce(model, $new): the first assignment wins.
       existing.model ??= model;
       return { session: existing, previousEnd };
@@ -160,6 +186,7 @@ class MemoryPathMappings implements PathMappingRepository {
 class MemoryAgents implements AgentRepository {
   public readonly upserts: UpsertAgentForKey[] = [];
   private readonly idsByKey = new Map<string, string>();
+  public readonly repoKeysById = new Map<string, string | null>();
 
   public async upsertForKey(input: UpsertAgentForKey): Promise<{ id: string }> {
     this.upserts.push(input);
@@ -170,6 +197,7 @@ class MemoryAgents implements AgentRepository {
     if (id === undefined) {
       id = crypto.randomUUID();
       this.idsByKey.set(key, id);
+      this.repoKeysById.set(id, identityRepoKey(input.repoRoot, input.repoRemote));
     }
     return { id };
   }
@@ -232,6 +260,8 @@ function createService(options: {
   clock?: () => Date;
 } = {}) {
   const agentSessions = new MemoryAgentSessions();
+  const roster = options.agents;
+  if (roster instanceof MemoryAgents) agentSessions.repoKeyOf = (agentId) => roster.repoKeysById.get(agentId) ?? null;
   const timers = new MemoryTimers();
   timers.running = options.runningTimer ?? null;
   const service = createAgentSessionService({
@@ -244,6 +274,49 @@ function createService(options: {
     ...(options.onUploaded === undefined ? {} : { onUploaded: options.onUploaded }),
   });
   return { agentSessions, service };
+}
+
+/**
+ * Stands in for the database's distance. Every repository call waits for a
+ * round trip, and the calls in flight together complete in the same one, the
+ * way independent queries on a connection pool do. Counting round trips rather
+ * than sleeping keeps a timing claim deterministic.
+ */
+class RoundTrips {
+  public calls = 0;
+  public trips = 0;
+  private readonly waiting: (() => void)[] = [];
+
+  public wrap<T extends object>(target: T): T {
+    return new Proxy(target, {
+      get: (object, property, receiver) => {
+        const value: unknown = Reflect.get(object, property, receiver);
+        if (typeof value !== "function") return value;
+        return async (...args: unknown[]) => {
+          this.calls += 1;
+          await new Promise<void>((resolve) => this.waiting.push(resolve));
+          return (value as (...parameters: unknown[]) => unknown).apply(object, args);
+        };
+      },
+    });
+  }
+
+  public async run<T>(work: Promise<T>): Promise<T> {
+    let settled = false;
+    const outcome = work.finally(() => {
+      settled = true;
+    });
+    while (!settled) {
+      // Every lane that can issue its next call has done so once the
+      // microtasks drain, so one macrotask turn is one round trip.
+      await new Promise((resolve) => setImmediate(resolve));
+      const ready = this.waiting.splice(0);
+      if (ready.length === 0) continue;
+      this.trips += 1;
+      for (const resolve of ready) resolve();
+    }
+    return outcome;
+  }
 }
 
 const mapped: PathMappingRecord = { id: "f1c7e513-b094-4d4c-ae55-21790ae019a4", organizationId: ids.organization, userId: ids.user, kind: "path_prefix", pathPrefix: "C:/dev/siqshift", repoUrl: null, projectId: ids.project };
@@ -531,6 +604,119 @@ describe("agent-session service", () => {
     expect(agentSessions.records[1]).toMatchObject({ externalSessionId: "fresh", status: "running" });
   });
 
+  it("ends a shift at its last event when the next one comes after the staleness window, however late the upload", async () => {
+    // The shape a backlog took after the 2026-09-11 outage: a no-mistakes gate
+    // reviewer started, beat once, went quiet, and its end fired a day and a
+    // half later when the worktree was cleaned up. Uploaded live, the reaper
+    // closes it at its heartbeat long before that end arrives. Uploaded late,
+    // start and end reach the server together and nothing had reaped it.
+    const { agentSessions, service } = createService({ clock: () => new Date("2026-08-08T02:00:00.000Z") });
+
+    await service.ingest(subject, [
+      event({ occurredAt: new Date("2026-08-06T13:30:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:40:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T15:00:00.000Z") }),
+      event({ event: "ended", occurredAt: new Date("2026-08-08T01:30:00.000Z") }),
+    ]);
+
+    expect(agentSessions.records).toHaveLength(1);
+    expect(agentSessions.records[0]).toMatchObject({
+      status: "ended",
+      startedAt: new Date("2026-08-06T13:30:00.000Z"),
+      endedAt: new Date("2026-08-06T13:40:00.000Z"),
+      lastEventAt: new Date("2026-08-06T13:40:00.000Z"),
+    });
+  });
+
+  it("does not let a resumed or compacted session's later start carry its shift across the gap", async () => {
+    // Claude Code fires SessionStart again on resume and on compaction under the
+    // same session id. The operator's CFO session read as one fifteen-hour shift
+    // from three starts and nothing between them.
+    const { agentSessions, service } = createService({ clock: () => new Date("2026-08-08T02:00:00.000Z") });
+
+    await service.ingest(subject, [
+      event({ occurredAt: new Date("2026-08-06T13:30:00.000Z") }),
+      event({ event: "heartbeat", model: "claude-opus-5", occurredAt: new Date("2026-08-06T13:31:00.000Z") }),
+      event({ occurredAt: new Date("2026-08-07T04:10:00.000Z") }),
+    ]);
+
+    expect(agentSessions.records).toHaveLength(1);
+    expect(agentSessions.records[0]).toMatchObject({
+      status: "ended",
+      endedAt: new Date("2026-08-06T13:31:00.000Z"),
+      lastEventAt: new Date("2026-08-06T13:31:00.000Z"),
+    });
+  });
+
+  it("carries a late shift through every gap inside the staleness window", async () => {
+    const { agentSessions, service } = createService({ clock: () => new Date("2026-08-08T02:00:00.000Z") });
+
+    await service.ingest(subject, [
+      event({ occurredAt: new Date("2026-08-06T13:30:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:59:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T14:28:00.000Z") }),
+      event({ event: "ended", occurredAt: new Date("2026-08-06T14:57:00.000Z") }),
+    ]);
+
+    expect(agentSessions.records[0]).toMatchObject({ status: "ended", endedAt: new Date("2026-08-06T14:57:00.000Z") });
+  });
+
+  it("applies one shift's events in the order they happened, whatever order the batch lists them in", async () => {
+    const { agentSessions, service } = createService();
+
+    const result = await service.ingest(subject, [
+      event({ event: "ended", occurredAt: new Date("2026-08-06T13:50:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:40:00.000Z") }),
+      event({ occurredAt: new Date("2026-08-06T13:30:00.000Z") }),
+    ]);
+
+    expect(result.results).toEqual([
+      { externalSessionId: "session-1", accepted: true },
+      { externalSessionId: "session-1", accepted: true },
+      { externalSessionId: "session-1", accepted: true },
+    ]);
+    expect(agentSessions.records).toHaveLength(1);
+    expect(agentSessions.records[0]).toMatchObject({
+      status: "ended",
+      startedAt: new Date("2026-08-06T13:30:00.000Z"),
+      endedAt: new Date("2026-08-06T13:50:00.000Z"),
+    });
+  });
+
+  it("answers a full batch of concurrent shifts inside the desktop's request timeout at production latency", async () => {
+    // Production measured about 43 ms an event with a batch written one row
+    // after another (2026-08-29), and every installed desktop gives the request
+    // 20 seconds. A timed-out batch acknowledges nothing, so the desktop sent
+    // the same first 500 events on every pass from 2026-09-11 on, and nothing
+    // behind them ever arrived: "Agent 0s" for a machine running a fleet.
+    const measuredMsPerEvent = 43;
+    const desktopTimeoutMs = 20_000;
+    const network = new RoundTrips();
+    const agentSessions = new MemoryAgentSessions();
+    const service = createAgentSessionService({
+      agentSessions: network.wrap(agentSessions),
+      pathMappings: network.wrap(new MemoryPathMappings([mapped])),
+      sessions: network.wrap(new MemoryTimers()) as SessionRepository,
+      agents: network.wrap(new MemoryAgents()),
+      clock: () => now,
+    });
+    const batch = Array.from({ length: 125 }, (_, shift) => [
+      event({ externalSessionId: `goblin-${shift}`, occurredAt: new Date("2026-08-06T13:00:00.000Z") }),
+      event({ externalSessionId: `goblin-${shift}`, event: "heartbeat", occurredAt: new Date("2026-08-06T13:10:00.000Z") }),
+      event({ externalSessionId: `goblin-${shift}`, event: "heartbeat", occurredAt: new Date("2026-08-06T13:20:00.000Z") }),
+      event({ externalSessionId: `goblin-${shift}`, event: "ended", occurredAt: new Date("2026-08-06T13:30:00.000Z") }),
+    ]).flat();
+
+    const result = await network.run(service.ingest(subject, batch));
+
+    expect(result.results.filter((entry) => entry.accepted)).toHaveLength(500);
+    expect(agentSessions.records.every((row) => row.status === "ended" && row.endedAt?.toISOString() === "2026-08-06T13:30:00.000Z")).toBe(true);
+    // One round trip after another costs what production measured, so a
+    // round trip is worth the measured batch cost spread over every call.
+    const msPerRoundTrip = (measuredMsPerEvent * batch.length) / network.calls;
+    expect(network.trips * msPerRoundTrip).toBeLessThan(desktopTimeoutMs / 2);
+  });
+
   it("exposes reaping for read paths", async () => {
     const { agentSessions, service } = createService();
     await service.ingest(subject, [event({ occurredAt: new Date("2026-08-06T07:30:00.000Z") })]);
@@ -741,6 +927,61 @@ describe("roster minting", () => {
     ]);
 
     expect(agentSessions.records.map((row) => row.projectId)).toEqual([ids.project, ids.project, null]);
+  });
+
+  it("places a gate worktree shift through the operator's own shifts of the same repository", async () => {
+    const agents = new MemoryAgents();
+    const dev: PathMappingRecord = { ...mapped, pathPrefix: "C:/dev" };
+    const { agentSessions, service } = createService({ mappings: [dev], agents });
+    const gate = "C:/Users/op/.no-mistakes/worktrees/3946e592fa2c/01M244TFYBDE1JF7DNGW0H8Y1P";
+
+    await service.ingest(subject, [
+      event({ externalSessionId: "goblin", cwd: "C:/dev/siqshift/.worktrees/fix", repoRoot: "C:/dev/siqshift", repoRemote: "https://github.com/acme/siqshift.git" }),
+    ]);
+    await service.ingest(subject, [
+      // No path prefix reaches the gate and no mapping names its remote, but
+      // it is the repository the goblin's checkout already placed.
+      event({ externalSessionId: "reviewer", cwd: gate, repoRoot: gate, repoRemote: "git@github.com:acme/siqshift.git" }),
+      // A repository no shift has placed stays unattributed.
+      event({ externalSessionId: "stranger", cwd: gate, repoRoot: gate, repoRemote: "https://github.com/acme/other.git" }),
+    ]);
+
+    expect(Object.fromEntries(agentSessions.records.map((row) => [row.externalSessionId, row.projectId]))).toEqual({
+      goblin: ids.project,
+      reviewer: ids.project,
+      stranger: null,
+    });
+  });
+
+  it("borrows nothing from a repository whose shifts were placed in two projects, or from a teammate's shifts", async () => {
+    const agents = new MemoryAgents();
+    const teammate: AuthenticatedSubject = { ...subject, userId: ids.otherUser };
+    const { agentSessions, service } = createService({
+      mappings: [
+        { ...mapped, pathPrefix: "C:/dev/one" },
+        { ...mapped, id: "c1c7e513-b094-4d4c-ae55-21790ae019a4", pathPrefix: "C:/dev/two", projectId: ids.otherProject },
+        { ...mapped, id: "e2c7e513-b094-4d4c-ae55-21790ae019a4", userId: ids.otherUser, pathPrefix: "C:/src" },
+      ],
+      agents,
+    });
+    const gate = "C:/Users/op/.no-mistakes/worktrees/3946e592fa2c/01M244TFYBDE1JF7DNGW0H8Y1P";
+
+    await service.ingest(subject, [
+      event({ externalSessionId: "one", cwd: "C:/dev/one", repoRoot: "C:/dev/one", repoRemote: "https://github.com/acme/split" }),
+      event({ externalSessionId: "two", cwd: "C:/dev/two", repoRoot: "C:/dev/two", repoRemote: "https://github.com/acme/split" }),
+    ]);
+    await service.ingest(teammate, [
+      event({ externalSessionId: "theirs", cwd: "C:/src/solo", repoRoot: "C:/src/solo", repoRemote: "https://github.com/acme/solo" }),
+    ]);
+    await service.ingest(subject, [
+      event({ externalSessionId: "split-gate", cwd: gate, repoRoot: gate, repoRemote: "https://github.com/acme/split" }),
+      event({ externalSessionId: "solo-gate", cwd: gate, repoRoot: gate, repoRemote: "https://github.com/acme/solo" }),
+    ]);
+
+    const projectOf = (externalSessionId: string) => agentSessions.records.find((row) => row.externalSessionId === externalSessionId)?.projectId;
+    expect(projectOf("theirs")).toBe(ids.project);
+    expect(projectOf("split-gate")).toBeNull();
+    expect(projectOf("solo-gate")).toBeNull();
   });
 
   it("stays safe when the agents dependency is missing", async () => {

@@ -141,6 +141,8 @@ button:disabled { opacity: .55; cursor: default; }
 .meter-bar { height: 4px; border-radius: 999px; background: rgba(163, 179, 194, 0.14); }
 .meter-bar::before { display: block; width: var(--share, 0%); height: 100%; border-radius: inherit; background: var(--accent-green); opacity: .55; content: ""; }
 .project-dot { width: 10px; height: 10px; margin: 0 auto; border-radius: 50%; background: var(--accent-green); }
+/* Unattributed time is not a project, so its mark is hollow rather than wearing a project's fill. */
+.project-dot.is-unattributed { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-secondary); }
 
 /* The box the WebGL background paints into, shipped with the component that
    paints it (`@siqshift/shared/webgl-shader`). The z-index MUST stay -1: a GPU

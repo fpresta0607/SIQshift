@@ -25,6 +25,19 @@ const futureEventToleranceMs = 30_000;
 const defaultStaleThresholdMs = 30 * 60 * 1_000;
 
 /**
+ * How many shifts one batch writes at once. A full batch is 500 events and
+ * production measured about 43 ms an event written one after another, past the
+ * 20-second timeout every installed desktop gives the request. Each shift still
+ * applies its own events in order; this only stops one shift waiting on
+ * another's. Kept under the API's database pool of ten so a batch never holds
+ * every connection a report read needs.
+ */
+const concurrentShifts = 6;
+
+/** Within one instant a shift starts before it beats, and beats before it ends. */
+const eventOrder: Record<AgentSessionEventInput["event"], number> = { started: 0, heartbeat: 1, ended: 2 };
+
+/**
  * Whether a source mints a roster identity. Browser spans are excluded by
  * decision: a browser tab is evidence of attention, not a worker on the
  * payroll.
@@ -180,7 +193,6 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         return pending;
       };
 
-      const results: AgentSessionEventBatchResponse["results"] = [];
       // Resolution runs the same chain on every non-browser event, each lane
       // answering only when the one before it found nothing:
       // 1. The repository root's path - the better evidence of where work
@@ -193,8 +205,28 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
       //    operator keeps outside every mapped root (`~/.treehouse/...`, a
       //    relocated `.worktrees`): two checkouts of one repoRemote are one
       //    project, matched through the mappings' own repoUrl.
+      // 4. The same repository again, through this operator's own shifts of it
+      //    that an earlier lane already placed. Lane 3's rule without its
+      //    configuration: a no-mistakes gate worktree under `~/.no-mistakes`
+      //    reaches no mapped path and no mapping names its remote, yet the
+      //    checkout under the mapped root the gate was run from is the same
+      //    repository, and its shifts already say which project that is.
       // Ambiguity resolves to nothing at every lane rather than to a guess.
-      const resolveProject = (event: AgentSessionEventInput, mappings: PathMappingCandidate[]): string | null => {
+      const projectsByRepository = new Map<string, Promise<string | null>>();
+      const resolveProjectFromShifts = (event: AgentSessionEventInput): Promise<string | null> => {
+        const repoKey = identityRepoKey(event.repoRoot, event.repoRemote);
+        if (repoKey === null) return Promise.resolve(null);
+        let pending = projectsByRepository.get(repoKey);
+        if (pending === undefined) {
+          pending = dependencies.agentSessions
+            .listProjectsForRepoKey(subject, repoKey)
+            .then((projectIds) => (projectIds.length === 1 ? projectIds[0] ?? null : null));
+          projectsByRepository.set(repoKey, pending);
+        }
+        return pending;
+      };
+      const resolveProject = async (event: AgentSessionEventInput): Promise<string | null> => {
+        const mappings = await loadMappings();
         if (event.source === "browser") return event.ruleId === null ? null : resolveProjectForRule(event.ruleId, mappings);
         if (event.repoRoot !== null) {
           const fromRepo = resolveProjectForCwd(event.repoRoot, mappings);
@@ -202,7 +234,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         }
         const fromCwd = resolveProjectForCwd(event.cwd ?? "", mappings);
         if (fromCwd !== null) return fromCwd;
-        return resolveProjectForRemote(event.repoRemote, mappings);
+        return resolveProjectForRemote(event.repoRemote, mappings) ?? resolveProjectFromShifts(event);
       };
       const folded: Date[] = [];
       // A finished day's agent share can move only when a session's known end -
@@ -229,23 +261,14 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         const floor = Math.max(from.getTime(), to.getTime() - RETENTION_WINDOW_MS);
         folded.push(...utcDaysBetween(new Date(floor), to));
       };
-      for (const event of events) {
-        const occurredAt = event.occurredAt.getTime();
-        if (!Number.isFinite(occurredAt)) {
-          results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is invalid" });
-          continue;
-        }
-        if (occurredAt > now.getTime() + futureEventToleranceMs) {
-          results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is too far in the future" });
-          continue;
-        }
-        if (occurredAt < now.getTime() - RETENTION_WINDOW_MS) {
-          results.push({ externalSessionId: event.externalSessionId, accepted: false, reason: "occurredAt is older than the retention window" });
-          continue;
-        }
+      // The reaper's staleness rule, judged against the event's own time: a
+      // running shift silent for longer than the window before this event was
+      // already over when it happened, however late the upload carrying both.
+      const lapsedBefore = (event: AgentSessionEventInput): Date => new Date(event.occurredAt.getTime() - staleThresholdMs);
 
+      const apply = async (event: AgentSessionEventInput): Promise<void> => {
         if (event.event === "started") {
-          const projectId = resolveProject(event, await loadMappings());
+          const projectId = await resolveProject(event);
           let linkedSessionId: string | null = null;
           if (projectId !== null) {
             const running = await dependencies.sessions.findRunning(subject);
@@ -263,13 +286,14 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             agentId: await resolveAgent(event, projectId),
             linkedSessionId,
             occurredAt: event.occurredAt,
+            lapsedBefore: lapsedBefore(event),
             receivedAt: now,
           }));
         } else if (event.event === "ended") {
           const existing = await dependencies.agentSessions.findByExternalKey(subject, event.source, event.externalSessionId);
           if (existing === null) {
             // End-before-start is tolerated: the row is stored directly as ended.
-            const projectId = resolveProject(event, await loadMappings());
+            const projectId = await resolveProject(event);
             await dependencies.agentSessions.insertEnded({
               organizationId: subject.organizationId,
               userId: subject.userId,
@@ -284,13 +308,21 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
               receivedAt: now,
             });
           } else if (existing.status === "running") {
-            recordEndShift(await dependencies.agentSessions.closeRunning(subject, event.source, event.externalSessionId, event.occurredAt, now));
+            recordEndShift(await dependencies.agentSessions.closeRunning(
+              subject,
+              event.source,
+              event.externalSessionId,
+              event.occurredAt,
+              lapsedBefore(event),
+              now,
+            ));
           }
           // An end for an already-ended session is a no-op replay.
         } else {
           // Heartbeats only advance lastEventAt; an unknown session is
           // accepted as a no-op - a heartbeat must never create or resurrect
-          // one. A heartbeat naming a model fills a still-null model, on a
+          // one, nor carry a shift across a gap the staleness window already
+          // ended. A heartbeat naming a model fills a still-null model, on a
           // running or an already-ended row alike (the transcript reader's
           // backfill can land after the end that closed a short session); an
           // existing model is never overwritten (first assignment wins).
@@ -300,12 +332,61 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             event.externalSessionId,
             attestedModel(event.model),
             event.occurredAt,
+            lapsedBefore(event),
             now,
           ));
         }
-        results.push({ externalSessionId: event.externalSessionId, accepted: true });
-        folded.push(event.occurredAt);
-      }
+      };
+
+      const results: AgentSessionEventBatchResponse["results"] = new Array(events.length);
+      // One lane per shift, holding its events in the order they happened.
+      // Shifts are independent of one another, so they are written side by
+      // side: one row at a time, a full batch outran the desktop's 20-second
+      // request timeout, and a timed-out batch acknowledges nothing, so the
+      // desktop sent the same batch again on every pass and nothing behind it
+      // ever arrived.
+      const shifts = new Map<string, number[]>();
+      events.forEach((event, index) => {
+        const occurredAt = event.occurredAt.getTime();
+        const reason = !Number.isFinite(occurredAt)
+          ? "occurredAt is invalid"
+          : occurredAt > now.getTime() + futureEventToleranceMs
+            ? "occurredAt is too far in the future"
+            : occurredAt < now.getTime() - RETENTION_WINDOW_MS
+              ? "occurredAt is older than the retention window"
+              : null;
+        if (reason !== null) {
+          results[index] = { externalSessionId: event.externalSessionId, accepted: false, reason };
+          return;
+        }
+        const key = `${event.source}|${event.externalSessionId}`;
+        const indexes = shifts.get(key);
+        if (indexes === undefined) shifts.set(key, [index]);
+        else indexes.push(index);
+      });
+      const queue = [...shifts.values()].map((indexes) => indexes.sort((left, right) =>
+        events[left]!.occurredAt.getTime() - events[right]!.occurredAt.getTime()
+        || eventOrder[events[left]!.event] - eventOrder[events[right]!.event]
+        || left - right));
+      // A failed write fails the request, and the desktop replays the whole
+      // batch; lanes stop taking new shifts rather than writing on behind it.
+      let failed = false;
+      const lane = async (): Promise<void> => {
+        for (let indexes = queue.shift(); indexes !== undefined && !failed; indexes = queue.shift()) {
+          for (const index of indexes) {
+            const event = events[index]!;
+            try {
+              await apply(event);
+            } catch (error: unknown) {
+              failed = true;
+              throw error;
+            }
+            results[index] = { externalSessionId: event.externalSessionId, accepted: true };
+            folded.push(event.occurredAt);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrentShifts, queue.length) }, lane));
       await dependencies.onUploaded?.(subject, folded);
       return { results };
     },

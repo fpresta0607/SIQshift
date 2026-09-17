@@ -971,7 +971,11 @@ describe("dashboard", () => {
     // claude.exe reads as the tool it is, so the team sees Claude usage plainly.
     expect(stats.getAllByText("Claude Code").length).toBeGreaterThan(0);
     expect(stats.getByText("VS Code")).toBeInTheDocument();
-    expect(stats.getByText(/30m of that landed in the default project/)).toBeInTheDocument();
+    // The half hour nothing named a project for is its own row, in words, not
+    // a share of General's.
+    const projectRows = within(stats.getByTestId("member-project-list")).getAllByRole("listitem");
+    expect(projectRows.map((row) => row.textContent)).toEqual(["General1h 30m", "Unattributed30m"]);
+    expect(stats.getByText(/30m of that is unattributed: nothing named a project for it, so none is claimed/)).toBeInTheDocument();
   });
 
   it("renders an older API response that lacks the hourly series", async () => {
@@ -1146,8 +1150,9 @@ describe("dashboard", () => {
     // Both lists now close on the same total: 1h 34m + 22m of projects, and
     // 20m + 12m + 5m of apps with the 1h 19m nobody was in front of anything.
     const projects = stats.getByTestId("member-project-list");
-    expect(projects).toHaveTextContent("1h 34m");
-    expect(projects).toHaveTextContent("22m");
+    expect(projects).toHaveTextContent("peakCraftsman1h 34m");
+    expect(projects).toHaveTextContent("Unattributed22m");
+    expect(projects).not.toHaveTextContent("General");
     const apps = stats.getByTestId("member-app-list");
     expect(apps).toHaveTextContent("Quiet time");
     expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
@@ -1297,8 +1302,12 @@ describe("the home screen", () => {
 
     const rows = within(await screen.findByTestId("project-list")).getAllByRole("listitem");
     expect(rows[0]).toHaveTextContent("General");
-    expect(rows[0]).toHaveTextContent("2h 00m");
-    expect(rows[0]!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share")).toBe("100%");
+    expect(rows[0]).toHaveTextContent("1h 30m");
+    expect(rows[0]!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share")).toBe("75%");
+    // What nothing named a project for is not filed under the default project's name.
+    expect(rows[1]).toHaveTextContent("Unattributed");
+    expect(rows[1]).toHaveTextContent("30m");
+    expect(rows[1]!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share")).toBe("25%");
   });
 
   it("plots the day's hours against its agents on the home screen", async () => {

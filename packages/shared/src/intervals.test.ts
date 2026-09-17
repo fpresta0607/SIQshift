@@ -124,6 +124,49 @@ describe("measureTime", () => {
     expect(leverage({ activeSeconds: 0, agentSeconds: 100 })).toBeNull();
   });
 
+  it("books every second of a goblin fleet exactly once: unassisted, assisted by n agents, or away", () => {
+    // The operator's shape: a CFO session that runs all afternoon, goblins
+    // started and ended under it (two of them over the very same minutes), a
+    // gate reviewer inside one goblin, and agents still running after the
+    // person left. Checked minute by minute against the sweep, so no second
+    // can be both human work and agent-assisted work.
+    const working = [span(0, 45), span(40, 90), span(120, 150)];
+    const agents = [
+      span(0, 170), // CFO
+      span(10, 60), span(10, 60), // two goblins over identical minutes
+      span(30, 35), // gate reviewer
+      span(55, 130), // goblin that outlives the break
+      span(160, 200), // runs entirely while away
+    ];
+
+    const measurement = measureTimeMs(working, agents);
+
+    const expected = { t0Ms: 0, t1Ms: 0, t2Ms: 0, t3PlusMs: 0, awayMs: 0 };
+    let activeMs = 0;
+    let agentMs = 0;
+    for (let minute = 0; minute < 200; minute++) {
+      const covers = (interval: Interval) => interval.start <= at(minute) && at(minute + 1) <= interval.end;
+      const running = agents.filter(covers).length;
+      agentMs += running * at(1);
+      if (!working.some(covers)) {
+        expected.awayMs += running * at(1);
+        continue;
+      }
+      activeMs += at(1);
+      if (running === 0) expected.t0Ms += at(1);
+      else if (running === 1) expected.t1Ms += at(1);
+      else if (running === 2) expected.t2Ms += at(1);
+      else expected.t3PlusMs += at(1);
+    }
+    expect(measurement.activeMs).toBe(activeMs);
+    expect(measurement.concurrency).toEqual(expected);
+    const { t0Ms, t1Ms, t2Ms, t3PlusMs } = measurement.concurrency;
+    expect(t0Ms + t1Ms + t2Ms + t3PlusMs).toBe(measurement.activeMs);
+    // Parallel agents add up, so agent time exceeds active time; it is never
+    // taken out of the unassisted seconds above.
+    expect(measurement.agentMs).toBe(agentMs);
+  });
+
   it("merges overlapping working intervals before bucketing (two devices at once)", () => {
     const measurement = measureTime([span(0, 40), span(20, 60)], [span(10, 30)]);
 

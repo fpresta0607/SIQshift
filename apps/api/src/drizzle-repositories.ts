@@ -1401,6 +1401,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       input.source,
       input.externalSessionId,
     );
+    const lapsed = sql`${agentSessions.status} = 'running' and ${agentSessions.lastEventAt} < ${input.lapsedBefore.toISOString()}::timestamptz`;
     const rows = await this.db
       .insert(agentSessions)
       .values({
@@ -1425,12 +1426,16 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         // A replayed start refreshes lastEventAt only; an ended row stays ended.
         // A later start that names a model fills one in — a session can be
         // resumed on a different model — but never blanks one already recorded.
+        // A running row silent past the staleness window before this start was
+        // already over at its last event, where the reaper closes it live.
         set: {
           ...(input.model === null ? {} : { model: input.model }),
           // The first assignment wins: a shift never changes identity, and a
           // replay carrying null never blanks one already stamped.
           agentId: sql`coalesce(${agentSessions.agentId}, ${input.agentId})`,
-          lastEventAt: sql`greatest(${agentSessions.lastEventAt}, ${input.occurredAt.toISOString()}::timestamptz)`,
+          status: sql`case when ${lapsed} then 'ended' else ${agentSessions.status} end`,
+          endedAt: sql`case when ${lapsed} then ${agentSessions.lastEventAt} else ${agentSessions.endedAt} end`,
+          lastEventAt: sql`case when ${lapsed} then ${agentSessions.lastEventAt} else greatest(${agentSessions.lastEventAt}, ${input.occurredAt.toISOString()}::timestamptz) end`,
           updatedAt: input.receivedAt,
         },
       })
@@ -1441,13 +1446,16 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
     };
   }
 
-  public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, now: Date): Promise<AgentSessionEndShift | null> {
+  public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null> {
+    // Silent past the staleness window before this end: already over, at its
+    // last event, exactly where the reaper would have closed it live.
+    const lapsed = sql`${agentSessions.lastEventAt} < ${lapsedBefore.toISOString()}::timestamptz`;
     const rows = await this.db
       .update(agentSessions)
       .set({
         status: "ended",
-        endedAt,
-        lastEventAt: sql`greatest(${agentSessions.lastEventAt}, ${endedAt.toISOString()}::timestamptz)`,
+        endedAt: sql`case when ${lapsed} then ${agentSessions.lastEventAt} else ${endedAt.toISOString()}::timestamptz end`,
+        lastEventAt: sql`case when ${lapsed} then ${agentSessions.lastEventAt} else greatest(${agentSessions.lastEventAt}, ${endedAt.toISOString()}::timestamptz) end`,
         updatedAt: now,
       })
       .from(priorAgentSession)
@@ -1466,6 +1474,21 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       });
     const row = rows[0];
     return row === undefined ? null : { session: asAgentSessionRecord(row), previousEnd: agentSessionKnownEnd({ endedAt: row.priorEndedAt, lastEventAt: row.priorLastEventAt }) };
+  }
+
+  public async listProjectsForRepoKey(subject: AuthenticatedSubject, repoKey: string): Promise<string[]> {
+    const rows = await this.db
+      .selectDistinct({ projectId: agentSessions.projectId })
+      .from(agentSessions)
+      .innerJoin(agents, and(eq(agents.organizationId, agentSessions.organizationId), eq(agents.id, agentSessions.agentId)))
+      .where(and(
+        eq(agentSessions.organizationId, subject.organizationId),
+        eq(agentSessions.userId, subject.userId),
+        eq(agents.repoKey, repoKey),
+        isNotNull(agentSessions.projectId),
+      ))
+      .limit(2);
+    return rows.flatMap((row) => (row.projectId === null ? [] : [row.projectId]));
   }
 
   public async insertEnded(input: InsertEndedAgentSession): Promise<void> {
@@ -1490,7 +1513,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       .onConflictDoNothing({ target: agentSessionKey });
   }
 
-  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, now: Date): Promise<AgentSessionEndShift | null> {
+  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null> {
     const key = and(
       eq(agentSessions.id, priorAgentSession.id),
       eq(agentSessions.organizationId, subject.organizationId),
@@ -1503,10 +1526,15 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       priorEndedAt: priorAgentSession.endedAt,
       priorLastEventAt: priorAgentSession.lastEventAt,
     };
+    // Silent past the staleness window before this heartbeat: already over, at
+    // its last event, exactly where the reaper would have closed it live.
+    const lapsed = sql`${agentSessions.lastEventAt} < ${lapsedBefore.toISOString()}::timestamptz`;
     const running = await this.db
       .update(agentSessions)
       .set({
-        lastEventAt: sql`greatest(${agentSessions.lastEventAt}, ${occurredAt.toISOString()}::timestamptz)`,
+        status: sql`case when ${lapsed} then 'ended' else ${agentSessions.status} end`,
+        endedAt: sql`case when ${lapsed} then ${agentSessions.lastEventAt} else ${agentSessions.endedAt} end`,
+        lastEventAt: sql`case when ${lapsed} then ${agentSessions.lastEventAt} else greatest(${agentSessions.lastEventAt}, ${occurredAt.toISOString()}::timestamptz) end`,
         // First assignment wins, mirroring the isNull guard in stampAgent: a
         // heartbeat naming a model fills a still-null model and never
         // overwrites one the shift already carries.
