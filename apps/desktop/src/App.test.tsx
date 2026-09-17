@@ -485,6 +485,7 @@ describe("recording", () => {
     const where = await screen.findByTestId("filing-where");
     await waitFor(() => expect(where).toHaveTextContent("Unattributed"));
     expect(where).not.toHaveTextContent(project.name);
+    expect(where.querySelector(".monitor-dot")).not.toHaveAttribute("style");
   });
 
   it("pins time to a project and hands the choice back to the host", async () => {
@@ -1163,6 +1164,24 @@ describe("the team board", () => {
       "b1c7e513-b094-4d4c-ae55-21790ae019a4",
     ));
     expect(await within(stats).findByText("Blender")).toBeInTheDocument();
+  });
+
+  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+
+    const panel = await openAllStats(person);
+    const board = within(panel).getByTestId("board-list");
+    const breakdown = await within(panel).findByTestId("breakdown");
+    const notes = within(panel).getAllByTestId("agent-time-limit");
+    expect(notes).toHaveLength(2);
+    expect(board.nextElementSibling).toBe(notes[0]);
+    expect(breakdown).toContainElement(notes[1]!);
+    for (const note of notes) expect(note).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+
+    await person.click(within(panel).getByRole("button", { name: "Agents" }));
+    const shifts = await within(panel).findByTestId("agent-shifts");
+    expect(within(shifts).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
   });
 
   it("writes the breakdown in plain words and drops empty agent buckets", async () => {

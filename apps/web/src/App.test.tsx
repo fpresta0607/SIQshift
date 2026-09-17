@@ -978,6 +978,53 @@ describe("dashboard", () => {
     expect(stats.getByText(/30m of that is unattributed: nothing named a project for it, so none is claimed/)).toBeInTheDocument();
   });
 
+  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+    const person = await signIn(clientFor());
+
+    const stats = await openAllStats(person);
+    const board = await stats.findByTestId("board-list");
+    const breakdown = await stats.findByTestId("breakdown");
+    const notes = stats.getAllByTestId("agent-time-limit");
+    expect(notes).toHaveLength(2);
+    expect(board.nextElementSibling).toBe(notes[0]);
+    expect(breakdown).toContainElement(notes[1]!);
+    for (const note of notes) expect(note).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    expect(await panel.findByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+  });
+
+  it("names a session nothing named a project for as unattributed in the history", async () => {
+    const sessionRow = {
+      user: { id: "u2", name: "Alex" },
+      project: { id: "p1", name: "General" },
+      description: null,
+      status: "stopped",
+      startedAt: "2026-08-06T15:00:00.000Z",
+      stoppedAt: "2026-08-06T16:00:00.000Z",
+      idleSeconds: 0,
+      durationSeconds: 3_600,
+    };
+    const person = await signIn(clientFor({
+      report: vi.fn().mockResolvedValue({
+        rows: [
+          { ...sessionRow, id: "00000000-0000-4000-8000-000000000701", attribution: "default", attributedSeconds: 0, unattributedSeconds: 3_600 },
+          { ...sessionRow, id: "00000000-0000-4000-8000-000000000702", attribution: "agent", attributedSeconds: 3_600, unattributedSeconds: 0 },
+        ],
+        totalDurationSeconds: 7_200,
+        filters: {},
+        pagination: { page: 1, pageSize: 25, totalRows: 2, totalPages: 1 },
+      }),
+    }));
+
+    const stats = await openAllStats(person);
+    await person.click(stats.getByText(/Recent sessions/));
+    const table = await stats.findByRole("table");
+    const projectCells = within(table).getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("cell")[1]!.textContent);
+    expect(projectCells).toEqual(["Unattributed", "General"]);
+  });
+
   it("renders an older API response that lacks the hourly series", async () => {
     const olderStats = { ...memberStats, hourly: undefined } as unknown as MeStatsResponse;
     const person = await signIn(clientFor({ meStats: vi.fn().mockResolvedValue(olderStats) }));

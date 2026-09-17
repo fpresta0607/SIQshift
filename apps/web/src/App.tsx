@@ -18,11 +18,13 @@ import {
   type ViewPreferences,
 } from "@siqshift/shared";
 import {
+  AGENT_TIME_LIMIT_NOTE,
   HourlyGraph,
   LiveSessions,
   MemberBreakdown,
   MeterRowItem,
   ShiftGroups,
+  UNATTRIBUTED_LABEL,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -1082,6 +1084,7 @@ export const App = ({ client }: AppProps) => {
                         ))}
                       </ol>
                     )}
+                    {entries.length > 0 && <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>}
                   </>
                 )}
 
@@ -1186,7 +1189,7 @@ export const App = ({ client }: AppProps) => {
                       {sessionRows.map((row) => (
                         <tr key={row.id}>
                           <td>{row.user.name}</td>
-                          <td>{row.project.name}</td>
+                          <td>{row.attribution === "default" ? UNATTRIBUTED_LABEL : row.project.name}</td>
                           <td>{new Date(row.startedAt).toLocaleString()}</td>
                           <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
                         </tr>
@@ -1400,6 +1403,7 @@ const ShiftsTabBody = ({ shifts, people, selected, onSelect, selfId, loadShifts 
       </ol>
     )}
     <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
+    <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
     <HourlyGraph buckets={shifts.hourly} />
     {shifts.groups.length === 0 ? (
       <p className="subtle">No agent worked in this range.</p>

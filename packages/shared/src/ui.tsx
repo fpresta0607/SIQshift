@@ -76,6 +76,7 @@ export const MemberBreakdown = ({
         <span className="metric-value">{formatHumanDuration(concurrency.t3PlusSeconds)}</span>
       </div>
     )}
+    <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
   </div>
 );
 
@@ -531,6 +532,7 @@ export type ProjectRow = {
 
 export const UNATTRIBUTED_ROW_KEY = "unattributed";
 export const UNATTRIBUTED_LABEL = "Unattributed";
+export const AGENT_TIME_LIMIT_NOTE = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
 
 /// A project breakdown, heaviest first, with the time nothing named a project
 /// for pulled out into one "Unattributed" row read last. That time is stored

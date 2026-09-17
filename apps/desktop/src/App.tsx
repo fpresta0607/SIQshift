@@ -30,6 +30,7 @@ import {
   type AgentRuntimeReportsModel,
 } from "@siqshift/shared";
 import {
+  AGENT_TIME_LIMIT_NOTE,
   HourlyGraph,
   LiveSessions,
   MemberBreakdown,
@@ -1108,7 +1109,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // The dot beside the project name wears that project's color - the same
   // color its row wears below - so the two never disagree.
   const headerProjectColor = (pinnedProject === ""
-    ? currentProject?.color
+    ? current?.attribution === "default" ? null : currentProject?.color
     : ready.projects.find((item) => item.id === pinnedProject)?.color) ?? null;
   const defaultProject = ready.projects.find((item) => item.id === ready.defaultProjectId);
   const backlog = monitorStatus === undefined
@@ -1498,6 +1499,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     <LiveSessions people={liveSessions.people} />
                   )}
                   <p className="today-total"><strong>{formatHuman(agentShifts.totalAgentSeconds)}</strong> recorded</p>
+                  <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
                   <HourlyGraph buckets={agentShifts.hourly} />
                   {agentShifts.groups.length === 0 ? (
                     <p className="subtle">No agent worked in this range.</p>
@@ -1548,6 +1550,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                       ))}
                     </ol>
                   )}
+                  {overview.entries.length > 0 && <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>}
                 </>
               )}
 
