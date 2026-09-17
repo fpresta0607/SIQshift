@@ -13,9 +13,9 @@ import { RETENTION_WINDOW_MS, utcDaysBetween } from "./utc-days.js";
 
 const futureEventToleranceMs = 30_000;
 /**
- * No event for this long ends a running shift at its last event. The hook
- * spools SessionStart, SessionEnd, and a PostToolUse heartbeat - a working
- * agent heartbeats on every tool call, seconds to minutes apart, so half an
+ * No event for this long ends a running shift at its last event. A working
+ * agent heartbeats while it works - Claude Code from its transcript, Codex
+ * from its held writer lock, both every five minutes of activity - so half an
  * hour of silence means the agent stopped, crashed, or the machine slept.
  * The six hours this replaced let abandoned sessions hold whole evenings open
  * and reclassify a person's own active time as agent-assisted. The desktop
