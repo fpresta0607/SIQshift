@@ -87,6 +87,16 @@ export interface CreateAppDependencies {
    * answers 500. Which is why the migration goes first - see DEPLOY.md.
    */
   userDailyRollupRepository?: UserDailyRollupRepository;
+  /**
+   * The migrations this build carries that the database has not applied.
+   *
+   * `/health` is what Railway gates a deploy on, so answering it truthfully is
+   * what turns "migrate first, then deploy" from a rule in DEPLOY.md into a
+   * deploy that refuses to go live ahead of its schema. Absent - every test,
+   * and any host that wires the app without a database - `/health` answers as
+   * it always did.
+   */
+  pendingMigrations?: () => Promise<readonly string[]>;
 }
 
 function addSecurityHeaders(context: Context): void {
@@ -186,7 +196,29 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     onError: (context) => jsonError(context, new AppError("validation_error", "Request body is too large."), 413),
   }));
 
-  app.get("/health", (context) => context.json({ status: "ok" }));
+  app.get("/health", async (context) => {
+    const readPendingMigrations = dependencies.pendingMigrations;
+    if (readPendingMigrations === undefined) return context.json({ status: "ok" });
+    let pending: readonly string[];
+    try {
+      pending = await readPendingMigrations();
+    } catch (error: unknown) {
+      // A journal this cannot read is not proof of drift, but it is not proof
+      // of anything else either, and this check exists to gate a deploy. The
+      // only consumer is Railway's health check on a new deployment: failing
+      // it leaves the previous build serving rather than switching traffic to
+      // one whose schema nobody could verify, and Railway keeps polling inside
+      // its timeout, so a momentary blip still passes on a later poll.
+      // `schema_unknown` is the answer that separates "you forgot the
+      // migration" from "the database was unreachable".
+      console.error("siqshift-api: could not read the migration journal", error);
+      return context.json({ status: "schema_unknown" }, 503);
+    }
+    if (pending.length > 0) {
+      return context.json({ status: "schema_behind", pendingMigrations: [...pending] }, 503);
+    }
+    return context.json({ status: "ok" });
+  });
 
   app.use("/me", authenticate);
   app.get("/me", (context) => context.json(meResponseSchema.parse({ user: context.get("authenticatedUser") })));

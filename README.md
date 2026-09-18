@@ -260,7 +260,8 @@ and nothing re-establishes them: uploads only fill upward, and the retention
 sweep stops its deletes at the first such hole rather than refolding it.
 They read live, which is correct.
 History older than the day coverage started is read live, and backfilling it is
-the retention sweep's nightly job, not something a report does.
+the retention sweep's job - a command a scheduler runs, not something a report or
+the API does on its own.
 The read path assumes none of this in any case: a day with no row is read live
 wherever it sits.
 
@@ -286,8 +287,10 @@ no whole day between them.
 
 ### Raw evidence is kept for 90 days; the fold is kept for good
 
-A scheduled sweep rolls `activity_segments` older than 90 days into the fold and
-then deletes them.
+A sweep rolls `activity_segments` older than 90 days into the fold and then
+deletes them - a command meant to run on a schedule rather than anything the API
+does on its own, so whether it is scheduled in production today is
+[DEPLOY.md](DEPLOY.md)'s to say.
 Ninety days is not an arbitrary number: it is the longest bounded range either
 dashboard offers, so every range that draws an hourly chart still has the rows
 behind it.
@@ -312,7 +315,7 @@ starts keep their rows until a later pass has folded them.
 This is also what backfills the history the upload path cannot reach.
 Uploads only ever fill coverage upward from where it started; the sweep is the
 only thing that extends it downward, a bounded number of days per pass, so a
-workspace with years behind it converges over several nights rather than folding
+workspace with years behind it converges over several passes rather than folding
 all of it in one sitting.
 
 The window is also what the upload paths accept.
@@ -529,7 +532,7 @@ A pnpm workspace. Contracts flow down; nothing flows back up.
 | Package | What lives there |
 |---|---|
 | **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the two React entries the frontends share — `./webgl-shader` (the WebGL background) and `./ui` (the hourly chart, the member breakdown, the Today meter rows, the runtime marks, the Agents-tab drawers). React and three are those entries' optional peers, so the API pulls neither. |
-| **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, and the migration runner. |
+| **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, the migration runner, and the journal comparison `/health` answers from. |
 | **`apps/api`** | Hono API: env validation, Neon Auth JWT verification, services (sessions, activity, agent sessions, attribution, reports), Drizzle repositories, CSV export. |
 | **`apps/desktop`** | The tray app. React UI over a Tauri 2 Rust host: `monitor.rs` (activity), `spool.rs` (shared with the helper binaries), `uploader.rs`, `recovery.rs`, the All stats overlay, and the `siqshift-hook` and `siqshift-browser-host` bin targets. |
 | **`apps/web`** | The dashboard, laid out as the desktop app's own screen: sign-up/sign-in, the filing header, today's clock and Today card, the All-stats overlay (Humans board with per-member breakdowns, Agents map, session history), settings (projects, team, sign out), installer downloads. |
@@ -615,7 +618,7 @@ organization are derived from verified claims, never from the request body.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | liveness probe |
+| `GET` | `/health` | readiness: `200 {"status":"ok"}`; `503 {"status":"schema_behind","pendingMigrations":[…]}` when the database is behind the migrations this build carries, `503 {"status":"schema_unknown"}` when the journal could not be read at all (the driver's own message stays in the log) |
 | `POST` | `/accounts` | first call after sign-up: create a workspace, or join one by invite code |
 | `GET` | `/me` | the signed-in user |
 | `GET` | `/organization` | workspace name and invite code |

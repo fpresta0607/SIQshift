@@ -75,7 +75,7 @@ simply do not exist on it, so nobody's time is recorded either.
 Check what is actually running before blaming the code:
 
 ```bash
-curl -s https://api.siqshift.siqstack.com/health                 # is it up
+curl -s https://api.siqshift.siqstack.com/health                 # up, and level with its migrations
 curl -s -H "authorization: Bearer <jwt>" \
   'https://api.siqshift.siqstack.com/reports/leaderboard?fromAt=2026-01-01T00:00:00.000Z&toExclusiveAt=2026-01-02T00:00:00.000Z'
 ```
@@ -123,6 +123,29 @@ to a database that is missing `time_sessions.attribution` answers `500` on both
 report endpoints, because every report query selects that column. Deploying the
 API before migrating therefore trades the `400` for a `500` and fixes nothing.
 Run the migration, confirm it, then `railway up`.
+
+**`/health` now refuses the wrong order rather than only warning about it.** It
+compares the migration journal this build ships against the one the database
+records, and answers `503 {"status":"schema_behind","pendingMigrations":[…]}`
+when the database is behind. `railway.json` already gates a deploy on that path,
+so a `railway up` that runs ahead of its migration fails its health check and
+the previous build keeps serving, instead of going live and answering `500` on
+whichever routes touch the new table. `healthcheckTimeout` is 30 seconds, which
+is the whole budget Railway gives the new deployment to come up: it is marked
+failed long before anyone can migrate by hand, and nothing polls it afterwards.
+Recovery is therefore run the migration, then `railway up` again.
+
+The check compares journal timestamps rather than the file hashes drizzle
+journals by, so the CRLF trap `.gitattributes` describes cannot make a level
+database look behind. It names no table either, so the next migration needs no
+edit here. And it fails closed on a journal it could not read at all: a database
+it cannot reach logs `could not read the migration journal` and answers
+`503 {"status":"schema_unknown"}`, which is how you tell "you forgot
+the migration" from "the database was unreachable". A build whose schema nobody
+could verify is not one to switch traffic to, and the cost of failing closed is
+only a retry - Railway keeps polling inside its 30-second budget, so a
+momentary blip still passes on a later poll and the previous build serves
+throughout either way.
 
 ### Production's migration journal has entries this repo no longer carries
 
@@ -356,12 +379,60 @@ database.
 pnpm --filter @siqshift/api retention
 ```
 
-On Railway, add a **second service from this same repo** with `pnpm --filter
-@siqshift/api retention` as its start command and a cron schedule - daily,
-outside working hours, is the intent. It needs `DATABASE_URL` and `AUTH_BASE_URL`
-(the config parser requires both, though the sweep only uses the first). Any
-other scheduler that can run a command against the production database works
-just as well.
+On Railway, add a **second service from this same repo** with a cron schedule -
+daily, outside working hours, is the intent. It needs `DATABASE_URL` and
+`AUTH_BASE_URL` (the config parser requires both, though the sweep only uses the
+first). Any other scheduler that can run a command against the production
+database works just as well.
+
+Its start command is **`node apps/api/dist/retention.js`**, not the `pnpm` line
+above. That line is the one to type on your own machine; it cannot be the
+container's, because the runtime stage of `apps/api/Dockerfile` is a bare
+`node:22-alpine` that never runs `corepack enable`, so `pnpm` is not on the
+image's `PATH` at all. The existing `CMD` is `node apps/api/dist/server.js` for
+the same reason, and this is its twin.
+
+That start command, and the two settings the `api` service's `railway.json`
+would otherwise impose on a cron job, live in **`railway.retention.json`** at
+the repo root: it builds the same Dockerfile, sets `startCommand`, sets
+`restartPolicyType` to `NEVER` so a sweep that exits is not restarted, and sets
+no `healthcheckPath` - a job that exits answers nothing, and the root
+`railway.json` would gate its deploy on `/health`. The `api` service keeps
+reading `railway.json`; only the `retention` service is pointed at this file. I
+have not confirmed from Railway's documentation what happens to a field a
+service-level config file omits but the dashboard sets, so set nothing in the
+dashboard that this file is meant to own.
+
+**As of 2026-09-18 that second service does not exist.** Railway project
+`clock-in` has one service, `api`, so the sweep has never run on a schedule and
+no raw row has ever been deleted in production. Nothing is overdue: the oldest
+`activity_segments` row is 2026-08-12, and the sweep will not delete at or above
+91 days back, so it has nothing to do before roughly **2026-11-10**. Run by hand
+against production on 2026-09-18 it printed `nothing older than 90 days` and
+exited 0.
+
+To create it, keeping the "nothing deploys on merge" rule the `api` service
+already follows:
+
+```bash
+railway add --service retention
+```
+
+Then, in the dashboard, on the `retention` service:
+
+1. **Settings -> Config-as-code -> Railway Config File**: `railway.retention.json`.
+   This carries the start command, the restart policy and the absence of a
+   health check, so none of the three is a dashboard field that can drift.
+2. **Variables**: `DATABASE_URL` and `AUTH_BASE_URL`, copied from `api`. Nothing
+   else is read.
+3. **Settings -> Cron Schedule**: `0 08 * * *` - 03:00 US Central, outside
+   working hours.
+
+Then deploy it, from a checkout of `main` as with the API:
+
+```bash
+railway up --service retention --detach
+```
 
 It is safe to run by hand, safe to run twice, and safe to interrupt: each pass
 folds a bounded number of days per organization and deletes only inside what it
@@ -481,7 +552,14 @@ progress: it reads `Verified: no` until the TXT is visible, then flips to
 DATABASE_URL='<the same direct URL>' pnpm --filter @siqshift/database migrate
 ```
 
-**Confirm:** `curl https://api.siqshift.siqstack.com/health` → `{"status":"ok"}`
+**Confirm:** `curl https://api.siqshift.siqstack.com/health` → `{"status":"ok"}`.
+Since the schema check landed this is a real confirmation rather than a
+liveness ping: a database still behind the running build answers `503` and
+names the migrations it is missing.
+
+As of **2026-09-18** production is level with `0023_activity_segment_retention_index`,
+the journal's head. `0022` and `0023` were applied that day, nineteen days after
+they merged and one day after the build that needs `0022` went live.
 
 ---
 
@@ -867,7 +945,7 @@ listing must exist and stay published even when every install is managed.
 ## Verifying a deploy
 
 ```bash
-curl https://api.siqshift.siqstack.com/health          # {"status":"ok"}
+curl -i https://api.siqshift.siqstack.com/health       # 200 {"status":"ok"}; 503 names the missing migrations
 curl -i https://api.siqshift.siqstack.com/me           # 401, no token
 curl -i -X OPTIONS https://api.siqshift.siqstack.com/me \
   -H 'Origin: https://siqshift.siqstack.com' \
