@@ -373,12 +373,45 @@ database.
 pnpm --filter @siqshift/api retention
 ```
 
-On Railway, add a **second service from this same repo** with `pnpm --filter
-@siqshift/api retention` as its start command and a cron schedule - daily,
-outside working hours, is the intent. It needs `DATABASE_URL` and `AUTH_BASE_URL`
-(the config parser requires both, though the sweep only uses the first). Any
-other scheduler that can run a command against the production database works
-just as well.
+On Railway, add a **second service from this same repo** with a cron schedule -
+daily, outside working hours, is the intent. It needs `DATABASE_URL` and
+`AUTH_BASE_URL` (the config parser requires both, though the sweep only uses the
+first). Any other scheduler that can run a command against the production
+database works just as well.
+
+Its start command is **`node apps/api/dist/retention.js`**, not the `pnpm` line
+above. That line is the one to type on your own machine; it cannot be the
+container's, because the runtime stage of `apps/api/Dockerfile` is a bare
+`node:22-alpine` that never runs `corepack enable`, so `pnpm` is not on the
+image's `PATH` at all. The existing `CMD` is `node apps/api/dist/server.js` for
+the same reason, and this is its twin.
+
+**As of 2026-09-18 that second service does not exist.** Railway project
+`clock-in` has one service, `api`, so the sweep has never run on a schedule and
+no raw row has ever been deleted in production. Nothing is overdue: the oldest
+`activity_segments` row is 2026-08-12, and the sweep will not delete at or above
+91 days back, so it has nothing to do before roughly **2026-11-10**. Run by hand
+against production on 2026-09-18 it printed `nothing older than 90 days` and
+exited 0.
+
+To create it, keeping the "nothing deploys on merge" rule the `api` service
+already follows:
+
+```bash
+railway add --service retention
+railway up --service retention --detach   # from a checkout of main, as with the API
+```
+
+Then, in the dashboard, on the `retention` service:
+
+1. **Settings -> Deploy -> Custom Start Command**: `node apps/api/dist/retention.js`.
+2. **Variables**: `DATABASE_URL` and `AUTH_BASE_URL`, copied from `api`. Nothing
+   else is read.
+3. **Settings -> Deploy -> Healthcheck Path**: clear it. `railway.json` sets
+   `/health` for every service built from this repo, and a cron job that exits
+   answers nothing, so leaving it there fails the deploy.
+4. **Settings -> Cron Schedule**: `0 08 * * *` - 03:00 US Central, outside
+   working hours.
 
 It is safe to run by hand, safe to run twice, and safe to interrupt: each pass
 folds a bounded number of days per organization and deletes only inside what it
