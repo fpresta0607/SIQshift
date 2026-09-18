@@ -1,4 +1,4 @@
-import { createDatabase } from "@siqshift/database";
+import { createDatabase, pendingMigrations } from "@siqshift/database";
 
 import { createApp } from "./app.js";
 import { createNeonAuthKeys } from "./auth.js";
@@ -38,6 +38,7 @@ const server = serveApp(
     pathMappingRepository: new DrizzlePathMappingRepository(db),
     viewPreferencesRepository: new DrizzleViewPreferencesRepository(db),
     userDailyRollupRepository: new DrizzleUserDailyRollupRepository(db),
+    pendingMigrations: () => pendingMigrations(client),
   }),
   config,
 );

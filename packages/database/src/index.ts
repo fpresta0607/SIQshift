@@ -1,6 +1,7 @@
 export { createDatabase, type DatabaseConnection } from "./client.js";
 export { createDisposableTestDatabase, type DisposableTestDatabase } from "./disposable-test-database.js";
 export { runMigrations } from "./migrate.js";
+export { bundledMigrations, pendingMigrations } from "./migration-status.js";
 export {
   activitySegmentKind,
   activitySegments,

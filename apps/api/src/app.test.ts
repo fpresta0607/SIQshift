@@ -39,7 +39,13 @@ beforeAll(async () => {
   bearerFor = (userId) => auth.bearer(userId);
 });
 
-function createTestApp(options: { bodyLimitBytes?: number; accounts?: AccountStore } = {}) {
+function createTestApp(
+  options: {
+    bodyLimitBytes?: number;
+    accounts?: AccountStore;
+    pendingMigrations?: () => Promise<readonly string[]>;
+  } = {},
+) {
   const resolved: string[] = [];
   const accounts: AccountStore = options.accounts ?? {
     resolve: async (identity) => {
@@ -54,6 +60,7 @@ function createTestApp(options: { bodyLimitBytes?: number; accounts?: AccountSto
     keys,
     accounts,
     ...(options.bodyLimitBytes === undefined ? {} : { bodyLimitBytes: options.bodyLimitBytes }),
+    ...(options.pendingMigrations === undefined ? {} : { pendingMigrations: options.pendingMigrations }),
     clock: () => now,
   });
 
@@ -70,6 +77,49 @@ describe("API composition", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(response.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/i);
     await expect(response.json()).resolves.toEqual({ status: "ok" });
+  });
+
+  it("fails the health check while the database is behind the migrations this build carries", async () => {
+    const { app } = createTestApp({ pendingMigrations: async () => ["0022_user_daily_rollups"] });
+
+    const response = await app.request("http://api.test/health");
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      status: "schema_behind",
+      pendingMigrations: ["0022_user_daily_rollups"],
+    });
+  });
+
+  it("stops reading the migration journal once the schema is level with the build", async () => {
+    let reads = 0;
+    const { app } = createTestApp({
+      pendingMigrations: async () => {
+        reads += 1;
+        return [];
+      },
+    });
+
+    expect((await app.request("http://api.test/health")).status).toBe(200);
+    expect((await app.request("http://api.test/health")).status).toBe(200);
+    expect(reads).toBe(1);
+  });
+
+  it("keeps asking, and stays healthy, while the migration journal cannot be read", async () => {
+    let reads = 0;
+    const { app } = createTestApp({
+      pendingMigrations: async () => {
+        reads += 1;
+        throw new Error("connection refused");
+      },
+    });
+
+    const response = await app.request("http://api.test/health");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "ok" });
+    await app.request("http://api.test/health");
+    expect(reads).toBe(2);
   });
 
   it("returns the signed-in account and provisions it through the account store", async () => {

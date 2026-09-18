@@ -124,6 +124,23 @@ report endpoints, because every report query selects that column. Deploying the
 API before migrating therefore trades the `400` for a `500` and fixes nothing.
 Run the migration, confirm it, then `railway up`.
 
+**`/health` now refuses the wrong order rather than only warning about it.** It
+compares the migration journal this build ships against the one the database
+records, and answers `503 {"status":"schema_behind","pendingMigrations":[…]}`
+when the database is behind. `railway.json` already gates a deploy on that path,
+so a `railway up` that runs ahead of its migration fails its health check and
+the previous build keeps serving, instead of going live and answering `500` on
+whichever routes touch the new table. Run the migration and the next health poll
+passes on its own - nothing needs redeploying.
+
+The check compares journal timestamps rather than the file hashes drizzle
+journals by, so the CRLF trap `.gitattributes` describes cannot make a level
+database look behind. It names no table either, so the next migration needs no
+edit here. And it only fails on a journal it has actually read: a database it
+cannot reach logs `could not read the migration journal` and still answers
+`200`, because an unreachable database is not evidence of drift and rolling a
+deploy back over a blip is worse than the blip.
+
 ### Production's migration journal has entries this repo no longer carries
 
 `drizzle.__drizzle_migrations` in production records eleven migrations: the ten
@@ -481,7 +498,14 @@ progress: it reads `Verified: no` until the TXT is visible, then flips to
 DATABASE_URL='<the same direct URL>' pnpm --filter @siqshift/database migrate
 ```
 
-**Confirm:** `curl https://api.siqshift.siqstack.com/health` → `{"status":"ok"}`
+**Confirm:** `curl https://api.siqshift.siqstack.com/health` → `{"status":"ok"}`.
+Since the schema check landed this is a real confirmation rather than a
+liveness ping: a database still behind the running build answers `503` and
+names the migrations it is missing.
+
+As of **2026-09-18** production is level with `0023_activity_segment_retention_index`,
+the journal's head. `0022` and `0023` were applied that day, nineteen days after
+they merged and one day after the build that needs `0022` went live.
 
 ---
 
