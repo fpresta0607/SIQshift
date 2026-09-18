@@ -529,7 +529,7 @@ A pnpm workspace. Contracts flow down; nothing flows back up.
 | Package | What lives there |
 |---|---|
 | **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the two React entries the frontends share — `./webgl-shader` (the WebGL background) and `./ui` (the hourly chart, the member breakdown, the Today meter rows, the runtime marks, the Agents-tab drawers). React and three are those entries' optional peers, so the API pulls neither. |
-| **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, and the migration runner. |
+| **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, the migration runner, and the journal comparison `/health` answers from. |
 | **`apps/api`** | Hono API: env validation, Neon Auth JWT verification, services (sessions, activity, agent sessions, attribution, reports), Drizzle repositories, CSV export. |
 | **`apps/desktop`** | The tray app. React UI over a Tauri 2 Rust host: `monitor.rs` (activity), `spool.rs` (shared with the helper binaries), `uploader.rs`, `recovery.rs`, the All stats overlay, and the `siqshift-hook` and `siqshift-browser-host` bin targets. |
 | **`apps/web`** | The dashboard, laid out as the desktop app's own screen: sign-up/sign-in, the filing header, today's clock and Today card, the All-stats overlay (Humans board with per-member breakdowns, Agents map, session history), settings (projects, team, sign out), installer downloads. |
