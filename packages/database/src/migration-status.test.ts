@@ -1,7 +1,16 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import type { Sql } from "postgres";
 import { describe, expect, it } from "vitest";
 
 import { bundledMigrations, pendingMigrations } from "./migration-status.js";
+
+/** The journal drizzle-kit writes, read as the input contract the reader parses. */
+function journalEntries(): Array<{ tag: string; when: number }> {
+  const journalPath = fileURLToPath(new URL("../migrations/meta/_journal.json", import.meta.url));
+  return (JSON.parse(readFileSync(journalPath, "utf8")) as { entries: Array<{ tag: string; when: number }> }).entries;
+}
 
 /**
  * A `postgres` client stands in for a tagged template, so a fake is a function
@@ -18,10 +27,14 @@ function fakeClient(answers: readonly unknown[][]): Sql {
 
 describe("bundledMigrations", () => {
   it("reads the journal this build ships, in the order it would apply it", () => {
+    const raw = journalEntries();
+    const oldestFirst = [...raw].sort((left, right) => left.when - right.when);
+
     const entries = bundledMigrations();
 
-    expect(entries.length).toBeGreaterThan(0);
-    expect(entries.map((entry) => entry.when)).toEqual([...entries.map((entry) => entry.when)].sort((a, b) => a - b));
+    expect(raw.length).toBeGreaterThan(0);
+    expect(entries.map((entry) => ({ tag: entry.tag, when: entry.when })))
+      .toEqual(oldestFirst.map((entry) => ({ tag: entry.tag, when: entry.when })));
     expect(entries.at(0)?.tag).toBe("0000_initial");
   });
 });

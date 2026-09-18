@@ -138,10 +138,14 @@ Recovery is therefore run the migration, then `railway up` again.
 The check compares journal timestamps rather than the file hashes drizzle
 journals by, so the CRLF trap `.gitattributes` describes cannot make a level
 database look behind. It names no table either, so the next migration needs no
-edit here. And it only fails on a journal it has actually read: a database it
-cannot reach logs `could not read the migration journal` and still answers
-`200`, because an unreachable database is not evidence of drift and rolling a
-deploy back over a blip is worse than the blip.
+edit here. And it fails closed on a journal it could not read at all: a database
+it cannot reach logs `could not read the migration journal` and answers
+`503 {"status":"schema_unknown","error":"…"}`, which is how you tell "you forgot
+the migration" from "the database was unreachable". A build whose schema nobody
+could verify is not one to switch traffic to, and the cost of failing closed is
+only a retry - Railway keeps polling inside its 30-second budget, so a
+momentary blip still passes on a later poll and the previous build serves
+throughout either way.
 
 ### Production's migration journal has entries this repo no longer carries
 

@@ -91,7 +91,7 @@ describe("API composition", () => {
     });
   });
 
-  it("keeps asking, and stays healthy, while the migration journal cannot be read", async () => {
+  it("fails the health check, distinguishably, while the migration journal cannot be read", async () => {
     let reads = 0;
     const { app } = createTestApp({
       pendingMigrations: async () => {
@@ -102,10 +102,24 @@ describe("API composition", () => {
 
     const response = await app.request("http://api.test/health");
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: "ok" });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ status: "schema_unknown", error: "connection refused" });
     await app.request("http://api.test/health");
     expect(reads).toBe(2);
+  });
+
+  it("recovers on a later poll once the journal becomes readable", async () => {
+    let reads = 0;
+    const { app } = createTestApp({
+      pendingMigrations: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("connection refused");
+        return [];
+      },
+    });
+
+    expect((await app.request("http://api.test/health")).status).toBe(503);
+    expect((await app.request("http://api.test/health")).status).toBe(200);
   });
 
   it("returns the signed-in account and provisions it through the account store", async () => {

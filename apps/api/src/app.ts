@@ -203,11 +203,17 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     try {
       pending = await readPendingMigrations();
     } catch (error: unknown) {
-      // A database this cannot reach is not evidence of drift. Failing here
-      // would turn a blip into a rolled-back deploy, so it answers as before
-      // and says why in the log.
+      // A journal this cannot read is not proof of drift, but it is not proof
+      // of anything else either, and this check exists to gate a deploy. The
+      // only consumer is Railway's health check on a new deployment: failing
+      // it leaves the previous build serving rather than switching traffic to
+      // one whose schema nobody could verify, and Railway keeps polling inside
+      // its timeout, so a momentary blip still passes on a later poll.
+      // `schema_unknown` is the answer that separates "you forgot the
+      // migration" from "the database was unreachable".
       console.error("siqshift-api: could not read the migration journal", error);
-      return context.json({ status: "ok" });
+      const reason = error instanceof Error ? error.message : "unknown error";
+      return context.json({ status: "schema_unknown", error: reason }, 503);
     }
     if (pending.length > 0) {
       return context.json({ status: "schema_behind", pendingMigrations: [...pending] }, 503);
