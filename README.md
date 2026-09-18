@@ -615,7 +615,7 @@ organization are derived from verified claims, never from the request body.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | liveness probe |
+| `GET` | `/health` | readiness: `200 {"status":"ok"}`, or `503 {"status":"schema_behind","pendingMigrations":[…]}` when the database is behind the migrations this build carries |
 | `POST` | `/accounts` | first call after sign-up: create a workspace, or join one by invite code |
 | `GET` | `/me` | the signed-in user |
 | `GET` | `/organization` | workspace name and invite code |

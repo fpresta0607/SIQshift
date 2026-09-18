@@ -196,14 +196,9 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     onError: (context) => jsonError(context, new AppError("validation_error", "Request body is too large."), 413),
   }));
 
-  // Latched once the schema has caught up: a migration only ever moves the
-  // database forward, so a database that is level with this build cannot fall
-  // behind it again while the process lives. Only the failing answer keeps
-  // asking, which is what lets a deploy recover the moment its migration runs.
-  let schemaIsCurrent = false;
   app.get("/health", async (context) => {
     const readPendingMigrations = dependencies.pendingMigrations;
-    if (readPendingMigrations === undefined || schemaIsCurrent) return context.json({ status: "ok" });
+    if (readPendingMigrations === undefined) return context.json({ status: "ok" });
     let pending: readonly string[];
     try {
       pending = await readPendingMigrations();
@@ -217,7 +212,6 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     if (pending.length > 0) {
       return context.json({ status: "schema_behind", pendingMigrations: [...pending] }, 503);
     }
-    schemaIsCurrent = true;
     return context.json({ status: "ok" });
   });
 

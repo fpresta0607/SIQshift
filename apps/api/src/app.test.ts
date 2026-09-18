@@ -91,20 +91,6 @@ describe("API composition", () => {
     });
   });
 
-  it("stops reading the migration journal once the schema is level with the build", async () => {
-    let reads = 0;
-    const { app } = createTestApp({
-      pendingMigrations: async () => {
-        reads += 1;
-        return [];
-      },
-    });
-
-    expect((await app.request("http://api.test/health")).status).toBe(200);
-    expect((await app.request("http://api.test/health")).status).toBe(200);
-    expect(reads).toBe(1);
-  });
-
   it("keeps asking, and stays healthy, while the migration journal cannot be read", async () => {
     let reads = 0;
     const { app } = createTestApp({

@@ -75,7 +75,7 @@ simply do not exist on it, so nobody's time is recorded either.
 Check what is actually running before blaming the code:
 
 ```bash
-curl -s https://api.siqshift.siqstack.com/health                 # is it up
+curl -s https://api.siqshift.siqstack.com/health                 # up, and level with its migrations
 curl -s -H "authorization: Bearer <jwt>" \
   'https://api.siqshift.siqstack.com/reports/leaderboard?fromAt=2026-01-01T00:00:00.000Z&toExclusiveAt=2026-01-02T00:00:00.000Z'
 ```
@@ -130,8 +130,10 @@ records, and answers `503 {"status":"schema_behind","pendingMigrations":[…]}`
 when the database is behind. `railway.json` already gates a deploy on that path,
 so a `railway up` that runs ahead of its migration fails its health check and
 the previous build keeps serving, instead of going live and answering `500` on
-whichever routes touch the new table. Run the migration and the next health poll
-passes on its own - nothing needs redeploying.
+whichever routes touch the new table. `healthcheckTimeout` is 30 seconds, which
+is the whole budget Railway gives the new deployment to come up: it is marked
+failed long before anyone can migrate by hand, and nothing polls it afterwards.
+Recovery is therefore run the migration, then `railway up` again.
 
 The check compares journal timestamps rather than the file hashes drizzle
 journals by, so the CRLF trap `.gitattributes` describes cannot make a level
@@ -386,6 +388,17 @@ container's, because the runtime stage of `apps/api/Dockerfile` is a bare
 image's `PATH` at all. The existing `CMD` is `node apps/api/dist/server.js` for
 the same reason, and this is its twin.
 
+That start command, and the two settings the `api` service's `railway.json`
+would otherwise impose on a cron job, live in **`railway.retention.json`** at
+the repo root: it builds the same Dockerfile, sets `startCommand`, sets
+`restartPolicyType` to `NEVER` so a sweep that exits is not restarted, and sets
+no `healthcheckPath` - a job that exits answers nothing, and the root
+`railway.json` would gate its deploy on `/health`. The `api` service keeps
+reading `railway.json`; only the `retention` service is pointed at this file. I
+have not confirmed from Railway's documentation what happens to a field a
+service-level config file omits but the dashboard sets, so set nothing in the
+dashboard that this file is meant to own.
+
 **As of 2026-09-18 that second service does not exist.** Railway project
 `clock-in` has one service, `api`, so the sweep has never run on a schedule and
 no raw row has ever been deleted in production. Nothing is overdue: the oldest
@@ -399,19 +412,23 @@ already follows:
 
 ```bash
 railway add --service retention
-railway up --service retention --detach   # from a checkout of main, as with the API
 ```
 
 Then, in the dashboard, on the `retention` service:
 
-1. **Settings -> Deploy -> Custom Start Command**: `node apps/api/dist/retention.js`.
+1. **Settings -> Config-as-code -> Railway Config File**: `railway.retention.json`.
+   This carries the start command, the restart policy and the absence of a
+   health check, so none of the three is a dashboard field that can drift.
 2. **Variables**: `DATABASE_URL` and `AUTH_BASE_URL`, copied from `api`. Nothing
    else is read.
-3. **Settings -> Deploy -> Healthcheck Path**: clear it. `railway.json` sets
-   `/health` for every service built from this repo, and a cron job that exits
-   answers nothing, so leaving it there fails the deploy.
-4. **Settings -> Cron Schedule**: `0 08 * * *` - 03:00 US Central, outside
+3. **Settings -> Cron Schedule**: `0 08 * * *` - 03:00 US Central, outside
    working hours.
+
+Then deploy it, from a checkout of `main` as with the API:
+
+```bash
+railway up --service retention --detach
+```
 
 It is safe to run by hand, safe to run twice, and safe to interrupt: each pass
 folds a bounded number of days per organization and deletes only inside what it
@@ -924,7 +941,7 @@ listing must exist and stay published even when every install is managed.
 ## Verifying a deploy
 
 ```bash
-curl https://api.siqshift.siqstack.com/health          # {"status":"ok"}
+curl -i https://api.siqshift.siqstack.com/health       # 200 {"status":"ok"}; 503 names the missing migrations
 curl -i https://api.siqshift.siqstack.com/me           # 401, no token
 curl -i -X OPTIONS https://api.siqshift.siqstack.com/me \
   -H 'Origin: https://siqshift.siqstack.com' \
