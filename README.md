@@ -260,7 +260,8 @@ and nothing re-establishes them: uploads only fill upward, and the retention
 sweep stops its deletes at the first such hole rather than refolding it.
 They read live, which is correct.
 History older than the day coverage started is read live, and backfilling it is
-the retention sweep's nightly job, not something a report does.
+the retention sweep's job - a command a scheduler runs, not something a report or
+the API does on its own.
 The read path assumes none of this in any case: a day with no row is read live
 wherever it sits.
 
@@ -286,8 +287,10 @@ no whole day between them.
 
 ### Raw evidence is kept for 90 days; the fold is kept for good
 
-A scheduled sweep rolls `activity_segments` older than 90 days into the fold and
-then deletes them.
+A sweep rolls `activity_segments` older than 90 days into the fold and then
+deletes them - a command meant to run on a schedule rather than anything the API
+does on its own, so whether it is scheduled in production today is
+[DEPLOY.md](DEPLOY.md)'s to say.
 Ninety days is not an arbitrary number: it is the longest bounded range either
 dashboard offers, so every range that draws an hourly chart still has the rows
 behind it.
@@ -312,7 +315,7 @@ starts keep their rows until a later pass has folded them.
 This is also what backfills the history the upload path cannot reach.
 Uploads only ever fill coverage upward from where it started; the sweep is the
 only thing that extends it downward, a bounded number of days per pass, so a
-workspace with years behind it converges over several nights rather than folding
+workspace with years behind it converges over several passes rather than folding
 all of it in one sitting.
 
 The window is also what the upload paths accept.
