@@ -212,8 +212,7 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
       // `schema_unknown` is the answer that separates "you forgot the
       // migration" from "the database was unreachable".
       console.error("siqshift-api: could not read the migration journal", error);
-      const reason = error instanceof Error ? error.message : "unknown error";
-      return context.json({ status: "schema_unknown", error: reason }, 503);
+      return context.json({ status: "schema_unknown" }, 503);
     }
     if (pending.length > 0) {
       return context.json({ status: "schema_behind", pendingMigrations: [...pending] }, 503);

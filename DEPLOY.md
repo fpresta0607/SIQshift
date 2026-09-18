@@ -140,7 +140,7 @@ journals by, so the CRLF trap `.gitattributes` describes cannot make a level
 database look behind. It names no table either, so the next migration needs no
 edit here. And it fails closed on a journal it could not read at all: a database
 it cannot reach logs `could not read the migration journal` and answers
-`503 {"status":"schema_unknown","error":"…"}`, which is how you tell "you forgot
+`503 {"status":"schema_unknown"}`, which is how you tell "you forgot
 the migration" from "the database was unreachable". A build whose schema nobody
 could verify is not one to switch traffic to, and the cost of failing closed is
 only a retry - Railway keeps polling inside its 30-second budget, so a

@@ -103,7 +103,7 @@ describe("API composition", () => {
     const response = await app.request("http://api.test/health");
 
     expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ status: "schema_unknown", error: "connection refused" });
+    await expect(response.json()).resolves.toEqual({ status: "schema_unknown" });
     await app.request("http://api.test/health");
     expect(reads).toBe(2);
   });

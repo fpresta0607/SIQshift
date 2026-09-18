@@ -29,10 +29,21 @@ interface JournalEntry {
   when: number;
 }
 
-/** The migrations this build carries, oldest first. */
-export function bundledMigrations(): JournalEntry[] {
-  const journal = JSON.parse(readFileSync(fileURLToPath(journalUrl), "utf8")) as { entries: JournalEntry[] };
-  return [...journal.entries].sort((left, right) => left.when - right.when);
+let journalEntries: readonly JournalEntry[] | undefined;
+
+/**
+ * The migrations this build carries, oldest first - the order drizzle-kit
+ * appends the journal in and the order drizzle's own migrator reads it back.
+ * The comparison below selects by timestamp rather than by position, so it
+ * holds whatever order the journal arrives in.
+ *
+ * Read once per process: the journal is a build artifact inside the image, and
+ * the caller is a public endpoint that should not repeat a synchronous disk
+ * read per request.
+ */
+export function bundledMigrations(): readonly JournalEntry[] {
+  journalEntries ??= (JSON.parse(readFileSync(fileURLToPath(journalUrl), "utf8")) as { entries: JournalEntry[] }).entries;
+  return journalEntries;
 }
 
 /**

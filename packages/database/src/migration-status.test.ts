@@ -28,13 +28,12 @@ function fakeClient(answers: readonly unknown[][]): Sql {
 describe("bundledMigrations", () => {
   it("reads the journal this build ships, in the order it would apply it", () => {
     const raw = journalEntries();
-    const oldestFirst = [...raw].sort((left, right) => left.when - right.when);
 
     const entries = bundledMigrations();
 
     expect(raw.length).toBeGreaterThan(0);
     expect(entries.map((entry) => ({ tag: entry.tag, when: entry.when })))
-      .toEqual(oldestFirst.map((entry) => ({ tag: entry.tag, when: entry.when })));
+      .toEqual(raw.map((entry) => ({ tag: entry.tag, when: entry.when })));
     expect(entries.at(0)?.tag).toBe("0000_initial");
   });
 });
