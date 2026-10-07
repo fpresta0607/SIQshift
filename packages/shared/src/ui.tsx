@@ -708,6 +708,7 @@ export type ShiftPage = {
 export const shiftGroupLabel = (group: ShiftGroup): string => {
   if (group.repo !== null) return group.repo;
   if (group.nullCause === "no-working-directory") return "No working directory recorded";
+  if (group.nullCause === "home-or-temp-directory") return "Home or temp folder, no codebase";
   if (group.nullCause === "unidentified-run-directory") return "Run worktree, codebase not identified";
   return "No codebase recorded";
 };

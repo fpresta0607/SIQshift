@@ -921,12 +921,14 @@ export const agentShiftsResponseSchema = z
         /**
          * Why a null-repo group exists, so one collapsed bucket can never hide
          * several different answers: `no-working-directory` - no commit root
-         * and no working directory was ever captured - and
+         * and no working directory was ever captured -
+         * `home-or-temp-directory` - the shift worked in a home folder or the
+         * temp tree, which name no codebase - and
          * `unidentified-run-directory` - the shift worked in a per-run
          * worktree whose repository no runtime identified. Always null on a
          * named group. Additive: an API from before it sends none.
          */
-        nullCause: z.enum(["no-working-directory", "unidentified-run-directory"]).nullable().optional(),
+        nullCause: z.enum(["no-working-directory", "home-or-temp-directory", "unidentified-run-directory"]).nullable().optional(),
         agentSeconds: z.number().int().nonnegative().safe(),
         shiftCount: z.number().int().nonnegative().safe(),
         /** merged / decided; null while nothing has been decided. */

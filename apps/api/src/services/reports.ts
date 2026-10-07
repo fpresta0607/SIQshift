@@ -63,7 +63,7 @@ import type {
 } from "../repositories.js";
 import { asAgentView } from "./agents.js";
 import { isSpentDay, planRollupRange, rollupWindow, type LiveSpan } from "./rollup-ranges.js";
-import { agentCodebaseLabel, repoLabel } from "./attribution.js";
+import { isHomeOrTempDirectory, shiftCodebase } from "./attribution.js";
 import { rosterEligibleSource, type AgentSessionReaper } from "./agent-sessions.js";
 
 export interface ReportService {
@@ -752,9 +752,8 @@ function collectLabel(labels: string[], label: string | null): void {
 
 /**
  * Roster agents' intervals grouped by agentId; legacy sessions with no roster
- * identity carry no row to group into. A shift's codebase follows the
- * paystub's shiftRepoLabel rule: its commit's repo root when it recorded one,
- * its working directory otherwise.
+ * identity carry no row to group into. A shift's codebase is `shiftCodebase`'s,
+ * the one every Agents-tab surface reads.
  */
 function intervalsByAgentId(
   intervals: readonly AgentIntervalRecord[],
@@ -767,8 +766,7 @@ function intervalsByAgentId(
     const existing = grouped.get(row.agentId) ?? { intervals: [], models: [], repos: [] };
     existing.intervals.push(asInterval(row.startedAt, row.endedAt));
     collectLabel(existing.models, row.model);
-    const root = rootBySession.get(row.sessionId) ?? row.cwd;
-    collectLabel(existing.repos, root === null ? null : repoLabel(root));
+    collectLabel(existing.repos, shiftCodebase(rootBySession.get(row.sessionId) ?? null, row.cwd, row.agentRepoRoot, row.agentRepoKey));
     grouped.set(row.agentId, existing);
   }
   return grouped;
@@ -1090,7 +1088,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         if (scope.projectId !== undefined && row.projectId !== scope.projectId) continue;
         const person = people.get(row.user.id)
           ?? { owner: { id: row.user.id, name: row.user.name }, sessions: [] };
-        const repo = (row.cwd === null ? null : repoLabel(row.cwd)) ?? agentCodebaseLabel(row.agentRepoRoot, row.agentRepoKey);
+        const repo = shiftCodebase(null, row.cwd, row.agentRepoRoot, row.agentRepoKey);
         const project = row.projectId === null || row.projectName == null
           ? null
           : { id: row.projectId, name: row.projectName };
@@ -1163,16 +1161,14 @@ type ShiftBoardGroup = {
  * a shift's codebase label is computed here rather than in SQL and so cannot
  * narrow the query to one group.
  *
- * One group per codebase label, assembled straight from the shifts: no roster
- * join, so two worktree clones of the same repo read as one codebase, which
- * is what the tab is for. Each shift labels itself the paystub's way - its
- * first commit's repo root, else its working directory - and a shift whose
- * own paths name only a run (a no-mistakes gate worktree, a CI checkout)
- * falls back to its roster identity's repository: the remote the runtime
- * probed for exactly this shift, the same evidence that keyed the identity. A
- * shift that can name nothing at all groups under null, split by why - no
- * directory ever captured, or a run directory whose repository no runtime
- * identified - so the reader can tell a capture gap from work that
+ * One group per codebase, assembled straight from the shifts: no roster join,
+ * so two worktree clones of the same repo read as one codebase, which is what
+ * the tab is for. Each shift names its codebase through `shiftCodebase` - its
+ * first commit's repository, else the repository its identity is keyed on,
+ * else its working directory - and groups case-insensitively. A shift that can
+ * name nothing at all groups under null, split by why - no directory ever
+ * captured, a home or temp folder, or a run directory whose repository no
+ * runtime identified - so the reader can tell a capture gap from work that
  * legitimately has no repo.
  */
 async function readShiftBoard(
@@ -1231,13 +1227,16 @@ async function readShiftBoard(
     people.set(interval.user.id, person);
     if (selectedUserId !== undefined && interval.user.id !== selectedUserId) continue;
     const shiftCommitList = commitsBySession.get(interval.sessionId) ?? [];
-    const root = shiftCommitList[0]?.repoRoot ?? interval.cwd;
-    const repo = (root === null || root === undefined ? null : repoLabel(root))
-      ?? agentCodebaseLabel(interval.agentRepoRoot, interval.agentRepoKey);
-    const nullCause: NullCause = repo === null
-      ? (root === null || root === undefined ? "no-working-directory" : "unidentified-run-directory")
-      : null;
-    const key = repo ?? `null:${nullCause}`;
+    const commitRoot = shiftCommitList[0]?.repoRoot ?? null;
+    const root = commitRoot ?? interval.cwd;
+    const repo = shiftCodebase(commitRoot, interval.cwd, interval.agentRepoRoot, interval.agentRepoKey);
+    const nullCause: NullCause = repo !== null
+      ? null
+      : root === null
+        ? "no-working-directory"
+        : isHomeOrTempDirectory(root) ? "home-or-temp-directory" : "unidentified-run-directory";
+    // One repository is one group however a checkout capitalised its folder.
+    const key = repo?.toLowerCase() ?? `null:${nullCause}`;
     const project = interval.projectId === null || interval.projectName == null
       ? null
       : { id: interval.projectId, name: interval.projectName };
@@ -1355,8 +1354,7 @@ export function liveSessionDescription(
 ): string {
   const runtime = agentRuntimeLabel(session.source);
   const where = session.projectName
-    ?? (session.cwd === null ? null : repoLabel(session.cwd))
-    ?? agentCodebaseLabel(session.agentRepoRoot, session.agentRepoKey)
+    ?? shiftCodebase(null, session.cwd, session.agentRepoRoot, session.agentRepoKey)
     ?? "no codebase recorded";
   const model = session.model === null ? "" : ` on ${session.model}`;
   return `${runtime}${model} in ${where}, running ${liveElapsedSeconds(session.startedAt, now)}`;
