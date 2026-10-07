@@ -4,6 +4,7 @@ import {
   agentCodebaseLabel,
   identityRepoKey,
   identityRepoRoot,
+  isHomeOrTempDirectory,
   normalizePath,
   normalizeRemote,
   repoKeyLabel,
@@ -22,6 +23,34 @@ function mapping(pathPrefix: string, projectId: string, kind: "path_prefix" | "u
   serial += 1;
   return { id: `m${serial}`, kind, pathPrefix, repoUrl, projectId };
 }
+
+describe("isHomeOrTempDirectory", () => {
+  it.each([
+    "C:\\Users\\fpres",
+    "c:/users/fpres/",
+    "/home/alex",
+    "/Users/alex",
+    "/root",
+    "C:/Users/fpres/AppData/Local/Temp/claude/run/scratchpad/steer-claude",
+    "C:\\Windows\\Temp\\build",
+    "/tmp",
+    "/tmp/checkout",
+    "/var/folders/xy/abc/T/proof",
+    "/private/var/folders/xy/abc/T/proof",
+  ])("names no codebase in %s", (path) => {
+    expect(isHomeOrTempDirectory(path)).toBe(true);
+  });
+
+  it.each([
+    "C:/dev/code-goblins",
+    "C:/Users/fpres/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
+    "C:/Users/Gianluca/coldOutreachPrecisionDocs",
+    "/home/alex/src/quartermaster",
+    "/tmpfiles/app",
+  ])("leaves %s to its own name", (path) => {
+    expect(isHomeOrTempDirectory(path)).toBe(false);
+  });
+});
 
 describe("repoLabel", () => {
   it("names the last segment of a path, whatever separators it uses", () => {

@@ -93,14 +93,11 @@ from a path key, and the directory itself only when there is no key at all.
 That is one definition, read by the roster view, by the default name the API mints and by
 scripts/repair-agent-identity-by-remote.mjs, so a row whose root is one worktree still renders the
 whole repository's name and a repaired roster reads exactly like a freshly minted one.
-A shift labels itself the paystub's way: first commit's repo root, else cwd; when neither names a
-codebase - a no-mistakes gate worktree under `.no-mistakes/worktrees/<hash>/<ULID>` names only its
-run, and most recorded shifts ran in one, while an older shift captured no directory at all - it
-falls back to its roster identity's `agentCodebaseLabel`, which is why the shifts map attributes
-gate worktrees at all. Whatever still names nothing groups last, split by
-`nullCause` (`no-working-directory`, `unidentified-run-directory`) so one bucket never hides two
-answers; there is no default codebase, just as `resolveProjectForCwd` returns null rather than
-falling back to a project.
+A shift names its codebase through `shiftCodebase`, the one rule every Agents-tab surface reads (the shifts map, the live view and its description, the paystub's repos): its first commit's repository, else the repository its identity is keyed on, else its working directory.
+The identity outranks the working directory because a worktree's folder is named for its task: a goblin's `.worktrees/gb-cg-ci-speed` is not opaque enough to read as a run, so reading the folder first split one repository into a group per task.
+Groups are keyed case-insensitively, and a label matching the identity's in all but case takes the identity's spelling, so a checkout's capitalisation never splits a repository in two.
+A home folder or the temp tree names no codebase (`isHomeOrTempDirectory`), unless a remote does: a session opened in `~` works on whatever it is asked to, and test harnesses make throwaway repositories in temp by the dozen.
+Whatever still names nothing groups last, split by `nullCause` (`no-working-directory`, `home-or-temp-directory`, `unidentified-run-directory`) so one bucket never hides two answers; there is no default codebase, just as `resolveProjectForCwd` returns null rather than falling back to a project.
 
 Agents are durable identities, not rows per run: one `agents` row per `(organization, owner, source, repo_key)` - one person's harness working one **repository** - and each `agent_sessions` row is one of its shifts.
 The operator is the authenticated uploader, so the dimension costs each runtime nothing.
@@ -352,6 +349,12 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   `agent_usage.rs` spools one plain heartbeat per `ACTIVITY_HEARTBEAT_SECONDS` of
   entries, stamped with the entry's own time. Before it, a live-delivered Claude Code
   shift never outlived the 30-minute reaper, and only a late upload read longer.
+  Activity after the server ended the current shift - past the staleness window, or
+  after an end, which `claude --continue` follows under the same session id - opens a
+  continuation shift, `<session id>~<unix start>`, carrying the hook's repository so it
+  keys the same identity and project; the hook's next end closes it. Without it a
+  goblin lost every minute after its first wait on CI. Commits and token counters stay
+  on the session's own row.
 - `/agent-sessions` must answer a full 500-event batch inside `ApiClient`'s 20-second
   timeout, because installed desktops older than `AGENT_UPLOAD_BATCH_SIZE` still send
   500 at a time and a timed-out batch is re-sent forever. Ingest writes a batch's shifts
@@ -404,10 +407,13 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   stylesheets and the real shader (`pnpm test:browser`, and the tail of `pnpm test`;
   CI installs chromium first). jsdom has neither a layout engine nor WebGL, so a
   rule about columns and a shader's scale both pass there whatever they render.
-- Nothing deploys on merge. The API (Railway) and the web dashboard (Vercel) are
-  separate manual pushes, so production can run two different commits of
+- The API (Railway) is a manual push, but the web dashboard is not: Vercel's Git
+  integration deploys production on every merge to `main` (seen 2026-10-07, three
+  seconds after a merge). So a merged web change that needs a newer API is live
+  before the API is, and production can run two different commits of
   `packages/shared`. Because the report filters are `.strict()`, a newer web
   bundle sending a parameter an older API does not declare gets a bare `400`.
+  Deploy the API first, or merge web changes that need it only once it is out.
   Check what is deployed before debugging a live report failure; see
   "Deploy the API and the web dashboard together" in `DEPLOY.md`.
 

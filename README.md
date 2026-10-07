@@ -180,14 +180,10 @@ its shifts underneath - each shift naming its runtime, its operator, the model i
 the commits it recorded. A group states its own totals; its shifts are fetched when you open
 it, a page at a time behind a **Show more** row, so a tab that draws four numbers per group
 never carries a month of shifts to do it.
-A shift labels itself the way the roster labels an agent: by its first commit's repo root, else
-its working directory, and when neither names a codebase - a validation gate worktree, a CI
-checkout, or no directory captured at all - by the repository its roster identity is keyed on.
-A shift that can name nothing at all groups last, split by why: **No working directory
-recorded** when nothing was captured, and
-**Run worktree, codebase not identified** when the work happened in a per-run directory whose
-repository no runtime identified - a named absence, so a capture gap never reads like work that
-legitimately had no repo.
+A shift names its codebase by the repository its first commit landed in, else the repository its roster identity is keyed on, else its working directory.
+The repository outranks the folder because a worktree's folder is named for its task, and one repository's shifts group together however a checkout capitalised its folder.
+A home folder or the temp tree names no codebase unless the repository's remote does.
+A shift that can name nothing at all groups last, split by why: **No working directory recorded** when nothing was captured, **Home or temp folder, no codebase** when the work happened in one, and **Run worktree, codebase not identified** when the work happened in a per-run directory whose repository no runtime identified - a named absence, so a capture gap never reads like work that legitimately had no repo.
 The web tab opens on a board of the people whose agents ran, ranked by agent time, and picking
 one narrows the map to their shifts; the desktop gets the map alone, since its Humans tab
 already lists every member.
@@ -716,6 +712,9 @@ applied in event time as each event arrives, so a backlog uploaded days late mea
 would have live: an event more than 30 minutes after a running shift's last one finds that shift
 already over at its last event, instead of stretching it across the gap. An `end` that arrives
 before its `start` is tolerated by upsert, not rejected.
+
+An ended shift never reopens, so a Claude Code session that works again after its shift ended - after half an hour waiting on CI, or resumed with `claude --continue` under the same session id - continues on a new shift.
+The desktop opens it from the session's transcript as `<session id>~<unix start>`, with the repository the hook probed, and the hook's next end closes it.
 
 ### Wiring up your own orchestrator
 

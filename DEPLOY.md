@@ -60,9 +60,12 @@ update. That file has been bumped since; read it for the current version.
 
 ## Deploy the API and the web dashboard together
 
-Nothing deploys on merge. Both are manual CLI pushes, so `main` being green says
-only that the code builds, never that it is running. Whenever a change touches
-`packages/shared`, redeploy **both** in the same sitting.
+The API is a manual CLI push, so `main` being green says only that its code
+builds, never that it is running. The web dashboard is not manual: Vercel's Git
+integration deploys production on every merge to `main`, so a merged web change
+is live within seconds, ahead of any API it needs. Whenever a change touches
+`packages/shared`, ship the API in the same sitting, and before the merge when the
+web needs it.
 
 The two drift silently and the dashboard pays for it. The request filters are
 `.strict()`, so a web bundle that sends a query parameter the running API has

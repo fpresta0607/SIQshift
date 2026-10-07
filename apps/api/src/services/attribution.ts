@@ -231,6 +231,54 @@ export function agentCodebaseLabel(repoRoot: string | null, repoKey: string | nu
     ?? (repoRoot === null ? null : repoLabel(repoRoot));
 }
 
+const homeDirectory = /^(?:[a-z]:\/users\/[^/]+|\/home\/[^/]+|\/users\/[^/]+|\/root)$/;
+const tempTree = /^(?:[a-z]:\/users\/[^/]+\/appdata\/local\/temp|[a-z]:\/windows\/temp|\/tmp|\/var\/tmp|(?:\/private)?\/var\/folders)(?:\/|$)/;
+
+/**
+ * A folder that names no codebase whatever its last segment says: a user's
+ * home folder, where a session opened from a fresh terminal works on whatever
+ * it is asked to, and the operating system's temp tree, where test harnesses
+ * make throwaway repositories by the dozen. Labelling either by its folder put
+ * "fpres" and a run of one-off test repositories on the Agents tab as
+ * codebases.
+ */
+export function isHomeOrTempDirectory(path: string): boolean {
+  const normalized = normalizePath(path);
+  return homeDirectory.test(normalized) || tempTree.test(normalized);
+}
+
+/**
+ * The codebase a shift's evidence names on the Agents tab. A remote names its
+ * repository wherever the checkout sits, even in temp; a folder - a commit's
+ * root, a working directory, or the path a local-only identity is keyed on -
+ * names one only outside the home folder and the temp tree.
+ */
+export function shiftCodebaseLabel(path: string | null, repoKey: string | null = null): string | null {
+  if (repoKey !== null && !repoKey.startsWith(pathKeyPrefix)) return repoKeyLabel(repoKey);
+  const folder = repoKey === null ? path : repoKey.slice(pathKeyPrefix.length);
+  return folder === null || isHomeOrTempDirectory(folder) ? null : repoLabel(folder);
+}
+
+/**
+ * The codebase one shift worked, as every Agents-tab surface names it: the
+ * repository its first commit landed in, else the repository its identity is
+ * keyed on, else its working directory. The identity outranks the folder
+ * because a worktree's folder is named for its task - a goblin's
+ * `.worktrees/gb-cg-ci-speed` split one repository into a group per task - and
+ * a label that matches the identity's in all but case takes the identity's
+ * spelling, so a checkout's capitalisation never splits a repository in two.
+ */
+export function shiftCodebase(
+  commitRoot: string | null,
+  cwd: string | null,
+  agentRepoRoot: string | null,
+  agentRepoKey: string | null,
+): string | null {
+  const identity = shiftCodebaseLabel(agentRepoRoot, agentRepoKey);
+  const label = shiftCodebaseLabel(commitRoot) ?? identity ?? shiftCodebaseLabel(cwd);
+  return label !== null && identity !== null && label.toLowerCase() === identity.toLowerCase() ? identity : label;
+}
+
 /**
  * A prefix matches only on a path-segment boundary: `c:/dev/siqshift` matches
  * `c:/dev/siqshift` and `c:/dev/siqshift/src` but never `c:/dev/siqshift-extra`.

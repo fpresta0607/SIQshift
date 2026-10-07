@@ -269,6 +269,9 @@ class MemoryReports implements ReportRepository {
         model: null,
         cwd: null,
         projectId: null,
+        agentId: null,
+        agentRepoRoot: null,
+        agentRepoKey: null,
         startedAt: agent.startedAt,
         endedAt: agent.endedAt ?? agent.lastEventAt,
       }));

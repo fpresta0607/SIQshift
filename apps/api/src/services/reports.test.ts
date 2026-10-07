@@ -610,9 +610,9 @@ describe("leaderboard", () => {
       { user: { id: ids.otherUser, name: "Sam" }, projectId: ids.project, attribution: "selected", startedAt: hour(9), stoppedAt: hour(10) },
     ];
     reports.agentIntervals = [
-      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, startedAt: hour(9), endedAt: hour(10) },
-      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, startedAt: hour(9), endedAt: hour(10) },
-      { user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: null, projectId: ids.project, startedAt: hour(9), endedAt: hour(10) },
+      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
+      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
+      { user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
     ];
     const service = createReportService({ reports, reaper: silentReaper, agents });
 
@@ -924,8 +924,8 @@ describe("me/stats", () => {
     ];
     // Two agents running in parallel count twice inside that hour.
     reports.agentIntervals = [
-      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, startedAt: hour(9), endedAt: hour(10) },
-      { user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: null, projectId: ids.project, startedAt: hour(9), endedAt: hour(10) },
+      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
+      { user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
     ];
     const service = createReportService({ reports, reaper: silentReaper, agents });
 
@@ -996,7 +996,7 @@ describe("me/stats", () => {
       { user: { id: ids.user, name: "Alex" }, startedAt: hour(9), endedAt: hour(11) },
     ];
     reports.agentIntervals = [
-      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, startedAt: hour(9), endedAt: hour(10) },
+      { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
     ];
     const service = createReportService({ reports, reaper: silentReaper, agents });
 
@@ -1644,6 +1644,66 @@ describe("agent shifts", () => {
     // Both stay footnotes after the named groups, ordered by their own weight.
     expect(result.groups.every((group) => group.repo === null)).toBe(true);
     expect(result.totalAgentSeconds).toBe(7_200);
+  });
+
+  it("groups worktree shifts under the repository their identity is keyed on, not the worktree's folder", async () => {
+    const reports = new Reports();
+    const goblin = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/dev/code-goblins", agentRepoKey: "github.com/fpresta0607/code-goblins" };
+    reports.agentIntervals = [
+      // A goblin's worktree folder is named for its task, not its codebase,
+      // and it is not opaque enough to read as a run directory.
+      { ...goblin, sessionId: "s1", cwd: "C:\\dev\\code-goblins\\.worktrees\\gb-cg-ci-speed", startedAt: at(10), endedAt: at(11) },
+      { ...goblin, sessionId: "s2", cwd: "C:\\dev\\code-goblins\\.worktrees\\gb-cg-flakes-3", startedAt: at(11), endedAt: at(12) },
+      { ...goblin, sessionId: "s3", cwd: "C:\\dev\\code-goblins", startedAt: at(12), endedAt: at(13) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const result = await service.agentShifts(subject, {});
+
+    expect(result.groups.map((group) => [group.repo, group.shiftCount])).toEqual([["code-goblins", 3]]);
+  });
+
+  it("folds one repository's spellings into one group under its identity's name", async () => {
+    const reports = new Reports();
+    const outreach = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/Users/alex/coldOutreachPrecisionDocs", agentRepoKey: "github.com/acme/coldoutreachprecisiondocs" };
+    reports.agentIntervals = [
+      // The main checkout's folder keeps its capitalisation; a worktree with an
+      // opaque name falls back to the remote, which is lowercased. One codebase.
+      { ...outreach, sessionId: "s1", cwd: "C:\\Users\\alex\\coldOutreachPrecisionDocs", startedAt: at(10), endedAt: at(11) },
+      { ...outreach, sessionId: "s2", cwd: "C:\\Users\\alex\\coldOutreachPrecisionDocs\\.claude\\worktrees\\consolidate-csvs-google-sheet-0f77f7", startedAt: at(11), endedAt: at(12) },
+      // No identity key at all, only a folder spelled another way.
+      { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/Users/alex/ColdOutreachPrecisionDocs", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const result = await service.agentShifts(subject, {});
+
+    expect(result.groups.map((group) => [group.repo, group.shiftCount])).toEqual([["coldoutreachprecisiondocs", 3]]);
+    const rows = await service.agentShiftRows(subject, { groupKey: result.groups[0]!.groupKey, pageSize: 50 });
+    expect(rows.shifts.map((shift) => shift.id).sort()).toEqual(["s1", "s2", "s3"]);
+  });
+
+  it("files home-folder and temp-folder shifts under no codebase, unless a remote names one", async () => {
+    const reports = new Reports();
+    const alex = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project };
+    const scratch = "C:/Users/alex/AppData/Local/Temp/claude/run/scratchpad/steer-proof/home/worktrees/project/steer-claude";
+    reports.agentIntervals = [
+      // A session started in the home folder works on whatever it is asked to.
+      { ...alex, sessionId: "s1", cwd: "C:\\Users\\alex", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
+      { ...alex, sessionId: "s2", cwd: "/home/alex", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(11), endedAt: at(12) },
+      // A throwaway repository a test harness made under the temp folder.
+      { ...alex, sessionId: "s3", cwd: scratch, agentId: ids.otherAgent, agentRepoRoot: scratch, agentRepoKey: `path:${scratch}`, startedAt: at(12), endedAt: at(13) },
+      // A clone of a real repository that happens to sit in temp is still that repository.
+      { ...alex, sessionId: "s4", cwd: "/tmp/checkout", agentId: ids.otherAgent, agentRepoRoot: "/tmp/checkout", agentRepoKey: "github.com/acme/app", startedAt: at(13), endedAt: at(14) },
+    ];
+    const service = createReportService({ reports, reaper: silentReaper });
+
+    const result = await service.agentShifts(subject, {});
+
+    expect(result.groups.map((group) => [group.repo, group.nullCause, group.shiftCount])).toEqual([
+      ["app", null, 1],
+      [null, "home-or-temp-directory", 3],
+    ]);
   });
 
   it("prefers the shift's own commit root over its identity's repository", async () => {
