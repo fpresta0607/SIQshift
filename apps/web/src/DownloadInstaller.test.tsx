@@ -9,8 +9,8 @@ import { describe, expect, it } from "vitest";
 import {
   DownloadInstaller,
   InstallerLink,
+  installerNote,
   macInstallerUrl,
-  unsignedNote,
   windowsInstallerUrl,
 } from "./DownloadInstaller.js";
 
@@ -102,16 +102,16 @@ describe("DownloadInstaller in the masthead", () => {
     expect(container.textContent).toBe("Download");
   });
 
-  it("warns about the unsigned build before anything is downloaded", async () => {
+  it("says who signed the build before anything is downloaded", async () => {
     // Discoverable without opening anything…
     render(<DownloadInstaller />);
-    expect(screen.getByRole("button", { name: /download/i })).toHaveAttribute("title", unsignedNote);
+    expect(screen.getByRole("button", { name: /download/i })).toHaveAttribute("title", installerNote);
 
     // …and stated in the panel, tied to both installers.
     const person = userEvent.setup();
     await person.click(screen.getByRole("button", { name: /download/i }));
     for (const name of ["Download for Windows", "Mac installer (Apple silicon)"]) {
-      expect(screen.getByRole("link", { name })).toHaveAccessibleDescription(unsignedNote);
+      expect(screen.getByRole("link", { name })).toHaveAccessibleDescription(installerNote);
     }
   });
 
@@ -161,7 +161,7 @@ describe("DownloadInstaller in the welcome hero", () => {
     const windows = screen.getByRole("link", { name: "Download for Windows" });
     expect(windows).toHaveAttribute("href", windowsInstallerUrl);
     expect(windows).toHaveClass("download-button");
-    expect(windows).toHaveAccessibleDescription(unsignedNote);
+    expect(windows).toHaveAccessibleDescription(installerNote);
     expect(screen.getByRole("link", { name: "Mac installer (Apple silicon)" }))
       .toHaveAttribute("href", macInstallerUrl);
   });
