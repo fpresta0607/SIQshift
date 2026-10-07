@@ -252,6 +252,9 @@ jobs:
 
       # Every Windows file that ships must carry a valid, timestamped signature
       # from the expected publisher, checked two ways, or nothing is published.
+      # What is checked is the installer and what 7-Zip unpacks from it, not
+      # the build tree: the bundler signs a patched copy of the app and leaves
+      # `target/debug` holding the unsigned original.
       - name: Verify the Windows signatures
         if: matrix.target == 'windows'
         shell: pwsh
@@ -264,12 +267,15 @@ jobs:
             Select-Object -First 1 -ExpandProperty FullName
           $installers = @(Get-ChildItem apps/desktop/src-tauri/target/debug/bundle -Recurse -Filter '*-setup.exe')
           if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
-          $files = @(
-            $installers[0].FullName,
-            'apps/desktop/src-tauri/target/debug/siqshift-desktop.exe',
-            'apps/desktop/src-tauri/binaries/siqshift-hook-x86_64-pc-windows-msvc.exe',
-            'apps/desktop/src-tauri/binaries/siqshift-browser-host-x86_64-pc-windows-msvc.exe'
-          )
+          $payload = Join-Path $env:RUNNER_TEMP 'installer-payload'
+          & 7z x $installers[0].FullName "-o$payload" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip could not unpack $($installers[0].Name) (exit code $LASTEXITCODE)." }
+          $contents = @(Get-ChildItem $payload -Recurse -File -Include '*.exe', '*.dll')
+          $contents | ForEach-Object { Write-Host "payload: $($_.FullName.Substring($payload.Length + 1))" }
+          foreach ($helper in 'siqshift-hook.exe', 'siqshift-browser-host.exe') {
+            if ($contents.Name -notcontains $helper) { throw "The installer does not carry $helper, so the check would prove nothing." }
+          }
+          $files = @($installers[0].FullName) + @($contents.FullName)
           foreach ($file in $files) {
             $signature = Get-AuthenticodeSignature -FilePath $file
             if ($signature.Status -ne 'Valid') { throw "$file is not validly signed: $($signature.Status) $($signature.StatusMessage)" }
