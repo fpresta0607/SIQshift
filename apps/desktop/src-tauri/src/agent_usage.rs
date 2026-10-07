@@ -26,6 +26,16 @@
 //! The registry holds counts, plus the transcript's own path as the tail
 //! pointer (it never leaves the machine). A missing or unreadable file is a
 //! state, not an error: the counters simply do not advance.
+//!
+//! A session is not always one shift. The server ends a shift after
+//! `AGENT_ACTIVE_WINDOW_SECONDS` without an event, or at the hook's end, and
+//! never reopens it, so a goblin that waits most of an hour on CI, or a session
+//! resumed with `claude --continue` (same session id), lost every minute after
+//! the first pause. Activity after the server ended the current shift starts a
+//! continuation shift instead, recorded under `<session id>~<unix start>` with
+//! the repository the hook probed, so it keys the same identity and project;
+//! the hook's next end closes it. The id derives from an entry's own time, so a
+//! replayed pass names the same shift.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
@@ -34,7 +44,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::browser::write_if_changed_locked;
-use crate::monitor::{iso8601, parse_iso8601};
+use crate::monitor::{iso8601, parse_iso8601, AGENT_ACTIVE_WINDOW_SECONDS};
 use crate::spool::{self, AgentEventKind, AgentSource, SpoolEvent, TokenCounters};
 
 /// Upper bound on what one pass reads from one transcript file. The next pass
@@ -47,8 +57,24 @@ const MAX_FILE_BYTES_PER_PASS: u64 = 4 * 1024 * 1024;
 /// thirty-minute staleness window, so a working session never reads as a gap.
 const ACTIVITY_HEARTBEAT_SECONDS: u64 = 5 * 60;
 
+/// Separates a session id from the start of one of its continuation shifts.
+const CONTINUATION_SEPARATOR: char = '~';
+
 fn session_key(source: &AgentSource, external_session_id: &str) -> String {
     format!("{}|{external_session_id}", source.as_str())
+}
+
+fn continuation_id(external_session_id: &str, started_at: u64) -> String {
+    format!("{external_session_id}{CONTINUATION_SEPARATOR}{started_at}")
+}
+
+/// The session a continuation shift's id belongs to, or `None` for any other id.
+fn continuation_base(external_session_id: &str) -> Option<&str> {
+    let (base, started_at) = external_session_id.rsplit_once(CONTINUATION_SEPARATOR)?;
+    (!base.is_empty()
+        && !started_at.is_empty()
+        && started_at.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some(base)
 }
 
 /// One session's counters for one hour bucket, carried end to end: captured
@@ -191,6 +217,31 @@ struct SessionUsage {
     /// stamped with; the next one is due `ACTIVITY_HEARTBEAT_SECONDS` later.
     #[serde(default)]
     activity_heartbeat_at: u64,
+    /// The repository the hook probed at the session's start, carried onto
+    /// every continuation shift so each keys the same identity and project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repo_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repo_remote: Option<String>,
+    /// The model the hook named or the transcript first did, so a
+    /// continuation shift starts out naming it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    /// The continuation shift the session is working on, or `None` while it is
+    /// still on the shift the hook opened under the session's own id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shift_id: Option<String>,
+    /// Unix seconds the current shift started at.
+    #[serde(default)]
+    shift_started_at: u64,
+    /// Unix seconds of the latest event the server holds for the current shift,
+    /// which its staleness window runs from. Zero for a session an older build
+    /// registered, whose shift the server has long since ended.
+    #[serde(default)]
+    shift_last_event_at: u64,
+    /// Unix seconds an end closed the current shift at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shift_ended_at: Option<u64>,
     /// Cumulative totals the hook itself reported (the `--input-tokens` flag
     /// family), kept as the maximum restatement in the hour of the first
     /// report, per model. Flag totals name no turn, so they cannot follow the
@@ -493,28 +544,82 @@ fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
     })
 }
 
-/// The entry times, out of those a pass read, that carry a liveness heartbeat:
-/// each one at least `ACTIVITY_HEARTBEAT_SECONDS` after the heartbeat before
-/// it, starting from the last one the session already emitted. Stamped with
-/// the entry's own time rather than the read's, so a pass that catches up on
-/// an hour of transcript lays the hour's liveness down across the hour.
-fn activity_heartbeats(activity: &mut [u64], previous: u64) -> Vec<u64> {
+/// What the entry times a pass read put on the spool for one session, in time
+/// order. Activity on a shift the server still holds carries a liveness
+/// heartbeat, each at least `ACTIVITY_HEARTBEAT_SECONDS` after the one before
+/// it. Activity after the server ended the shift - past its staleness window,
+/// or after an end - starts a continuation shift at that entry. Everything is
+/// stamped with the entry's own time rather than the read's, so a pass that
+/// catches up on an hour of transcript lays the hour down across the hour.
+fn shift_events(session: &mut SessionUsage, cwd: &str, activity: &mut [u64]) -> Vec<SpoolEvent> {
     activity.sort_unstable();
-    let mut due = previous;
-    let mut beats = Vec::new();
+    let mut events = Vec::new();
     for &at in activity.iter() {
-        if at >= due.saturating_add(ACTIVITY_HEARTBEAT_SECONDS) {
-            beats.push(at);
-            due = at;
-        }
+        let shift_over = match session.shift_ended_at {
+            Some(ended_at) => at > ended_at,
+            None => {
+                session.shift_last_event_at == 0
+                    || at
+                        > session
+                            .shift_last_event_at
+                            .saturating_add(AGENT_ACTIVE_WINDOW_SECONDS)
+            }
+        };
+        let event = if shift_over {
+            let shift_id = continuation_id(&session.external_session_id, at);
+            session.shift_id = Some(shift_id.clone());
+            session.shift_started_at = at;
+            session.shift_ended_at = None;
+            AgentEventKind::Started
+        } else if at
+            >= session
+                .activity_heartbeat_at
+                .saturating_add(ACTIVITY_HEARTBEAT_SECONDS)
+        {
+            AgentEventKind::Heartbeat
+        } else {
+            continue;
+        };
+        session.activity_heartbeat_at = at;
+        session.shift_last_event_at = session.shift_last_event_at.max(at);
+        let started = event == AgentEventKind::Started;
+        events.push(SpoolEvent {
+            source: session.source.clone(),
+            external_session_id: session
+                .shift_id
+                .clone()
+                .unwrap_or_else(|| session.external_session_id.clone()),
+            event,
+            occurred_at: iso8601(at),
+            cwd: Some(cwd.to_string()),
+            start_head: None,
+            repo_root: started.then(|| session.repo_root.clone()).flatten(),
+            repo_remote: started.then(|| session.repo_remote.clone()).flatten(),
+            model: started.then(|| session.model.clone()).flatten(),
+            rule_id: None,
+            transcript_path: None,
+            tokens: None,
+        });
     }
-    beats
+    events
 }
 
 /// Folds one spool event into the registry: registers the session, learns
-/// the transcript path, the cwd, and whether the hook named a model, and
-/// takes the maximum of any hook-reported cumulative totals.
-fn fold_event(registry: &mut UsageRegistry, event: &SpoolEvent) {
+/// the transcript path, the cwd, the repository, and whether the hook named a
+/// model, takes the maximum of any hook-reported cumulative totals, and
+/// follows the hook's start and end of the session's current shift. Returns
+/// the end of the continuation shift the hook's end closed, if it closed one.
+/// Every step is idempotent: a pass re-reads lines the uploader has not
+/// drained yet.
+fn fold_event(registry: &mut UsageRegistry, event: &SpoolEvent) -> Option<SpoolEvent> {
+    // A continuation shift's own lines are this reader's output, not a session.
+    if continuation_base(&event.external_session_id).is_some_and(|base| {
+        registry
+            .sessions
+            .contains_key(&session_key(&event.source, base))
+    }) {
+        return None;
+    }
     let key = session_key(&event.source, &event.external_session_id);
     let session = registry
         .sessions
@@ -527,8 +632,23 @@ fn fold_event(registry: &mut UsageRegistry, event: &SpoolEvent) {
     if let Some(cwd) = event.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty()) {
         session.cwd = Some(cwd.to_string());
     }
-    if event.model.is_some() {
+    if let Some(model) = &event.model {
         session.model_from_hook = true;
+        session.model.get_or_insert_with(|| model.clone());
+    }
+    if let Some(root) = event
+        .repo_root
+        .as_deref()
+        .filter(|root| !root.trim().is_empty())
+    {
+        session.repo_root = Some(root.to_string());
+    }
+    if let Some(remote) = event
+        .repo_remote
+        .as_deref()
+        .filter(|remote| !remote.trim().is_empty())
+    {
+        session.repo_remote = Some(remote.to_string());
     }
     if let Some(path) = event
         .transcript_path
@@ -537,22 +657,65 @@ fn fold_event(registry: &mut UsageRegistry, event: &SpoolEvent) {
     {
         session.transcript_path = Some(path.to_string());
     }
+    let shift_end = follow_shift(session, event);
     let totals = event.tokens.as_ref().and_then(TokenTotals::from_counters);
-    let (Some(totals), Some(bucket_start_at)) = (totals, hour_bucket(&event.occurred_at)) else {
-        return;
-    };
-    match session
-        .hook_buckets
-        .iter_mut()
-        .find(|bucket| bucket.model == event.model && !bucket.sidechain)
-    {
-        Some(bucket) => bucket.tokens.take_max(&totals),
-        None => session.hook_buckets.push(BucketTotals {
-            bucket_start_at,
-            model: event.model.clone(),
-            sidechain: false,
-            tokens: totals,
-        }),
+    if let (Some(totals), Some(bucket_start_at)) = (totals, hour_bucket(&event.occurred_at)) {
+        match session
+            .hook_buckets
+            .iter_mut()
+            .find(|bucket| bucket.model == event.model && !bucket.sidechain)
+        {
+            Some(bucket) => bucket.tokens.take_max(&totals),
+            None => session.hook_buckets.push(BucketTotals {
+                bucket_start_at,
+                model: event.model.clone(),
+                sidechain: false,
+                tokens: totals,
+            }),
+        }
+    }
+    shift_end
+}
+
+/// Follows the hook's lifecycle events onto the session's current shift. A
+/// start reaches the server under the session's own id, so it moves that
+/// shift and no continuation; an end closes whichever shift is current, and a
+/// continuation needs its own end, because the hook only ever names the
+/// session. An end from before the current shift started is a replay of one
+/// an earlier shift already took.
+fn follow_shift(session: &mut SessionUsage, event: &SpoolEvent) -> Option<SpoolEvent> {
+    let at = parse_iso8601(&event.occurred_at)?;
+    match event.event {
+        AgentEventKind::Started => {
+            if session.shift_id.is_none() && session.shift_ended_at.is_none() {
+                if session.shift_started_at == 0 {
+                    session.shift_started_at = at;
+                }
+                session.shift_last_event_at = session.shift_last_event_at.max(at);
+            }
+            None
+        }
+        AgentEventKind::Ended
+            if session.shift_ended_at.is_none() && at >= session.shift_started_at =>
+        {
+            session.shift_ended_at = Some(at);
+            let shift_id = session.shift_id.clone()?;
+            Some(SpoolEvent {
+                source: session.source.clone(),
+                external_session_id: shift_id,
+                event: AgentEventKind::Ended,
+                occurred_at: iso8601(at),
+                cwd: session.cwd.clone(),
+                start_head: None,
+                repo_root: None,
+                repo_remote: None,
+                model: None,
+                rule_id: None,
+                transcript_path: None,
+                tokens: None,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -663,19 +826,12 @@ struct PendingHeartbeat {
     model: String,
 }
 
-/// A transcript entry time that carries the session's liveness onto the spool.
-struct ActivityHeartbeat {
-    source: AgentSource,
-    external_session_id: String,
-    cwd: String,
-    at: u64,
-}
-
 /// Reads pending agent-spool lines without truncating them - the uploader's
 /// own agent-spool drain owns truncation - and tails every known transcript
 /// incrementally. Replay is safe because every step is idempotent: offsets
 /// make a transcript entry count exactly once, hook totals keep the maximum,
-/// and the heartbeat fires once per session.
+/// the model heartbeat fires once per session, and a shift's start and end
+/// are recorded once against the registry's own shift state.
 ///
 /// When the reader first learns a session's model (Claude Code's hook
 /// payload never carries one; the transcript names it within seconds of the
@@ -691,13 +847,21 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
     if !pending.events.is_empty() {
         let folded = spool::with_lock(agent_usage_path, || {
             let mut registry = read_registry(agent_usage_path);
-            for event in &pending.events {
-                fold_event(&mut registry, event);
-            }
-            write_registry(agent_usage_path, &registry)
+            let shift_ends: Vec<SpoolEvent> = pending
+                .events
+                .iter()
+                .filter_map(|event| fold_event(&mut registry, event))
+                .collect();
+            write_registry(agent_usage_path, &registry)?;
+            Ok(shift_ends)
         });
-        if folded.is_err() {
+        let Ok(shift_ends) = folded else {
             return;
+        };
+        // Appended before anything this pass reads from the transcripts, so a
+        // shift's end always precedes the next shift's start on the spool.
+        for end in &shift_ends {
+            let _ = spool::append(agent_path, end);
         }
     }
 
@@ -734,7 +898,7 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
     }
 
     let mut heartbeats: Vec<PendingHeartbeat> = Vec::new();
-    let mut activity_heartbeats_due: Vec<ActivityHeartbeat> = Vec::new();
+    let mut shift_lines: Vec<SpoolEvent> = Vec::new();
     let merged = spool::with_lock(agent_usage_path, || {
         let mut registry = read_registry(agent_usage_path);
         let mut activity: HashMap<String, Vec<u64>> = HashMap::new();
@@ -747,6 +911,7 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
                 .or_default()
                 .extend(tail.activity);
             if let Some(model) = &tail.learned_model {
+                session.model.get_or_insert_with(|| model.clone());
                 if !session.heartbeat_sent && !session.model_from_hook {
                     if let Some(cwd) = session.cwd.clone() {
                         heartbeats.push(PendingHeartbeat {
@@ -772,15 +937,7 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
             let Some(cwd) = session.cwd.clone() else {
                 continue;
             };
-            for at in activity_heartbeats(&mut times, session.activity_heartbeat_at) {
-                session.activity_heartbeat_at = at;
-                activity_heartbeats_due.push(ActivityHeartbeat {
-                    source: session.source.clone(),
-                    external_session_id: session.external_session_id.clone(),
-                    cwd: cwd.clone(),
-                    at,
-                });
-            }
+            shift_lines.extend(shift_events(session, &cwd, &mut times));
         }
         recompute_entries(&mut registry);
         write_registry(agent_usage_path, &registry)
@@ -820,26 +977,12 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
         }
     }
 
-    // Plain heartbeats, no model: the server advances the shift's last event
-    // to each, and the monitor keeps the agent active through them.
-    for heartbeat in activity_heartbeats_due {
-        let _ = spool::append(
-            agent_path,
-            &SpoolEvent {
-                source: heartbeat.source,
-                external_session_id: heartbeat.external_session_id,
-                event: AgentEventKind::Heartbeat,
-                occurred_at: iso8601(heartbeat.at),
-                cwd: Some(heartbeat.cwd),
-                model: None,
-                start_head: None,
-                repo_root: None,
-                repo_remote: None,
-                rule_id: None,
-                transcript_path: None,
-                tokens: None,
-            },
-        );
+    // Liveness heartbeats and continuation starts, no model heartbeat among
+    // them: the server advances the shift's last event to each heartbeat and
+    // opens a shift at each start, and the monitor keeps the agent active
+    // through both.
+    for line in &shift_lines {
+        let _ = spool::append(agent_path, line);
     }
 }
 
@@ -1643,6 +1786,227 @@ mod tests {
             .collect()
     }
 
+    /// Every line the reader itself spooled - liveness heartbeats and
+    /// continuation shifts - as (kind, shift id, instant), in spool order. The
+    /// hook's own lines and the one model heartbeat are left out.
+    fn shift_lines(agent_path: &Path) -> Vec<(AgentEventKind, String, String)> {
+        spool::read_pending(agent_path)
+            .expect("the spool reads")
+            .events
+            .into_iter()
+            .filter(|event| {
+                event.transcript_path.is_none()
+                    && !(event.event == AgentEventKind::Heartbeat && event.model.is_some())
+            })
+            .map(|event| (event.event, event.external_session_id, event.occurred_at))
+            .collect()
+    }
+
+    /// The id a continuation shift that started at `at` is recorded under.
+    fn continuation(at: &str) -> String {
+        format!(
+            "session-1~{}",
+            parse_iso8601(at).expect("the instant parses")
+        )
+    }
+
+    /// A hook line for `session-1`, carrying the repository the hook probed.
+    fn hook_event(kind: AgentEventKind, transcript: &Path, occurred_at: &str) -> SpoolEvent {
+        SpoolEvent {
+            event: kind,
+            repo_root: Some("C:/dev/siqshift".to_string()),
+            repo_remote: Some("https://github.com/acme/siqshift.git".to_string()),
+            ..started_event(transcript, occurred_at, Some("claude-opus-5"))
+        }
+    }
+
+    #[test]
+    fn activity_after_a_silence_the_server_ended_the_shift_at_opens_a_continuation_shift() {
+        // A goblin works, waits most of an hour on CI, then works again. The
+        // server ended its shift thirty minutes after the last heartbeat and
+        // never reopens one, so the second stretch is a shift of its own.
+        let dir = temp_dir("continuation-gap");
+        let agent_path = dir.join("agent-spool.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let transcript = dir.join("session-1.jsonl");
+        let line = |timestamp: &str| assistant_line(timestamp, "claude-opus-5", false, 10, 1, 0, 0);
+        write_transcript(
+            &transcript,
+            &[
+                line("2026-10-07T10:00:30Z"),
+                line("2026-10-07T10:06:00Z"),
+                line("2026-10-07T11:00:00Z"),
+                line("2026-10-07T11:06:00Z"),
+            ],
+        );
+        spool::append(
+            &agent_path,
+            &hook_event(AgentEventKind::Started, &transcript, "2026-10-07T10:00:00Z"),
+        )
+        .expect("append succeeds");
+
+        capture_from_spool(&agent_path, &usage_path);
+
+        let resumed = continuation("2026-10-07T11:00:00Z");
+        assert_eq!(
+            shift_lines(&agent_path),
+            vec![
+                (
+                    AgentEventKind::Heartbeat,
+                    "session-1".to_string(),
+                    "2026-10-07T10:00:30Z".to_string()
+                ),
+                (
+                    AgentEventKind::Heartbeat,
+                    "session-1".to_string(),
+                    "2026-10-07T10:06:00Z".to_string()
+                ),
+                (
+                    AgentEventKind::Started,
+                    resumed.clone(),
+                    "2026-10-07T11:00:00Z".to_string()
+                ),
+                (
+                    AgentEventKind::Heartbeat,
+                    resumed.clone(),
+                    "2026-10-07T11:06:00Z".to_string()
+                ),
+            ]
+        );
+        // The continuation keys the same identity and project as the session:
+        // it carries the repository, the directory and the model the hook named.
+        let started = spool::read_pending(&agent_path)
+            .expect("the spool reads")
+            .events
+            .into_iter()
+            .find(|event| event.external_session_id == resumed)
+            .expect("the continuation started");
+        assert_eq!(started.cwd.as_deref(), Some("C:/dev/siqshift"));
+        assert_eq!(started.repo_root.as_deref(), Some("C:/dev/siqshift"));
+        assert_eq!(
+            started.repo_remote.as_deref(),
+            Some("https://github.com/acme/siqshift.git")
+        );
+        assert_eq!(started.model.as_deref(), Some("claude-opus-5"));
+
+        // Replaying the same pending spool writes nothing new.
+        capture_from_spool(&agent_path, &usage_path);
+        assert_eq!(shift_lines(&agent_path).len(), 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_resumed_after_its_end_works_on_a_new_shift_that_its_next_end_closes() {
+        // `claude --continue` reuses the session id, and the server keeps an
+        // ended shift ended, so everything after the first end needs a new one.
+        let dir = temp_dir("continuation-resume");
+        let agent_path = dir.join("agent-spool.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let transcript = dir.join("session-1.jsonl");
+        let line = |timestamp: &str| assistant_line(timestamp, "claude-opus-5", false, 10, 1, 0, 0);
+        write_transcript(&transcript, &[line("2026-10-07T10:01:00Z")]);
+        spool::append(
+            &agent_path,
+            &hook_event(AgentEventKind::Started, &transcript, "2026-10-07T10:00:00Z"),
+        )
+        .expect("append succeeds");
+        spool::append(
+            &agent_path,
+            &hook_event(AgentEventKind::Ended, &transcript, "2026-10-07T10:10:00Z"),
+        )
+        .expect("append succeeds");
+        capture_from_spool(&agent_path, &usage_path);
+
+        // Resumed ten minutes later: inside the staleness window, but after an end.
+        append_to_transcript(
+            &transcript,
+            &format!(
+                "{}\n{}\n",
+                line("2026-10-07T10:20:00Z"),
+                line("2026-10-07T10:26:00Z")
+            ),
+        );
+        capture_from_spool(&agent_path, &usage_path);
+        spool::append(
+            &agent_path,
+            &hook_event(AgentEventKind::Ended, &transcript, "2026-10-07T10:40:00Z"),
+        )
+        .expect("append succeeds");
+        capture_from_spool(&agent_path, &usage_path);
+        capture_from_spool(&agent_path, &usage_path);
+
+        let resumed = continuation("2026-10-07T10:20:00Z");
+        assert_eq!(
+            shift_lines(&agent_path),
+            vec![
+                (
+                    AgentEventKind::Heartbeat,
+                    "session-1".to_string(),
+                    "2026-10-07T10:01:00Z".to_string()
+                ),
+                (
+                    AgentEventKind::Started,
+                    resumed.clone(),
+                    "2026-10-07T10:20:00Z".to_string()
+                ),
+                (
+                    AgentEventKind::Heartbeat,
+                    resumed.clone(),
+                    "2026-10-07T10:26:00Z".to_string()
+                ),
+                (
+                    AgentEventKind::Ended,
+                    resumed.clone(),
+                    "2026-10-07T10:40:00Z".to_string()
+                ),
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_an_older_build_was_tracking_picks_up_on_a_new_shift() {
+        // An older build sent no liveness at all, so every shift it opened was
+        // closed at its own start; its sessions' next activity starts afresh.
+        let dir = temp_dir("continuation-upgrade");
+        let agent_path = dir.join("agent-spool.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let transcript = dir.join("session-1.jsonl");
+        let line = |timestamp: &str| assistant_line(timestamp, "claude-opus-5", false, 10, 1, 0, 0);
+        write_transcript(&transcript, &[line("2026-10-07T08:00:00Z")]);
+        let older_build = serde_json::json!({
+            "sessions": {
+                "claude_code|session-1": {
+                    "source": "claude_code",
+                    "externalSessionId": "session-1",
+                    "transcriptPath": transcript.to_string_lossy(),
+                    "cwd": "C:/dev/siqshift",
+                    "files": {},
+                }
+            }
+        });
+        std::fs::write(&usage_path, older_build.to_string()).expect("registry writes");
+        capture_from_spool(&agent_path, &usage_path);
+        let caught_up = shift_lines(&agent_path).len();
+
+        append_to_transcript(&transcript, &format!("{}\n", line("2026-10-07T09:00:00Z")));
+        capture_from_spool(&agent_path, &usage_path);
+
+        let lines = shift_lines(&agent_path);
+        assert_eq!(
+            lines[caught_up..],
+            [(
+                AgentEventKind::Started,
+                continuation("2026-10-07T09:00:00Z"),
+                "2026-10-07T09:00:00Z".to_string()
+            )]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_working_transcript_carries_its_session_liveness_onto_the_spool() {
         // The shape of every goblin session on the operator's machine: the hook
@@ -1670,15 +2034,21 @@ mod tests {
 
         capture_from_spool(&agent_path, &usage_path);
 
-        // One per five minutes of entries, at the entries' own times; the
-        // hour-long quiet stretch stays a gap the server may end a shift at.
+        // One per five minutes of entries, at the entries' own times. The
+        // hour-long quiet stretch is a gap the server ends the shift at, so
+        // the work after it starts a continuation shift of its own.
+        let resumed = continuation("2026-09-16T03:40:00Z");
         assert_eq!(
             liveness_heartbeats(&agent_path),
-            vec![
-                "2026-09-16T02:43:10Z",
-                "2026-09-16T02:48:30Z",
-                "2026-09-16T03:40:00Z"
-            ]
+            vec!["2026-09-16T02:43:10Z", "2026-09-16T02:48:30Z"]
+        );
+        assert_eq!(
+            shift_lines(&agent_path)[2..],
+            [(
+                AgentEventKind::Started,
+                resumed.clone(),
+                "2026-09-16T03:40:00Z".to_string()
+            )]
         );
 
         // The next pass reads only what was appended, and spaces it from the
@@ -1693,18 +2063,17 @@ mod tests {
         );
         capture_from_spool(&agent_path, &usage_path);
         assert_eq!(
-            liveness_heartbeats(&agent_path),
-            vec![
-                "2026-09-16T02:43:10Z",
-                "2026-09-16T02:48:30Z",
-                "2026-09-16T03:40:00Z",
-                "2026-09-16T03:45:00Z",
-            ]
+            shift_lines(&agent_path)[3..],
+            [(
+                AgentEventKind::Heartbeat,
+                resumed,
+                "2026-09-16T03:45:00Z".to_string()
+            )]
         );
 
         // A pass with nothing new writes nothing.
         capture_from_spool(&agent_path, &usage_path);
-        assert_eq!(liveness_heartbeats(&agent_path).len(), 4);
+        assert_eq!(shift_lines(&agent_path).len(), 4);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1791,6 +2160,13 @@ mod tests {
                 model_from_hook: true,
                 heartbeat_sent: true,
                 activity_heartbeat_at: 1_786_000_000,
+                repo_root: Some("C:/dev/siqshift".to_string()),
+                repo_remote: Some("https://github.com/acme/siqshift.git".to_string()),
+                model: Some("claude-opus-4.1".to_string()),
+                shift_id: Some("session-1~1786000000".to_string()),
+                shift_started_at: 1_786_000_000,
+                shift_last_event_at: 1_786_000_300,
+                shift_ended_at: Some(1_786_000_600),
                 hook_buckets: vec![BucketTotals {
                     bucket_start_at: "2026-08-06T10:00:00Z".to_string(),
                     model: Some("claude-opus-4.1".to_string()),
