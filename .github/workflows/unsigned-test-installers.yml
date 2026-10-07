@@ -100,11 +100,13 @@ jobs:
           key: unsigned-test
       - run: pnpm install --frozen-lockfile
 
-      - name: Build the hook helper
-        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-hook
-
-      - name: Build the browser host helper
-        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-browser-host
+      # One cargo invocation, not one per helper. A debug build's `build.rs`
+      # writes empty `binaries/` stand-ins, and tauri-build copies every
+      # sidecar over `target/debug/<name>.exe`. A second invocation reruns the
+      # build script and overwrites the helper the first one linked with the
+      # empty stand-in, which staging below would then ship.
+      - name: Build the helpers
+        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-hook --bin siqshift-browser-host
 
       # `externalBin` resolves `binaries/<name>-<target-triple>`, so the helpers
       # have to sit there under that name before the bundler runs. Same staging
@@ -119,10 +121,14 @@ jobs:
             suffix=".exe"
           fi
           mkdir -p apps/desktop/src-tauri/binaries
-          cp "apps/desktop/src-tauri/target/debug/siqshift-hook$suffix" \
-            "apps/desktop/src-tauri/binaries/siqshift-hook-$triple$suffix"
-          cp "apps/desktop/src-tauri/target/debug/siqshift-browser-host$suffix" \
-            "apps/desktop/src-tauri/binaries/siqshift-browser-host-$triple$suffix"
+          for name in siqshift-hook siqshift-browser-host; do
+            staged="apps/desktop/src-tauri/binaries/$name-$triple$suffix"
+            cp "apps/desktop/src-tauri/target/debug/$name$suffix" "$staged"
+            if [ ! -s "$staged" ]; then
+              echo "$staged is empty: the helper build left a debug stand-in, not $name." >&2
+              exit 1
+            fi
+          done
 
       # The updater only offers a build whose semver is strictly higher than
       # the installed one, so every run needs its own version. `run_number`
