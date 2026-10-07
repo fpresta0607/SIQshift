@@ -31,7 +31,8 @@ name: Unsigned test installers
 
 on:
   # Once this file is on the default branch: Actions -> Unsigned test
-  # installers -> Run workflow (any branch).
+  # installers -> Run workflow, from `main`. The Windows leg signs only from
+  # `main` or `unsigned-test/*`, so a run from any other branch fails there.
   workflow_dispatch:
   # workflow_dispatch only exists for workflows already on the default branch,
   # so this prefix is how you exercise the workflow from a branch before it
