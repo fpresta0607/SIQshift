@@ -1,9 +1,11 @@
 name: Unsigned test installers
 
-# Builds desktop installers with NO signing, uploads them as workflow-run
-# artifacts, and (on a deliberate `workflow_dispatch` only) republishes the
+# Builds the desktop test installers, uploads them as workflow-run artifacts,
+# and (on a deliberate `workflow_dispatch` only) republishes the
 # `unsigned-latest` release so the website has something anonymous visitors
-# can actually download.
+# can actually download. The Windows build is code signed by SIQstack LLC
+# through Azure Artifact Signing; the macOS build is still unsigned. The tag
+# keeps its old name because every installed copy's updater polls it.
 #
 # Why a release and not the run artifact: GitHub requires authentication to
 # download a workflow artifact, so a raw artifact URL is useless to a signed-out
@@ -21,16 +23,16 @@ name: Unsigned test installers
 #                          the updater key plus platform signing credentials.
 #   this workflow          tauri *debug* build (`tauri build --debug`), which
 #                          `build.rs` already classifies as a development
-#                          build: no signing credentials, and
-#                          `bundle.createUpdaterArtifacts` must stay off.
+#                          build, so `bundle.createUpdaterArtifacts` must stay
+#                          off. Authenticode signing happens in the bundler,
+#                          after compilation, and `build.rs` never sees it.
 #
-# So the signing gate is honoured rather than bypassed, and adding Azure
-# Trusted Signing later only touches `release.yml` and the signing config.
-# Nothing in this file has to change for that.
+# So the production signing gate is honoured rather than bypassed.
 
 on:
   # Once this file is on the default branch: Actions -> Unsigned test
-  # installers -> Run workflow (any branch).
+  # installers -> Run workflow, from `main`. The Windows leg signs only from
+  # `main` or `unsigned-test/*`, so a run from any other branch fails there.
   workflow_dispatch:
   # workflow_dispatch only exists for workflows already on the default branch,
   # so this prefix is how you exercise the workflow from a branch before it
@@ -66,6 +68,14 @@ jobs:
             bundle_args: ""
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # The `release` environment holds the SIQstack LLC signing identity and
+    # admits only `main` and `unsigned-test/*`, so no other branch can sign.
+    # Azure sign-in goes through GitHub's OpenID Connect: no password is
+    # stored. The macOS leg takes no environment and signs nothing.
+    environment: ${{ matrix.target == 'windows' && 'release' || '' }}
+    permissions:
+      contents: read
+      id-token: write
     # Job-level so the helper build and the bundle build see identical values;
     # `build.rs` reruns on any change to these, and a mismatch between the two
     # steps would recompile the whole crate. These are the same public
@@ -91,15 +101,17 @@ jobs:
           key: unsigned-test
       - run: pnpm install --frozen-lockfile
 
-      - name: Build the hook helper
-        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-hook
-
-      - name: Build the browser host helper
-        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-browser-host
+      # One cargo invocation, not one per helper. A debug build's `build.rs`
+      # writes empty `binaries/` stand-ins, and tauri-build copies every
+      # sidecar over `target/debug/<name>.exe`. A second invocation reruns the
+      # build script and overwrites the helper the first one linked with the
+      # empty stand-in, which staging below would then ship.
+      - name: Build the helpers
+        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-hook --bin siqshift-browser-host
 
       # `externalBin` resolves `binaries/<name>-<target-triple>`, so the helpers
       # have to sit there under that name before the bundler runs. Same staging
-      # rule as the release workflow, minus the signing.
+      # rule as the release workflow; on Windows the bundler signs these copies.
       - name: Stage the helpers for bundling
         shell: bash
         run: |
@@ -110,10 +122,14 @@ jobs:
             suffix=".exe"
           fi
           mkdir -p apps/desktop/src-tauri/binaries
-          cp "apps/desktop/src-tauri/target/debug/siqshift-hook$suffix" \
-            "apps/desktop/src-tauri/binaries/siqshift-hook-$triple$suffix"
-          cp "apps/desktop/src-tauri/target/debug/siqshift-browser-host$suffix" \
-            "apps/desktop/src-tauri/binaries/siqshift-browser-host-$triple$suffix"
+          for name in siqshift-hook siqshift-browser-host; do
+            staged="apps/desktop/src-tauri/binaries/$name-$triple$suffix"
+            cp "apps/desktop/src-tauri/target/debug/$name$suffix" "$staged"
+            if [ ! -s "$staged" ]; then
+              echo "$staged is empty: the helper build left a debug stand-in, not $name." >&2
+              exit 1
+            fi
+          done
 
       # The updater only offers a build whose semver is strictly higher than
       # the installed one, so every run needs its own version. `run_number`
@@ -135,12 +151,139 @@ jobs:
 
       # --debug is what keeps this build outside the production signing gate.
       # Still no TAURI_CONFIG override, so `bundle.createUpdaterArtifacts`
-      # stays off and `build.rs` keeps refusing updater artifacts from an
-      # unsigned build. The updater signature is produced separately below,
+      # stays off and `build.rs` keeps refusing updater artifacts from a
+      # debug build. The updater signature is produced separately below,
       # from the finished installer, so this gate is never touched.
-      - name: Build unsigned installers
+      #
+      # Compiling and bundling are separate steps because GitHub's sign-in
+      # token for Azure lasts about five minutes: the Azure login has to come
+      # after the long compile and right before the bundler starts signing.
+      - name: Build the app
         working-directory: apps/desktop
-        run: pnpm exec tauri build --debug ${{ matrix.bundle_args }}
+        run: pnpm exec tauri build --debug --no-bundle
+
+      # Microsoft's Artifact Signing client is a dlib that signtool loads. It is
+      # pinned by version and hash, and it signs in through the Azure CLI
+      # session the login step below leaves behind, so every other credential
+      # source is excluded. The bundler then calls signtool for the app, both
+      # helpers, the uninstaller and the setup.
+      - name: Prepare Windows code signing
+        id: windows_signing
+        if: matrix.target == 'windows'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE }}
+          SIGNING_PUBLISHER: ${{ vars.SIGNING_PUBLISHER }}
+          CLIENT_VERSION: 1.0.128
+          CLIENT_SHA256: 74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = 'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID', 'SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE', 'SIGNING_PUBLISHER'
+          $missing = @($names | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
+          if ($missing.Count -gt 0) {
+            throw "The release environment is missing $($missing -join ', '), so the Windows installer cannot be signed."
+          }
+          $package = Join-Path $env:RUNNER_TEMP 'artifact-signing-client.zip'
+          Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/$env:CLIENT_VERSION/microsoft.artifactsigning.client.$env:CLIENT_VERSION.nupkg" -OutFile $package
+          $hash = (Get-FileHash $package -Algorithm SHA256).Hash
+          if ($hash -ne $env:CLIENT_SHA256) { throw "The Artifact Signing client hashed to $hash, not the pinned $env:CLIENT_SHA256." }
+          $client = Join-Path $env:RUNNER_TEMP 'artifact-signing-client'
+          Expand-Archive $package -DestinationPath $client
+          $metadata = Join-Path $env:RUNNER_TEMP 'artifact-signing-metadata.json'
+          @{
+            Endpoint = $env:SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:SIGNING_ACCOUNT
+            CertificateProfileName = $env:SIGNING_PROFILE
+            ExcludeCredentials = @(
+              'EnvironmentCredential', 'ManagedIdentityCredential', 'WorkloadIdentityCredential',
+              'SharedTokenCacheCredential', 'VisualStudioCredential', 'VisualStudioCodeCredential',
+              'AzurePowerShellCredential', 'AzureDeveloperCliCredential', 'InteractiveBrowserCredential'
+            )
+          } | ConvertTo-Json | Set-Content $metadata -Encoding utf8
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { $_.VersionInfo.ProductVersion } -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw 'signtool.exe is not on this runner.' }
+          $config = @{
+            bundle = @{
+              windows = @{
+                signCommand = @{
+                  cmd = $signtool
+                  args = @(
+                    'sign', '/v', '/fd', 'SHA256',
+                    '/tr', 'http://timestamp.acs.microsoft.com', '/td', 'SHA256',
+                    '/d', 'SIQshift', '/du', 'https://siqshift.siqstack.com',
+                    '/dlib', (Join-Path $client 'bin\x64\Azure.CodeSigning.Dlib.dll'),
+                    '/dmdf', $metadata,
+                    '%1'
+                  )
+                }
+              }
+            }
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP 'tauri.signing.conf.json'
+          $config | ConvertTo-Json -Depth 5 | Set-Content $configPath -Encoding utf8
+          "config=$configPath" >> $env:GITHUB_OUTPUT
+
+      - uses: azure/login@v3
+        if: matrix.target == 'windows'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Bundle the installers
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          SIGNING_CONFIG: ${{ steps.windows_signing.outputs.config }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SIGNING_CONFIG" ]; then
+            pnpm exec tauri bundle --debug ${{ matrix.bundle_args }} --config "$SIGNING_CONFIG"
+          else
+            pnpm exec tauri bundle --debug ${{ matrix.bundle_args }}
+          fi
+
+      # Every Windows file that ships must carry a valid, timestamped signature
+      # from the expected publisher, checked two ways, or nothing is published.
+      # What is checked is the installer and what 7-Zip unpacks from it, not
+      # the build tree: the bundler signs a patched copy of the app and leaves
+      # `target/debug` holding the unsigned original.
+      - name: Verify the Windows signatures
+        if: matrix.target == 'windows'
+        shell: pwsh
+        env:
+          SIGNING_PUBLISHER: ${{ vars.SIGNING_PUBLISHER }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { $_.VersionInfo.ProductVersion } -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          $installers = @(Get-ChildItem apps/desktop/src-tauri/target/debug/bundle -Recurse -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
+          $payload = Join-Path $env:RUNNER_TEMP 'installer-payload'
+          & 7z x $installers[0].FullName "-o$payload" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip could not unpack $($installers[0].Name) (exit code $LASTEXITCODE)." }
+          $contents = @(Get-ChildItem $payload -Recurse -File -Include '*.exe', '*.dll')
+          $contents | ForEach-Object { Write-Host "payload: $($_.FullName.Substring($payload.Length + 1))" }
+          foreach ($helper in 'siqshift-hook.exe', 'siqshift-browser-host.exe') {
+            if ($contents.Name -notcontains $helper) { throw "The installer does not carry $helper, so the check would prove nothing." }
+          }
+          $files = @($installers[0].FullName) + @($contents.FullName)
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -FilePath $file
+            if ($signature.Status -ne 'Valid') { throw "$file is not validly signed: $($signature.Status) $($signature.StatusMessage)" }
+            if ($signature.SignerCertificate.GetNameInfo('SimpleName', $false) -ne $env:SIGNING_PUBLISHER) { throw "$file is signed by '$($signature.SignerCertificate.Subject)', not '$env:SIGNING_PUBLISHER'" }
+            if (-not $signature.TimeStamperCertificate) { throw "$file carries no timestamp, so its signature would lapse with the certificate" }
+            & $signtool verify /pa /tw $file
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify /pa failed for $file with exit code $LASTEXITCODE" }
+          }
 
       # The updater verifies a detached minisign signature over the installer
       # bytes. `tauri signer sign` produces exactly what
@@ -175,34 +318,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=unsigned-artifacts
+          out=test-artifacts
           bundle=apps/desktop/src-tauri/target/debug/bundle
+          # Only the macOS build is unsigned, and its name keeps saying so.
+          prefix=TEST-
+          if [ "${{ matrix.target }}" = macos ]; then
+            prefix=UNSIGNED-TEST-
+          fi
           mkdir -p "$out"
           found=0
           while IFS= read -r -d '' installer; do
-            cp "$installer" "$out/UNSIGNED-TEST-$(basename "$installer")"
+            cp "$installer" "$out/$prefix$(basename "$installer")"
             found=1
           done < <(find "$bundle" -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \) -print0)
           # The updater signature travels beside its installer, under the same
           # renamed prefix, so the publish job can pair them without guessing.
           while IFS= read -r -d '' signature; do
-            cp "$signature" "$out/UNSIGNED-TEST-$(basename "$signature")"
+            cp "$signature" "$out/$prefix$(basename "$signature")"
           done < <(find "$bundle" -type f -name '*.sig' -print0)
           if [ "$found" -eq 0 ]; then
             echo "No installer was produced under $bundle" >&2
             find "$bundle" -maxdepth 2 >&2 || true
             exit 1
           fi
-          cat > "$out/UNSIGNED-TEST-BUILD.txt" <<EOF
-          SIQshift unsigned test build
-          ============================
+          cat > "$out/TEST-BUILD.txt" <<EOF
+          SIQshift test build
+          ===================
 
-          These installers are NOT code signed and are NOT a release. They come
-          from ${{ github.repository }} run ${{ github.run_id }}, commit
+          These installers are NOT a release. They come from
+          ${{ github.repository }} run ${{ github.run_id }}, commit
           ${{ github.sha }}.
 
           What that means:
-            * Windows SmartScreen will warn about an unknown publisher.
+            * The Windows installer and everything it installs are code signed
+              by SIQstack LLC. SmartScreen may still warn on the first
+              downloads, until the certificate has built a reputation.
+            * The macOS build is NOT signed or notarized.
             * On Windows this build updates itself: it checks for a newer
               build at launch and every six hours, installs it quietly, and
               restarts. A copy installed before the updater shipped cannot,
@@ -211,15 +362,14 @@ jobs:
             * It is a debug build, so it is larger and slower than a release
               build.
 
-          Until code signing exists, this is what siqshift.siqstack.com hands out.
-          Signed installers will come from the tagged release workflow only.
+          This is what siqshift.siqstack.com hands out.
           EOF
           ls -l "$out"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: UNSIGNED-TEST-BUILD-${{ matrix.target }}-${{ github.run_number }}
-          path: unsigned-artifacts/*
+          name: TEST-BUILD-${{ matrix.target }}-${{ github.run_number }}
+          path: test-artifacts/*
           if-no-files-found: error
 
   publish:
@@ -232,7 +382,7 @@ jobs:
     timeout-minutes: 15
     # The only place in this workflow that can write to the repository, and it
     # compiles nothing: it renames what `installers` already produced and
-    # uploads it. The signing gate lives in `release.yml` and is untouched.
+    # signed, and uploads it.
     permissions:
       contents: write
     env:
@@ -265,11 +415,11 @@ jobs:
             fi
             cp "$found" "release-assets/$name"
           }
-          take '*.exe' SIQshift-UNSIGNED-TEST-windows-x64-setup.exe
+          take '*.exe' SIQshift-windows-x64-setup.exe
           take '*.dmg' SIQshift-UNSIGNED-TEST-macos-aarch64.dmg
-          take '*.exe.sig' SIQshift-UNSIGNED-TEST-windows-x64-setup.exe.sig
+          take '*.exe.sig' SIQshift-windows-x64-setup.exe.sig
           # Both matrix legs write an identical one, so either will do.
-          take 'UNSIGNED-TEST-BUILD.txt' UNSIGNED-TEST-BUILD.txt
+          take 'TEST-BUILD.txt' TEST-BUILD.txt
           ls -l release-assets
 
       # The manifest the installed app polls. It lives at the same fixed
@@ -283,8 +433,8 @@ jobs:
         shell: bash
         env:
           BASE_URL: "${{ github.server_url }}/${{ github.repository }}/releases/download/unsigned-latest"
-          INSTALLER_NAME: SIQshift-UNSIGNED-TEST-windows-x64-setup.exe
-          SIGNATURE_PATH: release-assets/SIQshift-UNSIGNED-TEST-windows-x64-setup.exe.sig
+          INSTALLER_NAME: SIQshift-windows-x64-setup.exe
+          SIGNATURE_PATH: release-assets/SIQshift-windows-x64-setup.exe.sig
           MANIFEST_PATH: release-assets/latest.json
         run: |
           set -euo pipefail
@@ -300,12 +450,14 @@ jobs:
           version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")-test.${{ github.run_number }}"
           echo "VERSION=$version" >> "$GITHUB_ENV"
           cat > release-notes.md <<EOF
-          Unsigned test build of SIQshift **$version**, from commit
+          Test build of SIQshift **$version**, from commit
           \`${{ github.sha }}\` (run [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})).
 
-          These installers are **not code signed**. Windows SmartScreen will warn
-          about an unknown publisher: choose **More info**, then **Run anyway**.
-          macOS is un-notarized and needs
+          The Windows installer, and everything it installs, is **code signed by
+          SIQstack LLC**, and Windows names SIQstack LLC as the publisher.
+          SmartScreen may still warn on the first downloads while the
+          certificate builds a reputation: choose **More info**, then **Run
+          anyway**. The macOS build is **not signed or notarized** and needs
           \`xattr -dr com.apple.quarantine "/Applications/SIQshift.app"\`.
 
           They are debug builds, so they are larger and slower than a release
@@ -333,12 +485,14 @@ jobs:
         run: git push --force origin "HEAD:refs/tags/$TAG"
 
       # Edit-or-create, never delete-and-recreate: deleting would leave the
-      # published download URL 404ing for the length of the upload.
+      # published download URL 404ing for the length of the upload. An asset
+      # this run did not stage is removed only after the upload, so the
+      # release ends up carrying exactly this build and nothing stale.
       - name: Publish the release
         shell: bash
         run: |
           set -euo pipefail
-          title="Unsigned test build $VERSION"
+          title="Test build $VERSION"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "$title" --notes-file release-notes.md \
               --prerelease=false --target "${{ github.sha }}"
@@ -347,3 +501,8 @@ jobs:
               --target "${{ github.sha }}"
           fi
           gh release upload "$TAG" release-assets/* --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+            if [ ! -e "release-assets/$asset" ]; then
+              gh release delete-asset "$TAG" "$asset" --yes
+            fi
+          done

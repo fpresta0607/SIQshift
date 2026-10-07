@@ -834,12 +834,12 @@ still designed and not started. What's deliberately not built yet:
   unattributed.
 - **One project at a time.** Concurrent agent sessions in different projects do not split a
   session; the last one to report wins, and the boundary between them is a session close.
-- **No signing credentials yet** — paid certificates are needed for a real release (see
-  DEPLOY.md). Until they arrive, the **Unsigned test installers** workflow is the
+- **No tagged release yet.** The **Unsigned test installers** workflow is the
   distributable: it republishes the `unsigned-latest` release under fixed asset names,
-  which is what the dashboard's **Download for Windows** button links. Windows SmartScreen
-  warns, macOS needs `xattr`. Windows debug builds carry the auto-updater
-  (see DEPLOY.md); macOS updates are still by hand.
+  which is what the dashboard's **Download for Windows** button links. Its Windows build
+  is code signed by SIQstack LLC through Azure Artifact Signing; macOS is unsigned and
+  needs `xattr` (see DEPLOY.md). Windows debug builds carry the auto-updater; macOS
+  updates are still by hand.
 - Evidence can be forged by a determined user. Automatic recording raises the cost and the
   visibility of padding; it does not attempt cryptographic proof.
 

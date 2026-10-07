@@ -691,10 +691,10 @@ person who made it rather than treating idle as abandoned.
 
 ## 5. Desktop installers
 
-The repo is public, so release assets are downloadable by anyone. Until code
-signing exists, the site's **Download for Windows** button does not point here:
-it points at the `unsigned-latest` release described under *Unsigned test
-installers* below.
+The repo is public, so release assets are downloadable by anyone. The site's
+**Download for Windows** button does not point here: it points at the
+`unsigned-latest` release described under *Unsigned test installers* below,
+whose Windows build is signed by SIQstack LLC.
 
 Set these **repository variables** (Settings → Secrets and variables → Actions →
 Variables). They are baked into a public binary, so do not use secrets:
@@ -782,11 +782,10 @@ durable: losing it means existing installs can never verify an update again.
 
 ### Unsigned test installers
 
-Before the signing certificates exist, `.github/workflows/unsigned-test-installers.yml`
-builds the installers people actually download, and **it is what the website
-hands out**. The build job still runs with read-only `contents` permission and
-cannot publish anything; a separate `publish` job, which compiles nothing,
-uploads what that job produced.
+`.github/workflows/unsigned-test-installers.yml` builds the installers people
+actually download, and **it is what the website hands out**. The build job
+still runs with read-only `contents` permission and cannot publish anything; a
+separate `publish` job, which compiles nothing, uploads what that job produced.
 
 This is not a way around the signing gate — `build.rs` still classifies a
 `--debug` build as development and keeps `createUpdaterArtifacts` off. When a
@@ -797,7 +796,22 @@ signing credentials are not required. `bundle.createUpdaterArtifacts` stays
 off (`build.rs` refuses it for unsigned builds), but the workflow signs the
 finished Windows installer with `tauri signer sign` and publishes a
 `latest.json` manifest, so the updater works without touching the production
-signing gate. Adding Azure Trusted Signing later changes `release.yml` only.
+signing gate.
+
+#### Windows code signing
+
+The Windows build is code signed by **SIQstack LLC** through Azure Artifact Signing, the same signing account and certificate profile that sign Code Goblins.
+The bundler signs the app, both helpers, the uninstaller and the setup, and the workflow then checks that each shipped file carries a valid, timestamped SIQstack LLC signature before anything is uploaded.
+The updater signature is made afterwards, over the signed setup.
+The macOS build is still unsigned.
+
+The Windows leg runs in the `release` environment, which admits only `main` and `unsigned-test/*`, so no other branch can sign.
+It holds the secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` and the variables `SIGNING_ENDPOINT`, `SIGNING_ACCOUNT`, `SIGNING_PROFILE` and `SIGNING_PUBLISHER`, with the same values as Code Goblins' `release` environment.
+Azure sign-in goes through GitHub's OpenID Connect, so no password is stored: the Entra signing app carries a federated credential for this repository's `release` environment, and its Artifact Signing Certificate Profile Signer role already covers the account.
+If any of those values is missing, the Windows leg fails rather than publishing an unsigned installer under the signed name.
+
+Signing runs `signtool` with Microsoft's `Microsoft.ArtifactSigning.Client` dlib, pinned by version and SHA-256 in the workflow.
+Compiling and bundling are separate steps (`tauri build --no-bundle`, then `tauri bundle`) because GitHub's sign-in token for Azure lasts about five minutes, so the Azure login has to land after the long compile and right before the bundler signs.
 
 **To trigger it:** Actions → *Unsigned test installers* → **Run workflow**.
 Because GitHub only offers *Run workflow* for workflows already on the default
@@ -818,9 +832,12 @@ clobbers its assets, so these two URLs always serve the newest build and never
 need touching:
 
 ```
-https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshift-UNSIGNED-TEST-windows-x64-setup.exe
+https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshift-windows-x64-setup.exe
 https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshift-UNSIGNED-TEST-macos-aarch64.dmg
 ```
+
+The tag keeps its old name because every installed copy's updater polls `unsigned-latest/latest.json`.
+After uploading, the run deletes any asset it did not stage, so the release carries exactly the newest build.
 
 `apps/web/src/DownloadInstaller.tsx` hard-codes exactly those strings, and
 `DownloadInstaller.test.tsx` pins them, because renaming an asset on one side
@@ -832,10 +849,11 @@ release title, the release notes, and the installed app, not in the URL.
 authentication to download one, so an artifact URL is a dead link for a
 signed-out visitor. That is the whole reason for the fixed release.
 
-The run artifacts (`UNSIGNED-TEST-BUILD-windows-<run number>` and `-macos-`)
-still exist for branch pushes and for grabbing a build that was never
-published. Inside are the installers under their versioned names, each prefixed
-`UNSIGNED-TEST-`, plus an `UNSIGNED-TEST-BUILD.txt` recording the commit.
+The run artifacts (`TEST-BUILD-windows-<run number>` and `-macos-`) still
+exist for branch pushes and for grabbing a build that was never published.
+Inside are the installers under their versioned names, prefixed `TEST-` on
+Windows and `UNSIGNED-TEST-` on macOS, plus a `TEST-BUILD.txt` recording the
+commit.
 
 **Bump the version when the build changes.** `apps/desktop/src-tauri/tauri.conf.json`
 holds the single `version`, and the installer, Add/Remove Programs, and the
@@ -843,15 +861,10 @@ release title all read from it. Leave it stale and a fresh build introduces
 itself as the old one, which is how a same-day build got mistaken for four-day-old
 software.
 
-**Installing on Windows.** The installer is not signed, so SmartScreen shows a
-blue *"Windows protected your PC / Windows Defender SmartScreen prevented an
-unrecognized app from starting"* dialog with only a **Don't run** button. Click
-**More info**, then **Run anyway**. The UAC prompt that follows names the
-publisher as **Unknown**. Browsers may also flag the download itself: in Edge or
-Chrome, open the downloads list and choose **Keep** on the blocked file. If the
-file came through as a zip artifact, unblock it before extracting (right-click
-the zip → Properties → **Unblock**), otherwise the mark-of-the-web propagates to
-the installer.
+**Installing on Windows.** The installer is signed, so the UAC prompt names the publisher as **SIQstack LLC**.
+SmartScreen reputation builds with downloads rather than arriving with the certificate, so the first downloads may still show the blue *"Windows protected your PC"* dialog with only a **Don't run** button: click **More info**, then **Run anyway**.
+Browsers may also flag the download itself: in Edge or Chrome, open the downloads list and choose **Keep** on the blocked file.
+If the file came through as a zip artifact, unblock it before extracting (right-click the zip → Properties → **Unblock**), otherwise the mark-of-the-web propagates to the installer.
 
 Because these are debug builds, they are noticeably larger and slower than a
 release build. The console window that once opened beside the app on Windows

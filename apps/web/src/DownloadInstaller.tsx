@@ -17,12 +17,14 @@ const downloadBase = "https://github.com/fpresta0607/SIQshift/releases/download/
  * authentication to download one, and the people who need this button are
  * signed out.
  */
-export const windowsInstallerUrl = `${downloadBase}/SIQshift-UNSIGNED-TEST-windows-x64-setup.exe`;
+export const windowsInstallerUrl = `${downloadBase}/SIQshift-windows-x64-setup.exe`;
 export const macInstallerUrl = `${downloadBase}/SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`;
 
 /// Said once, in one place, so the site cannot end up warning about the
 /// SmartScreen prompt in one corner and staying quiet about it in another.
-export const unsignedNote = "Unsigned test build. Windows will ask you to confirm.";
+/// A new signing certificate has no download reputation yet, so SmartScreen
+/// can still ask on a signed build.
+export const installerNote = "Signed by SIQstack LLC. Windows may still ask you to confirm.";
 
 /**
  * Where the button is sitting, which decides how loud it is allowed to be:
@@ -56,7 +58,7 @@ const DownloadIcon = () => (
 /**
  * The masthead pill. One control the height of the Sign out button beside it,
  * opening everything that used to be stacked underneath it in the header: the
- * unsigned-build warning and the Mac build.
+ * signing note and the Mac build.
  */
 const HeaderMenu = () => {
   const panelId = useId();
@@ -94,7 +96,7 @@ const HeaderMenu = () => {
         // The SmartScreen warning is still on the control itself, not only
         // inside the panel: a visitor who never opens the panel can still meet
         // it on hover, and it is what the button is described by either way.
-        title={unsignedNote}
+        title={installerNote}
         onClick={() => setOpen((wasOpen) => !wasOpen)}
       >
         <DownloadIcon />
@@ -103,7 +105,7 @@ const HeaderMenu = () => {
       </button>
       {open && (
         <div className="card glass download-panel" id={panelId}>
-          <p className="download-note" id={noteId}>{unsignedNote}</p>
+          <p className="download-note" id={noteId}>{installerNote}</p>
           <a className="download-choice is-primary" href={windowsInstallerUrl} rel="noreferrer" aria-describedby={noteId}>
             Download for Windows
           </a>
@@ -132,7 +134,7 @@ export const DownloadInstaller = ({ placement = "header" }: DownloadInstallerPro
       <a className="download-button" href={windowsInstallerUrl} rel="noreferrer" aria-describedby={noteId}>
         Download for Windows
       </a>
-      <p className="download-note" id={noteId}>{unsignedNote}</p>
+      <p className="download-note" id={noteId}>{installerNote}</p>
       <a className="download-secondary" href={macInstallerUrl} rel="noreferrer">
         Mac installer (Apple silicon)
       </a>
