@@ -60,9 +60,9 @@ async function waveBand(page: Page, width: number, height: number): Promise<numb
   await page.addInitScript(FREEZE_FRAMES);
   await page.setViewportSize({ width, height });
   await page.goto("/");
-  // The sign-in card is the app's settled state: waiting for it means the
+  // The landing page is the app's settled state: waiting for it means the
   // booting screen is not still on its way out mid-measurement.
-  await page.getByRole("heading", { name: "Sign in" }).waitFor();
+  await page.getByRole("heading", { name: /Your time/ }).waitFor();
   await page.addStyleTag({ content: ".shell > *:not(canvas.shader-bg) { visibility: hidden !important; }" });
   await page.waitForSelector("canvas.shader-bg");
   await page.evaluate((frames) => (window as unknown as { __advance: (n: number) => void }).__advance(frames), PHASE_FRAMES);
@@ -155,12 +155,12 @@ test.describe("the WebGL background", () => {
     // expectation is the exact wrapped value rather than a range: a queue the
     // shader has not joined yet drains into nothing, and "inside one period"
     // is also true of the 0.01 a shader that never advanced is left at. The
-    // settled sign-in card is a commit after the canvas mounted, so the
+    // settled landing page is a commit after the canvas mounted, so the
     // component's effect - and with it the loop these frames feed - has run.
     await page.addInitScript(FREEZE_FRAMES);
     await page.setViewportSize({ width: 400, height: 600 });
     await page.goto("/");
-    await page.getByRole("heading", { name: "Sign in" }).waitFor();
+    await page.getByRole("heading", { name: /Your time/ }).waitFor();
     await page.waitForSelector("canvas.shader-bg");
 
     const before = await page.evaluate(readTimeUniform);
