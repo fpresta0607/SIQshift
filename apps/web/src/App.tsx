@@ -691,7 +691,7 @@ export const App = ({ client }: AppProps) => {
     const isSignUp = mode === "sign-up";
     return (
       <>
-        <LandingPage authOpen={authOpen} onAuth={nextMode => {
+        <LandingPage onAuth={nextMode => {
           setMode(nextMode);
           setAuthError(undefined);
           setPassword("");

@@ -7,6 +7,7 @@ export function AuthDialog({ children, busy, onClose }: { children: ReactNode; b
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overflow = document.body.style.overflow;
     dialog.showModal();
+    dialog.querySelector<HTMLInputElement>("input")?.focus();
     document.body.style.overflow = "hidden";
     return () => {
       dialog.close();

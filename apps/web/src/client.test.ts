@@ -14,6 +14,24 @@ function clientWith(handler: (url: string, init?: RequestInit) => Promise<Respon
 }
 
 describe("web client", () => {
+  it.each([
+    { authBaseUrl: undefined, apiBaseUrl },
+    { authBaseUrl, apiBaseUrl: undefined },
+    { authBaseUrl: " ", apiBaseUrl },
+    { authBaseUrl, apiBaseUrl: "" },
+  ])("keeps the public page usable without account services: %j", async (config) => {
+    const fetchMock = vi.fn();
+    const client = createClient({ ...config, fetch: fetchMock });
+    const credentials = { email: "alex@example.com", password: "long-enough-password" };
+
+    await expect(client.restoreSession()).resolves.toBe(false);
+    await expect(client.signIn(credentials)).rejects.toMatchObject({ kind: "transient" });
+    await expect(client.signUp({ ...credentials, name: "Alex" })).rejects.toMatchObject({ kind: "transient" });
+    await expect(client.organization()).rejects.toMatchObject({ kind: "transient" });
+    expect(client.hasSession).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("signs in, then reaches the API with the token it was given", async () => {
     const { client, fetchMock } = clientWith(async (url) => {
       if (url.endsWith("/sign-in/email")) return jsonResponse({ token: "session" });

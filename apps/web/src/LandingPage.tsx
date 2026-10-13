@@ -72,9 +72,9 @@ function ProductPreview() {
   );
 }
 
-export function LandingPage({ onAuth, authOpen }: { onAuth: (mode: AuthMode) => void; authOpen: boolean }) {
+export function LandingPage({ onAuth }: { onAuth: (mode: AuthMode) => void }) {
   return (
-    <div className="landing" inert={authOpen} aria-hidden={authOpen || undefined}>
+    <div className="landing">
       <LandingBackground />
       <a className="landing-skip" href="#landing-main">Skip to content</a>
       <header className="landing-header">

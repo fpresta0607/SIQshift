@@ -33,8 +33,8 @@ export class ClientError extends Error {
 }
 
 export interface ClientConfig {
-  authBaseUrl: string;
-  apiBaseUrl: string;
+  authBaseUrl: string | undefined;
+  apiBaseUrl: string | undefined;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -143,12 +143,21 @@ async function authErrorCode(response: Response): Promise<string | undefined> {
 }
 
 export function createClient(config: ClientConfig) {
-  const authBaseUrl = config.authBaseUrl.replace(/\/$/, "");
-  const apiBaseUrl = config.apiBaseUrl.replace(/\/$/, "");
+  const authBaseUrl = config.authBaseUrl?.trim().replace(/\/$/, "");
+  const apiBaseUrl = config.apiBaseUrl?.trim().replace(/\/$/, "");
   const doFetch = config.fetch ?? globalThis.fetch.bind(globalThis);
   let accessToken: string | undefined;
 
+  // A public landing page can render without account services configured.
+  // Refuse requests before sending credentials or creating a partial account.
+  const requireAccountServices = () => {
+    if (!authBaseUrl || !apiBaseUrl) {
+      throw new ClientError("transient", "Account access is unavailable here. Please use siqshift.siqstack.com.");
+    }
+  };
+
   const authRequest = async (path: string, init: RequestInit = {}): Promise<Response> => {
+    requireAccountServices();
     try {
       return await doFetch(`${authBaseUrl}${path}`, { ...init, credentials: "include" });
     } catch {
@@ -170,6 +179,7 @@ export function createClient(config: ClientConfig) {
   };
 
   const apiRequest = async (path: string, init: RequestInit = {}): Promise<Response> => {
+    requireAccountServices();
     const token = accessToken ?? (await refreshAccessToken());
     const send = (bearer: string) => doFetch(`${apiBaseUrl}${path}`, {
       ...init,

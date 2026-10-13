@@ -779,7 +779,7 @@ describe("dashboard", () => {
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
     await person.type(screen.getByLabelText(/Invite code/), "  ACDEF-GHJKM ");
-    await person.click(screen.getByRole("button", { name: "Create account" }));
+    await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create account" }));
 
     await waitFor(() => expect(signUp).toHaveBeenCalledWith({
       email: "alex@example.com",
@@ -797,7 +797,7 @@ describe("dashboard", () => {
     await person.type(screen.getByLabelText("Name"), "Alex Morgan");
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
-    await person.click(screen.getByRole("button", { name: "Create account" }));
+    await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create account" }));
 
     expect(await screen.findByRole("heading", { name: /the app/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Download for Windows" })).toHaveAttribute("href", windowsInstallerUrl);
@@ -816,7 +816,7 @@ describe("dashboard", () => {
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
     await person.type(screen.getByLabelText(/Workspace name/), "  SIQstack  ");
-    await person.click(screen.getByRole("button", { name: "Create account" }));
+    await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create account" }));
 
     await waitFor(() => expect(signUp).toHaveBeenCalledWith({
       email: "alex@example.com",
