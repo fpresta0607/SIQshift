@@ -62,7 +62,7 @@ async function waveBand(page: Page, width: number, height: number): Promise<numb
   await page.goto("/");
   // The landing page is the app's settled state: waiting for it means the
   // booting screen is not still on its way out mid-measurement.
-  await page.getByRole("heading", { name: /Your time/ }).waitFor();
+  await page.getByRole("heading", { name: /Measure the work/ }).waitFor();
   await page.addStyleTag({ content: ".shell > *:not(canvas.shader-bg) { visibility: hidden !important; }" });
   await page.waitForSelector("canvas.shader-bg");
   await page.evaluate((frames) => (window as unknown as { __advance: (n: number) => void }).__advance(frames), PHASE_FRAMES);
@@ -160,7 +160,7 @@ test.describe("the WebGL background", () => {
     await page.addInitScript(FREEZE_FRAMES);
     await page.setViewportSize({ width: 400, height: 600 });
     await page.goto("/");
-    await page.getByRole("heading", { name: /Your time/ }).waitFor();
+    await page.getByRole("heading", { name: /Measure the work/ }).waitFor();
     await page.waitForSelector("canvas.shader-bg");
 
     const before = await page.evaluate(readTimeUniform);

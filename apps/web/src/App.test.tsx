@@ -1379,7 +1379,7 @@ describe("the home screen", () => {
 describe("getting the desktop app", () => {
   it("does not float the desktop download over the landing page", async () => {
     const { container } = render(<App client={clientFor()} />);
-    await screen.findByRole("heading", { name: /Your time/ });
+    await screen.findByRole("heading", { name: /Measure the work/ });
 
     // Account creation leads to the existing download onboarding.
     expect(container.querySelector(".download-menu, .download-corner")).toBeNull();
