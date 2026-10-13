@@ -36,6 +36,8 @@ import {
 import { ClientError, type Client } from "./client.js";
 import { DownloadInstaller } from "./DownloadInstaller.js";
 import { HelpModal } from "./HelpModal.js";
+import { AuthDialog } from "./AuthDialog.js";
+import { LandingPage } from "./LandingPage.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
 
 type AppProps = { client: Client };
@@ -138,6 +140,7 @@ export const App = ({ client }: AppProps) => {
   const [inviteCode, setInviteCode] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const [authError, setAuthError] = useState<string | undefined>();
 
   const [scope, setScope] = useState<ProjectScope>("all");
@@ -196,6 +199,8 @@ export const App = ({ client }: AppProps) => {
 
   const expireSession = useCallback(() => {
     setSignedIn(false);
+    setMode("sign-in");
+    setAuthOpen(true);
     setAuthError("Your session expired. Sign in again.");
   }, []);
 
@@ -529,6 +534,7 @@ export const App = ({ client }: AppProps) => {
       setInviteCode("");
       setWorkspaceName("");
       setJustSignedUp(mode === "sign-up");
+      setAuthOpen(false);
       setSignedIn(true);
     } catch (error: unknown) {
       setAuthError(messageFor(error));
@@ -560,6 +566,7 @@ export const App = ({ client }: AppProps) => {
   const signOut = async (): Promise<void> => {
     await client.signOut();
     setSignedIn(false);
+    setAuthOpen(false);
     setJustSignedUp(false);
     setOrganization(undefined);
     setSelfId(undefined);
@@ -683,22 +690,27 @@ export const App = ({ client }: AppProps) => {
   if (!signedIn) {
     const isSignUp = mode === "sign-up";
     return (
-      <main className="shell auth-shell">
-        <WebGLShader />
-        <section className="card glass" aria-labelledby="auth-title">
+      <>
+        <LandingPage authOpen={authOpen} onAuth={nextMode => {
+          setMode(nextMode);
+          setAuthError(undefined);
+          setPassword("");
+          setAuthOpen(true);
+        }} />
+        {authOpen && <AuthDialog busy={authBusy} onClose={() => { setAuthOpen(false); setPassword(""); setAuthError(undefined); }}>
           <p className="eyebrow">SIQshift</p>
-          <h1 id="auth-title">{isSignUp ? "Create your account" : "Sign in"}</h1>
-          <p className="subtle">
+          <h2 id="auth-title">{isSignUp ? "Create your account" : "Sign in"}</h2>
+          <p className="subtle" id="auth-description">
             {isSignUp
               ? "Enter a teammate's invite code to join their workspace, or leave it blank to start your own."
-              : "See your team's hours and export them."}
+              : "Welcome back. Your workspace is ready."}
           </p>
           {authError && <p className="error" role="alert">{authError}</p>}
-          <form onSubmit={submitAuth}>
+          <form onSubmit={submitAuth} aria-busy={authBusy}>
             {isSignUp && (
-              <label>Name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required /></label>
+              <label>Name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" autoFocus required /></label>
             )}
-            <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required /></label>
+            <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" autoFocus={!isSignUp} required /></label>
             <label>Password
               <input
                 value={password}
@@ -723,11 +735,11 @@ export const App = ({ client }: AppProps) => {
               {authBusy ? "Working…" : isSignUp ? "Create account" : "Sign in"}
             </button>
           </form>
-          <button className="link" type="button" onClick={() => { setMode(isSignUp ? "sign-in" : "sign-up"); setAuthError(undefined); setPassword(""); }}>
+          <button className="link" type="button" disabled={authBusy} onClick={() => { setMode(isSignUp ? "sign-in" : "sign-up"); setAuthError(undefined); setPassword(""); }}>
             {isSignUp ? "Already have an account? Sign in" : "New here? Create an account"}
           </button>
-        </section>
-      </main>
+        </AuthDialog>}
+      </>
     );
   }
 

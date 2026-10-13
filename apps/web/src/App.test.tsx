@@ -203,6 +203,7 @@ type Person = ReturnType<typeof userEvent.setup>;
 async function signIn(client: Client) {
   const person = userEvent.setup();
   render(<App client={client} />);
+  await person.click((await screen.findAllByRole("button", { name: "Log in" }))[0]!);
   await person.type(await screen.findByLabelText("Email"), "alex@example.com");
   await person.type(screen.getByLabelText("Password"), "long-enough-password");
   await person.click(screen.getByRole("button", { name: "Sign in" }));
@@ -773,7 +774,7 @@ describe("dashboard", () => {
     const person = userEvent.setup();
     render(<App client={clientFor({ signUp })} />);
 
-    await person.click(await screen.findByRole("button", { name: "New here? Create an account" }));
+    await person.click((await screen.findAllByRole("button", { name: "Create account" }))[0]!);
     await person.type(screen.getByLabelText("Name"), "Alex Morgan");
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
@@ -792,7 +793,7 @@ describe("dashboard", () => {
     const person = userEvent.setup();
     render(<App client={clientFor()} />);
 
-    await person.click(await screen.findByRole("button", { name: "New here? Create an account" }));
+    await person.click((await screen.findAllByRole("button", { name: "Create account" }))[0]!);
     await person.type(screen.getByLabelText("Name"), "Alex Morgan");
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
@@ -810,7 +811,7 @@ describe("dashboard", () => {
     const person = userEvent.setup();
     render(<App client={clientFor({ signUp })} />);
 
-    await person.click(await screen.findByRole("button", { name: "New here? Create an account" }));
+    await person.click((await screen.findAllByRole("button", { name: "Create account" }))[0]!);
     await person.type(screen.getByLabelText("Name"), "Alex Morgan");
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
@@ -829,7 +830,7 @@ describe("dashboard", () => {
     const person = userEvent.setup();
     render(<App client={clientFor()} />);
 
-    await person.click(await screen.findByRole("button", { name: "New here? Create an account" }));
+    await person.click((await screen.findAllByRole("button", { name: "Create account" }))[0]!);
     expect(screen.getByLabelText(/Workspace name/)).toBeInTheDocument();
 
     await person.type(screen.getByLabelText(/Invite code/), "ACDEF-GHJKM");
@@ -1376,12 +1377,11 @@ describe("the home screen", () => {
 });
 
 describe("getting the desktop app", () => {
-  it("leaves the sign-in page alone", async () => {
+  it("does not float the desktop download over the landing page", async () => {
     const { container } = render(<App client={clientFor()} />);
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: /Your time/ });
 
-    // Signing in is the only thing anyone came to this page to do, so the
-    // download control is not floated over it.
+    // Account creation leads to the existing download onboarding.
     expect(container.querySelector(".download-menu, .download-corner")).toBeNull();
     expect(screen.queryByRole("link", { name: /download/i })).not.toBeInTheDocument();
   });
