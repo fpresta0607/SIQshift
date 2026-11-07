@@ -91,6 +91,9 @@ export function WebGLShader({ className }: WebGLShaderProps) {
     const WAVE_PERIOD = (Math.PI * 2) / BASE_X_SCALE;
 
     let timeStep = BASE_TIME_STEP;
+    let lastPixelWidth = 0;
+    let lastPixelHeight = 0;
+    let lastPixelRatio = 0;
 
     // ── Vertex shader ─────────────────────────────────────────────────────
     const vertexShader = `
@@ -226,7 +229,6 @@ export function WebGLShader({ className }: WebGLShaderProps) {
     const initScene = () => {
       refs.scene = new THREE.Scene();
       refs.renderer = new THREE.WebGLRenderer({ canvas });
-      refs.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       refs.renderer.setClearColor(new THREE.Color(0x000000));
 
       refs.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, -1);
@@ -301,8 +303,9 @@ export function WebGLShader({ className }: WebGLShaderProps) {
       refs.animationId = requestAnimationFrame(animate);
     };
 
-    // ── Mouse / touch handlers ────────────────────────────────────────────
-    const handleMouseMove = (e: MouseEvent) => {
+    // Touch movement scrolls the page; it must never activate electric jitter.
+    const handlePointerMove = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
       const m = mouseRef.current;
       const now = performance.now();
       const dt = Math.max(now - m.lastTime, 1);
@@ -333,25 +336,26 @@ export function WebGLShader({ className }: WebGLShaderProps) {
       mouseRef.current.onCanvas = 0.0;
     };
 
-    const handleTouchMove = (e: TouchEvent) => {
-      const t = e.touches.item(0);
-      if (!t) return;
-      handleMouseMove({ clientX: t.clientX, clientY: t.clientY } as MouseEvent);
-    };
-
     const handleResize = () => {
       if (!refs.renderer || !refs.uniforms) return;
       const { width, height } = getDimensions();
       // A hidden or not-yet-laid-out canvas measures zero, and a zero
       // resolution divides by zero in the shader. Keep the last good size.
       if (width === 0 || height === 0) return;
-      // Re-read the ratio on every pass: a buffer left at the old ratio is
-      // the one thing that does make the wave look resampled. Getting here
-      // on a ratio-only change is the observer registration's job below.
-      refs.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      refs.renderer.setSize(width, height, false);
-      const dpr = refs.renderer.getPixelRatio();
-      refs.uniforms.resolution.value = [width * dpr, height * dpr];
+      const dpr = Math.min(window.devicePixelRatio, 2);
+      const pixelWidth = Math.max(1, Math.floor(width * dpr));
+      const pixelHeight = Math.max(1, Math.floor(height * dpr));
+      // Setting canvas dimensions clears its buffer, even to the same size.
+      // Ignore duplicate observations and fractional layout noise, and apply
+      // real size/ratio changes together rather than clearing the buffer twice.
+      if (pixelWidth === lastPixelWidth && pixelHeight === lastPixelHeight && dpr === lastPixelRatio) return;
+      refs.renderer.setDrawingBufferSize(width, height, dpr);
+      lastPixelWidth = pixelWidth;
+      lastPixelHeight = pixelHeight;
+      lastPixelRatio = dpr;
+      refs.uniforms.resolution.value = [canvas.width, canvas.height];
+      // Paint the resized buffer at the current phase before it is presented.
+      if (refs.scene && refs.camera) refs.renderer.render(refs.scene, refs.camera);
     };
 
     // ── Bootstrap ─────────────────────────────────────────────────────────
@@ -363,10 +367,9 @@ export function WebGLShader({ className }: WebGLShaderProps) {
       return;
     }
 
-    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
     canvas.addEventListener("mouseenter", handleMouseEnter);
     canvas.addEventListener("mouseleave", handleMouseLeave);
-    window.addEventListener("touchmove", handleTouchMove, { passive: true });
     // Observing the canvas catches every reason its box changed - the window,
     // a scrollbar appearing, a container resizing - where a window `resize`
     // listener only catches the first. device-pixel-content-box also fires
@@ -387,10 +390,9 @@ export function WebGLShader({ className }: WebGLShaderProps) {
       if (refs.animationId) cancelAnimationFrame(refs.animationId);
       refs.animationId = null;
 
-      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("pointermove", handlePointerMove);
       canvas.removeEventListener("mouseenter", handleMouseEnter);
       canvas.removeEventListener("mouseleave", handleMouseLeave);
-      window.removeEventListener("touchmove", handleTouchMove);
       sizeObserver.disconnect();
       if (refs.mesh) {
         refs.scene?.remove(refs.mesh);
@@ -412,3 +414,4 @@ export function WebGLShader({ className }: WebGLShaderProps) {
 
   return <canvas ref={canvasRef} className={className ?? "shader-bg"} />;
 }
+

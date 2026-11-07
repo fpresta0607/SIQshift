@@ -1,12 +1,14 @@
 .landing { position: relative; isolation: isolate; min-height: 100vh; color: white; }
-.landing-scene { position: fixed; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(ellipse at 30% 70%, color-mix(in srgb, var(--accent-green) 10%, var(--body-bg)), var(--body-bg) 75%); }
-.landing-scene .shader-bg { z-index: 0; }
+/* The large viewport stays the same height while mobile browser bars slide.
+   Keep the canvas inside this stable box so scrolling never reallocates it. */
+.landing-scene { position: fixed; inset: 0 0 auto; height: 100vh; height: 100lvh; z-index: -1; pointer-events: none; overflow: hidden; background: radial-gradient(ellipse at 30% 70%, color-mix(in srgb, var(--accent-green) 10%, var(--body-bg)), var(--body-bg) 75%); }
+.landing-scene .shader-bg { position: absolute; z-index: 0; }
 .landing-shade { position: absolute; inset: 0; background: color-mix(in srgb, var(--body-bg) 28%, transparent); }
 .landing a { color: inherit; text-decoration: none; }
 .landing button { text-transform: none; letter-spacing: normal; }
-.landing-skip { position: fixed; top: -100px; left: 20px; z-index: 10; padding: 12px 18px; border-radius: var(--radius); background: var(--body-bg); }
+.landing-skip { position: fixed; top: -100px; left: 20px; z-index: 30; padding: 12px 18px; border-radius: var(--radius); background: var(--body-bg); }
 .landing-skip:focus { top: 12px; }
-.landing-header { max-width: 1320px; margin: auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.landing-header { position: sticky; top: max(24px, env(safe-area-inset-top)); z-index: 20; max-width: 1320px; margin: auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .landing-siq-logo { display: block; width: 150px; height: auto; }
 .landing-header nav { display: flex; align-items: center; gap: 28px; font-size: .875rem; color: var(--text-secondary); }
 .landing-header nav a { display: inline-flex; align-items: center; min-height: 44px; }
@@ -26,7 +28,8 @@
 .landing-secondary { border: 1px solid var(--glass-border-hover); background: var(--glass-bg); color: white; }
 .landing-secondary:hover { border-color: var(--mint); }
 .landing-scroll { display: inline-flex; min-height: 44px; align-items: center; gap: 12px; margin-top: 30px; font-size: .84rem; color: var(--text-secondary) !important; }
-.landing-content { max-width: 1180px; margin: auto; padding: 48px 24px 0; scroll-margin-top: 24px; }
+.landing-content { max-width: 1180px; margin: auto; padding: 48px 24px 0; scroll-margin-top: calc(136px + env(safe-area-inset-top)); }
+#landing-main { scroll-margin-top: calc(136px + env(safe-area-inset-top)); }
 .landing-section-heading { margin-bottom: 34px; }
 .landing-section-heading .eyebrow { margin-bottom: 16px; font-size: .76rem; letter-spacing: .16em; }
 .landing-section-heading h2 { font-size: clamp(2.25rem, 3.7vw, 3.25rem); line-height: 1.12; letter-spacing: -.045em; font-weight: 600; }
@@ -75,7 +78,7 @@
 .auth-dialog .primary { min-height: 48px; text-transform: none; letter-spacing: normal; }
 .auth-dialog .link { min-height: 44px; }
 @media (max-width: 767px) {
-  .landing-header { padding: 16px 20px; }
+  .landing-header { top: max(14px, env(safe-area-inset-top)); padding: 16px 20px; }
   .landing-siq-logo { width: 126px; }
   .landing-header nav { gap: 14px; }
   .landing-header nav a { display: none; }
@@ -86,6 +89,7 @@
   .landing-hero > p { font-size: 1rem; max-width: 390px; }
   .landing-desktop-break { display: none; }
   .landing-content { padding: 42px 20px 0; }
+  .landing-content, #landing-main { scroll-margin-top: calc(104px + env(safe-area-inset-top)); }
   .landing-section-heading { margin-bottom: 26px; }
   .landing-app-bar { padding: 13px 16px; }
   .landing-app-body { padding: 22px 16px 14px; }
@@ -179,3 +183,4 @@
   .landing-tools { gap: 12px 18px; }
   .landing-tools > span:first-child { flex-basis: 100%; }
 }
+
