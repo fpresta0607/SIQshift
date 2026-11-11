@@ -63,8 +63,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/chromium-debs/*.deb
           key: ${{ steps.chromium-deps-key.outputs.key }}
+      # dpkg installs the cached packages as they are. apt would take each
+      # package from the mirrors' index instead and fail without a download.
       - if: steps.chromium-deps-cache.outputs.cache-hit == 'true'
-        run: sudo apt-get install --yes --no-download --no-install-recommends "$RUNNER_TEMP"/chromium-debs/*.deb
+        run: sudo dpkg -i "$RUNNER_TEMP"/chromium-debs/*.deb
       - if: steps.chromium-deps-cache.outputs.cache-hit != 'true'
         run: |
           debs="$RUNNER_TEMP/chromium-debs"
