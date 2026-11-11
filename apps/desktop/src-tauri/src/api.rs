@@ -2257,7 +2257,8 @@ mod tests {
                 None,
             )
             .await
-            .expect_err("the provisioning is refused");
+            .err()
+            .expect("the provisioning is refused");
 
         // Assert: the reason reaches the person, and no session comes back
         // for the caller to keep, so no half-made account stays signed in.
@@ -2311,7 +2312,8 @@ mod tests {
         let error = client
             .sign_up_and_provision("new.person@example.test", "not it", "Sam Example", None)
             .await
-            .expect_err("the sign-up does not complete");
+            .err()
+            .expect("the sign-up does not complete");
 
         // Assert
         assert_eq!(error.kind, ErrorKind::AccountExists);
