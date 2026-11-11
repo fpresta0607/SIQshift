@@ -340,23 +340,21 @@ pub struct SignupInput {
 #[tauri::command]
 async fn auth_signup(state: State<'_, AppState>, input: SignupInput) -> ApiResult<Snapshot> {
     state.monitor.stop().await;
-    let session = state
-        .client
-        .sign_up(&input.email, &input.password, &input.name)
-        .await?;
-    state.store_session_token(&session)?;
-    let access_token = state.client.fetch_access_token(&session).await?;
-
-    // Provision explicitly and first: any other authenticated call would create a
-    // personal workspace before the invite code could be applied.
+    // Provisioning runs first and the session is kept only after it: any other
+    // authenticated call would create a personal workspace before the invite
+    // code could be applied.
     let code = input
         .invite_code
         .as_deref()
         .map(str::trim)
         .filter(|code| !code.is_empty());
-    state.client.provision_account(&access_token, code).await?;
+    let signed_up = state
+        .client
+        .sign_up_and_provision(&input.email, &input.password, &input.name, code)
+        .await?;
+    state.store_session_token(&signed_up.session)?;
 
-    let snapshot = state.snapshot(&access_token).await?;
+    let snapshot = state.snapshot(&signed_up.access_token).await?;
     state.start_recording_for_account().await?;
     Ok(snapshot)
 }

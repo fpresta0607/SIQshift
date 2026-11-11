@@ -818,7 +818,14 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       clearAccountFields();
       setAccount(snapshot);
     } catch (error: unknown) {
-      if (isCurrent(service, generation)) setAuthError(bridgeError(error).message);
+      if (!isCurrent(service, generation)) return;
+      const failure = bridgeError(error);
+      if (failure.kind === "account_exists") {
+        // The email stays typed; the password is asked for again on purpose.
+        setAuthMode("sign-in");
+        setPassword("");
+      }
+      setAuthError(failure.message);
     } finally {
       if (isCurrent(service, generation)) setAuthBusy(false);
     }
