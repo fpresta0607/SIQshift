@@ -289,7 +289,14 @@ fn read_registry(path: &Path) -> UsageRegistry {
     read_json_sidecar(path)
 }
 
+#[cfg(test)]
+thread_local! {
+    static REGISTRY_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn write_registry(path: &Path, registry: &UsageRegistry) -> spool::SpoolResult<()> {
+    #[cfg(test)]
+    REGISTRY_WRITES.with(|writes| writes.set(writes.get() + 1));
     let bytes = serde_json::to_vec(registry).map_err(std::io::Error::other)?;
     write_if_changed_locked(path, &bytes)
 }
@@ -947,10 +954,14 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
     }
 
     // Heartbeats append through the same path the hook binary uses, so they
-    // drain and upload exactly like a hook's own events. The sent flag is
-    // recorded only once the line is on disk; a failed append retries next
-    // pass, and a crash between append and flag can only ever emit one
-    // duplicate, which the server's model coalesce absorbs.
+    // drain and upload exactly like a hook's own events. The sent flags are
+    // recorded only once the lines are on disk, in one registry write for the
+    // whole pass: the registry holds every session ever seen, so a write per
+    // heartbeat turned a backlog into an hour-long pass that held up the
+    // uploads behind it. A failed append retries next pass, and a crash
+    // between append and flag can only ever emit one duplicate per session,
+    // which the server's model coalesce absorbs.
+    let mut sent_keys: Vec<String> = Vec::new();
     for heartbeat in heartbeats {
         let event = SpoolEvent {
             source: heartbeat.source,
@@ -967,14 +978,19 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
             tokens: None,
         };
         if spool::append(agent_path, &event).is_ok() {
-            let _ = spool::with_lock(agent_usage_path, || {
-                let mut registry = read_registry(agent_usage_path);
-                if let Some(session) = registry.sessions.get_mut(&heartbeat.key) {
+            sent_keys.push(heartbeat.key);
+        }
+    }
+    if !sent_keys.is_empty() {
+        let _ = spool::with_lock(agent_usage_path, || {
+            let mut registry = read_registry(agent_usage_path);
+            for key in &sent_keys {
+                if let Some(session) = registry.sessions.get_mut(key) {
                     session.heartbeat_sent = true;
                 }
-                write_registry(agent_usage_path, &registry)
-            });
-        }
+            }
+            write_registry(agent_usage_path, &registry)
+        });
     }
 
     // Liveness heartbeats and continuation starts, no model heartbeat among
@@ -1769,6 +1785,78 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One pass over `sessions` new sessions whose transcripts each name a
+    /// model the hook did not: the registry writes that pass made, after
+    /// checking every session got its one heartbeat and its sent flag.
+    fn registry_writes_for_a_pass_with_heartbeats(sessions: usize) -> usize {
+        let dir = temp_dir(&format!("heartbeat-writes-{sessions}"));
+        let agent_path = dir.join("agent-spool.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        for index in 0..sessions {
+            let transcript = dir.join(format!("session-{index}.jsonl"));
+            write_transcript(
+                &transcript,
+                &[assistant_line(
+                    "2026-08-06T10:15:00Z",
+                    "claude-opus-4.1",
+                    false,
+                    100,
+                    20,
+                    0,
+                    0,
+                )],
+            );
+            spool::append(
+                &agent_path,
+                &SpoolEvent {
+                    external_session_id: format!("session-{index}"),
+                    ..started_event(&transcript, "2026-08-06T10:00:00Z", None)
+                },
+            )
+            .expect("append succeeds");
+        }
+        REGISTRY_WRITES.with(|writes| writes.set(0));
+
+        capture_from_spool(&agent_path, &usage_path);
+
+        let writes = REGISTRY_WRITES.with(std::cell::Cell::get);
+        let pending = spool::read_pending(&agent_path).expect("the spool reads");
+        assert_eq!(
+            pending
+                .events
+                .iter()
+                .filter(|event| event.event == AgentEventKind::Heartbeat && event.model.is_some())
+                .count(),
+            sessions,
+            "every session gets its one model heartbeat"
+        );
+        let registry = read_registry(&usage_path);
+        assert_eq!(registry.sessions.len(), sessions);
+        assert!(
+            registry
+                .sessions
+                .values()
+                .all(|session| session.heartbeat_sent),
+            "every emission is recorded"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        writes
+    }
+
+    /// The registry holds every session since capture began (tens of
+    /// megabytes on a busy machine), so each rewrite costs seconds. A pass
+    /// that rewrote it once per heartbeat ran for an hour on a backlog and
+    /// never reached the uploads behind it (issue 85).
+    #[test]
+    fn a_pass_rewrites_the_registry_the_same_number_of_times_however_many_heartbeats_fire() {
+        // Arrange, Act
+        let writes_for_one = registry_writes_for_a_pass_with_heartbeats(1);
+        let writes_for_five = registry_writes_for_a_pass_with_heartbeats(5);
+
+        // Assert
+        assert_eq!(writes_for_five, writes_for_one);
     }
 
     /// The liveness heartbeats on the spool, as the instants they carry.

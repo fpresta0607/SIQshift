@@ -207,6 +207,55 @@ fn a_claude_native_stdin_payload_is_translated_and_spooled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An orchestrator runs its agents natively: no shell between it and the
+/// agent, and no console or window of their own. Detection rides the agent's
+/// hook, so the hook spools a session from such a parent exactly as from a
+/// terminal. This test process stands in for that parent; on Windows it
+/// starts the hook detached from every console.
+#[test]
+fn a_session_started_under_a_windowless_non_shell_parent_is_spooled() {
+    // Arrange
+    let dir = temp_dir("windowless-parent");
+    let spool = active_agent_spool(&dir);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_siqshift-hook"));
+    command
+        .env("SIQSHIFT_SPOOL", dir.join("agent-spool.jsonl"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        command.creation_flags(DETACHED_PROCESS);
+    }
+
+    // Act
+    let mut child = command.spawn().expect("hook binary spawns");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(
+            br#"{"session_id":"native-1","transcript_path":"/tmp/t.jsonl","cwd":"C:/dev/SIQshift","hook_event_name":"SessionStart","source":"startup"}"#,
+        )
+        .expect("stdin writes");
+    let status = child.wait().expect("hook exits");
+
+    // Assert
+    assert!(status.success());
+    let content = std::fs::read_to_string(&spool).expect("spool reads");
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let value: serde_json::Value = serde_json::from_str(lines[0]).expect("line parses");
+    assert_eq!(value["source"], "claude_code");
+    assert_eq!(value["event"], "started");
+    assert_eq!(value["externalSessionId"], "native-1");
+    assert_eq!(value["cwd"], "C:/dev/SIQshift");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_untracked_claude_event_exits_zero_and_writes_nothing() {
     let dir = temp_dir("claude-ignored");
