@@ -259,6 +259,52 @@ describe("API composition", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "validation_error" } });
   });
 
+  // Desktop builds up to 0.2.2 send `"inviteCode": null` when no code was
+  // typed. Refusing it failed every such desktop sign-up after the sign-in
+  // service had already made the account (issue 84).
+  it("treats a null invite code as no code", async () => {
+    // Arrange
+    const seen: (string | undefined)[] = [];
+    const { app } = createTestApp({
+      accounts: {
+        resolve: async (_identity, inviteCode) => { seen.push(inviteCode); return account; },
+        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        joinOrganization: async () => account,
+      },
+    });
+
+    // Act
+    const response = await app.request("http://api.test/accounts", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: await bearer() },
+      body: JSON.stringify({ inviteCode: null }),
+    });
+
+    // Assert
+    expect(response.status).toBe(200);
+    expect(seen).toEqual([undefined]);
+  });
+
+  it.each([
+    [{ inviteCode: 42 }, "The invite code must be text, or left out."],
+    [{ workspaceName: "  " }, "A workspace name needs 1 to 80 characters."],
+    [{ teamName: "SIQstack" }, "The server does not accept the field teamName."],
+  ])("names what to fix in a provisioning body it refuses: %j", async (body, message) => {
+    // Arrange
+    const { app } = createTestApp();
+
+    // Act
+    const response = await app.request("http://api.test/accounts", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: await bearer() },
+      body: JSON.stringify(body),
+    });
+
+    // Assert
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: { code: "validation_error", message } });
+  });
+
   it("does not create a personal organization while a coded sign-up is in flight", async () => {
     const codes: (string | undefined)[] = [];
     const { app } = createTestApp({
