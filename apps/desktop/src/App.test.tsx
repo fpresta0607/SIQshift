@@ -510,11 +510,12 @@ describe("recording", () => {
     render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(defaultAttributed) })} />);
 
     // Assert: "Work it out for me" files under the default project, so the
-    // header says that project rather than "Unattributed".
+    // header says that project rather than "Unattributed", and its dot wears
+    // the color that project's row wears below.
     const where = await screen.findByTestId("filing-where");
     await waitFor(() => expect(where).toHaveTextContent(project.name));
     expect(where).not.toHaveTextContent("Unattributed");
-    expect(where.querySelector(".monitor-dot")).not.toHaveAttribute("style");
+    expect(where.querySelector<HTMLElement>(".monitor-dot")).toHaveStyle({ background: project.color });
   });
 
   it("offers the default project once, as the work it out for me choice", async () => {
@@ -590,17 +591,20 @@ describe("recording", () => {
 });
 
 describe("today", () => {
-  it("totals the range and names where unattributed time landed", async () => {
+  it("totals the range with the time nothing named a project for in its project's row", async () => {
+    // Arrange: Field work's two hours include half an hour filed there by default.
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(status) })} />);
 
+    // Act
     const panel = await openAllStats(person);
-    // The card renders before the stats land, so wait for the figure itself.
-    // The project row underneath repeats the number, so pin the headline.
+
+    // Assert: the card renders before the stats land, so wait for the figure
+    // itself. The project row underneath repeats the number, so pin the headline.
     expect(await within(panel).findByText("2h 00m", { selector: "strong" })).toBeInTheDocument();
-    expect(within(panel).getByTestId("unattributed-foot")).toHaveTextContent(
-      "30m of that is unattributed: nothing named a project for it, so none is claimed.",
-    );
+    const projects = within(within(panel).getByTestId("member-project-list")).getAllByRole("listitem");
+    expect(projects.map((row) => row.textContent)).toEqual([`${project.name}2h 00m`]);
+    expect(within(panel).queryByTestId("unattributed-foot")).not.toBeInTheDocument();
   });
 
   it("switches range and refetches from the week's start", async () => {
@@ -858,10 +862,10 @@ describe("the today panel", () => {
     expect(projects[0]).toHaveTextContent("Field work");
     expect(projects[0]).toHaveTextContent("1h 30m");
     // Client work's quarter hour fell back to it because nothing named a
-    // project, so it reads as unattributed rather than under that name.
-    expect(projects[1]).toHaveTextContent("Unattributed");
+    // project, and time filed by default counts as that project's time.
+    expect(projects[1]).toHaveTextContent("Client work");
     expect(projects[1]).toHaveTextContent("15m");
-    expect(screen.getByTestId("project-list")).not.toHaveTextContent("Client work");
+    expect(screen.getByTestId("project-list")).not.toHaveTextContent("Unattributed");
 
     const rows = within(screen.getByTestId("session-app-list")).getAllByRole("listitem");
     // Heaviest first, agent CLIs named by their runtime rather than their exe.
@@ -984,6 +988,33 @@ describe("the today panel", () => {
     const projects = within(await screen.findByTestId("project-list")).getAllByRole("listitem");
     expect(projects[0]).toHaveTextContent("Field work");
     expect(projects[0]).toHaveTextContent(/\d+s/);
+  });
+
+  it("adds an open stretch filed by default to the default project's row, not a row of its own", async () => {
+    // Arrange: nothing named a project for the open stretch, and the server
+    // already holds an hour of the default project's time.
+    const live = {
+      ...recording,
+      currentSession: {
+        ...recording.currentSession,
+        attribution: "default" as const,
+        since: new Date(Date.now() - 30_000).toISOString(),
+      },
+    };
+    const projects = [{ project: { id: project.id, name: project.name }, durationSeconds: 3_600, attributedSeconds: 0, unattributedSeconds: 3_600, sessionCount: 1 }];
+
+    // Act
+    render(<App bridge={bridgeFor({
+      monitorStatus: vi.fn().mockResolvedValue(live),
+      meStats: vi.fn().mockResolvedValue({ ...meStats, totalDurationSeconds: 3_600, apps: [], projects }),
+    })} />);
+
+    // Assert
+    const rows = within(await screen.findByTestId("project-list")).getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent(project.name);
+    expect(rows[0]).toHaveTextContent("1h 00m");
+    expect(screen.getByTestId("project-list")).not.toHaveTextContent("Unattributed");
   });
 
   it("counts the still-open span so the app in front is neither frozen nor missing", async () => {

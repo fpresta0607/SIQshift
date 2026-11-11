@@ -74,8 +74,7 @@ export const HelpModal = ({ open, onClose }: HelpModalProps) => {
           <li>
             <strong>Hours are filed under a project.</strong> If an AI coding tool is working in a
             folder matched to a project, they go there; if someone picks a project, they go there.
-            Anything else lands in that person's default project, and shows up here as
-            unattributed.
+            Anything else lands in that person's default project.
           </li>
           <li>
             <strong>This dashboard adds it up.</strong> The leaderboard ranks the team and recent

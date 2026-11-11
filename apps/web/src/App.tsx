@@ -24,7 +24,6 @@ import {
   MemberBreakdown,
   MeterRowItem,
   ShiftGroups,
-  UNATTRIBUTED_LABEL,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -784,7 +783,7 @@ export const App = ({ client }: AppProps) => {
   const todayTotalSeconds = todayStats?.totalDurationSeconds ?? 0;
   const todayProjectRows = buildProjectRows(todayStats?.projects ?? []).map((row) => ({
     ...row,
-    color: row.projectId === null ? null : projects.find((project) => project.id === row.projectId)?.color ?? null,
+    color: projects.find((project) => project.id === row.projectId)?.color ?? null,
     share: todayTotalSeconds === 0 ? 0 : Math.round((row.durationSeconds / todayTotalSeconds) * 100),
   }));
   const todayMeterRows = buildMeterRows(todayStats?.apps ?? []);
@@ -923,9 +922,9 @@ export const App = ({ client }: AppProps) => {
               {todayProjectRows.length > 0 && (
                 <ul className="meter-list" data-testid="project-list">
                   {todayProjectRows.map((row) => (
-                    <li key={row.key} className="meter-row">
+                    <li key={row.projectId} className="meter-row">
                       <span
-                        className={row.projectId === null ? "project-dot is-unattributed" : "project-dot"}
+                        className="project-dot"
                         aria-hidden="true"
                         style={row.color === null ? undefined : { background: row.color }}
                       />
@@ -1145,7 +1144,7 @@ export const App = ({ client }: AppProps) => {
                         {memberStats.projects.length > 0 && (
                           <ul className="app-list" data-testid="member-project-list">
                             {buildProjectRows(memberStats.projects).map((row) => (
-                              <li key={row.key} className="app-row">
+                              <li key={row.projectId} className="app-row">
                                 <span className="app-name">{row.name}</span>
                                 <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
                               </li>
@@ -1163,12 +1162,6 @@ export const App = ({ client }: AppProps) => {
                               </li>
                             ))}
                           </ul>
-                        )}
-                        {memberStats.unattributedSeconds > 0 && (
-                          <p className="verified-foot" data-testid="unattributed-foot">
-                            {formatHumanDuration(memberStats.unattributedSeconds)} of that is unattributed: nothing named
-                            a project for it, so none is claimed.
-                          </p>
                         )}
                       </>
                     )}
@@ -1201,7 +1194,7 @@ export const App = ({ client }: AppProps) => {
                       {sessionRows.map((row) => (
                         <tr key={row.id}>
                           <td>{row.user.name}</td>
-                          <td>{row.attribution === "default" ? UNATTRIBUTED_LABEL : row.project.name}</td>
+                          <td>{row.project.name}</td>
                           <td>{new Date(row.startedAt).toLocaleString()}</td>
                           <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
                         </tr>
