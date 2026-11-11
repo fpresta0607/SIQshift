@@ -21,6 +21,7 @@ import {
   DrizzleSessionRepository,
 } from "./drizzle-repositories.js";
 import { parseEnv } from "./env.js";
+import { DAY_MS, utcDayStart } from "./services/utc-days.js";
 import { createTestAuth } from "./test-tokens.js";
 
 // An empty TEST_DATABASE_URL in a .env means "not configured", not "connect to ''".
@@ -820,8 +821,17 @@ integration(integrationDescription, () => {
     const projectId = (await created.json()).id;
     const sessionId = randomUUID();
     const deviceId = randomUUID();
-    const startedAt = new Date("2026-08-02T10:00:00.000Z");
-    const stoppedAt = new Date("2026-08-02T12:00:00.000Z");
+    // A finished UTC day two days back, never a fixed date: ingest refuses a
+    // segment older than the retention window, so a dated fixture expires
+    // with the calendar.
+    const HOUR_MS = 60 * 60 * 1_000;
+    const day = utcDayStart(Date.now() - 2 * DAY_MS).getTime();
+    const startedAt = new Date(day + 10 * HOUR_MS);
+    const idleEndedAt = new Date(day + 11 * HOUR_MS);
+    const stoppedAt = new Date(day + 12 * HOUR_MS);
+    const reportRange = (from: Date, toExclusive: Date): string =>
+      `/reports?projectId=${projectId}&fromAt=${encodeURIComponent(from.toISOString())}`
+      + `&toExclusiveAt=${encodeURIComponent(toExclusive.toISOString())}&page=1&pageSize=50`;
 
     await database.client`
       insert into time_sessions (
@@ -841,7 +851,7 @@ integration(integrationDescription, () => {
           deviceId,
           kind: "idle",
           startedAt: startedAt.toISOString(),
-          endedAt: new Date("2026-08-02T11:00:00.000Z").toISOString(),
+          endedAt: idleEndedAt.toISOString(),
         }],
       }),
     });
@@ -854,10 +864,7 @@ integration(integrationDescription, () => {
     `;
     expect(stored).toEqual([{ device_id: null }]);
 
-    const startRange = await app.request(
-      `/reports?projectId=${projectId}&fromAt=2026-08-02T10%3A00%3A00.000Z&toExclusiveAt=2026-08-02T11%3A00%3A00.000Z&page=1&pageSize=50`,
-      { headers: authorized },
-    );
+    const startRange = await app.request(reportRange(startedAt, idleEndedAt), { headers: authorized });
     expect(startRange.status).toBe(200);
     const startRangeBody = await startRange.json();
     expect(startRangeBody.totalDurationSeconds).toBe(3_600);
@@ -870,10 +877,7 @@ integration(integrationDescription, () => {
 
     // The range covering the rest of the session reports nothing, because
     // completed sessions are never split across ranges.
-    const laterRange = await app.request(
-      `/reports?projectId=${projectId}&fromAt=2026-08-02T11%3A00%3A00.000Z&toExclusiveAt=2026-08-02T12%3A00%3A00.000Z&page=1&pageSize=50`,
-      { headers: authorized },
-    );
+    const laterRange = await app.request(reportRange(idleEndedAt, stoppedAt), { headers: authorized });
     expect(laterRange.status).toBe(200);
     const laterRangeBody = await laterRange.json();
     expect(laterRangeBody.totalDurationSeconds).toBe(0);
