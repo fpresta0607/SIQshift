@@ -9,7 +9,7 @@ for (const width of [390, 1440]) {
     await expect(page.locator(".landing-siq-logo")).toHaveJSProperty("complete", true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const canvas = page.locator("canvas.shader-bg");
-    expect(await canvas.evaluate(node => getComputedStyle(node).position)).toBe("fixed");
+    expect(await page.locator(".landing-scene").evaluate(node => getComputedStyle(node).position)).toBe("fixed");
 
     await page.getByRole("button", { name: "Agents", exact: true }).click();
     await expect(page.getByText("Runtime by agent", { exact: true })).toBeVisible();
