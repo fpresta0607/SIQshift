@@ -946,7 +946,7 @@ impl ApiClient {
                 ErrorKind::Validation,
                 "This account already recorded time here, so it cannot move.",
             ),
-            status => classify(status),
+            _ => classify_api_error(response).await,
         })
     }
 
@@ -1363,7 +1363,7 @@ impl ApiClient {
             .map_err(|error| classify_transport(&error))?;
 
         if !response.status().is_success() {
-            return Err(classify(response.status().as_u16()));
+            return Err(classify_api_error(response).await);
         }
         response
             .json()
@@ -2185,6 +2185,53 @@ mod tests {
                 vec![("POST /accounts".to_string(), expected_body.to_string())]
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_join_says_what_the_server_said() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "400 Bad Request",
+            "",
+            r#"{"error":{"code":"validation_error","message":"That invite code is not in the right format."}}"#,
+        )])
+        .await;
+
+        // Act
+        let error = client
+            .join_organization("access-jwt", "ACDEF-GHJK")
+            .await
+            .expect_err("the join is refused");
+
+        // Assert
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.message,
+            "That invite code is not in the right format."
+        );
+        assert_eq!(requests_seen(served).await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_stats_read_says_what_the_server_said() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "400 Bad Request",
+            "",
+            r#"{"error":{"code":"validation_error","message":"Invalid stats filters."}}"#,
+        )])
+        .await;
+
+        // Act
+        let error = client
+            .me_stats("access-jwt", None, None, None, None)
+            .await
+            .expect_err("the stats read is refused");
+
+        // Assert
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(error.message, "Invalid stats filters.");
+        assert_eq!(requests_seen(served).await.len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
