@@ -52,7 +52,41 @@ jobs:
       # `pnpm test` ends with the layout suite, which drives a real Chromium: a
       # stylesheet rule and a shader uniform are claims about what a page looks
       # like, and jsdom has neither a layout engine nor WebGL to check one.
-      - run: pnpm exec playwright install --with-deps chromium
+      # Chromium's system libraries come from the Ubuntu mirrors, so the
+      # packages are cached and a warm run does not reach the mirrors. The key
+      # names the runner image and the Playwright version, which fixes the
+      # package list Playwright installs, so a change to either fetches anew.
+      - id: chromium-deps-key
+        run: echo "key=chromium-debs-$ImageOS-$ImageVersion-playwright-$(pnpm exec playwright --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      - id: chromium-deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/chromium-debs/*.deb
+          key: ${{ steps.chromium-deps-key.outputs.key }}
+      - if: steps.chromium-deps-cache.outputs.cache-hit == 'true'
+        run: sudo apt-get install --yes --no-download --no-install-recommends "$RUNNER_TEMP"/chromium-debs/*.deb
+      - if: steps.chromium-deps-cache.outputs.cache-hit != 'true'
+        run: |
+          debs="$RUNNER_TEMP/chromium-debs"
+          mkdir -p "$debs/partial"
+          # apt keeps every package it downloads in that folder, for the cache.
+          printf 'Dir::Cache::Archives "%s/";\nAPT::Keep-Downloaded-Packages "true";\n' "$debs" |
+            sudo tee /etc/apt/apt.conf.d/99siqshift-chromium-debs > /dev/null
+          for attempt in 1 2 3; do
+            if pnpm exec playwright install-deps chromium; then
+              sudo rm /etc/apt/apt.conf.d/99siqshift-chromium-debs
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then sleep 60; fi
+          done
+          echo "::error title=Ubuntu mirrors did not answer::Chromium's system libraries could not be downloaded from the Ubuntu mirrors in 3 tries, 60 seconds apart. Typecheck, tests and build did not run. Rerun this job once the mirrors answer."
+          exit 1
+      - if: steps.chromium-deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/chromium-debs/*.deb
+          key: ${{ steps.chromium-deps-key.outputs.key }}
+      - run: pnpm exec playwright install chromium
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
@@ -80,26 +114,53 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    env:
+      TAURI_SYSTEM_PACKAGES: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The desktop build's system packages come from the Ubuntu mirrors, so
+      # they are cached and a warm run does not reach the mirrors. The key
+      # names the runner image and the package list, so a change to either
+      # fetches anew.
+      - id: tauri-deps-key
+        run: echo "key=tauri-debs-$ImageOS-$ImageVersion-$(printf '%s' "$TAURI_SYSTEM_PACKAGES" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - id: tauri-deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/siqshift-tauri-deps/cache/archives/*.deb
+          key: ${{ steps.tauri-deps-key.outputs.key }}
+      - if: steps.tauri-deps-cache.outputs.cache-hit != 'true'
+        run: |
+          deps="$RUNNER_TEMP/siqshift-tauri-deps"
+          mkdir -p "$deps/lists/partial" "$deps/cache/archives/partial"
+          touch "$deps/status"
+          apt_options=(
+            -o "Dir::State::Lists=$deps/lists"
+            -o "Dir::State::status=$deps/status"
+            -o "Dir::Cache=$deps/cache"
+            -o "Dir::Cache::Archives=$deps/cache/archives"
+          )
+          read -ra packages <<< "$TAURI_SYSTEM_PACKAGES"
+          for attempt in 1 2 3; do
+            if apt-get update "${apt_options[@]}" &&
+              sudo apt-get --download-only --yes install "${apt_options[@]}" "${packages[@]}"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then sleep 60; fi
+          done
+          echo "::error title=Ubuntu mirrors did not answer::The desktop build's system packages could not be downloaded from the Ubuntu mirrors in 3 tries, 60 seconds apart. fmt, clippy and the desktop tests did not run. Rerun this job once the mirrors answer."
+          exit 1
+      - if: steps.tauri-deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/siqshift-tauri-deps/cache/archives/*.deb
+          key: ${{ steps.tauri-deps-key.outputs.key }}
       - run: |
           deps="$RUNNER_TEMP/siqshift-tauri-deps"
-          mkdir -p "$deps/lists/partial" "$deps/cache/archives/partial" "$deps/root"
-          touch "$deps/status"
-          apt-get update \
-            -o "Dir::State::Lists=$deps/lists" \
-            -o "Dir::State::status=$deps/status" \
-            -o "Dir::Cache=$deps/cache" \
-            -o "Dir::Cache::Archives=$deps/cache/archives"
-          sudo apt-get --download-only --yes install \
-            -o "Dir::State::Lists=$deps/lists" \
-            -o "Dir::State::status=$deps/status" \
-            -o "Dir::Cache=$deps/cache" \
-            -o "Dir::Cache::Archives=$deps/cache/archives" \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+          mkdir -p "$deps/root"
           while IFS= read -r -d '' package; do
             dpkg-deb -x "$package" "$deps/root"
           done < <(find "$deps/cache/archives" -name '*.deb' -print0)
