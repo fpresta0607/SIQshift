@@ -1103,9 +1103,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     ? undefined
     : ready.projects.find((item) => item.id === pinnedProject)?.name ?? "Unknown project";
   // With nothing pinned, the header still names where time is landing right
-  // now rather than leaving the question open - and says so in words when
-  // nothing named a project, rather than naming the default one as if chosen.
-  const liveProjectName = current?.attribution === "default" ? UNATTRIBUTED_LABEL : currentProject?.name;
+  // now rather than leaving the question open. "Work it out for me" files time
+  // nothing else claimed under the default project, so the header names it.
+  const liveProjectName = currentProject?.name;
   // The dot beside the project name wears that project's color - the same
   // color its row wears below - so the two never disagree.
   const headerProjectColor = (pinnedProject === ""
@@ -1310,7 +1310,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   <span className="project-tick" aria-hidden="true">{pinnedProject === "" ? "✓" : ""}</span>
                   {defaultProject ? `Work it out for me (${defaultProject.name})` : "Work it out for me"}
                 </button>
-                {ready.projects.map((item) => (
+                {/* The default project is the choice above, so it is not listed twice. */}
+                {ready.projects.filter((item) => item.id !== ready.defaultProjectId).map((item) => (
                   <button
                     key={item.id}
                     type="button"

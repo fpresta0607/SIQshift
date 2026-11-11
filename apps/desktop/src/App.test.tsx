@@ -478,14 +478,34 @@ describe("recording", () => {
     expect(screen.queryByLabelText("File my time under")).not.toBeInTheDocument();
   });
 
-  it("says a stretch nothing named a project for is unattributed, rather than naming the default project", async () => {
-    const unattributed = { ...recording, currentSession: { ...recording.currentSession, attribution: "default" as const } };
-    render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(unattributed) })} />);
+  it("names the default project above the clock for a stretch nothing else named a project for", async () => {
+    // Arrange
+    const defaultAttributed = { ...recording, currentSession: { ...recording.currentSession, attribution: "default" as const } };
 
+    // Act
+    render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(defaultAttributed) })} />);
+
+    // Assert: "Work it out for me" files under the default project, so the
+    // header says that project rather than "Unattributed".
     const where = await screen.findByTestId("filing-where");
-    await waitFor(() => expect(where).toHaveTextContent("Unattributed"));
-    expect(where).not.toHaveTextContent(project.name);
+    await waitFor(() => expect(where).toHaveTextContent(project.name));
+    expect(where).not.toHaveTextContent("Unattributed");
     expect(where.querySelector(".monitor-dot")).not.toHaveAttribute("style");
+  });
+
+  it("offers the default project once, as the work it out for me choice", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(recording) })} />);
+
+    // Act
+    await person.click(await screen.findByTestId("filing-change"));
+
+    // Assert
+    const choices = within(screen.getByRole("radiogroup", { name: "File my time under" })).getAllByRole("radio");
+    expect(choices).toHaveLength(2);
+    expect(choices[0]).toHaveAccessibleName(`Work it out for me (${project.name})`);
+    expect(choices[1]).toHaveAccessibleName(otherProject.name);
   });
 
   it("pins time to a project and hands the choice back to the host", async () => {
@@ -515,7 +535,7 @@ describe("recording", () => {
     await person.click(await screen.findByTestId("filing-change"));
     const picker = await screen.findByRole("radiogroup", { name: "File my time under" });
     expect(screen.queryByLabelText("Team")).not.toBeInTheDocument();
-    expect(within(picker).getByRole("radio", { name: project.name })).toBeInTheDocument();
+    expect(within(picker).getByRole("radio", { name: `Work it out for me (${project.name})` })).toBeInTheDocument();
     expect(within(picker).getByRole("radio", { name: otherProject.name })).toBeInTheDocument();
   });
 
@@ -1508,8 +1528,8 @@ describe("the team board", () => {
     await person.click(within(dialog).getByRole("button", { name: "Close settings" }));
     await person.click(screen.getByRole("button", { name: "Change" }));
 
-    expect(await screen.findByRole("radio", { name: "Joined project" })).toBeInTheDocument();
-    expect(screen.queryByRole("radio", { name: "Field work" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("radio", { name: "Work it out for me (Joined project)" })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /Field work/ })).not.toBeInTheDocument();
   });
 });
 
