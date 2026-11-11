@@ -232,13 +232,21 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
       const raw = await context.req.text();
       body = raw.length === 0 ? {} : JSON.parse(raw);
     } catch {
-      throw new AppError("validation_error", "Invalid request body.");
+      throw new AppError("validation_error", "The request body is not valid JSON.");
     }
     const input = provisionAccountRequestSchema.safeParse(body);
-    if (!input.success) throw new AppError("validation_error", "Invalid request body.");
+    if (!input.success) {
+      // The app shows this sentence as it is, so it names what to fix.
+      const [issue] = input.error.issues;
+      let message = "The request body must be a JSON object.";
+      if (issue?.code === "unrecognized_keys") message = `The server does not accept the field ${issue.keys.join(", ")}.`;
+      else if (issue?.path[0] === "inviteCode") message = "The invite code must be text, or left out.";
+      else if (issue?.path[0] === "workspaceName") message = "A workspace name needs 1 to 80 characters.";
+      throw new AppError("validation_error", message);
+    }
 
     let inviteCode: string | undefined;
-    if (input.data.inviteCode !== undefined) {
+    if (input.data.inviteCode !== undefined && input.data.inviteCode !== null) {
       const normalized = normalizeInviteCode(input.data.inviteCode);
       if (normalized === null) throw new AppError("validation_error", "That invite code is not in the right format.");
       inviteCode = normalized;

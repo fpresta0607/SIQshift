@@ -1,6 +1,6 @@
 import type { AccountSnapshot, TimerProject, TimerUser } from "./account.js";
 
-export type BridgeErrorKind = "auth" | "transient" | "conflict" | "validation" | "unknown";
+export type BridgeErrorKind = "auth" | "transient" | "conflict" | "validation" | "unknown" | "account_exists";
 
 export type BridgeError = {
   kind: BridgeErrorKind;
@@ -1054,6 +1054,7 @@ export const bridgeError = (error: unknown): BridgeError => {
       || candidate.kind === "conflict"
       || candidate.kind === "validation"
       || candidate.kind === "unknown"
+      || candidate.kind === "account_exists"
     ) {
       return { kind: candidate.kind, message };
     }

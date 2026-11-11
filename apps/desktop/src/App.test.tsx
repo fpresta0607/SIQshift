@@ -324,6 +324,30 @@ describe("sign-in", () => {
     expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
   });
 
+  // Issue 84: a sign-up for an email the sign-in service already holds, with
+  // a password that did not sign in, ended on a generic error.
+  it("moves a sign-up for a taken email to sign-in with the email kept", async () => {
+    // Arrange
+    const message = "This email can't start a new account, so sign in with it or check it for a typo.";
+    const signup = vi.fn().mockRejectedValue({ kind: "account_exists", message });
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ bootstrap: vi.fn().mockResolvedValue({ kind: "signed-out" }), signup })} />);
+    await screen.findByRole("heading", { name: "Sign in" });
+    await person.click(screen.getByRole("button", { name: "New here? Create an account" }));
+
+    // Act
+    await person.type(screen.getByLabelText("Name"), "Sam Example");
+    await person.type(screen.getByLabelText("Email"), "new.person@example.test");
+    await person.type(screen.getByLabelText("Password"), "not-stored-here");
+    await person.click(screen.getByRole("button", { name: "Create account" }));
+
+    // Assert
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByLabelText("Email")).toHaveValue("new.person@example.test");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+
   it("signs in and lands on the recording screen", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({

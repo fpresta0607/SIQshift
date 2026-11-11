@@ -19,6 +19,10 @@ pub enum ErrorKind {
     Conflict,
     Validation,
     Unknown,
+    /// A sign-up for an email the sign-in service already holds, whose
+    /// password did not sign in: the form moves to sign-in with the email.
+    #[serde(rename = "account_exists")]
+    AccountExists,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,9 +63,10 @@ pub fn classify(status: u16) -> BridgeError {
             ErrorKind::Conflict,
             "A timer is already running for this account.",
         ),
+        // Only reached when the server gave no reason of its own.
         400 | 422 => BridgeError::new(
             ErrorKind::Validation,
-            "The server rejected the request as invalid.",
+            "The server rejected the request as invalid without saying why. Please report it at github.com/fpresta0607/SIQshift/issues.",
         ),
         408 | 429 => BridgeError::transient("The server is busy. Retrying shortly."),
         500..=599 => BridgeError::transient("The server is unavailable. Retrying shortly."),
@@ -94,9 +99,13 @@ async fn classify_api_error(response: reqwest::Response) -> BridgeError {
 /// The code is matched from a known set rather than echoing the server's text.
 pub fn classify_auth(status: u16, code: Option<&str>) -> BridgeError {
     match code {
-        Some("USER_ALREADY_EXISTS") => BridgeError::new(
-            ErrorKind::Validation,
-            "That email already has an account. Sign in instead.",
+        // Older and newer releases of the sign-in service name this case
+        // differently. The sentence does not say an account exists: the
+        // service's own answer already tells anyone who asks it directly,
+        // and the app does not repeat it in words (issue 84).
+        Some("USER_ALREADY_EXISTS" | "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL") => BridgeError::new(
+            ErrorKind::AccountExists,
+            "This email can't start a new account, so sign in with it or check it for a typo.",
         ),
         Some("PASSWORD_TOO_SHORT") => BridgeError::new(
             ErrorKind::Validation,
@@ -368,6 +377,13 @@ struct ApiErrorBodyError {
 #[derive(Deserialize)]
 struct TokenResponse {
     token: String,
+}
+
+/// A sign-up that finished: the session cookie value to keep, and an access
+/// token already minted from it.
+pub struct SignedUp {
+    pub session: String,
+    pub access_token: String,
 }
 
 /// What `/sessions/observed` answers with. Only the refusals matter to the
@@ -784,6 +800,37 @@ impl ApiClient {
         session_cookie_value(response.headers())
     }
 
+    /// Creates the account and places it in its workspace. An email the
+    /// sign-in service already holds signs in instead when the password is
+    /// right, which also finishes an account whose sign-up stopped before
+    /// provisioning. The session comes back only once the account is
+    /// provisioned: a session kept after a failed step made the next call
+    /// give the account a personal workspace its invite code never chose
+    /// (issue 84).
+    pub async fn sign_up_and_provision(
+        &self,
+        email: &str,
+        password: &str,
+        name: &str,
+        invite_code: Option<&str>,
+    ) -> ApiResult<SignedUp> {
+        let session = match self.sign_up(email, password, name).await {
+            Err(taken) if taken.kind == ErrorKind::AccountExists => {
+                match self.sign_in(email, password).await {
+                    Err(refused) if refused.kind == ErrorKind::Auth => return Err(taken),
+                    signed_in => signed_in?,
+                }
+            }
+            signed_up => signed_up?,
+        };
+        let access_token = self.fetch_access_token(&session).await?;
+        self.provision_account(&access_token, invite_code).await?;
+        Ok(SignedUp {
+            session,
+            access_token,
+        })
+    }
+
     /// Exchanges email and password for the long-lived Neon Auth session cookie.
     pub async fn sign_in(&self, email: &str, password: &str) -> ApiResult<String> {
         let response = self
@@ -842,23 +889,27 @@ impl ApiClient {
         access_token: &str,
         invite_code: Option<&str>,
     ) -> ApiResult<TimerUser> {
+        let body = match invite_code {
+            Some(code) => serde_json::json!({ "inviteCode": code }),
+            None => serde_json::json!({}),
+        };
         let response = self
             .http
             .post(format!("{}/accounts", self.api_base_url))
             .bearer_auth(access_token)
-            .json(&serde_json::json!({ "inviteCode": invite_code }))
+            .json(&body)
             .send()
             .await
             .map_err(|error| classify_transport(&error))?;
 
+        if response.status().as_u16() == 404 {
+            return Err(BridgeError::new(
+                ErrorKind::Validation,
+                "That invite code does not match a workspace. Check it and try again.",
+            ));
+        }
         if !response.status().is_success() {
-            return Err(match response.status().as_u16() {
-                404 => BridgeError::new(
-                    ErrorKind::Validation,
-                    "That invite code does not match a workspace. Check it and try again.",
-                ),
-                status => classify(status),
-            });
+            return Err(classify_api_error(response).await);
         }
 
         let body: MeResponse = response
@@ -895,7 +946,7 @@ impl ApiClient {
                 ErrorKind::Validation,
                 "This account already recorded time here, so it cannot move.",
             ),
-            status => classify(status),
+            _ => classify_api_error(response).await,
         })
     }
 
@@ -1312,7 +1363,7 @@ impl ApiClient {
             .map_err(|error| classify_transport(&error))?;
 
         if !response.status().is_success() {
-            return Err(classify(response.status().as_u16()));
+            return Err(classify_api_error(response).await);
         }
         response
             .json()
@@ -1656,9 +1707,14 @@ mod tests {
 
     #[test]
     fn names_the_sign_up_failures_a_user_can_act_on() {
-        assert!(classify_auth(422, Some("USER_ALREADY_EXISTS"))
-            .message
-            .contains("Sign in instead"));
+        for code in [
+            "USER_ALREADY_EXISTS",
+            "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL",
+        ] {
+            let taken = classify_auth(422, Some(code));
+            assert_eq!(taken.kind, ErrorKind::AccountExists);
+            assert!(taken.message.contains("sign in with it"));
+        }
         assert!(classify_auth(400, Some("PASSWORD_TOO_SHORT"))
             .message
             .contains("8 characters"));
@@ -1666,7 +1722,6 @@ mod tests {
             .message
             .contains("valid email"));
         for error in [
-            classify_auth(422, Some("USER_ALREADY_EXISTS")),
             classify_auth(400, Some("PASSWORD_TOO_SHORT")),
             classify_auth(400, Some("INVALID_EMAIL")),
         ] {
@@ -1994,5 +2049,293 @@ mod tests {
         // the exact bridge rule the rest of this file keeps.
         let empty: LiveAgentSessions = serde_json::from_str("{}").expect("absence decodes");
         assert!(empty.people.is_empty());
+    }
+
+    /// One scripted answer of the loopback stub: status, extra header lines
+    /// (each ending in CRLF) and body.
+    type StubAnswer = (&'static str, &'static str, &'static str);
+
+    const SIGNED_IN: StubAnswer = (
+        "200 OK",
+        "set-cookie: __Secure-neon-auth.session_token=signed.value; Path=/; HttpOnly\r\n",
+        r#"{"token":"bare"}"#,
+    );
+    const ACCESS_TOKEN: StubAnswer = ("200 OK", "", r#"{"token":"access-jwt"}"#);
+    const PROVISIONED: StubAnswer = (
+        "200 OK",
+        "",
+        r#"{"user":{"id":"u1","email":"new.person@example.test","name":"Sam Example"}}"#,
+    );
+    const EMAIL_TAKEN: StubAnswer = (
+        "422 Unprocessable Entity",
+        "",
+        r#"{"code":"USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL","message":"User already exists. Use another email."}"#,
+    );
+    const WRONG_PASSWORD: StubAnswer = (
+        "401 Unauthorized",
+        "",
+        r#"{"code":"INVALID_EMAIL_OR_PASSWORD","message":"Invalid email or password"}"#,
+    );
+
+    /// Answers each connection in turn with the next scripted answer and
+    /// returns every request it read as ("METHOD /path", body).
+    async fn scripted_stub(
+        answers: Vec<StubAnswer>,
+    ) -> (ApiClient, tokio::task::JoinHandle<Vec<(String, String)>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the loopback stub binds");
+        let port = listener
+            .local_addr()
+            .expect("the stub has an address")
+            .port();
+        let served = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for (status, headers, body) in answers {
+                let (mut stream, _) = listener.accept().await.expect("the stub accepts");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4_096];
+                let body_start = loop {
+                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                    let read = stream.read(&mut buffer).await.expect("the stub reads");
+                    assert!(read > 0, "the request ended inside its headers");
+                    request.extend_from_slice(&buffer[..read]);
+                };
+                let head = String::from_utf8_lossy(&request[..body_start]).into_owned();
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let lower = line.to_ascii_lowercase();
+                        lower
+                            .strip_prefix("content-length:")
+                            .map(|value| value.trim().parse::<usize>().expect("a numeric length"))
+                    })
+                    .unwrap_or(0);
+                while request.len() < body_start + length {
+                    let read = stream.read(&mut buffer).await.expect("the stub reads");
+                    assert!(read > 0, "the request ended inside its body");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let target = head
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let sent = String::from_utf8_lossy(&request[body_start..body_start + length]);
+                requests.push((target, sent.into_owned()));
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("the stub answers");
+                stream.flush().await.expect("the stub flushes");
+            }
+            requests
+        });
+        let client = ApiClient::new(
+            format!("http://127.0.0.1:{port}/auth"),
+            format!("http://127.0.0.1:{port}"),
+        )
+        .expect("the stub client builds");
+        (client, served)
+    }
+
+    async fn requests_seen(
+        served: tokio::task::JoinHandle<Vec<(String, String)>>,
+    ) -> Vec<(String, String)> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), served)
+            .await
+            .expect("the stub saw every scripted request")
+            .expect("the stub finishes")
+    }
+
+    /// Issue 84: with no code typed, provisioning sent `"inviteCode": null`,
+    /// which the API's contract refuses, so every desktop sign-up without a
+    /// code ended in "The server rejected the request as invalid."
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provisioning_sends_the_invite_code_only_when_one_was_typed() {
+        for (invite_code, expected_body) in [
+            (None, "{}"),
+            (Some("ACDEF-GHJKM"), r#"{"inviteCode":"ACDEF-GHJKM"}"#),
+        ] {
+            // Arrange
+            let (client, served) = scripted_stub(vec![PROVISIONED]).await;
+
+            // Act
+            let user = client
+                .provision_account("access-jwt", invite_code)
+                .await
+                .expect("the account provisions");
+
+            // Assert
+            assert_eq!(user.id, "u1");
+            let requests = requests_seen(served).await;
+            assert_eq!(
+                requests,
+                vec![("POST /accounts".to_string(), expected_body.to_string())]
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_join_says_what_the_server_said() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "400 Bad Request",
+            "",
+            r#"{"error":{"code":"validation_error","message":"That invite code is not in the right format."}}"#,
+        )])
+        .await;
+
+        // Act
+        let error = client
+            .join_organization("access-jwt", "ACDEF-GHJK")
+            .await
+            .expect_err("the join is refused");
+
+        // Assert
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.message,
+            "That invite code is not in the right format."
+        );
+        assert_eq!(requests_seen(served).await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_stats_read_says_what_the_server_said() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "400 Bad Request",
+            "",
+            r#"{"error":{"code":"validation_error","message":"Invalid stats filters."}}"#,
+        )])
+        .await;
+
+        // Act
+        let error = client
+            .me_stats("access-jwt", None, None, None, None)
+            .await
+            .expect_err("the stats read is refused");
+
+        // Assert
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(error.message, "Invalid stats filters.");
+        assert_eq!(requests_seen(served).await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_provisioning_says_what_the_server_said() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![
+            SIGNED_IN,
+            ACCESS_TOKEN,
+            (
+                "400 Bad Request",
+                "",
+                r#"{"error":{"code":"validation_error","message":"The invite code must be text, or left out."}}"#,
+            ),
+        ])
+        .await;
+
+        // Act
+        let error = client
+            .sign_up_and_provision(
+                "new.person@example.test",
+                "correct horse",
+                "Sam Example",
+                None,
+            )
+            .await
+            .err()
+            .expect("the provisioning is refused");
+
+        // Assert: the reason reaches the person, and no session comes back
+        // for the caller to keep, so no half-made account stays signed in.
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(error.message, "The invite code must be text, or left out.");
+        assert_eq!(requests_seen(served).await.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sign_up_with_a_taken_email_and_its_password_signs_in_and_provisions() {
+        // Arrange
+        let (client, served) =
+            scripted_stub(vec![EMAIL_TAKEN, SIGNED_IN, ACCESS_TOKEN, PROVISIONED]).await;
+
+        // Act
+        let signed_up = client
+            .sign_up_and_provision(
+                "new.person@example.test",
+                "correct horse",
+                "Sam Example",
+                Some("ACDEF-GHJKM"),
+            )
+            .await
+            .expect("the account signs in");
+
+        // Assert
+        assert_eq!(signed_up.session, "signed.value");
+        assert_eq!(signed_up.access_token, "access-jwt");
+        let requests = requests_seen(served).await;
+        let targets: Vec<&str> = requests.iter().map(|(target, _)| target.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec![
+                "POST /auth/sign-up/email",
+                "POST /auth/sign-in/email",
+                "GET /auth/token",
+                "POST /accounts"
+            ]
+        );
+        // A half-made account (signed up, never provisioned) lands in the
+        // workspace its code names, not a personal one.
+        assert_eq!(requests[3].1, r#"{"inviteCode":"ACDEF-GHJKM"}"#);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sign_up_with_a_taken_email_and_another_password_moves_to_sign_in() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![EMAIL_TAKEN, WRONG_PASSWORD]).await;
+
+        // Act
+        let error = client
+            .sign_up_and_provision("new.person@example.test", "not it", "Sam Example", None)
+            .await
+            .err()
+            .expect("the sign-up does not complete");
+
+        // Assert
+        assert_eq!(error.kind, ErrorKind::AccountExists);
+        assert_eq!(
+            error.message,
+            "This email can't start a new account, so sign in with it or check it for a typo."
+        );
+        assert_eq!(requests_seen(served).await.len(), 2);
+    }
+
+    #[test]
+    fn a_reasonless_refusal_says_where_to_report_it() {
+        for status in [400, 422] {
+            let error = classify(status);
+            assert_eq!(error.kind, ErrorKind::Validation);
+            assert!(
+                error
+                    .message
+                    .contains("github.com/fpresta0607/SIQshift/issues"),
+                "{}",
+                error.message
+            );
+        }
     }
 }

@@ -59,7 +59,8 @@ export const organizationResponseSchema = z.object({ organization: organizationS
 /** Sent once, right after sign-up, to place the new account in an existing organization. */
 export const provisionAccountRequestSchema = z
   .object({
-    inviteCode: z.string().min(1).optional(),
+    /** Null means no code: desktop builds up to 0.2.2 send it that way. */
+    inviteCode: z.string().min(1).nullish(),
     /** Names the workspace this account starts; ignored when an invite code joins one instead. */
     workspaceName: z.string().trim().min(1).max(80).optional(),
   })
