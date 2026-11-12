@@ -68,11 +68,6 @@ integration("renaming a workspace", () => {
 
     // Act
     const renamed = await rename(administrator, "  Field Crew  ");
-    const preview = await app.request("/organization/join-preview", {
-      method: "POST",
-      headers: newcomer,
-      body: JSON.stringify({ inviteCode: before.inviteCode }),
-    });
     const joined = await app.request("/accounts", {
       method: "POST",
       headers: newcomer,
@@ -83,8 +78,6 @@ integration("renaming a workspace", () => {
     expect(renamed.status).toBe(200);
     await expect(renamed.json()).resolves.toEqual({ organization: { ...before, name: "Field Crew" } });
     await expect(workspaceOf(administrator)).resolves.toEqual({ ...before, name: "Field Crew" });
-    expect(preview.status).toBe(200);
-    await expect(preview.json()).resolves.toMatchObject({ organization: { id: before.id, name: "Field Crew" } });
     expect(joined.status).toBe(200);
     await expect(joined.json()).resolves.toMatchObject({ user: { organizationId: before.id, role: "member" } });
     await expect(workspaceOf(newcomer)).resolves.toMatchObject({ id: before.id, name: "Field Crew" });

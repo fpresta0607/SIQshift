@@ -435,7 +435,6 @@ describe("API composition", () => {
       const accounts: AccountStore = {
         resolve: async () => ({ ...account, role }),
         findOrganization: async () => organization,
-        previewOrganizationJoin: async () => organization,
         joinOrganization: async () => account,
         renameOrganization: async (subject, name) => {
           if (subject.organizationId !== organization.id) return null;
@@ -451,10 +450,9 @@ describe("API composition", () => {
       body,
     });
 
-    it("lets an administrator rename it, and every read of the workspace returns the new name", async () => {
+    it("lets an administrator rename it, and answers with the trimmed name under the same id and code", async () => {
       // Arrange
       const app = renamingApp("admin");
-      const headers = { authorization: await bearer(), "content-type": "application/json" };
 
       // Act
       const response = await rename(app, JSON.stringify({ name: "  Field Crew  " }));
@@ -462,14 +460,6 @@ describe("API composition", () => {
       // Assert: trimmed as sign-up trims it; the code and the id stay.
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({ organization: { id: ids.organization, name: "Field Crew", inviteCode } });
-      const read = await app.request("http://api.test/organization", { headers });
-      await expect(read.json()).resolves.toMatchObject({ organization: { name: "Field Crew", inviteCode } });
-      const preview = await app.request("http://api.test/organization/join-preview", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ inviteCode }),
-      });
-      await expect(preview.json()).resolves.toMatchObject({ organization: { name: "Field Crew" } });
     });
 
     it("refuses a member who is not an administrator, and says why", async () => {
