@@ -46,9 +46,10 @@ the leaderboard ranks by; **agent time** — the summed runtime of every agent, 
 agents can legitimately push past active time; **leverage** — agent ÷ active, shown as
 `2.4x`; and **token usage** — the tokens an AI coding agent consumed and produced, read from
 its own session logs and reported only where the tool logs them. Concurrency then splits active time into how many agents ran at once. The older
-**attributed** / **unattributed** split remains as a per-session label: hours something named
-a project for versus hours that fell to the default project because nothing did. Neither is
-hidden or penalized. That's the posture: guessing isn't prevented, it's labelled.
+**attributed** / **unattributed** split remains as a per-session label in the API and the CSV
+export: hours something named a project for versus hours that fell to the default project
+because nothing did. Neither is hidden or penalized. That's the posture: guessing isn't
+prevented, it's labelled.
 
 The other half of the deal is that the tracked person sees everything the manager sees.
 `GET /me/stats` runs the same attribution math as the org report, and
