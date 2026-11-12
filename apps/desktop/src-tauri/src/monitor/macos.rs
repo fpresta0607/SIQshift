@@ -12,10 +12,13 @@ use std::sync::Arc;
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSWorkspace;
 use objc2_core_foundation::{
-    kCFRunLoopDefaultMode, CFDictionary, CFNotificationCenter, CFNotificationName,
+    kCFRunLoopDefaultMode, CFBoolean, CFDictionary, CFNotificationCenter, CFNotificationName,
     CFNotificationSuspensionBehavior, CFNumber, CFRetained, CFRunLoop, CFRunLoopSource, CFString,
+    CFType,
 };
-use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
+use objc2_core_graphics::{
+    CGEventSource, CGEventSourceStateID, CGEventType, CGSessionCopyCurrentDictionary,
+};
 
 use super::{read_poll, rescued, unix_now, ActivitySignal, ActivitySource, PlatformEvents};
 
@@ -29,16 +32,46 @@ impl Poller {
 
 impl ActivitySource for Poller {
     fn poll(&self) -> ActivitySignal {
-        // Hands off is not always away, exactly as on Windows: video, a call
-        // or a presentation holding the display awake, or a live microphone,
-        // means the person is still engaged. A probe that cannot answer never
-        // rescues.
-        read_poll(
-            idle_seconds(),
-            || rescued(&[&display_kept_awake, &microphone_in_use]),
-            frontmost_app_name,
-        )
+        poll_on_console(session_on_console(), || {
+            // Hands off is not always away, exactly as on Windows: video, a
+            // call or a presentation holding the display awake, or a live
+            // microphone, means the person is still engaged. A probe that
+            // cannot answer never rescues.
+            read_poll(
+                idle_seconds(),
+                || rescued(&[&display_kept_awake, &microphone_in_use]),
+                frontmost_app_name,
+            )
+        })
     }
+}
+
+/// A session another user has switched in front of with fast user switching
+/// reads as locked, and nothing else is read: the input clock and the probes
+/// describe the whole machine, so they would record the other user's work. A
+/// session the window server will not describe polls as usual.
+fn poll_on_console(
+    on_console: Option<bool>,
+    poll: impl FnOnce() -> ActivitySignal,
+) -> ActivitySignal {
+    match on_console {
+        Some(false) => ActivitySignal::Locked,
+        Some(true) | None => poll(),
+    }
+}
+
+/// `kCGSessionOnConsoleKey`, a `CFSTR` macro in CGSession.h rather than an
+/// exported symbol.
+const SESSION_ON_CONSOLE_KEY: &str = "kCGSSessionOnConsoleKey";
+
+/// Whether this login session is the one on the screen. `None` when the
+/// window server will not describe the session.
+fn session_on_console() -> Option<bool> {
+    let session = CGSessionCopyCurrentDictionary()?;
+    // SAFETY: CGSession.h documents the session dictionary's keys as CFStrings.
+    let session = unsafe { session.cast_unchecked::<CFString, CFType>() };
+    let on_console = session.get(&CFString::from_static_str(SESSION_ON_CONSOLE_KEY))?;
+    Some(on_console.downcast_ref::<CFBoolean>()?.as_bool())
 }
 
 /// `kCGAnyInputEventType`: the last keyboard, mouse or trackpad event of any kind.
@@ -124,6 +157,13 @@ struct AudioPropertyAddress {
 
 #[link(name = "CoreAudio", kind = "framework")]
 extern "C" {
+    fn AudioObjectGetPropertyDataSize(
+        object: u32,
+        address: *const AudioPropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        data_size: *mut u32,
+    ) -> i32;
     fn AudioObjectGetPropertyData(
         object: u32,
         address: *const AudioPropertyAddress,
@@ -139,17 +179,23 @@ const fn four_char_code(code: &[u8; 4]) -> u32 {
 }
 
 const AUDIO_SYSTEM_OBJECT: u32 = 1;
-const AUDIO_DEFAULT_INPUT_DEVICE: u32 = four_char_code(b"dIn ");
-const AUDIO_DEVICE_IS_RUNNING_SOMEWHERE: u32 = four_char_code(b"gone");
+/// `kAudioHardwarePropertyProcessObjectList`, macOS 14 and later.
+const AUDIO_PROCESS_OBJECT_LIST: u32 = four_char_code(b"prs#");
+/// `kAudioProcessPropertyIsRunningInput`, macOS 14 and later.
+const AUDIO_PROCESS_IS_RUNNING_INPUT: u32 = four_char_code(b"piri");
 const AUDIO_SCOPE_GLOBAL: u32 = four_char_code(b"glob");
 const AUDIO_ELEMENT_MAIN: u32 = 0;
 
-fn audio_property(object: u32, selector: u32) -> Option<u32> {
-    let address = AudioPropertyAddress {
+fn audio_address(selector: u32) -> AudioPropertyAddress {
+    AudioPropertyAddress {
         selector,
         scope: AUDIO_SCOPE_GLOBAL,
         element: AUDIO_ELEMENT_MAIN,
-    };
+    }
+}
+
+fn audio_property(object: u32, selector: u32) -> Option<u32> {
+    let address = audio_address(selector);
     let mut value = 0u32;
     let mut size = std::mem::size_of::<u32>() as u32;
     let status = unsafe {
@@ -165,17 +211,45 @@ fn audio_property(object: u32, selector: u32) -> Option<u32> {
     (status == 0 && size == std::mem::size_of::<u32>() as u32).then_some(value)
 }
 
-fn default_input_device() -> Option<u32> {
-    audio_property(AUDIO_SYSTEM_OBJECT, AUDIO_DEFAULT_INPUT_DEVICE).filter(|&device| device != 0)
+/// A property holding a list of audio object IDs.
+fn audio_object_list(object: u32, selector: u32) -> Option<Vec<u32>> {
+    let address = audio_address(selector);
+    let mut size = 0u32;
+    let status =
+        unsafe { AudioObjectGetPropertyDataSize(object, &address, 0, std::ptr::null(), &mut size) };
+    if status != 0 {
+        return None;
+    }
+    let mut objects = vec![0u32; size as usize / std::mem::size_of::<u32>()];
+    size = std::mem::size_of_val(objects.as_slice()) as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            object,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            objects.as_mut_ptr().cast(),
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    objects.truncate(size as usize / std::mem::size_of::<u32>());
+    Some(objects)
 }
 
-/// Rescue probe: is any app capturing from the default microphone right now.
-/// Reading the device's running state needs no Microphone grant, because
-/// SIQshift never opens the device. `None` without an input device or when
-/// CoreAudio errs, which never rescues.
+/// Rescue probe: is any app capturing audio input right now. Asked of each
+/// process, not of a device, because a headset is one device for both
+/// directions and music playing through it would read as a live microphone.
+/// Reading it needs no Microphone grant, because SIQshift never opens a
+/// device. `None` before macOS 14, which has no process list, or when
+/// CoreAudio errs; either never rescues.
 fn microphone_in_use() -> Option<bool> {
-    audio_property(default_input_device()?, AUDIO_DEVICE_IS_RUNNING_SOMEWHERE)
-        .map(|running| running != 0)
+    let processes = audio_object_list(AUDIO_SYSTEM_OBJECT, AUDIO_PROCESS_OBJECT_LIST)?;
+    Some(processes.into_iter().any(|process| {
+        audio_property(process, AUDIO_PROCESS_IS_RUNNING_INPUT).is_some_and(|running| running != 0)
+    }))
 }
 
 /// The distributed notification loginwindow posts when the screen locks.
@@ -287,6 +361,7 @@ unsafe extern "C" fn on_power_message(
 // where they prove the module, since a cross-compile cannot.
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::time::{Duration, Instant};
 
     use objc2_core_foundation::CFRunLoopRunResult;
@@ -306,18 +381,52 @@ mod tests {
     }
 
     #[test]
-    fn poll_reads_active_or_idle_from_the_real_system() {
+    fn poll_reads_locked_exactly_when_the_real_session_is_off_the_console() {
+        // Arrange
+        let is_off_console = session_on_console() == Some(false);
+
         // Act
         let signal = Poller::new().poll();
 
         // Assert
-        assert!(
-            matches!(
-                signal,
-                ActivitySignal::Active { .. } | ActivitySignal::Idle { .. }
-            ),
-            "{signal:?}"
-        );
+        if is_off_console {
+            assert_eq!(signal, ActivitySignal::Locked);
+        } else {
+            assert!(
+                matches!(
+                    signal,
+                    ActivitySignal::Active { .. } | ActivitySignal::Idle { .. }
+                ),
+                "{signal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_off_the_console_reads_locked_without_polling() {
+        let active = ActivitySignal::Active {
+            process_name: Some("Terminal".to_string()),
+            idle_seconds: Some(3),
+        };
+        let cases = [
+            (Some(true), active.clone(), true),
+            (Some(false), ActivitySignal::Locked, false),
+            (None, active.clone(), true),
+        ];
+        for (on_console, expected, should_poll) in cases {
+            // Arrange
+            let has_polled = Cell::new(false);
+
+            // Act
+            let signal = poll_on_console(on_console, || {
+                has_polled.set(true);
+                active.clone()
+            });
+
+            // Assert
+            assert_eq!(signal, expected, "{on_console:?}");
+            assert_eq!(has_polled.get(), should_poll, "{on_console:?}");
+        }
     }
 
     #[test]
@@ -364,16 +473,15 @@ mod tests {
         );
     }
 
+    // CI's macOS runners are macOS 14 or later, where CoreAudio lists its
+    // client processes; a `None` here means the process list never loaded.
     #[test]
-    fn microphone_probe_answers_whenever_an_input_device_exists() {
-        // Arrange
-        let has_input_device = default_input_device().is_some();
-
+    fn microphone_probe_reads_coreaudio_process_list() {
         // Act
         let in_use = microphone_in_use();
 
         // Assert
-        assert_eq!(in_use.is_some(), has_input_device);
+        assert!(in_use.is_some(), "CoreAudio listed no processes");
     }
 
     #[test]

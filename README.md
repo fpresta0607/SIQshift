@@ -482,10 +482,14 @@ privacy permission: seconds since the last input
 (`NSWorkspace.frontmostApplication`), recorded as its bundle's name, never a window
 title. Screen lock arrives as the `com.apple.screenIsLocked` distributed
 notification and sleep as an IOKit power message (`kIOMessageSystemWillSleep`).
+A session switched away from with fast user switching reads as locked
+(`kCGSessionOnConsoleKey`).
 Two rescue checks stand in for the Windows three: an app holding the display awake
 (`PreventUserIdleDisplaySleep`, which video, calls and presentations take; music
-alone does not) and a microphone in use (CoreAudio's
-`kAudioDevicePropertyDeviceIsRunningSomewhere` on the default input). The main
+alone does not) and a microphone in use (CoreAudio's per-process
+`kAudioProcessPropertyIsRunningInput`, so music through a headset does not count;
+macOS 13 and earlier have no per-process list, and there the microphone never
+rescues). The main
 screen lists the two grants that still decide what reaches the server: the login
 item, without which nothing is recorded until the app is opened, and Files and
 Folders access to Documents, Desktop and Downloads, without which commits in

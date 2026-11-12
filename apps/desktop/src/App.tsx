@@ -755,15 +755,18 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   useEffect(() => {
     if (signedIn === undefined) return undefined;
     let active = true;
+    let isReading = false;
     const service = bridge;
     const generation = bridgeGeneration.current;
     const poll = (): void => {
+      if (isReading) return;
+      isReading = true;
       void service.permissionsStatus().then(
         (next) => {
           if (active && isCurrent(service, generation)) setPermissions(next);
         },
         () => undefined,
-      );
+      ).finally(() => { isReading = false; });
     };
     poll();
     const timer = window.setInterval(poll, MONITOR_POLL_MS);

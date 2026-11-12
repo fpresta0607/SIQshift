@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
 import { sourceLabel } from "./agent-sources.js";
-import type { LiveAgentSessions, OrganizationOverview, TimerBridge, WorkspaceReport } from "./bridge.js";
+import type { LiveAgentSessions, OrganizationOverview, PermissionStatus, TimerBridge, WorkspaceReport } from "./bridge.js";
 
 vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
@@ -665,6 +665,31 @@ describe("macOS permissions", () => {
 
     // Assert
     await waitFor(() => expect(screen.queryByTestId("permissions-card")).not.toBeInTheDocument());
+  });
+
+  it("waits for a grant read macOS is holding behind its prompt before reading again", async () => {
+    // Arrange: the first read stays unanswered, as it does while macOS's
+    // folders prompt is up.
+    vi.useFakeTimers();
+    let answerHeldRead: (statuses: PermissionStatus[]) => void = () => undefined;
+    const permissionsStatus = vi.fn()
+      .mockReturnValueOnce(new Promise<PermissionStatus[]>((resolve) => { answerHeldRead = resolve; }))
+      .mockResolvedValue([]);
+    render(<App bridge={bridgeFor({ permissionsStatus })} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(permissionsStatus).toHaveBeenCalledTimes(1);
+
+    // Act: a poll tick and a focus change while it is still held.
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+
+    // Assert
+    expect(permissionsStatus).toHaveBeenCalledTimes(1);
+
+    // Once answered, the next tick reads again.
+    await act(async () => { answerHeldRead([]); await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(permissionsStatus).toHaveBeenCalledTimes(2);
   });
 
   it("hides the browser auto-install switch on macOS, where it would do nothing", async () => {

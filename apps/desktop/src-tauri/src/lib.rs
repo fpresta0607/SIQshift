@@ -503,7 +503,10 @@ async fn permissions_status(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> ApiResult<Vec<permissions::PermissionStatus>> {
-    Ok(permissions::statuses(&permission_paths(&app, &state).await))
+    let paths = permission_paths(&app, &state).await;
+    tauri::async_runtime::spawn_blocking(move || permissions::statuses(&paths))
+        .await
+        .map_err(|_| BridgeError::unknown("The permissions could not be read."))
 }
 
 /// The [Ask] button: raises macOS's own prompts, which block until answered,
