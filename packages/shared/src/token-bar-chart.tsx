@@ -54,10 +54,11 @@ export const TokenBarChart = ({ chart }: { chart: ChartTokens }) => {
   const [projectId, setProjectId] = useState("");
   const [readout, setReadout] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const selected = chart.projects.find((entry) => entry.project.id === projectId && entry.tokens > 0);
+  if (selected === undefined && projectId !== "") setProjectId("");
   const count = chart.buckets.length;
   if (count === 0) return null;
 
-  const selected = chart.projects.find((entry) => entry.project.id === projectId);
   const shown = selected?.buckets ?? chart.buckets;
   const isDaily = chart.bucketSeconds >= DAY_SECONDS;
 
@@ -76,19 +77,18 @@ export const TokenBarChart = ({ chart }: { chart: ChartTokens }) => {
   const slotCenter = (index: number): number => margin.left + index * slot + slot / 2;
   const y = (value: number): number => margin.top + plotH - (value / yMax) * plotH;
 
-  const bucketLabel = (index: number): string => {
-    const start = new Date(chart.buckets[index]!.start);
-    return isDaily
-      ? start.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
-      : start.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  };
+  const bucketStart = (index: number): Date => new Date(chart.buckets[index]!.start);
+  const bucketMiddle = (index: number): Date => new Date(bucketStart(index).getTime() + chart.bucketSeconds * 500);
+  const bucketLabel = (index: number): string =>
+    isDaily
+      ? bucketMiddle(index).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
+      : bucketStart(index).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const tickCount = Math.min(7, count);
   const xTicks = Array.from({ length: tickCount }, (_, tick) => {
     const index = tickCount === 1 ? 0 : Math.round((tick / (tickCount - 1)) * (count - 1));
-    const start = new Date(chart.buckets[index]!.start);
     const label = isDaily
-      ? start.toLocaleDateString([], { month: "short", day: "numeric" })
-      : String(start.getHours()).padStart(2, "0");
+      ? bucketMiddle(index).toLocaleDateString([], { month: "short", day: "numeric" })
+      : String(bucketStart(index).getHours()).padStart(2, "0");
     return { index, label };
   });
 

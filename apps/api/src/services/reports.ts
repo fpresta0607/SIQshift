@@ -1028,14 +1028,21 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
 
     async agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse> {
       const board = await readShiftBoard(dependencies, subject, filters);
+      const { start, end } = board.range;
       // The same range, scope and person the board shows, already authorized
-      // by the board's read.
-      const tokenRead = dependencies.agentUsage === undefined
+      // by the board's read. An unbounded range has no bars to draw, so its
+      // usage is never read.
+      const chart = dependencies.agentUsage === undefined || start === undefined || end === undefined
         ? undefined
         : await Promise.all([
           dependencies.agentUsage.sumByBucketAndProject(subject, { ...normalizedQuery(filters), ...scopeQuery(filters.scope) }),
           dependencies.reports.readDefaultProject(subject),
-        ]);
+        ]).then(([usage, defaultProject]) => tokenChart(
+          usage,
+          board.groups.flatMap((group) => group.shifts.map((shift) => shift.project ?? null)),
+          defaultProject,
+          { start, end },
+        ));
       return {
         filters,
         totalAgentSeconds: board.groups.reduce((sum, group) => sum + group.agentSeconds, 0),
@@ -1056,16 +1063,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           shiftCount: group.shifts.length,
           heldRate: heldRateOf(group.commits),
         })),
-        ...(tokenRead === undefined
-          ? {}
-          : {
-            tokenChart: tokenChart(
-              tokenRead[0],
-              board.groups.flatMap((group) => group.shifts.map((shift) => shift.project ?? null)),
-              tokenRead[1],
-              board.range,
-            ),
-          }),
+        ...(chart === undefined ? {} : { tokenChart: chart }),
       };
     },
 
@@ -1319,11 +1317,9 @@ function tokenChart(
   usage: readonly AgentUsageProjectBucketTotalRecord[],
   shiftProjects: readonly (ReportLookupRecord | null)[],
   defaultProject: ReportLookupRecord | null,
-  range: Partial<Interval>,
+  range: Interval,
 ): TokenChart {
-  const bucketMs = range.start !== undefined && range.end !== undefined && range.end - range.start > millisecondsPerDay + HOUR_MS
-    ? millisecondsPerDay
-    : HOUR_MS;
+  const bucketMs = range.end - range.start > millisecondsPerDay + HOUR_MS ? millisecondsPerDay : HOUR_MS;
   const byProject = new Map<string, { project: ReportLookupRecord; usage: AgentUsageProjectBucketTotalRecord[] }>();
   const projectEntry = (named: ReportLookupRecord | null) => {
     const project = named ?? defaultProject;

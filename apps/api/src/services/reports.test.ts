@@ -375,7 +375,9 @@ class Usage implements AgentUsageRepository {
     return [...byBucket.values()];
   }
   public projectNames = new Map<string, string>([[ids.project, "Timer"], [ids.otherProject, "Field"]]);
+  public projectBucketReads = 0;
   public async sumByBucketAndProject(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageProjectBucketTotalRecord[]> {
+    this.projectBucketReads += 1;
     const byKey = new Map<string, AgentUsageProjectBucketTotalRecord>();
     for (const row of this.scoped(query)) {
       const key = `${row.bucketStartAt.getTime()}:${row.projectId}`;
@@ -1679,7 +1681,7 @@ describe("agent shifts", () => {
       expect(result.tokenChart?.buckets.map((bucket) => bucket.tokens)).toEqual([10, null, null, null, null, null, 2]);
     });
 
-    it("draws no bars over an unbounded range, and no chart without a usage source", async () => {
+    it("reads no usage and draws no chart over an unbounded range, nor without a usage source", async () => {
       const reports = new Reports();
       reports.agentIntervals = [shift("s1", ids.project, "Timer", at(10), at(11))];
       const usage = new Usage([usageSeed({ bucketStartAt: at(10), inputTokens: 7, outputTokens: 3 })]);
@@ -1687,8 +1689,9 @@ describe("agent shifts", () => {
       const unbounded = await createReportService({ reports, agentUsage: usage }).agentShifts(subject, {});
       const unread = await createReportService({ reports }).agentShifts(subject, day);
 
-      expect(unbounded.tokenChart?.buckets).toEqual([]);
-      expect(unbounded.tokenChart?.projects).toEqual([{ project: { id: ids.project, name: "Timer" }, tokens: 10, buckets: [] }]);
+      expect(unbounded.tokenChart).toBeUndefined();
+      expect(usage.projectBucketReads).toBe(0);
+      expect(unbounded.totalAgentSeconds).toBe(3_600);
       expect(unread.tokenChart).toBeUndefined();
     });
   });

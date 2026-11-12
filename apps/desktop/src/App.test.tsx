@@ -1638,6 +1638,73 @@ describe("the agents tab", () => {
     expect(within(chart).getByRole("option", { name: `${otherProject.name} · no tokens` })).toBeDisabled();
   });
 
+  it("drops a picked project that the next range lists without tokens, and does not bring it back", async () => {
+    // Arrange: this week the picked project ran a shift that reported nothing.
+    const weekChart = {
+      bucketSeconds: 3_600,
+      buckets: bars([[100, 50, 999], [20, 20, 444], [10, 10, 3_000]]),
+      projects: [
+        { project: { id: otherProject.id, name: otherProject.name }, tokens: 444, buckets: bars([null, [20, 20, 444], null]) },
+        { project: { id: project.id, name: project.name }, tokens: 0, buckets: bars([null, null, null]) },
+      ],
+    };
+    const isWeek = (fromAt?: string, toExclusiveAt?: string): boolean =>
+      fromAt !== undefined && toExclusiveAt !== undefined && Date.parse(toExclusiveAt) - Date.parse(fromAt) > 2 * 86_400_000;
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      agentShifts: vi.fn().mockImplementation(async (fromAt?: string, toExclusiveAt?: string) => (
+        { ...agentShifts, tokenChart: isWeek(fromAt, toExclusiveAt) ? weekChart : tokenChart }
+      )),
+    })} />);
+    const panel = await openAgentsTab(person);
+    await person.selectOptions(within(panel).getByRole("combobox", { name: "Project" }), project.id);
+    expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([700, 77]);
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "This week" }));
+
+    // Assert: the period's bars, all solid, under All projects.
+    await waitFor(() => expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([999, 444, 3_000]));
+    expect(within(panel).getByTestId("token-chart").querySelectorAll("rect.is-ghost")).toHaveLength(0);
+    expect(within(panel).getByRole("combobox", { name: "Project" })).toHaveDisplayValue("All projects");
+
+    // Act: back to a range where the project burned tokens.
+    await person.click(within(panel).getByRole("button", { name: "Today" }));
+
+    // Assert: the pick was dropped, not held for later.
+    await waitFor(() => expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([999, 3_000]));
+    expect(within(panel).getByRole("combobox", { name: "Project" })).toHaveDisplayValue("All projects");
+  });
+
+  it("names a daily bar that starts at 23:00 after a daylight-saving change by the day it covers", async () => {
+    // Arrange: once the clocks fall back, the server's 24-hour bars start at
+    // 23:00 the evening before the day each one covers.
+    const starts = [new Date(2026, 9, 31), new Date(2026, 10, 1), new Date(2026, 10, 1, 23), new Date(2026, 10, 2, 23)];
+    const covered = [new Date(2026, 9, 31, 12), new Date(2026, 10, 1, 12), new Date(2026, 10, 2, 12), new Date(2026, 10, 3, 12)];
+    const dailyChart = {
+      bucketSeconds: 86_400,
+      buckets: starts.map((start) => ({ start: start.toISOString(), tokensIn: 100, tokensOut: 50, tokens: 999 })),
+      projects: [],
+    };
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart: dailyChart }) })} />);
+    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+
+    // Act: read every bar out from the keyboard.
+    act(() => within(chart).getByRole("img", { name: "Tokens burned per day" }).focus());
+    const readouts: string[] = [];
+    for (const key of ["{Home}", "{ArrowRight}", "{ArrowRight}", "{ArrowRight}"]) {
+      await person.keyboard(key);
+      readouts.push(chart.querySelector(".graph-tooltip-title")?.textContent ?? "");
+    }
+
+    // Assert: each bar's readout and axis tick name its own day, none twice.
+    expect(readouts).toEqual(covered.map((day) => day.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })));
+    expect([...chart.querySelectorAll("text[text-anchor='middle']")].map((tick) => tick.textContent))
+      .toEqual(covered.map((day) => day.toLocaleDateString([], { month: "short", day: "numeric" })));
+    expect(within(chart).getByRole("status")).toHaveTextContent(`${readouts[3]}: 999 tokens, 100 in, 50 out`);
+  });
+
   it("draws no token bars from an API that predates them", async () => {
     // Arrange
     const person = userEvent.setup();
