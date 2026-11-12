@@ -522,36 +522,26 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
   return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false }, ...quiet];
 };
 
-/// One row of a project breakdown. `projectId` is null on the unattributed row.
+/// One row of a project breakdown.
 export type ProjectRow = {
-  key: string;
-  projectId: string | null;
+  projectId: string;
   name: string;
   durationSeconds: number;
 };
 
-export const UNATTRIBUTED_ROW_KEY = "unattributed";
-export const UNATTRIBUTED_LABEL = "Unattributed";
 export const AGENT_TIME_LIMIT_NOTE = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
 
-/// A project breakdown, heaviest first, with the time nothing named a project
-/// for pulled out into one "Unattributed" row read last. That time is stored
-/// under the default project because a session row needs a project, but
-/// listing it under that project's name says someone chose the project, and
-/// nobody did: the report that asked for this read "4h 06m of that landed in
-/// the default project" under a row claiming all of it for General.
+/// A project breakdown, heaviest first, one row per project. Time nothing
+/// named a project for is filed under the default project, and the owner's
+/// rule is that it counts as that project's time ("Work it out for me" is
+/// General), so it sits in that project's row rather than a row of its own.
 export const buildProjectRows = (
-  projects: readonly { project: { id: string; name: string }; attributedSeconds: number; unattributedSeconds: number }[],
-): ProjectRow[] => {
-  const rows = projects
-    .filter((entry) => entry.attributedSeconds > 0)
-    .map((entry) => ({ key: entry.project.id, projectId: entry.project.id, name: entry.project.name, durationSeconds: entry.attributedSeconds }))
+  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[],
+): ProjectRow[] =>
+  projects
+    .filter((entry) => entry.durationSeconds > 0)
+    .map((entry) => ({ projectId: entry.project.id, name: entry.project.name, durationSeconds: entry.durationSeconds }))
     .sort((a, b) => b.durationSeconds - a.durationSeconds || a.name.localeCompare(b.name));
-  const unattributedSeconds = projects.reduce((sum, entry) => sum + entry.unattributedSeconds, 0);
-  return unattributedSeconds > 0
-    ? [...rows, { key: UNATTRIBUTED_ROW_KEY, projectId: null, name: UNATTRIBUTED_LABEL, durationSeconds: unattributedSeconds }]
-    : rows;
-};
 
 /// One app's share of the day, as the Today surface renders it.
 export type MeterRow = {

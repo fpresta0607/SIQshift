@@ -274,8 +274,10 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   operator's own shifts of that repository key already carry (`listProjectsForRepoKey`) -
   so a worktree stored outside every mapped root still lands on its repository's project.
   Never key any of it off the session name or worktree directory name. Time the chain
-  never placed is stored under the default project but renders as **Unattributed**
-  (`buildProjectRows`), never under that project's name.
+  never placed is stored under the default project and counts in that project's row in
+  every breakdown (`buildProjectRows`) and in the session history; the API (`GET /reports`,
+  `/reports/leaderboard`, `/me/stats`) and the CSV export still carry `attributedSeconds`
+  and `unattributedSeconds`, with `attribution = 'default'` as the unattributed bucket.
 - Attribution history was rewritten once by migration `0018_backfill_worktree_attribution`,
   and the audit trail of that rewrite is two columns, not one: `original_project_id` (0017)
   holds what a moved row held before, and `attribution_backfilled_at` (0019) marks that a

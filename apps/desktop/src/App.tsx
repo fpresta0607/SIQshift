@@ -36,8 +36,6 @@ import {
   MemberBreakdown,
   MeterRowItem,
   ShiftGroups,
-  UNATTRIBUTED_LABEL,
-  UNATTRIBUTED_ROW_KEY,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -1116,7 +1114,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // The dot beside the project name wears that project's color - the same
   // color its row wears below - so the two never disagree.
   const headerProjectColor = (pinnedProject === ""
-    ? current?.attribution === "default" ? null : currentProject?.color
+    ? currentProject?.color
     : ready.projects.find((item) => item.id === pinnedProject)?.color) ?? null;
   const defaultProject = ready.projects.find((item) => item.id === ready.defaultProjectId);
   const backlog = monitorStatus === undefined
@@ -1202,20 +1200,19 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const todayTotalSeconds = (stats?.totalDurationSeconds ?? 0) + liveSeconds;
   const projectTotals = new Map<string, { name: string; color: string | null; durationSeconds: number }>();
   for (const row of buildProjectRows(stats?.projects ?? [])) {
-    projectTotals.set(row.key, {
+    projectTotals.set(row.projectId, {
       name: row.name,
-      color: row.projectId === null ? null : ready.projects.find((item) => item.id === row.projectId)?.color ?? null,
+      color: ready.projects.find((item) => item.id === row.projectId)?.color ?? null,
       durationSeconds: row.durationSeconds,
     });
   }
+  // A stretch filed by default carries the default project's id, so it lands
+  // on that project's row like any other.
   if (current !== null && liveSeconds > 0) {
-    const unattributed = current.attribution === "default";
     const liveProject = ready.projects.find((item) => item.id === current.projectId);
-    const key = unattributed ? UNATTRIBUTED_ROW_KEY : current.projectId;
-    const row = projectTotals.get(key) ?? (unattributed
-      ? { name: UNATTRIBUTED_LABEL, color: null, durationSeconds: 0 }
-      : { name: liveProject?.name ?? "Unknown project", color: liveProject?.color ?? null, durationSeconds: 0 });
-    projectTotals.set(key, { ...row, durationSeconds: row.durationSeconds + liveSeconds });
+    const row = projectTotals.get(current.projectId)
+      ?? { name: liveProject?.name ?? "Unknown project", color: liveProject?.color ?? null, durationSeconds: 0 };
+    projectTotals.set(current.projectId, { ...row, durationSeconds: row.durationSeconds + liveSeconds });
   }
   const projectRows = [...projectTotals.entries()]
     .map(([key, row]) => ({
@@ -1223,10 +1220,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       ...row,
       share: todayTotalSeconds === 0 ? 0 : Math.round((row.durationSeconds / todayTotalSeconds) * 100),
     }))
-    // Unattributed reads last, whatever its size: it is the time no project claimed.
-    .sort((a, b) => Number(a.key === UNATTRIBUTED_ROW_KEY) - Number(b.key === UNATTRIBUTED_ROW_KEY)
-      || b.durationSeconds - a.durationSeconds
-      || a.name.localeCompare(b.name));
+    .sort((a, b) => b.durationSeconds - a.durationSeconds || a.name.localeCompare(b.name));
   // The app rows measure time spent in front of something; the day's total is
   // session wall-clock, which also counts the gaps too short to end a stretch.
   // The two were never going to be equal, so the difference gets a row of its
@@ -1241,12 +1235,11 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const boardLoading = showingLiveDay ? stats === undefined : boardStats === undefined;
   const boardError = showingLiveDay ? statsError : boardStatsError;
   const boardTotalSeconds = showingLiveDay ? todayTotalSeconds : boardStats?.totalDurationSeconds ?? 0;
-  const boardUnattributedSeconds = (showingLiveDay ? stats : boardStats)?.unattributedSeconds ?? 0;
   const boardMeasurement = showingLiveDay ? stats : boardStats;
   const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? [], boardTotalSeconds);
   const boardProjectRows = showingLiveDay
     ? projectRows.map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }))
-    : buildProjectRows(boardStats?.projects ?? []).map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }));
+    : buildProjectRows(boardStats?.projects ?? []).map((row) => ({ id: row.projectId, name: row.name, durationSeconds: row.durationSeconds }));
 
   return (
     <main className="app-shell">
@@ -1365,7 +1358,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   {projectRows.map((row) => (
                     <li key={row.key} className="meter-row">
                       <span
-                        className={row.key === UNATTRIBUTED_ROW_KEY ? "project-dot is-unattributed" : "project-dot"}
+                        className="project-dot"
                         aria-hidden="true"
                         style={row.color === null ? undefined : { background: row.color }}
                       />
@@ -1633,12 +1626,6 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                       </li>
                     ))}
                   </ul>
-                )}
-                {boardUnattributedSeconds > 0 && (
-                  <p className="verified-foot" data-testid="unattributed-foot">
-                    {formatHuman(boardUnattributedSeconds)} of that is unattributed: nothing named a project
-                    for it, so none is claimed.
-                  </p>
                 )}
               </>
             )}
