@@ -100,7 +100,9 @@ pub enum ActivitySignal {
         process_name: Option<String>,
         idle_seconds: Option<u32>,
     },
-    Idle { idle_seconds: u32 },
+    Idle {
+        idle_seconds: u32,
+    },
     Locked,
     Suspended,
 }
@@ -3290,9 +3292,7 @@ mod tests {
         let mut builder = SegmentBuilder::new();
         builder.apply(1_000, &active("code.exe"));
         assert!(
-            builder
-                .apply(1_030, &unnamed_active())
-                .is_empty(),
+            builder.apply(1_030, &unnamed_active()).is_empty(),
             "an unreadable foreground window is not a change of app"
         );
     }
