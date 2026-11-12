@@ -6,6 +6,7 @@ import type {
   AgentRepository,
   AppTotalRecord,
   LeaderboardRowRecord,
+  MemberProjectTotalRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
   ReportLookupRecord,
@@ -112,6 +113,9 @@ class Reports implements Partial<ReportRepository> {
     return this.roster.find((member) => member.id === userId) ?? null;
   }
   public async readProjectTotalsForMember(): Promise<ProjectTotalRecord[]> {
+    return [];
+  }
+  public async readProjectTotalsByMemberForOrganization(): Promise<MemberProjectTotalRecord[]> {
     return [];
   }
   public async readAppTotalsForMember(): Promise<AppTotalRecord[]> {
@@ -1342,6 +1346,55 @@ describe("the board with and without the fold", () => {
       toExclusiveAt: day(3).toISOString(),
       userId: ids.user,
     });
+
+    expect(reports.presenceReads).toHaveLength(1);
+    expect(reports.agentReads).toHaveLength(1);
+  });
+
+  /**
+   * The workspace view draws the board's rows, so past the sweep it has to
+   * answer from the fold the way the board does, or its totals would drop
+   * to the few hours the raw rows still hold.
+   */
+  it("answers the workspace from the fold, so its rows and totals match the board past the sweep", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    reports.presenceIntervals = reports.presenceIntervals.filter((row) => row.startedAt >= day(3));
+    reports.agentIntervals = reports.agentIntervals.filter((row) => row.startedAt >= day(3));
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    const filters = { fromAt: day(0).toISOString(), toExclusiveAt: at(3, 10).toISOString() };
+
+    const [workspace, board] = await Promise.all([service.workspace(subject, filters), service.leaderboard(subject, filters)]);
+
+    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })))
+      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })));
+    expect(board.entries.every((entry) => entry.activeSeconds > 0)).toBe(true);
+    expect(workspace.activeSeconds).toBe(board.entries.reduce((total, entry) => total + entry.activeSeconds, 0));
+    expect(workspace.agentSeconds).toBe(board.entries.reduce((total, entry) => total + entry.agentSeconds, 0));
+  });
+
+  it("reads each interval source once for the workspace, however many members it measures", async () => {
+    const reports = seed();
+    const rollups = new Rollups();
+    await createRollupService({ reports: reports as unknown as ReportRepository, rollups, now: () => now })
+      .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
+    const service = createReportService({
+      reports: reports as unknown as ReportRepository,
+      agents,
+      rollups,
+      now: () => now,
+    });
+    reports.presenceReads.length = 0;
+    reports.agentReads.length = 0;
+
+    await service.workspace(subject, { fromAt: day(0).toISOString(), toExclusiveAt: at(3, 10).toISOString() });
 
     expect(reports.presenceReads).toHaveLength(1);
     expect(reports.agentReads).toHaveLength(1);

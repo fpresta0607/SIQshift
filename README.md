@@ -640,6 +640,7 @@ organization are derived from verified claims, never from the request body.
 | `POST` | `/agent-sessions` | batch upload of agent lifecycle events |
 | `GET` `POST` `PATCH` `DELETE` | `/path-mappings`, `/path-mappings/:id` | map a path prefix to a project |
 | `GET` | `/reports`, `/reports/leaderboard`, `/reports/agents`, `/reports/agent-shifts`, `/reports/export.csv` | organization reporting |
+| `GET` | `/reports/workspace` | the caller's workspace in one read, every sum made on the server: team totals, the hourly graph, projects, agent runtimes, and the members ranked as the leaderboard ranks them; takes the leaderboard's range and scope only |
 | `GET` | `/reports/agent-shifts/rows` | one codebase group's shifts, a page at a time; `groupKey` names the group the aggregate returned |
 | `GET` | `/me/stats` | the caller's totals per project, per app, and per agent; an optional `?userId=` opens a teammate's |
 | `GET` `PUT` | `/me/preferences` | the web dashboard's scope+range view state |

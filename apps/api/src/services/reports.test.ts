@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { summedSeconds } from "@siqshift/shared";
-import type { AgentShiftsFilters, ReportFilters } from "@siqshift/shared";
+import { summedSeconds, unionSeconds } from "@siqshift/shared";
+import type { AgentShiftsFilters, Interval, ReportFilters } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
 import type {
@@ -15,6 +15,7 @@ import type {
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
+  MemberProjectTotalRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
   ReportLookupRecord,
@@ -29,7 +30,7 @@ import type {
   RunningAgentSessionRecord,
   SiteTotalRecord,
 } from "../repositories.js";
-import { createReportService, normalizedQuery, type ReportService } from "./reports.js";
+import { createReportService, normalizedQuery, timeSeries, type ReportService } from "./reports.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -107,6 +108,12 @@ class Reports implements ReportRepository {
   public async readProjectTotalsForMember(_subject: AuthenticatedSubject, query: ReportQuery) {
     this.lastProjectTotalsQuery = query;
     return this.projectTotals;
+  }
+  public memberProjectTotals: MemberProjectTotalRecord[] = [];
+  public lastMemberProjectTotalsQuery: ReportQuery | null = null;
+  public async readProjectTotalsByMemberForOrganization(_subject: AuthenticatedSubject, query: ReportQuery) {
+    this.lastMemberProjectTotalsQuery = query;
+    return this.memberProjectTotals;
   }
   public async readAppTotalsForMember(_subject: AuthenticatedSubject, query: ReportQuery) {
     this.lastAppTotalsQuery = query;
@@ -860,6 +867,220 @@ describe("leaderboard", () => {
       medianSessionSeconds: null,
       entries: [],
     });
+  });
+});
+
+describe("workspace report", () => {
+  const hour = (h: number): Date => new Date(Date.UTC(2026, 7, 5, h));
+  const oneDay = { fromAt: "2026-08-05T00:00:00.000Z", toExclusiveAt: "2026-08-06T00:00:00.000Z" };
+  const alex = { id: ids.user, name: "Alex" };
+  const sam = { id: ids.otherUser, name: "Sam" };
+  const riley = { id: "21c7e513-b094-4d4c-ae55-21790ae019a4", name: "Riley" };
+  const timer = { id: ids.project, name: "Timer" };
+  const side = { id: ids.otherProject, name: "Side" };
+  const agentRun = (user: { id: string; name: string }, source: string, start: Date, end: Date): AgentIntervalRecord => ({
+    sessionId: `${user.id}-${source}-${start.toISOString()}`,
+    user,
+    source,
+    model: null,
+    cwd: null,
+    projectId: ids.project,
+    agentId: null,
+    agentRepoRoot: null,
+    agentRepoKey: null,
+    startedAt: start,
+    endedAt: end,
+  });
+
+  /** Alex works 9-11 with two agents through 9-10; Sam works 9-10 with one agent through 10-12; Riley records nothing. */
+  const team = (): Reports => {
+    const reports = new Reports();
+    reports.roster = [alex, sam, riley];
+    reports.leaderboardRows = [
+      { user: alex, durationSeconds: 7_200, sessionCount: 2, attributedSeconds: 7_200 },
+      { user: sam, durationSeconds: 4_200, sessionCount: 2, attributedSeconds: 4_200 },
+    ];
+    reports.presenceIntervals = [
+      { user: alex, startedAt: hour(9), endedAt: hour(11) },
+      { user: sam, startedAt: hour(9), endedAt: hour(10) },
+    ];
+    reports.agentIntervals = [
+      agentRun(alex, "claude_code", hour(9), hour(10)),
+      agentRun(alex, "codex", hour(9), hour(10)),
+      agentRun(sam, "codex", hour(10), hour(12)),
+    ];
+    reports.memberProjectTotals = [
+      { userId: alex.id, project: timer, durationSeconds: "5400" },
+      { userId: alex.id, project: side, durationSeconds: 1_800 },
+      { userId: sam.id, project: side, durationSeconds: 3_600 },
+      { userId: sam.id, project: timer, durationSeconds: 600 },
+    ];
+    return reports;
+  };
+
+  it("adds the team's totals, graph, projects and agents up on the server", async () => {
+    const service = createReportService({ reports: team(), agents });
+
+    const result = await service.workspace(subject, oneDay);
+
+    expect(result.filters).toEqual(oneDay);
+    // Team hours: Alex's two and Sam's one, though Sam's hour is one Alex also worked.
+    expect(result.activeSeconds).toBe(10_800);
+    expect(result.agentSeconds).toBe(14_400);
+    expect(result.hourly).toHaveLength(24);
+    expect(result.hourly[8]).toEqual({ hourStart: hour(8).toISOString(), activeSeconds: 0, agentSeconds: 0 });
+    expect(result.hourly[9]).toEqual({ hourStart: hour(9).toISOString(), activeSeconds: 7_200, agentSeconds: 7_200 });
+    expect(result.hourly[10]).toEqual({ hourStart: hour(10).toISOString(), activeSeconds: 3_600, agentSeconds: 3_600 });
+    expect(result.hourly[11]).toEqual({ hourStart: hour(11).toISOString(), activeSeconds: 0, agentSeconds: 3_600 });
+    expect(result.projects).toEqual([
+      { project: timer, durationSeconds: 6_000 },
+      { project: side, durationSeconds: 5_400 },
+    ]);
+    expect(result.agents).toEqual([
+      { source: "codex", durationSeconds: 10_800 },
+      { source: "claude_code", durationSeconds: 3_600 },
+    ]);
+    expect(result.members).toEqual([
+      { rank: 1, user: alex, activeSeconds: 7_200, agentSeconds: 7_200, project: timer },
+      { rank: 2, user: sam, activeSeconds: 3_600, agentSeconds: 7_200, project: side },
+      { rank: 3, user: riley, activeSeconds: 0, agentSeconds: 0, project: null },
+    ]);
+  });
+
+  it("lists the members the leaderboard lists, in its order and with its numbers, ties included", async () => {
+    const reports = team();
+    // Sam now matches Alex on every ranking key, so the two share a rank.
+    reports.presenceIntervals = [
+      { user: alex, startedAt: hour(9), endedAt: hour(11) },
+      { user: sam, startedAt: hour(12), endedAt: hour(14) },
+    ];
+    reports.leaderboardRows = [
+      { user: alex, durationSeconds: 7_200, sessionCount: 2, attributedSeconds: 7_200 },
+      { user: sam, durationSeconds: 7_200, sessionCount: 2, attributedSeconds: 7_200 },
+    ];
+    const service = createReportService({ reports, agents });
+
+    const [workspace, board] = await Promise.all([service.workspace(subject, oneDay), service.leaderboard(subject, oneDay)]);
+
+    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })))
+      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })));
+    expect(workspace.members.map((member) => member.rank)).toEqual([1, 1, 3]);
+  });
+
+  it("shows a workspace of one as one row, theirs, with totals and graph equal to their own card", async () => {
+    const reports = team();
+    reports.roster = [alex];
+    reports.leaderboardRows = reports.leaderboardRows.filter((row) => row.user.id === alex.id);
+    reports.presenceIntervals = reports.presenceIntervals.filter((row) => row.user.id === alex.id);
+    reports.agentIntervals = reports.agentIntervals.filter((row) => row.user.id === alex.id);
+    reports.memberProjectTotals = reports.memberProjectTotals.filter((row) => row.userId === alex.id);
+    const service = createReportService({ reports, agents });
+
+    const [workspace, card] = await Promise.all([service.workspace(subject, oneDay), service.meStats(subject, oneDay)]);
+
+    expect(workspace.members).toEqual([{ rank: 1, user: alex, activeSeconds: 7_200, agentSeconds: 7_200, project: timer }]);
+    expect(workspace.activeSeconds).toBe(card.activeSeconds);
+    expect(workspace.agentSeconds).toBe(card.agentSeconds);
+    expect(workspace.hourly).toEqual(card.hourly.map(({ hourStart, activeSeconds, agentSeconds }) => ({ hourStart, activeSeconds, agentSeconds })));
+  });
+
+  it("narrows every part to a project scope the way the board does", async () => {
+    const reports = team();
+    reports.sessionIntervals = [
+      { user: alex, projectId: ids.project, attribution: "selected", startedAt: hour(10), stoppedAt: hour(11) },
+    ];
+    const service = createReportService({ reports, agents });
+
+    const result = await service.workspace(subject, { ...oneDay, scope: ids.project });
+
+    // Presence carries no project, so the scope keeps only the hour Alex's session was open.
+    expect(result.activeSeconds).toBe(3_600);
+    expect(result.hourly[9]?.activeSeconds).toBe(0);
+    expect(result.hourly[10]?.activeSeconds).toBe(3_600);
+    expect(reports.lastMemberProjectTotalsQuery).toEqual({
+      from: new Date(oneDay.fromAt),
+      toExclusive: new Date(oneDay.toExclusiveAt),
+      projectId: ids.project,
+    });
+  });
+
+  it("refuses a project from outside the caller's workspace before reading anything", async () => {
+    const reports = team();
+    const service = createReportService({ reports, agents });
+
+    await expect(service.workspace(subject, { ...oneDay, scope: "91c7e513-b094-4d4c-ae55-21790ae019a4" }))
+      .rejects.toMatchObject({ code: "not_found", message: "Project not found." });
+    expect(reports.lastMemberProjectTotalsQuery).toBeNull();
+  });
+
+  it("draws no graph over all time and still adds the rest up", async () => {
+    const service = createReportService({ reports: team(), agents });
+
+    const result = await service.workspace(subject, {});
+
+    expect(result.hourly).toEqual([]);
+    expect(result.activeSeconds).toBe(10_800);
+    expect(result.members).toHaveLength(3);
+  });
+});
+
+describe("time series", () => {
+  const hourMs = 60 * 60 * 1_000;
+  const dayMs = 24 * hourMs;
+  const rangeStart = Date.UTC(2026, 7, 1, 4);
+
+  it.each([
+    { name: "hours across ninety days", bucketMs: hourMs, rangeEnd: rangeStart + 90 * dayMs, tileCount: 2_160 },
+    { name: "days across a range with a spare daylight-saving hour", bucketMs: dayMs, rangeEnd: rangeStart + 40 * dayMs + hourMs, tileCount: 40 },
+  ])("matches the plain union and sum per tile over $name", ({ bucketMs, rangeEnd, tileCount }) => {
+    // Arrange: many overlapping, unsorted intervals and usage buckets, some
+    // crossing tile edges and some reaching past either end of the range.
+    const spanMs = rangeEnd - rangeStart + 4 * hourMs;
+    const spread = (index: number, multiplier: number, maxLengthMs: number): Interval => {
+      const start = rangeStart - 2 * hourMs + ((index * multiplier) % spanMs);
+      return { start, end: start + ((index * 104_729) % maxLengthMs) };
+    };
+    const working = [
+      ...Array.from({ length: 600 }, (_, index) => spread(index, 1_000_003_987, 3 * hourMs)),
+      { start: rangeStart + 5 * dayMs + 30 * 60 * 1_000, end: rangeStart + 7 * dayMs + 10 * 60 * 1_000 },
+    ];
+    const agents = [
+      ...Array.from({ length: 400 }, (_, index) => spread(index, 2_999_999_929, 10 * hourMs)),
+      { start: rangeStart - dayMs, end: rangeEnd + dayMs },
+      { start: rangeStart - dayMs, end: rangeStart },
+      { start: rangeEnd, end: rangeEnd + hourMs },
+    ];
+    const usage: AgentUsageBucketTotalRecord[] = Array.from({ length: 300 }, (_, index) => ({
+      bucketStartAt: new Date(spread(index, 1_999_999_973, 1).start),
+      inputTokens: index,
+      outputTokens: 1,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: String(index * 10),
+    }));
+    const expected = Array.from({ length: tileCount }, (_, tileIndex) => {
+      const tile = {
+        start: rangeStart + tileIndex * bucketMs,
+        end: tileIndex === tileCount - 1 ? rangeEnd : rangeStart + (tileIndex + 1) * bucketMs,
+      };
+      const indices = usage.flatMap((bucket, index) =>
+        bucket.bucketStartAt.getTime() >= tile.start && bucket.bucketStartAt.getTime() < tile.end ? [index] : []);
+      const indexSum = indices.reduce((sum, index) => sum + index, 0);
+      return {
+        hourStart: new Date(tile.start).toISOString(),
+        activeSeconds: unionSeconds(working, tile),
+        agentSeconds: summedSeconds(agents, tile),
+        inputTokens: indices.length === 0 ? null : indexSum,
+        outputTokens: indices.length === 0 ? null : indices.length,
+        cacheCreationInputTokens: indices.length === 0 ? null : 0,
+        cacheReadInputTokens: indices.length === 0 ? null : indexSum * 10,
+      };
+    });
+
+    // Act
+    const series = timeSeries(working, agents, usage, { start: rangeStart, end: rangeEnd }, bucketMs);
+
+    // Assert
+    expect(series).toEqual(expected);
   });
 });
 

@@ -271,6 +271,28 @@ describe("Drizzle report repository", () => {
     }]);
   });
 
+  it("maps per-member project totals across the workspace, preserving postgres sum strings", async () => {
+    const rows = {
+      innerJoin: () => rows,
+      where: () => rows,
+      groupBy: async () => [
+        { userId: input.userId, projectId: input.projectId, projectName: "Timer", durationSeconds: "7200" },
+        { userId: input.clientId, projectId: input.projectId, projectName: "Timer", durationSeconds: null },
+      ],
+    };
+    const db = {
+      select: () => ({ from: () => rows }),
+      transaction: async (callback: (handle: unknown) => Promise<unknown>) => callback({}),
+    } as unknown as DatabaseConnection["db"];
+    const repository = new DrizzleReportRepository(db);
+    const subject = { organizationId: input.organizationId, userId: input.userId, role: "member" as const };
+
+    await expect(repository.readProjectTotalsByMemberForOrganization(subject, {})).resolves.toEqual([
+      { userId: input.userId, project: { id: input.projectId, name: "Timer" }, durationSeconds: "7200" },
+      { userId: input.clientId, project: { id: input.projectId, name: "Timer" }, durationSeconds: null },
+    ]);
+  });
+
   it("maps caller-scoped per-app totals, preserving postgres sum strings", async () => {
     const rows = {
       where: () => rows,

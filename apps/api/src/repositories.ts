@@ -184,6 +184,13 @@ export interface ProjectTotalRecord {
   sessionCount: number | string | bigint;
 }
 
+export interface MemberProjectTotalRecord {
+  userId: string;
+  project: ReportLookupRecord;
+  /** sql sums surface as string/bigint. */
+  durationSeconds: number | string | bigint | null;
+}
+
 export interface AppTotalRecord {
   processName: string;
   /** sql sums surface as string/bigint. */
@@ -313,6 +320,8 @@ export interface ReportRepository {
   readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]>;
   /** Per-project totals for one member — the reporting math scoped to the caller for /me/stats. */
   readProjectTotalsForMember(subject: AuthenticatedSubject, query: ReportQuery): Promise<ProjectTotalRecord[]>;
+  /** Recorded time per member and project across the caller's workspace, for the workspace view's projects and each member's top project. */
+  readProjectTotalsByMemberForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<MemberProjectTotalRecord[]>;
   /** Per-foreground-process totals for one member from active segments, for the /me/stats app breakdown. */
   readAppTotalsForMember(subject: AuthenticatedSubject, query: ReportQuery): Promise<AppTotalRecord[]>;
   /** Per-url-rule browser-span totals for one member, clipped to fresh active segments, for /me/stats. */
