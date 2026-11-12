@@ -46,12 +46,11 @@ use crate::spool;
 /// into idle; finer buys nothing the server schema can store.
 pub const POLL_INTERVAL_SECONDS: u64 = 30;
 
-/// A poll reads "idle" once the last input is at least this old — one poll
-/// interval, so a single quiet moment between ticks still reads as active.
-// Only the Windows poll source reads this; non-Windows builds keep it for
-// tests and documentation.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-const IDLE_THRESHOLD_SECONDS: u32 = POLL_INTERVAL_SECONDS as u32;
+/// A poll reads "idle" once the last input is at least this old. A shorter
+/// pause counts as work: reading an agent's output and thinking take minutes,
+/// and the recorded days show the longer gaps are time away. Past it, the
+/// worked span ends at the last input, so the pause itself is not counted.
+const PAUSE_COUNTED_AS_WORK_SECONDS: u32 = 5 * 60;
 
 /// How long an open agent session without a fresh event still counts as
 /// active for the away override. Matches the server's staleness window
@@ -94,7 +93,13 @@ const MAX_OPEN_ACTIVE_SECONDS: u64 = 300;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActivitySignal {
-    Active { process_name: Option<String> },
+    /// `idle_seconds` is the age of the last keyboard or mouse input when the
+    /// poll read one. `None` means the tick is active without input to date
+    /// it: a hands-off probe answered, or the OS could not say.
+    Active {
+        process_name: Option<String>,
+        idle_seconds: Option<u32>,
+    },
     Idle { idle_seconds: u32 },
     Locked,
     Suspended,
@@ -143,7 +148,7 @@ fn signal_kind(signal: &ActivitySignal) -> SegmentKind {
 
 fn signal_process_name(signal: &ActivitySignal) -> Option<String> {
     match signal {
-        ActivitySignal::Active { process_name } => process_name.clone(),
+        ActivitySignal::Active { process_name, .. } => process_name.clone(),
         _ => None,
     }
 }
@@ -163,6 +168,37 @@ fn rescued(probes: &[&dyn Fn() -> Option<bool>]) -> bool {
     probes.iter().any(|probe| probe() == Some(true))
 }
 
+/// Reads one poll from the age of the last input. Under
+/// `PAUSE_COUNTED_AS_WORK_SECONDS` the person is at work; past it they are away
+/// unless `is_engaged` says otherwise. The probes behind `is_engaged` run only
+/// past the threshold, so they never cost an active-work tick. A failed input
+/// read fails toward active: a guessed idle span would trim worked time.
+// Only the Windows poll source reads the OS; non-Windows builds keep this for
+// tests and documentation.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn read_poll(
+    idle_seconds: Option<u32>,
+    is_engaged: impl FnOnce() -> bool,
+    foreground_process_name: impl FnOnce() -> Option<String>,
+) -> ActivitySignal {
+    match idle_seconds {
+        Some(idle_seconds) if idle_seconds >= PAUSE_COUNTED_AS_WORK_SECONDS => {
+            if is_engaged() {
+                ActivitySignal::Active {
+                    process_name: foreground_process_name(),
+                    idle_seconds: None,
+                }
+            } else {
+                ActivitySignal::Idle { idle_seconds }
+            }
+        }
+        _ => ActivitySignal::Active {
+            process_name: foreground_process_name(),
+            idle_seconds,
+        },
+    }
+}
+
 /// Whether the open span keeps running for this signal, given the signal does
 /// not change the state. It ends early when the app in front changed or when
 /// it has been open for `MAX_OPEN_ACTIVE_SECONDS`.
@@ -172,7 +208,7 @@ fn rescued(probes: &[&dyn Fn() -> Option<bool>]) -> bool {
 /// one would restart the away threshold on every poll and no session would
 /// ever close.
 fn continues_open_span(open: &OpenSegment, signal: &ActivitySignal, now: u64) -> bool {
-    let ActivitySignal::Active { process_name } = signal else {
+    let ActivitySignal::Active { process_name, .. } = signal else {
         return true;
     };
     if now.saturating_sub(open.started_at) >= MAX_OPEN_ACTIVE_SECONDS {
@@ -209,12 +245,28 @@ impl SegmentBuilder {
     /// two matter as much as the first - while only state changes closed
     /// spans, per-app time was "whichever app happened to be in front when the
     /// machine went idle", and a machine in continuous use spooled nothing at
-    /// all.
+    /// all. Those two end the span at the last input the poll read, not at the
+    /// poll: a pause still running may yet turn out to be time away.
+    ///
+    /// Coming back from a quiet span, the active span starts at the poll
+    /// before this one, which still read quiet, or at the last input if that
+    /// is earlier. The first input between the two polls is unknown, so this
+    /// counts up to one interval early rather than dropping a burst that began
+    /// and ended between polls. Input no newer than the quiet span's start is
+    /// the input that began it - the keystroke that locked the screen - and
+    /// ends nothing.
     pub fn apply(&mut self, now: u64, signal: &ActivitySignal) -> Vec<Segment> {
         let kind = signal_kind(signal);
         let transition_at = match signal {
             ActivitySignal::Idle { idle_seconds } => now.saturating_sub(u64::from(*idle_seconds)),
             _ => now,
+        };
+        let active_input_at = match signal {
+            ActivitySignal::Active {
+                idle_seconds: Some(idle_seconds),
+                ..
+            } => Some(now.saturating_sub(u64::from(*idle_seconds))),
+            _ => None,
         };
 
         let mut closed_now = Vec::new();
@@ -223,17 +275,18 @@ impl SegmentBuilder {
                 // Still the same state, but this span has to end: either the
                 // app in front changed, or it has been open long enough that
                 // holding it any longer would keep evidence off disk.
-                if now > open.started_at {
+                let split_at = active_input_at.unwrap_or(now);
+                if split_at > open.started_at {
                     closed_now.push(Segment {
                         kind: open.kind,
                         process_name: open.process_name.take(),
                         started_at: open.started_at,
-                        ended_at: now,
+                        ended_at: split_at,
                     });
                     *open = OpenSegment {
                         kind,
                         process_name: signal_process_name(signal),
-                        started_at: now,
+                        started_at: split_at,
                     };
                 } else {
                     // Zero-length: nothing worth recording, so just adopt the
@@ -245,15 +298,21 @@ impl SegmentBuilder {
                 // Same state, same app, still within the ceiling.
                 if let ActivitySignal::Active {
                     process_name: Some(name),
+                    ..
                 } = signal
                 {
                     open.process_name = Some(name.clone());
                 }
             }
             Some(open) => {
+                let boundary = match active_input_at {
+                    Some(input_at) if input_at <= open.started_at => return Vec::new(),
+                    Some(input_at) => now.saturating_sub(POLL_INTERVAL_SECONDS).min(input_at),
+                    None => transition_at,
+                };
                 // Clamp into [open.started_at, now]: an idle span that predates
                 // the open segment must not overlap what came before it.
-                let boundary = transition_at.clamp(open.started_at, now);
+                let boundary = boundary.clamp(open.started_at, now);
                 if boundary > open.started_at {
                     closed_now.push(Segment {
                         kind: open.kind,
@@ -2353,9 +2412,7 @@ mod platform {
         WM_WTSSESSION_CHANGE, WNDCLASSW, WS_POPUP, WTS_SESSION_LOCK,
     };
 
-    use super::{
-        rescued, unix_now, ActivitySignal, ActivitySource, PlatformEvents, IDLE_THRESHOLD_SECONDS,
-    };
+    use super::{read_poll, rescued, unix_now, ActivitySignal, ActivitySource, PlatformEvents};
 
     pub struct Poller;
 
@@ -2367,27 +2424,14 @@ mod platform {
 
     impl ActivitySource for Poller {
         fn poll(&self) -> ActivitySignal {
-            match idle_seconds() {
-                Some(idle_seconds) if idle_seconds >= IDLE_THRESHOLD_SECONDS => {
-                    // Hands off is not always away: media playing, a
-                    // presentation or call, or a live microphone all mean the
-                    // person is still engaged. The probes run only here, once
-                    // per poll and only when the input answer says idle; a
-                    // probe that fails never rescues.
-                    if rescued(&[&media_playing, &user_busy_or_presenting, &microphone_in_use]) {
-                        ActivitySignal::Active {
-                            process_name: foreground_process_name(),
-                        }
-                    } else {
-                        ActivitySignal::Idle { idle_seconds }
-                    }
-                }
-                // A failed read fails toward "active": a guessed idle span
-                // would trim time that was actually worked.
-                _ => ActivitySignal::Active {
-                    process_name: foreground_process_name(),
-                },
-            }
+            // Hands off is not always away: media playing, a presentation or
+            // call, or a live microphone all mean the person is still engaged.
+            // A probe that fails never rescues.
+            read_poll(
+                idle_seconds(),
+                || rescued(&[&media_playing, &user_busy_or_presenting, &microphone_in_use]),
+                foreground_process_name,
+            )
         }
     }
 
@@ -2732,7 +2776,10 @@ mod platform {
 
     impl ActivitySource for Poller {
         fn poll(&self) -> ActivitySignal {
-            ActivitySignal::Active { process_name: None }
+            ActivitySignal::Active {
+                process_name: None,
+                idle_seconds: None,
+            }
         }
     }
 }
@@ -2744,6 +2791,14 @@ mod tests {
     fn active(name: &str) -> ActivitySignal {
         ActivitySignal::Active {
             process_name: Some(name.to_string()),
+            idle_seconds: Some(0),
+        }
+    }
+
+    fn unnamed_active() -> ActivitySignal {
+        ActivitySignal::Active {
+            process_name: None,
+            idle_seconds: Some(0),
         }
     }
 
@@ -2783,6 +2838,152 @@ mod tests {
     #[test]
     fn a_failed_probe_does_not_mask_a_working_one() {
         assert!(rescued(&[&|| None, &|| Some(true)]));
+    }
+
+    #[test]
+    fn a_pause_reads_as_work_until_five_minutes_pass_without_input() {
+        for (idle_seconds, is_active) in [
+            (0, true),
+            (30, true),
+            (299, true),
+            (300, false),
+            (3_600, false),
+        ] {
+            let signal = read_poll(Some(idle_seconds), || false, || None);
+
+            assert_eq!(
+                matches!(signal, ActivitySignal::Active { .. }),
+                is_active,
+                "a pause of {idle_seconds}s"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hands_off_probes_run_only_once_the_pause_is_long_enough() {
+        let is_probed = std::cell::Cell::new(false);
+        let probe = || {
+            is_probed.set(true);
+            true
+        };
+
+        read_poll(Some(PAUSE_COUNTED_AS_WORK_SECONDS - 1), probe, || None);
+        assert!(!is_probed.get(), "an active-work tick never runs a probe");
+
+        let signal = read_poll(Some(PAUSE_COUNTED_AS_WORK_SECONDS), probe, || None);
+        assert!(is_probed.get(), "a long pause asks the probes");
+        assert_eq!(
+            signal,
+            ActivitySignal::Active {
+                process_name: None,
+                idle_seconds: None
+            },
+            "an engaged probe rescues the tick without dating any input"
+        );
+    }
+
+    /// Runs the pure half of the poll task over a timeline: one poll every
+    /// interval from `from` to `to`, each reading the age of the latest input
+    /// at or before it, no probe engaged, the same app in front. Returns the
+    /// worked stretches, adjoining active spans joined.
+    fn worked_stretches(inputs: &[u64], from: u64, to: u64) -> Vec<(u64, u64)> {
+        let mut builder = SegmentBuilder::new();
+        let mut now = from;
+        while now <= to {
+            let last_input = inputs.iter().copied().filter(|input| *input <= now).max();
+            let idle_seconds =
+                last_input.map(|input| u32::try_from(now - input).expect("a short timeline"));
+            builder.apply(
+                now,
+                &read_poll(idle_seconds, || false, || Some("code.exe".to_string())),
+            );
+            now += POLL_INTERVAL_SECONDS;
+        }
+        let mut stretches: Vec<(u64, u64)> = Vec::new();
+        for segment in builder.snapshot(to) {
+            if segment.kind != SegmentKind::Active {
+                continue;
+            }
+            match stretches.last_mut() {
+                Some(last) if last.1 == segment.started_at => last.1 = segment.ended_at,
+                _ => stretches.push((segment.started_at, segment.ended_at)),
+            }
+        }
+        stretches
+    }
+
+    #[test]
+    fn a_pause_under_five_minutes_counts_as_worked_up_to_the_last_input() {
+        // Away since 0, typing at 1_000 and 1_010, a four-minute pause, one
+        // more input at 1_250, then nothing. Polls run at 990, 1_020, ...
+        let inputs = [0, 1_000, 1_010, 1_250];
+
+        let stretches = worked_stretches(&inputs, 990, 2_000);
+
+        assert_eq!(
+            stretches,
+            vec![(990, 1_250)],
+            "one stretch from the poll before the return to the last input"
+        );
+    }
+
+    #[test]
+    fn a_burst_of_input_between_two_polls_is_counted() {
+        // Away since 0, then ten seconds of input that start and end between
+        // the polls at 990 and 1_020.
+        let inputs = [0, 995, 1_000, 1_005];
+
+        let stretches = worked_stretches(&inputs, 990, 2_000);
+
+        assert_eq!(
+            stretches,
+            vec![(990, 1_005)],
+            "the burst runs from the poll before it to its last input"
+        );
+    }
+
+    #[test]
+    fn a_span_closed_on_schedule_mid_pause_ends_at_the_last_input() {
+        // Input every ten seconds from 1_000 to 1_100, then nothing. The
+        // five-minute ceiling closes the open span at the poll at 1_290, three
+        // minutes into the pause, which turns out to be time away.
+        let inputs: Vec<u64> = std::iter::once(0)
+            .chain((1_000..=1_100).step_by(10))
+            .collect();
+
+        let stretches = worked_stretches(&inputs, 990, 2_000);
+
+        assert_eq!(
+            stretches,
+            vec![(990, 1_100)],
+            "the quiet after the last input is not counted"
+        );
+    }
+
+    #[test]
+    fn the_keystroke_that_locked_the_screen_does_not_end_the_lock() {
+        let mut builder = SegmentBuilder::new();
+        builder.apply(1_000, &active("code.exe"));
+        builder.apply(1_100, &ActivitySignal::Locked);
+
+        // The poll after the lock still reads the input that locked it.
+        let closed = builder.apply(1_110, &read_poll(Some(12), || false, || None));
+
+        assert!(closed.is_empty(), "nobody came back: {closed:?}");
+        assert_eq!(builder.open_span(), Some((SegmentKind::Locked, 1_100)));
+    }
+
+    #[test]
+    fn input_after_a_lock_ends_it_at_the_poll_before() {
+        let mut builder = SegmentBuilder::new();
+        builder.apply(1_000, &active("code.exe"));
+        builder.apply(1_100, &ActivitySignal::Locked);
+
+        // Unlocked and typing; the poll at 1_510 reads the last input 10s back.
+        let closed = builder.apply(1_510, &read_poll(Some(10), || false, || None));
+
+        assert_eq!(closed, vec![segment(SegmentKind::Locked, 1_100, 1_480)]);
+        assert_eq!(builder.open_span(), Some((SegmentKind::Active, 1_480)));
     }
 
     fn segment(kind: SegmentKind, start: u64, end: u64) -> Segment {
@@ -3014,7 +3215,7 @@ mod tests {
         let mut builder = SegmentBuilder::new();
         builder.apply(1_000, &active("code.exe"));
         builder.apply(1_060, &idle(60));
-        builder.apply(1_200, &ActivitySignal::Active { process_name: None });
+        builder.apply(1_200, &unnamed_active());
         builder.apply(1_260, &active("code.exe"));
 
         let totals = builder.app_totals(1_000, 1_300);
@@ -3090,7 +3291,7 @@ mod tests {
         builder.apply(1_000, &active("code.exe"));
         assert!(
             builder
-                .apply(1_030, &ActivitySignal::Active { process_name: None })
+                .apply(1_030, &unnamed_active())
                 .is_empty(),
             "an unreadable foreground window is not a change of app"
         );
@@ -3144,9 +3345,10 @@ mod tests {
         assert_eq!((closed[0].started_at, closed[0].ended_at), (1_060, 1_180));
         // Idle continues: no new segment.
         assert!(builder.apply(1_360, &idle(300)).is_empty());
-        // Back to work: the idle span closes at the transition.
+        // Back to work: the idle span closes one interval before the poll that
+        // read the input, the earliest the return can have happened.
         let closed = builder.apply(1_400, &active("code.exe"));
-        assert_eq!(closed, vec![segment(SegmentKind::Idle, 1_180, 1_400)]);
+        assert_eq!(closed, vec![segment(SegmentKind::Idle, 1_180, 1_370)]);
     }
 
     #[test]

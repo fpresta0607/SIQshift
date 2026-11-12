@@ -105,6 +105,9 @@ class Reports implements Partial<ReportRepository> {
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string): Promise<ReportLookupRecord | null> {
     return projectId === ids.project ? { id: ids.project, name: "Ledger" } : null;
   }
+  public async readDefaultProject(): Promise<ReportLookupRecord | null> {
+    return { id: ids.project, name: "Ledger" };
+  }
   public async findUserForOrganization(_subject: AuthenticatedSubject, userId: string): Promise<ReportLookupRecord | null> {
     return this.roster.find((member) => member.id === userId) ?? null;
   }

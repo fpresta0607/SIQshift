@@ -141,6 +141,43 @@ export async function openClockCard(page: Page, app: "desktop" | "web"): Promise
 }
 
 /**
+ * The desktop's Today rows with a connected agent on top: a row with no
+ * minutes of its own, so no duration cell, and its plan dial at the
+ * component's real 36px size showing a full plan's "100%". An app row below
+ * marks where the duration column starts.
+ */
+export async function openConnectedAgentRow(page: Page): Promise<void> {
+  await page.setContent(`
+    <main class="app-shell">
+      <div class="screen">
+        <section class="session-stats card" aria-labelledby="today-panel-title">
+          <div class="panel-head"><h2 id="today-panel-title">Today</h2></div>
+          <ul class="meter-list meter-apps" data-testid="session-app-list">
+            <li class="meter-row">
+              <span class="app-mark is-plain" aria-hidden="true"></span>
+              <span class="meter-name">Claude Code<span class="meter-detail"> · siqshift</span></span>
+              <div class="quota">
+                <button type="button" class="quota-trigger" aria-expanded="false">
+                  <svg class="quota-face" viewBox="0 0 36 36" width="36" height="36" aria-hidden="true">
+                    <circle class="quota-track" cx="18" cy="18" r="16" fill="none" stroke-width="4"></circle>
+                    <text class="quota-figure is-wide" x="18" y="18" text-anchor="middle" dominant-baseline="central">100%</text>
+                  </svg>
+                  <span class="quota-meta">
+                    <span class="quota-plan">Max</span>
+                    <span class="quota-window">til 12:45 PM</span>
+                  </span>
+                </button>
+              </div>
+            </li>
+            ${meterRow("Google Chrome", "", 51, "2h 09m")}
+          </ul>
+        </section>
+      </div>
+    </main>`);
+  await applyStylesheet(page, "desktop", ".screen");
+}
+
+/**
  * One Agents-tab codebase group, in either app's markup for it.
  *
  * Both tabs live in the All-stats overlay (`.modal-overlay` >

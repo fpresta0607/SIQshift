@@ -208,6 +208,9 @@ select:disabled { opacity: .55; }
 .quota-track { stroke: rgba(163, 179, 194, 0.22); }
 .quota-arc { stroke: var(--accent-green); }
 .quota-figure { fill: #ffffff; font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* A full plan's "100%" is a character wider than any other reading, and at
+   the size the rest print it runs into the ring. */
+.quota-figure.is-wide { font-size: 8px; }
 .quota.is-low .quota-arc { stroke: var(--red); }
 .quota.is-low .quota-figure { fill: #ffb4aa; }
 /* Unknown reads as unknown, not as empty: a dashed ring and an em dash. */
@@ -599,8 +602,6 @@ select:disabled { opacity: .55; }
 .graph { position: relative; max-width: 1050px; margin-top: 14px; }
 .graph svg { display: block; width: 100%; height: auto; }
 .graph text { font-variant-numeric: tabular-nums; }
-.graph-mode { width: fit-content; margin-top: 10px; }
-.graph-note { margin: 6px 0 0; color: var(--text-secondary); font-size: .74rem; }
 .graph-tooltip { position: absolute; top: 0; z-index: 1; transform: translateX(-50%); border: 1px solid var(--glass-border); border-radius: 6px; padding: 8px 10px; background: var(--chart-tooltip-surface); font-size: .74rem; white-space: nowrap; pointer-events: none; }
 .graph-tooltip-title { margin: 0 0 4px; color: var(--chart-axis); font-weight: 650; }
 .graph-tooltip-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }

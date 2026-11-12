@@ -10,7 +10,6 @@ import {
   type LiveAgentSessions,
   type BrowserHealth,
   type MeStats,
-  type MeStatsAgentActivity,
   type MonitorSettings,
   type MonitorStatus,
   type OrganizationOverview,
@@ -35,7 +34,9 @@ import {
   LiveSessions,
   MemberBreakdown,
   MeterRowItem,
+  QuietMark,
   ShiftGroups,
+  TokenBarChart,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -83,17 +84,6 @@ const hasQuotaProvider = (source: string): boolean =>
 
 const elapsedSeconds = (since: string, now: number): number =>
   Math.max(0, Math.floor((now - Date.parse(since)) / 1_000));
-
-/// Runtimes that ran shifts in range but reported no tokens - the honest gap
-/// the tokens view names beneath the plot rather than zeroing over. A null
-/// tokensReported means the API cannot say, so the runtime is not named.
-const tokenBlindRuntimes = (agents: readonly MeStatsAgentActivity[] | undefined): string[] => [
-  ...new Set(
-    (agents ?? [])
-      .filter((row) => row.shiftCount > 0 && row.tokensReported === false)
-      .map((row) => sourceLabel(row.source)),
-  ),
-];
 
 /// Every sentence the main page says about recording, keyed by the one shared
 /// recording state. Keeping them in tables rather than inline conditionals is
@@ -1176,7 +1166,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       // editor and the terminal it lives in, so its wall-clock overlaps
       // theirs; counting it as its own slice would total more hours than the
       // day had. Every row here measures the same thing - time this machine
-      // spent with that app in front - and the row says "working" instead.
+      // spent with that app in front - so the row carries no duration, and
+      // its being listed is what says the tool is connected.
       durationSeconds: 0,
       share: 0,
     }));
@@ -1400,7 +1391,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   ))}
                   {quietSeconds >= 60 && (
                     <li className="meter-row" data-testid="quiet-row">
-                      <span className="app-mark is-plain" aria-hidden="true" />
+                      <QuietMark />
                       <span className="meter-name">Quiet time</span>
                       <span aria-hidden="true" />
                       <span className="meter-duration">{formatHuman(quietSeconds)}</span>
@@ -1411,7 +1402,6 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
               <HourlyGraph
                 buckets={stats?.hourly ?? []}
                 personLabel="You"
-                tokenBlind={tokenBlindRuntimes(stats?.agents)}
               />
             </>
           )}
@@ -1502,6 +1492,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   <p className="today-total"><strong>{formatHuman(agentShifts.totalAgentSeconds)}</strong> recorded</p>
                   <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
                   <HourlyGraph buckets={agentShifts.hourly} />
+                  {agentShifts.tokenChart !== undefined && <TokenBarChart chart={agentShifts.tokenChart} />}
                   {agentShifts.groups.length === 0 ? (
                     <p className="subtle">No agent worked in this range.</p>
                   ) : (
@@ -1594,7 +1585,6 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     <HourlyGraph
                       buckets={boardMeasurement.hourly}
                       personLabel={viewingSelf ? "You" : viewedMember.name}
-                      tokenBlind={tokenBlindRuntimes(boardMeasurement.agents)}
                     />
                   </>
                 )}

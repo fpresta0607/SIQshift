@@ -159,7 +159,6 @@ describe("defaultBridge", () => {
       concurrency: { t0Seconds: 3_400, t1Seconds: 3_600, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
       byAgent: [{ source: "claude_code", model: null, durationSeconds: 3_600 }],
       hourly: [],
-      agents: [],
     };
     invoke.mockResolvedValueOnce(stats);
 
@@ -187,7 +186,6 @@ describe("defaultBridge", () => {
       hourly: [],
       projects: [],
       apps: [],
-      agents: [],
     };
     invoke.mockResolvedValueOnce(empty);
     await expect(defaultBridge.meStats(undefined, undefined, ids.user)).resolves.toEqual(empty);
@@ -218,74 +216,32 @@ describe("defaultBridge", () => {
     });
   });
 
-  it("decodes hourly token fields, absent ones as null", async () => {
-    const stats = {
-      filters: {},
-      totalDurationSeconds: 0,
-      attributedSeconds: 0,
-      unattributedSeconds: 0,
-      activeSeconds: 3_600,
-      agentSeconds: 1_800,
-      concurrency: { t0Seconds: 0, t1Seconds: 3_600, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
-      byAgent: [],
-      hourly: [
-        {
-          hourStart: "2026-08-06T09:00:00.000Z",
-          activeSeconds: 3_600,
-          agentSeconds: 1_800,
-          inputTokens: 12_000,
-          outputTokens: 800,
-          cacheCreationInputTokens: 400,
-          cacheReadInputTokens: 60_000,
-        },
-        // An hour nothing reported tokens for keeps nulls, and an API from
-        // before the fields shipped decodes to the same nulls.
-        { hourStart: "2026-08-06T10:00:00.000Z", activeSeconds: 0, agentSeconds: 0 },
-      ],
-      projects: [],
-      apps: [],
+  it("decodes the token bars as the server sent them, and their absence as none", async () => {
+    // Arrange
+    const tokenChart = {
+      bucketSeconds: 3_600,
+      buckets: [{ start: "2026-08-06T15:00:00.000Z", tokensIn: 100, tokensOut: 50, tokens: 999 }],
+      projects: [{
+        project: { id: "00000000-0000-4000-8000-000000000010", name: "Ledger" },
+        tokens: 0,
+        buckets: [{ start: "2026-08-06T15:00:00.000Z", tokensIn: null, tokensOut: null, tokens: null }],
+      }],
     };
-    invoke.mockResolvedValueOnce(stats);
+    const negative = { ...tokenChart, buckets: [{ ...tokenChart.buckets[0]!, tokens: -1 }] };
+    invoke
+      .mockResolvedValueOnce({ groups: [], tokenChart })
+      .mockResolvedValueOnce({ groups: [] })
+      .mockResolvedValueOnce({ groups: [], tokenChart: negative });
 
-    await expect(defaultBridge.meStats(undefined, undefined)).resolves.toMatchObject({
-      hourly: [
-        { inputTokens: 12_000, outputTokens: 800, cacheCreationInputTokens: 400, cacheReadInputTokens: 60_000 },
-        { inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
-      ],
-    });
+    // Act
+    const sent = await defaultBridge.agentShifts();
+    const older = await defaultBridge.agentShifts();
+    const broken = defaultBridge.agentShifts();
 
-    invoke.mockResolvedValueOnce({
-      ...stats,
-      hourly: [{ ...stats.hourly[0], inputTokens: -1 }],
-    });
-    await expect(defaultBridge.meStats(undefined, undefined)).rejects.toMatchObject({ kind: "unknown" });
-  });
-
-  it("decodes agent activity in stats, absent tokensReported as unknown", async () => {
-    invoke.mockResolvedValueOnce({
-      filters: {},
-      totalDurationSeconds: 0,
-      attributedSeconds: 0,
-      unattributedSeconds: 0,
-      activeSeconds: 0,
-      agentSeconds: 3_600,
-      concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
-      byAgent: [],
-      projects: [],
-      apps: [],
-      agents: [
-        { agent: { id: "a1", source: "claude_code" }, shiftCount: 2, tokensReported: true },
-        { agent: { id: "a2", source: "codex" }, shiftCount: 1 },
-      ],
-    });
-
-    await expect(defaultBridge.meStats(undefined, undefined)).resolves.toMatchObject({
-      agents: [
-        { source: "claude_code", shiftCount: 2, tokensReported: true },
-        // Absent on an older API decodes to null: it cannot say, so nobody is named blind.
-        { source: "codex", shiftCount: 1, tokensReported: null },
-      ],
-    });
+    // Assert: a total that is not in + out stays the server's.
+    expect(sent.tokenChart).toEqual(tokenChart);
+    expect(older.tokenChart).toBeUndefined();
+    await expect(broken).rejects.toMatchObject({ kind: "unknown" });
   });
 
   it("decodes the shifts-by-codebase map, and reads absence as empty rather than a crash", async () => {
@@ -295,10 +251,6 @@ describe("defaultBridge", () => {
         hourStart: "2026-08-06T15:00:00.000Z",
         activeSeconds: 0,
         agentSeconds: 5_400,
-        inputTokens: null,
-        outputTokens: null,
-        cacheCreationInputTokens: null,
-        cacheReadInputTokens: null,
       }],
       groups: [{
         groupKey: "siqshift",

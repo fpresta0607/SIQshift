@@ -110,7 +110,6 @@ select:disabled { opacity: .55; }
 .agent-mark { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 5px; overflow: hidden; }
 .agent-mark svg { width: 100%; height: 100%; }
 .agent-mark.is-generic { border: 1px solid var(--glass-border); background: rgba(3, 5, 10, .5); color: var(--text-secondary); font-size: .62rem; letter-spacing: 0; }
-.app-active { color: var(--mint); font-size: .74rem; }
 
 /* Everything historical, and the transparency panel, sit at the foot of the
    screen: neither is what the page is for. */
@@ -409,8 +408,6 @@ a.download-secondary:hover { color: #ffffff; }
 .graph { position: relative; max-width: 1050px; margin-top: 14px; }
 .graph svg { display: block; width: 100%; height: auto; }
 .graph text { font-variant-numeric: tabular-nums; }
-.graph-mode { width: fit-content; margin-top: 10px; }
-.graph-note { margin: 6px 0 0; color: var(--text-secondary); font-size: .74rem; }
 .graph-tooltip { position: absolute; top: 0; z-index: 1; transform: translateX(-50%); border: 1px solid var(--glass-border); border-radius: 6px; padding: 8px 10px; background: var(--chart-tooltip-surface); font-size: .74rem; white-space: nowrap; pointer-events: none; }
 .graph-tooltip-title { margin: 0 0 4px; color: var(--chart-axis); font-weight: 650; }
 .graph-tooltip-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }

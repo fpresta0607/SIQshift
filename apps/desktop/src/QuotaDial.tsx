@@ -145,7 +145,13 @@ export const QuotaDial = ({ agentLabel, quota, pending = false }: QuotaDialProps
               transform={`rotate(-90 ${CENTER} ${CENTER})`}
             />
           )}
-          <text className="quota-figure" x={CENTER} y={CENTER} textAnchor="middle" dominantBaseline="central">
+          <text
+            className={reading !== undefined && reading.remaining >= 100 ? "quota-figure is-wide" : "quota-figure"}
+            x={CENTER}
+            y={CENTER}
+            textAnchor="middle"
+            dominantBaseline="central"
+          >
             {reading === undefined ? "—" : `${reading.remaining}%`}
           </text>
         </svg>

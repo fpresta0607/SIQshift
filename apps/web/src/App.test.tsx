@@ -1076,70 +1076,30 @@ describe("dashboard", () => {
     expect(graph.querySelectorAll('circle[data-point="agent"]')).toHaveLength(3);
   });
 
-  it("switches the hourly chart to tokens, breaking the line over hours that reported none", async () => {
+  // Issue 101: the graph is time and only time, the person in gray against
+  // agents in green, even when the hours the API sends still carry tokens.
+  it("draws exactly two lines, human and agent, and no token series", async () => {
+    // Arrange
     const person = await signIn(clientFor({
       meStats: vi.fn().mockResolvedValue({
         ...memberStats,
-        agents: [{
-          agent: { ...rosterAgent, owner: undefined },
-          agentSeconds: 3_600,
-          shiftCount: 2,
-          commitsRecorded: 0,
-          commitsPending: 0,
-          commitsMerged: 0,
-          commitsReverted: 0,
-          commitsOrphaned: 0,
-          heldRate: null,
-          models: [],
-          tokens: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-          tokensReported: false,
-        }],
         hourly: [
           { hourStart: "2026-08-15T09:00:00.000Z", activeSeconds: 600, agentSeconds: 300, inputTokens: 4_000, outputTokens: 200, cacheCreationInputTokens: 0, cacheReadInputTokens: 8_000 },
-          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900, inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
-          { hourStart: "2026-08-15T11:00:00.000Z", activeSeconds: 300, agentSeconds: 100, inputTokens: 12_000, outputTokens: 800, cacheCreationInputTokens: 400, cacheReadInputTokens: 60_000 },
+          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900, inputTokens: 12_000, outputTokens: 800, cacheCreationInputTokens: 400, cacheReadInputTokens: 60_000 },
         ],
       }),
     }));
 
+    // Act
     await openAllStats(person);
     const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
     const graph = stats.getByTestId("hourly-graph");
-    // The time view says nothing about tokens; the note belongs to the token
-    // series alone, where it names the runtime that reported none.
-    expect(graph).not.toHaveTextContent(/No token data/);
-    const measure = within(graph).getByRole("group", { name: "Chart measure" });
-    await userEvent.click(within(measure).getByRole("button", { name: "Tokens" }));
-    expect(graph).toHaveTextContent("No token data from Claude Code.");
 
-    const tokensIn = graph.querySelector('path[data-series="tokens-in"]');
-    const tokensOut = graph.querySelector('path[data-series="tokens-out"]');
-    expect(tokensIn).not.toBeNull();
-    expect(tokensOut).not.toBeNull();
-    // The null hour lifts the pen: two subpaths, never a plunge to the baseline.
-    const d = tokensIn!.getAttribute("d")!;
-    expect(d.match(/M/g)).toHaveLength(2);
-    const points = [...d.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((match) => Number(match[2]));
-    expect(points).toHaveLength(2);
-    expect(points[1]!).toBeLessThan(points[0]!); // 72.4k plots above 12k
-  });
-
-  it("hides the tokens measure when nothing in the range reported tokens", async () => {
-    const person = await signIn(clientFor({
-      meStats: vi.fn().mockResolvedValue({
-        ...memberStats,
-        hourly: [
-          { hourStart: "2026-08-15T09:00:00.000Z", activeSeconds: 600, agentSeconds: 300, inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
-          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900, inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
-        ],
-      }),
-    }));
-
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
-    const graph = stats.getByTestId("hourly-graph");
-    expect(within(graph).queryByRole("group", { name: "Chart measure" })).not.toBeInTheDocument();
-    expect(graph).not.toHaveTextContent("No token data from");
+    // Assert
+    const series = [...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"));
+    expect(series).toEqual(["agent", "human"]);
+    expect(within(graph).queryByRole("button", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(graph).not.toHaveTextContent(/token/i);
   });
 
   it("labels 3+ concurrency in plain words and leaves the agents' own totals to their tab", async () => {
@@ -1561,6 +1521,57 @@ describe("project management", () => {
 });
 
 describe("the agents tab", () => {
+  /// The server's token bars over three hours. Every total is deliberately not
+  /// in + out, and no project's bars add up to the period's, so a client that
+  /// summed anything itself would draw different bars than these.
+  const hours = ["2026-08-15T09:00:00.000Z", "2026-08-15T10:00:00.000Z", "2026-08-15T11:00:00.000Z"];
+  const bars = (figures: readonly ([number, number, number] | null)[]) =>
+    figures.map((figure, index) => ({
+      start: hours[index]!,
+      tokensIn: figure?.[0] ?? null,
+      tokensOut: figure?.[1] ?? null,
+      tokens: figure?.[2] ?? null,
+    }));
+  const tokenChart = {
+    bucketSeconds: 3_600,
+    buckets: bars([[100, 50, 999], null, [10, 10, 3_000]]),
+    projects: [
+      { project: { id: "p1", name: "General" }, tokens: 777, buckets: bars([[7, 7, 700], null, [1, 1, 77]]) },
+      { project: { id: "p2", name: "Ledger" }, tokens: 0, buckets: bars([null, null, null]) },
+    ],
+  };
+  const drawnTokens = (chart: HTMLElement): number[] =>
+    [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("data-tokens")));
+  const openTokenChart = async (): Promise<{ person: Person; chart: HTMLElement }> => {
+    const person = await signIn(clientFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenChart }) }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const stats = await openAllStats(person);
+    await person.click(stats.getByRole("button", { name: "Agents" }));
+    return { person, chart: within(await screen.findByTestId("agent-shifts")).getByTestId("token-chart") };
+  };
+
+  it("draws the server's token bars as given, adding nothing up", async () => {
+    // Act
+    const { chart } = await openTokenChart();
+
+    // Assert: one bar per hour that burned anything, at the server's total.
+    expect(drawnTokens(chart)).toEqual([999, 3_000]);
+    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(0);
+  });
+
+  it("narrows the bars to a picked project and lists one with no tokens unpickable", async () => {
+    // Arrange
+    const { person, chart } = await openTokenChart();
+
+    // Act
+    await person.selectOptions(within(chart).getByRole("combobox", { name: "Project" }), "p1");
+
+    // Assert
+    expect(drawnTokens(chart)).toEqual([700, 77]);
+    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(2);
+    expect(within(chart).getByRole("option", { name: "Ledger · no tokens" })).toBeDisabled();
+  });
+
   it("maps every shift under its codebase, with the total recorded on top", async () => {
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });

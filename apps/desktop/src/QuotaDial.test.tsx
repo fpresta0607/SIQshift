@@ -111,6 +111,25 @@ describe("QuotaDial", () => {
     expect(container.querySelector(".quota")).toHaveClass("is-low");
   });
 
+  // Issue 101: "100%" is a character wider than any other reading and ran
+  // into the ring at the size the rest print at. The layout suite measures
+  // the fit; this pins which readings get the narrower figure.
+  it.each([
+    [100, true],
+    [99, false],
+    [4, false],
+  ])("prints %i%% in the wide figure: %s", (percentRemaining, isWide) => {
+    // Arrange
+    const quota = { ...claude, percentRemaining };
+
+    // Act
+    render(<QuotaDial agentLabel="Claude Code" quota={quota} />);
+
+    // Assert
+    const figure = screen.getByText(`${percentRemaining}%`);
+    expect(figure.classList.contains("is-wide")).toBe(isWide);
+  });
+
   it("keeps a full plan out of the low state", () => {
     const { container } = render(<QuotaDial agentLabel="Claude Code" quota={claude} />);
 

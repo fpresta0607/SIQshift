@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  agentRuntimeLabel,
   formatDuration,
   formatHumanDuration,
   leverage,
   type AgentShiftsResponse,
   type LeaderboardEntry,
   type LiveAgentSessionsResponse,
-  type MeStatsAgent,
   type MeStatsResponse,
   type Organization,
   type ProjectListItem,
@@ -23,7 +21,9 @@ import {
   LiveSessions,
   MemberBreakdown,
   MeterRowItem,
+  QuietMark,
   ShiftGroups,
+  TokenBarChart,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -102,16 +102,6 @@ const boardSorters: Record<BoardSort, (a: LeaderboardEntry, b: LeaderboardEntry)
 
 const messageFor = (error: unknown): string =>
   error instanceof ClientError ? error.message : "Something went wrong. Try again.";
-
-/// Runtimes that ran shifts in range but reported no tokens - the honest gap
-/// the tokens view names beneath the plot rather than zeroing over.
-const tokenBlindRuntimes = (agents: readonly MeStatsAgent[] | undefined): string[] => [
-  ...new Set(
-    (agents ?? [])
-      .filter((row) => row.shiftCount > 0 && !row.tokensReported)
-      .map((row) => agentRuntimeLabel(row.agent.source)),
-  ),
-];
 
 /**
  * What the Today panel says when it has nothing to add up. The desktop can
@@ -944,7 +934,7 @@ export const App = ({ client }: AppProps) => {
                   {todayMeterRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
                   {quietSeconds >= 60 && (
                     <li className="meter-row" data-testid="quiet-row">
-                      <span className="app-mark is-plain" aria-hidden="true" />
+                      <QuietMark />
                       <span className="meter-name">Quiet time</span>
                       <span aria-hidden="true" />
                       <span className="meter-duration">{formatHumanDuration(quietSeconds)}</span>
@@ -955,7 +945,6 @@ export const App = ({ client }: AppProps) => {
               <HourlyGraph
                 buckets={todayStats?.hourly ?? []}
                 personLabel="You"
-                tokenBlind={tokenBlindRuntimes(todayStats?.agents)}
               />
             </>
           )}
@@ -1139,7 +1128,6 @@ export const App = ({ client }: AppProps) => {
                         <HourlyGraph
                           buckets={memberStats.hourly ?? []}
                           personLabel={viewingSelf ? "You" : viewedName}
-                          tokenBlind={tokenBlindRuntimes(memberStats.agents)}
                         />
                         {memberStats.projects.length > 0 && (
                           <ul className="app-list" data-testid="member-project-list">
@@ -1410,6 +1398,7 @@ const ShiftsTabBody = ({ shifts, people, selected, onSelect, selfId, loadShifts 
     <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
     <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
     <HourlyGraph buckets={shifts.hourly} />
+    {shifts.tokenChart !== undefined && <TokenBarChart chart={shifts.tokenChart} />}
     {shifts.groups.length === 0 ? (
       <p className="subtle">No agent worked in this range.</p>
     ) : (
