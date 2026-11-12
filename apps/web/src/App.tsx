@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   formatDuration,
   formatHumanDuration,
-  leverage,
   type AgentShiftsResponse,
   type LiveAgentSessionsResponse,
   type MeStatsResponse,
@@ -94,12 +93,11 @@ const withParams = (base: string, params: Record<string, string>): string => {
   return text === "" ? "" : `?${text}`;
 };
 
-type BoardSort = "active" | "agent" | "leverage";
+type BoardSort = "active" | "agent";
 
 const boardSorters: Record<BoardSort, (a: WorkspaceMember, b: WorkspaceMember) => number> = {
   active: (a, b) => b.activeSeconds - a.activeSeconds,
   agent: (a, b) => b.agentSeconds - a.agentSeconds,
-  leverage: (a, b) => (leverage(b) ?? 0) - (leverage(a) ?? 0),
 };
 
 const messageFor = (error: unknown): string =>
@@ -292,13 +290,19 @@ export const App = ({ client }: AppProps) => {
   // The board, refetched whenever scope or range move. It reports its own
   // failure to the page banner and hands the message back, so a caller behind
   // an overlay that covers the banner can repeat it where it can be read.
+  const boardRequest = useRef(0);
   const reloadBoard = useCallback(async (): Promise<string | undefined> => {
+    boardRequest.current += 1;
+    const request = boardRequest.current;
     setBoardFailed(false);
     try {
-      setWorkspace(await client.workspace(scopeParams(rangeQuery(range))));
+      const report = await client.workspace(scopeParams(rangeQuery(range)));
+      if (request !== boardRequest.current) return undefined;
+      setWorkspace(report);
       setDataError(undefined);
       return undefined;
     } catch (error: unknown) {
+      if (request !== boardRequest.current) return undefined;
       if (error instanceof ClientError && error.kind === "auth") {
         expireSession();
         return undefined;
@@ -310,6 +314,10 @@ export const App = ({ client }: AppProps) => {
       return message;
     }
   }, [client, range, scopeParams, expireSession]);
+
+  useEffect(() => {
+    setWorkspace(undefined);
+  }, [range, scope]);
 
   useEffect(() => {
     if (!signedIn || !preferencesReady) return;
@@ -1055,7 +1063,6 @@ export const App = ({ client }: AppProps) => {
                         <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
                           <option value="active">By active time</option>
                           <option value="agent">By agent time</option>
-                          <option value="leverage">By leverage</option>
                         </select>
                       </label>
                     )}

@@ -228,6 +228,20 @@ describe("web client", () => {
       .toBe("application/json");
   });
 
+  it("reads the team view from the API's workspace report, with the query as given", async () => {
+    // Arrange
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse({ members: [] })
+    ));
+    const query = "?fromAt=2026-07-13T05:00:00.000Z&toExclusiveAt=2026-08-12T05:00:00.000Z&scope=p1";
+
+    // Act
+    await client.workspace(query);
+
+    // Assert: the route the API mounts at /reports/workspace.
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(`${apiBaseUrl}/reports/workspace${query}`);
+  });
+
   it("says a refused request is a version mismatch, because no reader composed it", async () => {
     const { client } = clientWith(async (url) => {
       if (url.endsWith("/token")) return jsonResponse({ token: "jwt" });

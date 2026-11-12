@@ -464,8 +464,16 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // The team view follows the overlay's range too: hours beside a name and
   // the breakdown under it must answer for the same days. All time sends no
   // bounds.
+  const lastWorkspaceRange = useRef<StatsRange | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
+    const blanked = lastWorkspaceRange.current !== boardRange;
+    if (blanked) {
+      lastWorkspaceRange.current = boardRange;
+      workspaceFailures.current = 0;
+      setWorkspace(undefined);
+      setWorkspaceError(undefined);
+    }
     let active = true;
     const service = bridge;
     const generation = bridgeGeneration.current;
@@ -483,7 +491,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
         const problem = bridgeError(error);
         if (problem.kind === "auth") return;
         workspaceFailures.current += 1;
-        if (workspaceFailures.current >= 3 || workspace === undefined) setWorkspaceError(problem.message);
+        if (workspaceFailures.current >= 3 || blanked || workspace === undefined) setWorkspaceError(problem.message);
       },
     );
     return () => { active = false; };

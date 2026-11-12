@@ -355,6 +355,18 @@ describe("dashboard", () => {
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
   });
 
+  it("orders the board only by what its rows show, active or agent time", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+
+    // Act
+    const stats = await openAllStats(person);
+    const sort = await stats.findByRole("combobox", { name: /Sort by/ });
+
+    // Assert: each choice is a column on the row; leverage is not one.
+    expect(within(sort).getAllByRole("option").map((option) => option.textContent)).toEqual(["By active time", "By agent time"]);
+  });
+
   it("draws the team totals the server added up, never a sum of the rows", async () => {
     // Arrange
     const person = await signIn(clientFor({
@@ -845,6 +857,37 @@ describe("dashboard", () => {
     await person.click(stats.getByRole("button", { name: "All time" }));
 
     await waitFor(() => expect(workspace).toHaveBeenLastCalledWith(""));
+  });
+
+  it("draws the range on screen, never an older range's answer that lands late", async () => {
+    // Arrange: all time answers only when told to, after the 7-day read asked later.
+    const allTime = { ...workspaceReport, activeSeconds: 90_000 };
+    const lastSevenDays = { ...workspaceReport, activeSeconds: 1_800 };
+    let answerAllTime: ((report: typeof allTime) => void) | undefined;
+    const workspace = vi.fn().mockImplementation((query: string = "") => {
+      if (query === "") return new Promise((resolve) => { answerAllTime = resolve; });
+      const params = new URLSearchParams(query.replace(/^\?/, ""));
+      const days = Math.round((Date.parse(params.get("toExclusiveAt")!) - Date.parse(params.get("fromAt")!)) / 86_400_000);
+      return Promise.resolve(days === 7 ? lastSevenDays : workspaceReport);
+    });
+    const person = await signIn(clientFor({ workspace }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("region", { name: "Your team’s work, together." });
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "All time" }));
+
+    // Assert: the 30 days already drawn do not stand in for all time.
+    expect(stats.queryByRole("region", { name: "Your team’s work, together." })).not.toBeInTheDocument();
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "7d" }));
+    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await act(async () => answerAllTime?.(allTime));
+
+    // Assert
+    expect(view.getByText("Last 7 days")).toBeInTheDocument();
+    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent(/^30m$/);
   });
 
   it("uses local calendar midnights across a daylight-saving boundary", () => {

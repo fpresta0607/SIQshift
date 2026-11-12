@@ -1303,6 +1303,51 @@ describe("the team board", () => {
     expect(within(panel).queryByText("Loading…")).not.toBeInTheDocument();
   });
 
+  it("asks for the team view over the range picked in the overlay", async () => {
+    // Arrange: a Thursday afternoon, so the week began on Monday the 3rd.
+    vi.setSystemTime(new Date(2026, 7, 6, 15));
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "This week" }));
+
+    // Assert: local Monday midnight to the next.
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
+      new Date(2026, 7, 3).toISOString(),
+      new Date(2026, 7, 10).toISOString(),
+    ));
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "All time" }));
+
+    // Assert: all time sends no bounds.
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(undefined, undefined));
+  });
+
+  it("takes today's team view down when the week's read fails, rather than calling it this week", async () => {
+    // Arrange: today's read lands; any read spanning more than a day fails.
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      workspaceReport: vi.fn().mockImplementation((fromAt?: string, toExclusiveAt?: string) => (
+        Date.parse(toExclusiveAt ?? "") - Date.parse(fromAt ?? "") > 2 * 86_400_000
+          ? Promise.reject({ kind: "transient", message: "Could not reach the server." })
+          : Promise.resolve(workspaceReport)
+      )),
+    })} />);
+    const panel = await openAllStats(person);
+    await within(panel).findByRole("region", { name: "Your team’s work, together." });
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "This week" }));
+
+    // Assert: the failure shows at once, and today's totals are gone with it.
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("Could not reach the server.");
+    expect(within(panel).queryByRole("region", { name: "Your team’s work, together." })).not.toBeInTheDocument();
+  });
+
   it("opens on your own breakdown and follows whichever member gets picked", async () => {
     const samStats = {
       ...meStats,
