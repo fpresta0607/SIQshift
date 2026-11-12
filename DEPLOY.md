@@ -93,7 +93,7 @@ commit checked out in it *are* the deploy. Neither is inferred from GitHub, and 
 feature branch left checked out will ship instead of `main`.
 
 ```bash
-cd /home/fpresta0607/firstmate/projects/SIQshift   # the directory Railway is linked to
+cd /path/to/SIQshift                               # the checkout the Railway service is linked to
 git checkout main && git pull                      # ship main, never a feature branch
 git rev-parse --short HEAD                         # record what is going out
 railway up --detach

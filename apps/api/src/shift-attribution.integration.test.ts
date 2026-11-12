@@ -79,7 +79,7 @@ integration("shifts map attribution over a real database", () => {
 
     // A no-mistakes gate worktree: the path names only the run, and the roster
     // identity the runtime minted for this shift is keyed on the remote.
-    const runWorktree = "C:/Users/fpres/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX";
+    const runWorktree = "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX";
     const agentId = randomUUID();
     await database.client`
       insert into agents (id, organization_id, owner_user_id, project_id, repo_root, repo_key, source, name, status)
