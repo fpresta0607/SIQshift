@@ -206,17 +206,6 @@ export type MeStats = {
   hourly: readonly MeStatsHourlyBucket[];
   projects: readonly MeStatsProject[];
   apps: readonly MeStatsApp[];
-  /// The caller's own agent activity in range; empty on an API that predates it.
-  agents: readonly MeStatsAgentActivity[];
-};
-
-/// One agent's activity in `/me/stats`, decoded only as far as the charts
-/// need: which runtime ran, and whether it reported tokens. A null
-/// tokensReported means the API predates the field and cannot say.
-export type MeStatsAgentActivity = {
-  source: string;
-  shiftCount: number;
-  tokensReported: boolean | null;
 };
 
 export type MeStatsConcurrency = {
@@ -251,11 +240,6 @@ export type MeStatsHourlyBucket = {
   hourStart: string;
   activeSeconds: number;
   agentSeconds: number;
-  /// Null when nothing in the hour reported tokens; never an invented zero.
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cacheCreationInputTokens: number | null;
-  cacheReadInputTokens: number | null;
 };
 
 /// The dashboard view state shared with the web app. Only `scope` is
@@ -350,6 +334,30 @@ export type AgentShifts = {
   /// Agent runtime by the hour for the line graph; empty over an unbounded range.
   hourly: readonly MeStatsHourlyBucket[];
   groups: readonly AgentShiftsGroup[];
+  /// The token bars, as the server computed them; absent from an API that
+  /// predates them, which draws no bars.
+  tokenChart?: TokenChart | undefined;
+};
+
+/// One token bar. `tokens` is the server's own total of in and out; all three
+/// are null when nothing in the bucket reported tokens.
+export type TokenChartBucket = {
+  start: string;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  tokens: number | null;
+};
+
+/// The Agents tab's token bars: the period's buckets, and each project's bars
+/// over the same buckets with its total for the period.
+export type TokenChart = {
+  bucketSeconds: number;
+  buckets: readonly TokenChartBucket[];
+  projects: readonly {
+    project: { id: string; name: string };
+    tokens: number;
+    buckets: readonly TokenChartBucket[];
+  }[];
 };
 
 /// Names the last shift a drawer holds, by the triple the rows are ordered
@@ -803,11 +811,6 @@ const decodeHourlyBucket = (value: unknown): MeStatsHourlyBucket => {
     hourStart: string(candidate.hourStart),
     activeSeconds: nonnegativeInteger(candidate.activeSeconds),
     agentSeconds: nonnegativeInteger(candidate.agentSeconds),
-    // Absent on an older API decodes to null - absence shown as absence.
-    inputTokens: nonnegativeIntegerOrNull(candidate.inputTokens),
-    outputTokens: nonnegativeIntegerOrNull(candidate.outputTokens),
-    cacheCreationInputTokens: nonnegativeIntegerOrNull(candidate.cacheCreationInputTokens),
-    cacheReadInputTokens: nonnegativeIntegerOrNull(candidate.cacheReadInputTokens),
   };
 };
 
@@ -818,10 +821,8 @@ export const decodeMeStats = (value: unknown): MeStats => {
   const apps = candidate.apps;
   const byAgent = candidate.byAgent;
   const hourly = candidate.hourly;
-  const agents = candidate.agents;
   if (!Array.isArray(projects) || !Array.isArray(apps) || !Array.isArray(byAgent)) invalidResponse();
   if (hourly !== undefined && hourly !== null && !Array.isArray(hourly)) invalidResponse();
-  if (agents !== undefined && agents !== null && !Array.isArray(agents)) invalidResponse();
   const totalDurationSeconds = nonnegativeInteger(candidate.totalDurationSeconds);
   const attributedSeconds = nonnegativeInteger(candidate.attributedSeconds);
   if (attributedSeconds > totalDurationSeconds) invalidResponse();
@@ -837,22 +838,6 @@ export const decodeMeStats = (value: unknown): MeStats => {
     hourly: (Array.isArray(hourly) ? hourly : []).map(decodeHourlyBucket),
     projects: (projects as unknown[]).map(decodeMeStatsProject),
     apps: (apps as unknown[]).map(decodeMeStatsApp),
-    // Absent on an older API decodes as none known, never an error.
-    agents: (Array.isArray(agents) ? agents : []).map(decodeMeStatsAgentActivity),
-  };
-};
-
-/// Only the fields the charts read; the rest of the row is the web's business.
-const decodeMeStatsAgentActivity = (value: unknown): MeStatsAgentActivity => {
-  const candidate = record(value);
-  const agent = record(candidate.agent);
-  return {
-    source: string(agent.source),
-    shiftCount: nonnegativeInteger(candidate.shiftCount),
-    // Absent on an older API means it cannot say, which decodes to null.
-    tokensReported: candidate.tokensReported === undefined || candidate.tokensReported === null
-      ? null
-      : boolean(candidate.tokensReported),
   };
 };
 
@@ -892,6 +877,43 @@ const decodeAgentShiftRow = (value: unknown): AgentShiftRow => {
   };
 };
 
+const decodeTokenChartBucket = (value: unknown): TokenChartBucket => {
+  const candidate = record(value);
+  return {
+    start: timestamp(candidate.start),
+    tokensIn: nonnegativeIntegerOrNull(candidate.tokensIn),
+    tokensOut: nonnegativeIntegerOrNull(candidate.tokensOut),
+    tokens: nonnegativeIntegerOrNull(candidate.tokens),
+  };
+};
+
+const decodeTokenChartBuckets = (value: unknown): TokenChartBucket[] => {
+  if (!Array.isArray(value)) invalidResponse();
+  return (value as unknown[]).map(decodeTokenChartBucket);
+};
+
+/// Absent on an API that predates the token bars decodes to absent, which
+/// draws no bars; a chart that is there but malformed is an invalid response.
+const decodeTokenChart = (value: unknown): TokenChart | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const candidate = record(value);
+  const bucketSeconds = nonnegativeInteger(candidate.bucketSeconds);
+  if (bucketSeconds === 0 || !Array.isArray(candidate.projects)) invalidResponse();
+  return {
+    bucketSeconds,
+    buckets: decodeTokenChartBuckets(candidate.buckets),
+    projects: (candidate.projects as unknown[]).map((entry) => {
+      const row = record(entry);
+      const project = record(row.project);
+      return {
+        project: { id: uuid(project.id), name: string(project.name) },
+        tokens: nonnegativeInteger(row.tokens),
+        buckets: decodeTokenChartBuckets(row.buckets),
+      };
+    }),
+  };
+};
+
 /// An absent group list decodes to none, never a crash: the deployed API can
 /// be older than this build, and an Agents tab with nothing to say beats one
 /// that dies decoding.
@@ -923,10 +945,11 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
         heldRate: unitRateOrNull(group.heldRate),
       };
     }),
+    tokenChart: decodeTokenChart(candidate.tokenChart),
   };
 };
 
-export const decodeAgentShiftRows = (value: unknown): AgentShiftRows => {
+export const decodeAgentShiftRows =(value: unknown): AgentShiftRows => {
   const candidate = record(value);
   const cursor = candidate.nextCursor;
   return {

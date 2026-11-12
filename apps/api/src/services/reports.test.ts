@@ -10,12 +10,14 @@ import type {
   AgentShiftRecord,
   AgentUsageBucketTotalRecord,
   AgentUsageModelTotalsRecord,
+  AgentUsageProjectBucketTotalRecord,
   AgentUsageRepository,
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
+  ReportLookupRecord,
   ReportPageOptions,
   ReportQuery,
   ReportRepository,
@@ -136,6 +138,10 @@ class Reports implements ReportRepository {
   }
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string) {
     return this.accessible.has(projectId) ? { id: projectId, name: "Timer" } : null;
+  }
+  public defaultProject: ReportLookupRecord | null = { id: ids.project, name: "Timer" };
+  public async readDefaultProject() {
+    return this.defaultProject;
   }
   public async findUserForOrganization(_subject: AuthenticatedSubject, userId: string) {
     return this.accessible.has(userId) ? { id: userId, name: "Alex" } : null;
@@ -367,6 +373,29 @@ class Usage implements AgentUsageRepository {
       byBucket.set(key, record);
     }
     return [...byBucket.values()];
+  }
+  public projectNames = new Map<string, string>([[ids.project, "Timer"], [ids.otherProject, "Field"]]);
+  public projectBucketReads = 0;
+  public async sumByBucketAndProject(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageProjectBucketTotalRecord[]> {
+    this.projectBucketReads += 1;
+    const byKey = new Map<string, AgentUsageProjectBucketTotalRecord>();
+    for (const row of this.scoped(query)) {
+      const key = `${row.bucketStartAt.getTime()}:${row.projectId}`;
+      const record = byKey.get(key) ?? {
+        bucketStartAt: row.bucketStartAt,
+        project: row.projectId === null ? null : { id: row.projectId, name: this.projectNames.get(row.projectId) ?? "Unnamed" },
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
+      record.inputTokens = (record.inputTokens as number) + row.inputTokens;
+      record.outputTokens = (record.outputTokens as number) + row.outputTokens;
+      record.cacheCreationInputTokens = (record.cacheCreationInputTokens as number) + row.cacheCreationInputTokens;
+      record.cacheReadInputTokens = (record.cacheReadInputTokens as number) + row.cacheReadInputTokens;
+      byKey.set(key, record);
+    }
+    return [...byKey.values()];
   }
   public async sumByAgent(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageTotalsRecord[]> {
     this.lastAgentQuery = query;
@@ -1564,6 +1593,107 @@ describe("agent shifts", () => {
     const unbounded = await service.agentShifts(subject, {});
     expect(unbounded.hourly).toEqual([]);
     expect(unbounded.totalAgentSeconds).toBe(5_400);
+  });
+
+  describe("token chart", () => {
+    const shift = (sessionId: string, projectId: string | null, projectName: string | null, start: Date, end: Date): AgentIntervalRecord => ({
+      sessionId,
+      user: { id: ids.user, name: "Alex" },
+      source: "claude_code",
+      model: null,
+      cwd: "C:/dev/ledger",
+      projectId,
+      projectName,
+      agentId: ids.session,
+      agentRepoRoot: null,
+      agentRepoKey: null,
+      startedAt: start,
+      endedAt: end,
+    });
+    const day = { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() };
+
+    it("bars a day by the hour, with in, out and their sum added on the server", async () => {
+      const reports = new Reports();
+      reports.agentIntervals = [shift("s1", ids.project, "Timer", at(10), at(12))];
+      const usage = new Usage([
+        usageSeed({ bucketStartAt: at(10), inputTokens: 100, cacheCreationInputTokens: 20, cacheReadInputTokens: 3_000, outputTokens: 400 }),
+        usageSeed({ bucketStartAt: at(11), inputTokens: 1, outputTokens: 2 }),
+      ]);
+      const service = createReportService({ reports, agentUsage: usage });
+
+      const result = await service.agentShifts(subject, day);
+
+      expect(result.tokenChart?.bucketSeconds).toBe(3_600);
+      expect(result.tokenChart?.buckets).toHaveLength(24);
+      expect(result.tokenChart?.buckets[10]).toEqual({ start: at(10).toISOString(), tokensIn: 3_120, tokensOut: 400, tokens: 3_520 });
+      expect(result.tokenChart?.buckets[11]).toEqual({ start: at(11).toISOString(), tokensIn: 1, tokensOut: 2, tokens: 3 });
+      // An hour nothing reported is no data, never an invented zero.
+      expect(result.tokenChart?.buckets[12]).toEqual({ start: at(12).toISOString(), tokensIn: null, tokensOut: null, tokens: null });
+    });
+
+    it("splits the bars by project, counts usage of shifts that named none under the default project, and lists a project without tokens at zero", async () => {
+      const reports = new Reports();
+      reports.defaultProject = { id: ids.otherProject, name: "General" };
+      reports.agentIntervals = [
+        shift("s1", ids.project, "Timer", at(9), at(10)),
+        shift("s2", null, null, at(10), at(11)),
+        shift("s3", "91c7e513-b094-4d4c-ae55-21790ae019a4", "Quiet", at(11), at(12)),
+      ];
+      const usage = new Usage([
+        usageSeed({ bucketStartAt: at(9), projectId: ids.project, inputTokens: 10, outputTokens: 5 }),
+        usageSeed({ bucketStartAt: at(10), projectId: null, inputTokens: 200, outputTokens: 100 }),
+        usageSeed({ bucketStartAt: at(10), projectId: ids.otherProject, inputTokens: 1, outputTokens: 1 }),
+      ]);
+      usage.projectNames.set(ids.otherProject, "General");
+      const service = createReportService({ reports, agentUsage: usage });
+
+      const result = await service.agentShifts(subject, day);
+
+      expect(result.tokenChart?.projects.map((entry) => [entry.project.name, entry.tokens])).toEqual([
+        ["General", 302],
+        ["Timer", 15],
+        ["Quiet", 0],
+      ]);
+      const general = result.tokenChart?.projects[0];
+      expect(general?.buckets[10]).toEqual({ start: at(10).toISOString(), tokensIn: 201, tokensOut: 101, tokens: 302 });
+      expect(result.tokenChart?.projects[2]?.buckets).toEqual([]);
+      // The bars for every project together hold all of it.
+      expect(result.tokenChart?.buckets[10]?.tokens).toBe(302);
+      expect(result.tokenChart?.buckets[9]?.tokens).toBe(15);
+    });
+
+    it("bars a longer range by the day, the spare daylight-saving hour joining the last day", async () => {
+      const reports = new Reports();
+      reports.agentIntervals = [shift("s1", ids.project, "Timer", at(10), at(11))];
+      const usage = new Usage([
+        usageSeed({ bucketStartAt: at(10), inputTokens: 7, outputTokens: 3 }),
+        // The last hour of a week that runs one hour long.
+        usageSeed({ bucketStartAt: new Date(at(0).getTime() + 7 * 24 * 3_600_000), inputTokens: 1, outputTokens: 1 }),
+      ]);
+      const service = createReportService({ reports, agentUsage: usage });
+
+      const result = await service.agentShifts(subject, {
+        fromAt: at(0).toISOString(),
+        toExclusiveAt: new Date(at(0).getTime() + (7 * 24 + 1) * 3_600_000).toISOString(),
+      });
+
+      expect(result.tokenChart?.bucketSeconds).toBe(86_400);
+      expect(result.tokenChart?.buckets.map((bucket) => bucket.tokens)).toEqual([10, null, null, null, null, null, 2]);
+    });
+
+    it("reads no usage and draws no chart over an unbounded range, nor without a usage source", async () => {
+      const reports = new Reports();
+      reports.agentIntervals = [shift("s1", ids.project, "Timer", at(10), at(11))];
+      const usage = new Usage([usageSeed({ bucketStartAt: at(10), inputTokens: 7, outputTokens: 3 })]);
+
+      const unbounded = await createReportService({ reports, agentUsage: usage }).agentShifts(subject, {});
+      const unread = await createReportService({ reports }).agentShifts(subject, day);
+
+      expect(unbounded.tokenChart).toBeUndefined();
+      expect(usage.projectBucketReads).toBe(0);
+      expect(unbounded.totalAgentSeconds).toBe(3_600);
+      expect(unread.tokenChart).toBeUndefined();
+    });
   });
 
   it("labels a run-directory shift by its roster identity's repository, so gate worktrees land on their codebase", async () => {

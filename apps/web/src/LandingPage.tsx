@@ -48,7 +48,6 @@ function ProductPreview() {
     hourStart: new Date(2026, 9, 12, index + 8).toISOString(),
     activeSeconds: active * activeSeconds / 18000,
     agentSeconds: agent * agentSeconds / 38400,
-    inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null,
   }));
   const projects = exampleProjects.map((project, index) => ({
     ...project, seconds: sum(visibleMembers.map(member => member.projects[index] ?? 0)),

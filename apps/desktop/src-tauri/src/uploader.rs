@@ -1680,7 +1680,10 @@ mod tests {
             let mut state = lock(&shared);
             state.builder.apply(
                 1_000,
-                &crate::monitor::ActivitySignal::Active { process_name: None },
+                &crate::monitor::ActivitySignal::Active {
+                    process_name: None,
+                    idle_seconds: Some(0),
+                },
             );
             advance_sessions(&mut state, 1_000);
         }

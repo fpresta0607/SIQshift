@@ -284,6 +284,9 @@ class MemoryReports implements ReportRepository {
   public async findProjectForOrganization(): Promise<never> {
     throw new Error("not used by me/stats");
   }
+  public async readDefaultProject(): Promise<never> {
+    throw new Error("not used by me/stats");
+  }
   /** The membership check behind the `userId` filter, against the seeded users. */
   public async findUserForOrganization(subject: AuthenticatedSubject, userId: string): Promise<{ id: string; name: string } | null> {
     const found = users[userId as keyof typeof users];

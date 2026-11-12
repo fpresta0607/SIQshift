@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openAgentsGroup, openClockCard, openMemberStats, openTodayCard } from "./harness.js";
+import { openAgentsGroup, openClockCard, openConnectedAgentRow, openMemberStats, openTodayCard } from "./harness.js";
 
 /** Every `.meter-row`'s box, plus the boxes of the four cells inside it. */
 const rowBoxes = (page: import("@playwright/test").Page) =>
@@ -133,6 +133,42 @@ for (const app of ["desktop", "web"] as const) {
     });
   });
 }
+
+// Issue 101: the owner saw the Claude Code reading cut off. A connected agent
+// has no minutes of its own, so its row had an empty duration column that the
+// dial stopped at, and a full plan's "100%" ran into its own ring.
+test.describe("a connected agent's row on the desktop", () => {
+  test("gives the plan dial the empty duration cell, so its reset shows whole", async ({ page }) => {
+    await page.setViewportSize({ width: 520, height: 920 });
+    await openConnectedAgentRow(page);
+
+    const measured = await page.evaluate(() => {
+      const [agent, app] = [...document.querySelectorAll(".meter-row")];
+      const until = agent!.querySelector(".quota-window")!;
+      return {
+        dialRight: agent!.querySelector(".quota")!.getBoundingClientRect().right,
+        durationLeft: app!.querySelector(".meter-duration")!.getBoundingClientRect().left,
+        isUntilClipped: until.scrollWidth > until.clientWidth,
+      };
+    });
+
+    expect(measured.dialRight).toBeGreaterThan(measured.durationLeft);
+    expect(measured.isUntilClipped).toBe(false);
+  });
+
+  test("prints a full plan's 100% inside its ring", async ({ page }) => {
+    await page.setViewportSize({ width: 520, height: 920 });
+    await openConnectedAgentRow(page);
+
+    const farthestCorner = await page.evaluate(() => {
+      const box = document.querySelector<SVGTextElement>(".quota-figure")!.getBBox();
+      return Math.hypot(Math.max(18 - box.x, box.x + box.width - 18), Math.max(18 - box.y, box.y + box.height - 18));
+    });
+
+    // The ring's inner edge: its 16px radius less half its 4px stroke.
+    expect(farthestCorner).toBeLessThanOrEqual(14);
+  });
+});
 
 test("a wide window spends its room on the name, not only on the bar", async ({ page }) => {
   // A fixed 10rem name cap ellipsized repo labels on a maximised dashboard

@@ -24,7 +24,7 @@ import type {
 } from "../repositories.js";
 import { AGENT_STALE_WINDOW_MS } from "./agent-sessions.js";
 import { agentCodebaseLabel, repoLabel } from "./attribution.js";
-import { hourlySeries, maxConcurrentCount, medianDurationSeconds, normalizedQuery, safeInteger } from "./reports.js";
+import { maxConcurrentCount, medianDurationSeconds, normalizedQuery, safeInteger, timeSeries } from "./reports.js";
 
 export interface AgentPatchInput {
   name?: string;
@@ -396,7 +396,7 @@ export function createAgentService(dependencies: AgentServiceDependencies): Agen
           .sort((a, b) => b.agentSeconds - a.agentSeconds || (a.repo ?? "").localeCompare(b.repo ?? "")),
         shifts: shiftViews,
         trend,
-        hourly: hourlySeries(
+        hourly: timeSeries(
           ownerPresence.map((row) => ({ start: row.startedAt.getTime(), end: row.endedAt.getTime() })),
           shiftIntervals,
           usageBuckets,

@@ -41,6 +41,9 @@ class Reports implements ReportRepository {
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string) {
     return projectId === ids.project ? { id: ids.project, name: "Timer" } : null;
   }
+  public async readDefaultProject() {
+    return { id: ids.project, name: "Timer" };
+  }
   public async findUserForOrganization(_subject: AuthenticatedSubject, userId: string) {
     return userId === ids.user ? { id: ids.user, name: "Alex" } : null;
   }

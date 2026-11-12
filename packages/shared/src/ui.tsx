@@ -4,8 +4,11 @@ import { agentRuntimeForBinary, agentRuntimeLabel } from "./agent-runtimes.js";
 import { friendlyAppName } from "./app-names.js";
 import { formatHumanDuration } from "./time.js";
 import { AgentRuntimeIcon } from "./agent-marks.js";
+import { ChartTooltip } from "./chart-tooltip.js";
 
 export { AgentRuntimeIcon } from "./agent-marks.js";
+export { QuietMark } from "./quiet-mark.js";
+export { TokenBarChart, type ChartTokenBucket, type ChartTokens } from "./token-bar-chart.js";
 
 /**
  * The surfaces both frontends draw a measurement in.
@@ -104,25 +107,12 @@ export const recordedBasis = (
   return withAgent < 60 ? gap : `${gap}, ${formatHumanDuration(withAgent)} of that with an agent running`;
 };
 
-/// A compact count for token axes and readouts: 950, 12k, 3.4M. Token counts
-/// dwarf durations, so the charts format them on their own scale.
-const formatTokenCount = (value: number): string => {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  return String(value);
-};
-
 /// The structural slice of an hourly bucket the charts read. Each app's own
 /// bucket type satisfies it.
 export type ChartHourlyBucket = {
   hourStart: string;
   activeSeconds: number;
   agentSeconds: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cacheCreationInputTokens: number | null;
-  cacheReadInputTokens: number | null;
 };
 
 type ChartSeries = {
@@ -131,152 +121,63 @@ type ChartSeries = {
   label: string;
   /// The brand.css chart token the stroke, points, and gradient read.
   color: string;
-  values: readonly (number | null)[];
+  values: readonly number[];
 };
 
-/// The tooltip both charts share: the hovered or keyboard-focused moment, and
-/// each series' value there. Positioned as a percentage of the plot width so
-/// the SVG's viewBox scaling never desyncs it.
-const ChartTooltip = ({
-  left,
-  title,
-  rows,
-}: {
-  left: number;
-  title: string;
-  rows: readonly { color: string; label: string; value: string }[];
-}) => (
-  <div className="graph-tooltip" style={{ left: `${left}%` }}>
-    <p className="graph-tooltip-title">{title}</p>
-    {rows.map((row) => (
-      <p key={row.label} className="graph-tooltip-row">
-        <span className="legend-line" style={{ background: row.color }} aria-hidden="true" />
-        {row.label} {row.value}
-      </p>
-    ))}
-  </div>
-);
-
-/// The smallest 1/2/2.5/5 multiple of a power of ten at or above `raw`.
-const niceStep = (raw: number): number => {
-  const magnitude = 10 ** Math.floor(Math.log10(raw));
-  for (const multiplier of [1, 2, 2.5, 5, 10]) {
-    if (multiplier * magnitude >= raw) return multiplier * magnitude;
-  }
-  return 10 * magnitude;
-};
-
-/// SVG line chart - agents in the brand green, the person in gray, tokens in
-/// blue and purple. No chart library: a fixed viewBox, one path per series,
-/// and a gradient area under each. The server buckets to the caller's local
-/// hours, so the x-axis reads midnight-to-midnight on the viewer's clock.
-/// Token fields are null when nothing in the hour reported; the path breaks
-/// there rather than dropping to a zero that never happened.
+/// SVG line chart of time and nothing else: agents in the brand green, the
+/// person in gray. Tokens have their own bar chart on the Agents tab. No chart
+/// library: a fixed viewBox, one path per series, and a gradient area under
+/// each. The server buckets to the caller's local hours, so the x-axis reads
+/// midnight-to-midnight on the viewer's clock.
 export const HourlyGraph = ({
   buckets,
   personLabel,
-  tokenBlind = [],
 }: {
   buckets: readonly ChartHourlyBucket[];
   /// Names the presence line. Absent, no person series draws at all - the
   /// Agents tab plots runtime alone, where a flat "You" at zero would only
   /// claim somebody was measured and absent.
   personLabel?: string;
-  /// Runtimes that ran in range but reported no tokens, named beneath the plot.
-  tokenBlind?: readonly string[];
 }) => {
-  const [measure, setMeasure] = useState<"time" | "tokens">("time");
   const [readout, setReadout] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   if (buckets.length === 0) return null;
 
-  const hasTokens = buckets.some((bucket) => bucket.inputTokens !== null || bucket.outputTokens !== null);
-  // "In" is everything the model consumed: fresh input plus both cache sides.
-  const tokensIn = (bucket: ChartHourlyBucket): number | null =>
-    bucket.inputTokens === null
-      ? null
-      : bucket.inputTokens + (bucket.cacheCreationInputTokens ?? 0) + (bucket.cacheReadInputTokens ?? 0);
-  const series: readonly ChartSeries[] = measure === "tokens"
-    ? [
-        { id: "tokens-in", label: "Tokens in", color: "var(--chart-token-in)", values: buckets.map(tokensIn) },
-        { id: "tokens-out", label: "Tokens out", color: "var(--chart-token-out)", values: buckets.map((bucket) => bucket.outputTokens) },
-      ]
-    : [
-        { id: "agent", label: "Agents", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) },
-        ...(personLabel === undefined
-          ? []
-          : [{ id: "human", label: personLabel, color: "var(--chart-human)", values: buckets.map((bucket) => bucket.activeSeconds) }]),
-      ];
-  const formatValue = measure === "tokens" ? formatTokenCount : formatHumanDuration;
+  const series: readonly ChartSeries[] = [
+    { id: "agent", label: "Agents", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) },
+    ...(personLabel === undefined
+      ? []
+      : [{ id: "human", label: personLabel, color: "var(--chart-human)", values: buckets.map((bucket) => bucket.activeSeconds) }]),
+  ];
 
   const width = 640;
   const height = 190;
   const margin = { left: 44, right: 12, top: 14, bottom: 24 };
   const plotW = width - margin.left - margin.right;
   const plotH = height - margin.top - margin.bottom;
-  const rawMax = Math.max(
-    measure === "tokens" ? 3 : 60,
-    ...series.flatMap((entry) => entry.values.filter((value): value is number => value !== null)),
-  );
+  const rawMax = Math.max(60, ...series.flatMap((entry) => entry.values));
   // Gridlines land on thirds of yMax, so the quantum stays divisible by three
   // and every labeled line reads a round number.
-  const yMax = measure === "tokens"
-    ? 3 * niceStep(Math.ceil(rawMax / 3))
-    : Math.max(900, Math.ceil(rawMax / 900) * 900);
+  const yMax = Math.max(900, Math.ceil(rawMax / 900) * 900);
   const x = (index: number): number =>
     buckets.length === 1 ? margin.left + plotW / 2 : margin.left + (index / (buckets.length - 1)) * plotW;
   const y = (value: number): number => margin.top + plotH - (value / yMax) * plotH;
 
-  /// One path per series; a null lifts the pen, so a gap reads as a gap
-  /// instead of a plunge to the baseline.
-  const linePath = (values: readonly (number | null)[]): string => {
-    let d = "";
-    let pen = false;
-    values.forEach((value, index) => {
-      if (value === null) {
-        pen = false;
-        return;
-      }
-      d += `${pen ? "L" : "M"}${x(index).toFixed(1)},${y(value).toFixed(1)}`;
-      pen = true;
-    });
-    return d;
-  };
-
-  type Run = { start: number; end: number };
-  /// The contiguous non-null spans of a series; the gradient area fills one
-  /// run at a time so it too breaks over gaps.
-  const runs = (values: readonly (number | null)[]): Run[] => {
-    const spans: Run[] = [];
-    let start: number | null = null;
-    values.forEach((value, index) => {
-      if (value === null) {
-        if (start !== null) spans.push({ start, end: index - 1 });
-        start = null;
-      } else if (start === null) {
-        start = index;
-      }
-    });
-    if (start !== null) spans.push({ start, end: values.length - 1 });
-    return spans;
-  };
-  const areaPath = (values: readonly (number | null)[], run: Run): string => {
-    let d = `M${x(run.start).toFixed(1)},${y(0).toFixed(1)}`;
-    for (let index = run.start; index <= run.end; index += 1) {
-      d += `L${x(index).toFixed(1)},${y(values[index] ?? 0).toFixed(1)}`;
-    }
-    return `${d}L${x(run.end).toFixed(1)},${y(0).toFixed(1)}Z`;
-  };
+  const linePath = (values: readonly number[]): string =>
+    values.map((value, index) => `${index === 0 ? "M" : "L"}${x(index).toFixed(1)},${y(value).toFixed(1)}`).join("");
+  const areaPath = (values: readonly number[]): string =>
+    `M${x(0).toFixed(1)},${y(0).toFixed(1)}`
+    + values.map((value, index) => `L${x(index).toFixed(1)},${y(value).toFixed(1)}`).join("")
+    + `L${x(values.length - 1).toFixed(1)},${y(0).toFixed(1)}Z`;
 
   // Day ranges show every point; longer ranges thin to each series' local
   // extrema, plus wherever the read-out sits.
   const showEveryPoint = buckets.length <= 48;
-  const isExtremum = (values: readonly (number | null)[], index: number): boolean => {
-    const value = values[index];
-    if (value === null || value === undefined) return false;
+  const isExtremum = (values: readonly number[], index: number): boolean => {
+    const value = values[index]!;
     const previous = values[index - 1];
     const next = values[index + 1];
-    if (previous === null || previous === undefined || next === null || next === undefined) return true;
+    if (previous === undefined || next === undefined) return true;
     return (value > previous && value > next) || (value < previous && value < next);
   };
 
@@ -316,34 +217,15 @@ export const HourlyGraph = ({
   const hourLabel = (index: number): string =>
     new Date(buckets[index]!.hourStart).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const summary = (index: number): string =>
-    `${hourLabel(index)}: ${series
-      .map((entry) => {
-        const value = entry.values[index];
-        return `${entry.label} ${value === null || value === undefined ? "no data" : formatValue(value)}`;
-      })
-      .join(", ")}`;
+    `${hourLabel(index)}: ${series.map((entry) => `${entry.label} ${formatHumanDuration(entry.values[index]!)}`).join(", ")}`;
 
   return (
     <div className="graph" data-testid="hourly-graph">
-      {hasTokens && (
-        <div className="range-toggle graph-mode" role="group" aria-label="Chart measure">
-          {(["time", "tokens"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              className={measure === value ? "is-active" : undefined}
-              onClick={() => setMeasure(value)}
-            >
-              {value === "time" ? "Time" : "Tokens"}
-            </button>
-          ))}
-        </div>
-      )}
       <svg
         ref={svgRef}
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={measure === "tokens" ? "Hourly token usage" : "Hourly active and agent time"}
+        aria-label="Hourly active and agent time"
         tabIndex={0}
         onMouseMove={(event) => {
           const index = indexFromPointer(event.clientX);
@@ -374,7 +256,7 @@ export const HourlyGraph = ({
                 stroke={third === 0 ? "var(--chart-grid)" : "var(--chart-grid-soft)"}
               />
               <text x={margin.left - 6} y={y(value) + 3} fill="var(--chart-axis)" fontSize="9" textAnchor="end">
-                {formatValue(value)}
+                {formatHumanDuration(value)}
               </text>
             </g>
           );
@@ -382,13 +264,9 @@ export const HourlyGraph = ({
         {xTicks.map(({ index, label }) => (
           <text key={index} x={x(index)} y={height - 6} fill="var(--chart-axis)" fontSize="9" textAnchor="middle">{label}</text>
         ))}
-        {series.map((entry) =>
-          runs(entry.values)
-            .filter((run) => run.end > run.start)
-            .map((run) => (
-              <path key={`${entry.id}-${run.start}`} d={areaPath(entry.values, run)} fill={`url(#hourly-graph-fill-${entry.id})`} stroke="none" />
-            )),
-        )}
+        {buckets.length > 1 && series.map((entry) => (
+          <path key={`${entry.id}-area`} d={areaPath(entry.values)} fill={`url(#hourly-graph-fill-${entry.id})`} stroke="none" />
+        ))}
         {active !== null && (
           <line x1={x(active)} y1={margin.top} x2={x(active)} y2={margin.top + plotH} stroke="var(--chart-grid)" />
         )}
@@ -406,7 +284,6 @@ export const HourlyGraph = ({
         ))}
         {series.map((entry) =>
           entry.values.map((value, index) => {
-            if (value === null) return null;
             if (!showEveryPoint && !isExtremum(entry.values, index) && index !== active) return null;
             return (
               <circle
@@ -427,10 +304,7 @@ export const HourlyGraph = ({
         <ChartTooltip
           left={(x(active) / width) * 100}
           title={hourLabel(active)}
-          rows={series.map((entry) => {
-            const value = entry.values[active];
-            return { color: entry.color, label: entry.label, value: value === null || value === undefined ? "-" : formatValue(value) };
-          })}
+          rows={series.map((entry) => ({ color: entry.color, label: entry.label, value: formatHumanDuration(entry.values[active]!) }))}
         />
       )}
       <p className="visually-hidden" role="status">{active === null ? "" : summary(active)}</p>
@@ -439,12 +313,6 @@ export const HourlyGraph = ({
           <li key={entry.id}><span className="legend-line" style={{ background: entry.color }} aria-hidden="true" />{entry.label}</li>
         ))}
       </ul>
-      {/* Named only while the token series is on screen: ambient, the note
-          repeated under every graph on the page and read as a standing
-          warning about nothing the viewer was looking at. */}
-      {measure === "tokens" && tokenBlind.length > 0 && (
-        <p className="graph-note">No token data from {tokenBlind.join(", ")}.</p>
-      )}
     </div>
   );
 };
@@ -632,14 +500,12 @@ export const MeterRowItem = ({
         style={{ "--share": `${row.share}%` } as CSSProperties}
       />
     )}
-    <span className="meter-duration">
-      {/* "connected", not "working": a zero-second agent row exists because
-          the tool registered a session, which is not the same as it having
-          done anything yet. */}
-      {row.durationSeconds === 0 && row.source !== undefined
-        ? <span className="app-active">connected</span>
-        : formatHumanDuration(row.durationSeconds)}
-    </span>
+    {/* A zero-second agent row exists because the tool is connected, and the
+        row being there already says so: it prints no state word, and the
+        measure takes the empty duration cell. */}
+    {(row.durationSeconds > 0 || row.source === undefined) && (
+      <span className="meter-duration">{formatHumanDuration(row.durationSeconds)}</span>
+    )}
   </li>
 );
 

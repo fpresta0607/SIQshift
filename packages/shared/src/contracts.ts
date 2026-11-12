@@ -818,6 +818,49 @@ export const agentsReportResponseSchema = z
   })
   .strict();
 
+/**
+ * One bar of the token chart. Every figure is summed on the server, so a
+ * client draws `tokens` as it is and adds nothing: `tokensIn` is fresh input
+ * plus both cache sides, the same "in" the agent rows report, and `tokens` is
+ * in plus out. Null, never zero, when nothing in the bucket reported tokens.
+ */
+export const tokenBucketSchema = z
+  .object({
+    /** Inclusive start of the bucket, an instant on the caller's local calendar. */
+    start: timestampSchema,
+    tokensIn: z.number().int().nonnegative().safe().nullable(),
+    tokensOut: z.number().int().nonnegative().safe().nullable(),
+    tokens: z.number().int().nonnegative().safe().nullable(),
+  })
+  .strict();
+
+/**
+ * Tokens burned over a range, bucketed by the hour across a one-day range and
+ * by the day across anything longer. An unbounded range has no buckets, the
+ * same refusal the hourly series makes.
+ */
+export const tokenChartSchema = z
+  .object({
+    bucketSeconds: z.number().int().positive().safe(),
+    /** Every project's tokens together. */
+    buckets: z.array(tokenBucketSchema),
+    /**
+     * Each project the range's shifts or tokens ran under, most tokens first.
+     * A shift that named no project counts under the workspace's default
+     * project, the same rule the project rows follow. `tokens` is the
+     * project's total over the range, and zero means its shifts reported
+     * none.
+     */
+    projects: z.array(z
+      .object({
+        project: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+        tokens: z.number().int().nonnegative().safe(),
+        buckets: z.array(tokenBucketSchema),
+      })
+      .strict()),
+  })
+  .strict();
+
 export const agentShiftsFiltersSchema = z
   .object({
     fromAt: timestampSchema.optional(),
@@ -939,6 +982,12 @@ export const agentShiftsResponseSchema = z
       // carrying one is a contradiction, and the wire refuses it.
       .strict()
       .refine((group) => group.repo === null || group.nullCause == null)),
+    /**
+     * Tokens burned over the range, for the tab's bar chart. Optional, because
+     * the API and the dashboards deploy separately, and a dashboard ahead of
+     * its API draws no chart rather than failing the tab.
+     */
+    tokenChart: tokenChartSchema.optional(),
   })
   .strict();
 
@@ -1364,6 +1413,8 @@ export type JoinOrganizationRequest = z.infer<typeof joinOrganizationRequestSche
 export type AgentSplit = z.infer<typeof agentSplitSchema>;
 export type Concurrency = z.infer<typeof concurrencySchema>;
 export type HourlyBucket = z.infer<typeof hourlyBucketSchema>;
+export type TokenBucket = z.infer<typeof tokenBucketSchema>;
+export type TokenChart = z.infer<typeof tokenChartSchema>;
 export type LeaderboardEntry = z.infer<typeof leaderboardEntrySchema>;
 export type ProjectDeleteRequest = z.infer<typeof projectDeleteRequestSchema>;
 export type ProjectScope = z.infer<typeof projectScopeSchema>;

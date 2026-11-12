@@ -50,6 +50,7 @@ import {
   type AgentUsageRecord,
   type AgentUsageBucketTotalRecord,
   type AgentUsageModelTotalsRecord,
+  type AgentUsageProjectBucketTotalRecord,
   type AgentUsageRepository,
   type AgentUsageTotalsRecord,
   type UpsertAgentUsageBucket,
@@ -727,6 +728,16 @@ export class DrizzleReportRepository implements ReportRepository {
       .select({ id: projects.id, name: projects.name })
       .from(projects)
       .where(and(eq(projects.id, projectId), eq(projects.organizationId, subject.organizationId)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  public async readDefaultProject(subject: AuthenticatedSubject): Promise<ReportLookupRecord | null> {
+    const rows = await this.db
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(and(eq(projects.organizationId, subject.organizationId), eq(projects.archived, false)))
+      .orderBy(desc(projects.isDefault), asc(projects.createdAt), asc(projects.id))
       .limit(1);
     return rows[0] ?? null;
   }
@@ -2118,6 +2129,36 @@ export class DrizzleAgentUsageRepository implements AgentUsageRepository {
         .groupBy(agentUsage.bucketStartAt)
         .orderBy(asc(agentUsage.bucketStartAt)));
     return rows;
+  }
+
+  public async sumByBucketAndProject(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageProjectBucketTotalRecord[]> {
+    const rows = await this.db
+      .select({
+        bucketStartAt: agentUsage.bucketStartAt,
+        projectId: projects.id,
+        projectName: projects.name,
+        ...this.usageSums(),
+      })
+      .from(agentUsage)
+      .innerJoin(agentSessions, and(
+        eq(agentSessions.organizationId, agentUsage.organizationId),
+        eq(agentSessions.id, agentUsage.agentSessionId),
+      ))
+      .leftJoin(projects, and(
+        eq(projects.organizationId, agentSessions.organizationId),
+        eq(projects.id, agentSessions.projectId),
+      ))
+      .where(and(
+        ...this.usageScopeConditions(subject, query),
+        query.projectId === undefined ? undefined : eq(agentSessions.projectId, query.projectId),
+        query.unassignedOnly === true ? isNull(agentSessions.projectId) : undefined,
+      ))
+      .groupBy(agentUsage.bucketStartAt, projects.id, projects.name)
+      .orderBy(asc(agentUsage.bucketStartAt));
+    return rows.map(({ projectId, projectName, ...sums }) => ({
+      ...sums,
+      project: projectId === null || projectName === null ? null : { id: projectId, name: projectName },
+    }));
   }
 
   public async sumByBucketForAgent(

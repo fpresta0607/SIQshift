@@ -461,6 +461,12 @@ window (`WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`,
 `WM_POWERBROADCAST`/`PBT_APMSUSPEND`); unlock and resume raise no event, because
 the next poll closes the span down the same code path.
 
+A pause without input counts as work until **five minutes** pass, because reading an agent's output and thinking take minutes.
+Past that, the worked span ends at the last input, so the pause that turned out to be time away is not counted.
+A span closed on schedule in the middle of a pause also ends at the last input.
+Coming back, the span starts at the poll before the input was read, since the first input between two polls is unknown; that bound counts up to one interval early, but a short burst that starts and ends between two polls is no longer dropped.
+Input no newer than a lock or a quiet span's start, such as the keystroke that locked the screen, does not end that span.
+
 Hands off is not always away. When the input answer says idle, three more
 read-only checks can still rescue the tick as hands-off work: media playing
 (`GlobalSystemMediaTransportControlsSessionManager`), presentation or

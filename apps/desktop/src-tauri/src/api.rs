@@ -225,6 +225,40 @@ pub struct AgentShifts {
     pub hourly: Vec<MeStatsHourlyBucket>,
     #[serde(default)]
     pub groups: Vec<AgentShiftsGroup>,
+    /// The token bars for the tab, computed by the server. Absent from an API
+    /// that predates them, which leaves the tab without bars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_chart: Option<TokenChart>,
+}
+
+/// The Agents tab's token bars: the period's buckets, and each project's bars
+/// over the same buckets with its total. Every figure is the server's; the
+/// webview draws them as given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenChart {
+    pub bucket_seconds: u64,
+    pub buckets: Vec<TokenBucket>,
+    pub projects: Vec<TokenChartProject>,
+}
+
+/// One bar. All three counts are `None` when nothing in the bucket reported
+/// tokens, never a zero the server did not send.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenBucket {
+    pub start: String,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenChartProject {
+    pub project: LeaderboardMember,
+    pub tokens: u64,
+    pub buckets: Vec<TokenBucket>,
 }
 
 /// One codebase's group head: its summed runtime and how many shifts made it.
@@ -613,23 +647,13 @@ pub struct ProjectUsage {
 }
 
 /// One hour of the caller's local calendar for the line graph: active time
-/// and agent runtime bucketed to the hour, plus the token counters the hour's
-/// usage buckets reported. Token fields are null - never zero - when nothing
-/// in the hour reported tokens.
+/// and agent runtime bucketed to the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeStatsHourlyBucket {
     pub hour_start: String,
     pub active_seconds: u64,
     pub agent_seconds: u64,
-    #[serde(default)]
-    pub input_tokens: Option<u64>,
-    #[serde(default)]
-    pub output_tokens: Option<u64>,
-    #[serde(default)]
-    pub cache_creation_input_tokens: Option<u64>,
-    #[serde(default)]
-    pub cache_read_input_tokens: Option<u64>,
 }
 
 /// The `GET /me/stats` response: the reporting service's attribution totals
@@ -658,32 +682,6 @@ pub struct MeStats {
     /// graph", exactly as it already does.
     #[serde(default)]
     pub hourly: Vec<MeStatsHourlyBucket>,
-    /// The caller's own agent activity in range, decoded only as far as the
-    /// charts need. Defaulted so an API from before the field shipped still
-    /// parses; the webview reads an empty list as "nothing to name".
-    #[serde(default)]
-    pub agents: Vec<MeStatsAgentActivity>,
-}
-
-/// One agent's activity slice in `/me/stats`: the runtime it ran under, its
-/// shift count, and whether it reported tokens (`None` on an API that
-/// predates the field, which the webview refuses to read as "no").
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MeStatsAgentActivity {
-    pub agent: MeStatsAgentActivityRef,
-    pub shift_count: u32,
-    #[serde(default)]
-    pub tokens_reported: Option<bool>,
-}
-
-/// The runtime identity inside an activity row; the rest of the roster agent
-/// is the web dashboard's business.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MeStatsAgentActivityRef {
-    pub id: String,
-    pub source: AgentSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1463,7 +1461,11 @@ mod tests {
         // The line above the groups is the server's series now, not a fold over
         // rows this response no longer carries.
         assert_eq!(shifts.hourly[0].agent_seconds, 5400);
-        assert_eq!(shifts.hourly[0].input_tokens, None);
+        // An API that predates the token bars sends none, and none go on.
+        assert_eq!(shifts.token_chart, None);
+        assert!(!serde_json::to_string(&shifts)
+            .expect("serializes")
+            .contains("tokenChart"));
 
         // A newer API's cause rides through to the webview, so the desktop can
         // name why a group has no codebase instead of rendering one row for
@@ -1497,6 +1499,38 @@ mod tests {
         assert_eq!(bare.groups[0].group_key, "");
         let wire = serde_json::to_string(&bare).expect("serializes");
         assert!(wire.contains("\"groupKey\":\"\""));
+    }
+
+    /// The token bars reach the webview exactly as the server sent them: the
+    /// host adds nothing up, so a total that is not in + out stays as it came.
+    #[test]
+    fn carries_the_servers_token_bars_through_as_given() {
+        let shifts: AgentShifts = serde_json::from_str(
+            r#"{"tokenChart": {
+                "bucketSeconds": 3600,
+                "buckets": [{"start": "2026-08-06T15:00:00.000Z", "tokensIn": 100, "tokensOut": 50, "tokens": 999}],
+                "projects": [{
+                    "project": {"id": "p1", "name": "Ledger"},
+                    "tokens": 0,
+                    "buckets": [{"start": "2026-08-06T15:00:00.000Z", "tokensIn": null, "tokensOut": null, "tokens": null}]
+                }]
+            }}"#,
+        )
+        .expect("token bars decode");
+
+        let echoed = serde_json::to_value(&shifts).expect("serializes");
+
+        assert_eq!(echoed["tokenChart"]["bucketSeconds"], 3_600);
+        assert_eq!(echoed["tokenChart"]["buckets"][0]["tokens"], 999);
+        assert_eq!(echoed["tokenChart"]["buckets"][0]["tokensIn"], 100);
+        assert_eq!(
+            echoed["tokenChart"]["projects"][0]["project"]["name"],
+            "Ledger"
+        );
+        assert_eq!(
+            echoed["tokenChart"]["projects"][0]["buckets"][0]["tokens"],
+            serde_json::Value::Null
+        );
     }
 
     /// One group's page decodes the same tolerant way, and an endpoint that is
@@ -1799,21 +1833,16 @@ mod tests {
         assert_eq!(stats.concurrency.away_seconds, 3_600);
         assert_eq!(stats.by_agent[1].source, "codex");
         assert_eq!(stats.by_agent[1].model.as_deref(), Some("gpt-5"));
-        // The hourly series rides through too, null token fields included: a
-        // dropped field here is how the chart once shipped painting nothing.
+        // The hourly series rides through too: a dropped field here is how
+        // the chart once shipped painting nothing.
         assert_eq!(stats.hourly.len(), 2);
-        assert_eq!(stats.hourly[0].input_tokens, Some(12_000));
-        assert_eq!(stats.hourly[1].input_tokens, None);
+        assert_eq!(stats.hourly[0].agent_seconds, 1_800);
         // Re-serialized to the webview in the camelCase the decoder reads.
         let echoed = serde_json::to_value(&stats).expect("stats serialize");
         assert_eq!(echoed["activeSeconds"], 7_000);
         assert_eq!(echoed["concurrency"]["t3PlusSeconds"], 0);
         assert_eq!(echoed["byAgent"][0]["durationSeconds"], 7_200);
-        assert_eq!(echoed["hourly"][0]["cacheReadInputTokens"], 60_000);
-        assert_eq!(
-            echoed["hourly"][1]["cacheReadInputTokens"],
-            serde_json::Value::Null
-        );
+        assert_eq!(echoed["hourly"][0]["activeSeconds"], 3_600);
 
         assert_eq!(stats.filters.from.as_deref(), Some("2026-08-01"));
         assert_eq!(stats.filters.to, None);
@@ -1845,58 +1874,6 @@ mod tests {
         assert_eq!(body.entries[0].duration_seconds, 7_200);
         assert_eq!(body.entries[0].active_seconds, 0);
         assert_eq!(body.entries[0].agent_seconds, 0);
-    }
-
-    #[test]
-    fn reads_agent_activity_from_me_stats_and_survives_its_absence() {
-        let stats: MeStats = serde_json::from_str(
-            r#"{
-                "filters": {},
-                "totalDurationSeconds": 7200,
-                "attributedSeconds": 5400,
-                "unattributedSeconds": 1800,
-                "activeSeconds": 7000,
-                "agentSeconds": 3600,
-                "concurrency": {"t0Seconds": 3400, "t1Seconds": 0, "t2Seconds": 0, "t3PlusSeconds": 0, "awaySeconds": 0},
-                "byAgent": [],
-                "projects": [],
-                "apps": [],
-                "agents": [
-                    {"agent": {"id": "a1", "source": "claude_code"}, "shiftCount": 2, "tokensReported": true},
-                    {"agent": {"id": "a2", "source": "codex"}, "shiftCount": 1}
-                ]
-            }"#,
-        )
-        .expect("stats parse");
-
-        // A missing tokensReported stays unknown, never read as "reported none".
-        assert_eq!(stats.agents.len(), 2);
-        assert_eq!(stats.agents[0].tokens_reported, Some(true));
-        assert_eq!(stats.agents[1].tokens_reported, None);
-        let echoed = serde_json::to_value(&stats).expect("stats serialize");
-        assert_eq!(
-            echoed["agents"][1]["tokensReported"],
-            serde_json::Value::Null
-        );
-
-        // An API from before the field shipped parses to an empty list.
-        let older: MeStats = serde_json::from_str(
-            r#"{
-                "filters": {},
-                "totalDurationSeconds": 7200,
-                "attributedSeconds": 5400,
-                "unattributedSeconds": 1800,
-                "activeSeconds": 7000,
-                "agentSeconds": 3600,
-                "concurrency": {"t0Seconds": 3400, "t1Seconds": 0, "t2Seconds": 0, "t3PlusSeconds": 0, "awaySeconds": 0},
-                "byAgent": [],
-                "projects": [],
-                "apps": []
-            }"#,
-        )
-        .expect("older stats parse");
-        assert!(older.agents.is_empty());
-        assert!(older.hourly.is_empty());
     }
 
     #[test]

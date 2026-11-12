@@ -111,7 +111,6 @@ const meStats = {
   unattributedSeconds: 1_800,
   ...noMeasurement,
   hourly: [],
-  agents: [],
   projects: [{
     project: { id: project.id, name: project.name },
     durationSeconds: 7_200,
@@ -175,10 +174,6 @@ const agentShiftsHourly = [12, 13, 14, 15].map((hour) => ({
   hourStart: `2026-08-06T${String(hour).padStart(2, "0")}:00:00.000Z`,
   activeSeconds: 0,
   agentSeconds: hour === 15 ? 3_600 : hour === 14 ? 0 : 1_800,
-  inputTokens: null,
-  outputTokens: null,
-  cacheCreationInputTokens: null,
-  cacheReadInputTokens: null,
 }));
 
 /// The Agents tab's map: two codebases, three shifts, one decided commit.
@@ -467,11 +462,11 @@ describe("recording", () => {
     expect(claude[0]).toHaveTextContent(project.name);
     expect(claude[0]).toHaveTextContent(otherProject.name);
     // No minutes of its own: an agent runs beside the editor it lives in, so
-    // its wall-clock would double-count time already counted there. And it
-    // says "connected", not "working" — a registered session is presence,
-    // not proof of activity.
-    expect(claude[0]).toHaveTextContent("connected");
-    expect(claude[0]).not.toHaveTextContent("working");
+    // its wall-clock would double-count time already counted there. The row
+    // being there is what says the tool is connected (issue 101): it prints
+    // no state word, and leaves no empty duration cell for the dial to stop at.
+    expect(claude[0]).not.toHaveTextContent(/connected|working/);
+    expect(claude[0]!.querySelector(".meter-duration")).toBeNull();
   });
 
   it("renders no recording surfaces when the host cannot report status", async () => {
@@ -883,9 +878,9 @@ describe("the today panel", () => {
       meStats: vi.fn().mockResolvedValue({
         ...meStats,
         hourly: [
-          { hourStart: "2026-08-15T09:00:00.000Z", activeSeconds: 600, agentSeconds: 300, inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
-          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900, inputTokens: 12_000, outputTokens: 800, cacheCreationInputTokens: 400, cacheReadInputTokens: 60_000 },
-          { hourStart: "2026-08-15T11:00:00.000Z", activeSeconds: 300, agentSeconds: 0, inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
+          { hourStart: "2026-08-15T09:00:00.000Z", activeSeconds: 600, agentSeconds: 300 },
+          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900 },
+          { hourStart: "2026-08-15T11:00:00.000Z", activeSeconds: 300, agentSeconds: 0 },
         ],
       }),
     })} />);
@@ -915,40 +910,30 @@ describe("the today panel", () => {
     expect(graph.querySelectorAll('circle[data-point="agent"]')).toHaveLength(3);
   });
 
-  it("switches the hourly chart to tokens, breaking the line over hours that reported none", async () => {
-    render(<App bridge={bridgeFor({
+  // Issue 101: the Today graph is time and only time, the person in gray
+  // against agents in green. Tokens moved to the Agents tab's bars.
+  it("draws exactly two lines on the Today graph, human and agent, and no token series", async () => {
+    // Arrange
+    const bridge = bridgeFor({
       monitorStatus: vi.fn().mockResolvedValue(recording),
       meStats: vi.fn().mockResolvedValue({
         ...meStats,
-        agents: [{ source: "codex", shiftCount: 2, tokensReported: false }],
         hourly: [
-          { hourStart: "2026-08-15T09:00:00.000Z", activeSeconds: 600, agentSeconds: 300, inputTokens: 4_000, outputTokens: 200, cacheCreationInputTokens: 0, cacheReadInputTokens: 8_000 },
-          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900, inputTokens: null, outputTokens: null, cacheCreationInputTokens: null, cacheReadInputTokens: null },
-          { hourStart: "2026-08-15T11:00:00.000Z", activeSeconds: 300, agentSeconds: 100, inputTokens: 12_000, outputTokens: 800, cacheCreationInputTokens: 400, cacheReadInputTokens: 60_000 },
+          { hourStart: "2026-08-15T09:00:00.000Z", activeSeconds: 600, agentSeconds: 300 },
+          { hourStart: "2026-08-15T10:00:00.000Z", activeSeconds: 1_800, agentSeconds: 900 },
         ],
       }),
-    })} />);
+    });
 
+    // Act
+    render(<App bridge={bridge} />);
     const graph = await screen.findByTestId("hourly-graph");
-    // The time view says nothing about tokens: repeated under every graph,
-    // the blind-runtime note read as a standing warning about nothing on
-    // screen. It belongs to the token series alone.
-    expect(graph).not.toHaveTextContent(/No token data/);
-    const measure = within(graph).getByRole("group", { name: "Chart measure" });
-    await userEvent.click(within(measure).getByRole("button", { name: "Tokens" }));
-    // Now the runtime that ran shifts but reported none is named.
-    expect(graph).toHaveTextContent(`No token data from ${sourceLabel("codex")}.`);
 
-    const tokensIn = graph.querySelector('path[data-series="tokens-in"]');
-    const tokensOut = graph.querySelector('path[data-series="tokens-out"]');
-    expect(tokensIn).not.toBeNull();
-    expect(tokensOut).not.toBeNull();
-    // The null hour lifts the pen: two subpaths, never a plunge to the baseline.
-    const d = tokensIn!.getAttribute("d")!;
-    expect(d.match(/M/g)).toHaveLength(2);
-    const points = [...d.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((match) => Number(match[2]));
-    expect(points).toHaveLength(2);
-    expect(points[1]!).toBeLessThan(points[0]!); // 72.4k plots above 12k
+    // Assert
+    const series = [...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"));
+    expect(series).toEqual(["agent", "human"]);
+    expect(within(graph).queryByRole("button", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("token-chart")).not.toBeInTheDocument();
   });
 
   it("keeps agent runtimes on their own rows instead of folding them together", async () => {
@@ -1589,6 +1574,150 @@ describe("the team board", () => {
 });
 
 describe("the agents tab", () => {
+  /// The server's token bars over three hours. Every total is deliberately not
+  /// in + out, and no project's bars add up to the period's, so a client that
+  /// summed anything itself would draw different bars than these.
+  const hours = ["2026-08-06T12:00:00.000Z", "2026-08-06T13:00:00.000Z", "2026-08-06T14:00:00.000Z"];
+  const bars = (figures: readonly ([number, number, number] | null)[]) =>
+    figures.map((figure, index) => ({
+      start: hours[index]!,
+      tokensIn: figure?.[0] ?? null,
+      tokensOut: figure?.[1] ?? null,
+      tokens: figure?.[2] ?? null,
+    }));
+  const tokenChart = {
+    bucketSeconds: 3_600,
+    buckets: bars([[100, 50, 999], null, [10, 10, 3_000]]),
+    projects: [
+      { project: { id: project.id, name: project.name }, tokens: 777, buckets: bars([[7, 7, 700], null, [1, 1, 77]]) },
+      { project: { id: otherProject.id, name: otherProject.name }, tokens: 0, buckets: bars([null, null, null]) },
+    ],
+  };
+  const drawnTokens = (chart: HTMLElement): number[] =>
+    [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("data-tokens")));
+
+  it("draws the server's token bars as given, adding nothing up", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
+
+    // Act
+    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+
+    // Assert: one bar per hour that burned anything, at the server's total.
+    expect(drawnTokens(chart)).toEqual([999, 3_000]);
+    const heights = [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("height")));
+    expect(heights[1]!).toBeGreaterThan(heights[0]!);
+    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(0);
+  });
+
+  it("narrows the bars to a picked project, drawn solid over the period's as ghosts", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
+    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+
+    // Act
+    await person.selectOptions(within(chart).getByRole("combobox", { name: "Project" }), project.id);
+
+    // Assert
+    expect(drawnTokens(chart)).toEqual([700, 77]);
+    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(2);
+  });
+
+  it("lists a project that burned no tokens in the period without letting it be picked", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
+
+    // Act
+    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+
+    // Assert
+    expect(within(chart).getByRole("option", { name: `${project.name} · 777` })).toBeEnabled();
+    expect(within(chart).getByRole("option", { name: `${otherProject.name} · no tokens` })).toBeDisabled();
+  });
+
+  it("drops a picked project that the next range lists without tokens, and does not bring it back", async () => {
+    // Arrange: this week the picked project ran a shift that reported nothing.
+    const weekChart = {
+      bucketSeconds: 3_600,
+      buckets: bars([[100, 50, 999], [20, 20, 444], [10, 10, 3_000]]),
+      projects: [
+        { project: { id: otherProject.id, name: otherProject.name }, tokens: 444, buckets: bars([null, [20, 20, 444], null]) },
+        { project: { id: project.id, name: project.name }, tokens: 0, buckets: bars([null, null, null]) },
+      ],
+    };
+    const isWeek = (fromAt?: string, toExclusiveAt?: string): boolean =>
+      fromAt !== undefined && toExclusiveAt !== undefined && Date.parse(toExclusiveAt) - Date.parse(fromAt) > 2 * 86_400_000;
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      agentShifts: vi.fn().mockImplementation(async (fromAt?: string, toExclusiveAt?: string) => (
+        { ...agentShifts, tokenChart: isWeek(fromAt, toExclusiveAt) ? weekChart : tokenChart }
+      )),
+    })} />);
+    const panel = await openAgentsTab(person);
+    await person.selectOptions(within(panel).getByRole("combobox", { name: "Project" }), project.id);
+    expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([700, 77]);
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "This week" }));
+
+    // Assert: the period's bars, all solid, under All projects.
+    await waitFor(() => expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([999, 444, 3_000]));
+    expect(within(panel).getByTestId("token-chart").querySelectorAll("rect.is-ghost")).toHaveLength(0);
+    expect(within(panel).getByRole("combobox", { name: "Project" })).toHaveDisplayValue("All projects");
+
+    // Act: back to a range where the project burned tokens.
+    await person.click(within(panel).getByRole("button", { name: "Today" }));
+
+    // Assert: the pick was dropped, not held for later.
+    await waitFor(() => expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([999, 3_000]));
+    expect(within(panel).getByRole("combobox", { name: "Project" })).toHaveDisplayValue("All projects");
+  });
+
+  it("names a daily bar that starts at 23:00 after a daylight-saving change by the day it covers", async () => {
+    // Arrange: once the clocks fall back, the server's 24-hour bars start at
+    // 23:00 the evening before the day each one covers.
+    const starts = [new Date(2026, 9, 31), new Date(2026, 10, 1), new Date(2026, 10, 1, 23), new Date(2026, 10, 2, 23)];
+    const covered = [new Date(2026, 9, 31, 12), new Date(2026, 10, 1, 12), new Date(2026, 10, 2, 12), new Date(2026, 10, 3, 12)];
+    const dailyChart = {
+      bucketSeconds: 86_400,
+      buckets: starts.map((start) => ({ start: start.toISOString(), tokensIn: 100, tokensOut: 50, tokens: 999 })),
+      projects: [],
+    };
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart: dailyChart }) })} />);
+    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+
+    // Act: read every bar out from the keyboard.
+    act(() => within(chart).getByRole("img", { name: "Tokens burned per day" }).focus());
+    const readouts: string[] = [];
+    for (const key of ["{Home}", "{ArrowRight}", "{ArrowRight}", "{ArrowRight}"]) {
+      await person.keyboard(key);
+      readouts.push(chart.querySelector(".graph-tooltip-title")?.textContent ?? "");
+    }
+
+    // Assert: each bar's readout and axis tick name its own day, none twice.
+    expect(readouts).toEqual(covered.map((day) => day.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })));
+    expect([...chart.querySelectorAll("text[text-anchor='middle']")].map((tick) => tick.textContent))
+      .toEqual(covered.map((day) => day.toLocaleDateString([], { month: "short", day: "numeric" })));
+    expect(within(chart).getByRole("status")).toHaveTextContent(`${readouts[3]}: 999 tokens, 100 in, 50 out`);
+  });
+
+  it("draws no token bars from an API that predates them", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+
+    // Act
+    const panel = await openAgentsTab(person);
+
+    // Assert
+    expect(within(panel).getByTestId("hourly-graph")).toBeInTheDocument();
+    expect(within(panel).queryByTestId("token-chart")).not.toBeInTheDocument();
+  });
+
   it("maps every shift under its codebase, with the total recorded on top", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);

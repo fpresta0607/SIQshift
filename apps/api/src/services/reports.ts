@@ -31,6 +31,8 @@ import {
   type ReportResponse,
   type ReportRow,
   type TimeMeasurementMs,
+  type TokenBucket,
+  type TokenChart,
   type TokenTotals,
 } from "@siqshift/shared";
 
@@ -41,12 +43,14 @@ import type {
   AgentRecord,
   AgentRepository,
   AgentUsageBucketTotalRecord,
+  AgentUsageProjectBucketTotalRecord,
   AgentUsageRepository,
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
+  ReportLookupRecord,
   ReportQuery,
   ReportRepository,
   ReportRowRecord,
@@ -275,51 +279,65 @@ export function medianDurationSeconds(intervals: readonly Interval[]): number {
   return Math.round(medianMs / 1_000);
 }
 
+const HOUR_MS = 60 * 60 * 1_000;
+
 /**
- * One hour of the caller's local calendar at a time. Bounded ranges tile from
- * their start instant - which the dashboards send as the viewer's local
- * midnight - so bucket `k` is local hour `k`. The unbounded "all time" range
- * returns no buckets; its full history lives in the CSV export instead.
+ * The one series every chart is drawn from: human time, agent time and token
+ * counters per bucket of the caller's local calendar. Bounded ranges tile
+ * from their start instant - which the dashboards send as the viewer's local
+ * midnight - so hour bucket `k` is local hour `k` and day bucket `k` is local
+ * day `k`. The unbounded "all time" range returns no buckets; its full
+ * history lives in the CSV export instead.
  *
  * Usage buckets join the tile their start falls inside, and tokens are a
- * plain sum over them. An hour nothing reported tokens for keeps nulls, never
- * an invented zero.
+ * plain sum over them. A bucket nothing reported tokens for keeps nulls,
+ * never an invented zero.
  */
-export function hourlySeries(
+export function timeSeries(
   working: readonly Interval[],
   agents: readonly Interval[],
   usage: readonly AgentUsageBucketTotalRecord[],
   range: Partial<Interval>,
+  bucketMs = HOUR_MS,
 ): HourlyBucket[] {
   if (range.start === undefined || range.end === undefined) return [];
-  const evidence = [...working, ...agents];
-  if (evidence.length === 0) return [];
+  if (working.length === 0 && agents.length === 0 && usage.length === 0) return [];
   const start = range.start;
   const end = range.end;
   if (start >= end) return [];
-  const buckets: HourlyBucket[] = [];
-  for (let cursor = start; cursor < end; cursor += 60 * 60 * 1_000) {
-    const hour = { start: cursor, end: Math.min(cursor + 60 * 60 * 1_000, end) };
-    const tokens = usageTokensInHour(usage, hour);
-    buckets.push({
-      hourStart: new Date(cursor).toISOString(),
-      activeSeconds: unionSeconds(working, hour),
-      agentSeconds: summedSeconds(agents, hour),
+  const tiles: Interval[] = [];
+  for (let cursor = start; cursor < end; cursor += bucketMs) {
+    tiles.push({ start: cursor, end: Math.min(cursor + bucketMs, end) });
+  }
+  // A range of days across a daylight-saving change is an hour short or
+  // long. The spare hour joins the last day rather than standing as a day of
+  // its own.
+  const last = tiles.at(-1);
+  const beforeLast = tiles.at(-2);
+  if (bucketMs > HOUR_MS && last !== undefined && beforeLast !== undefined && last.end - last.start < bucketMs / 2) {
+    beforeLast.end = last.end;
+    tiles.pop();
+  }
+  return tiles.map((tile) => {
+    const tokens = usageTokensIn(usage, tile);
+    return {
+      hourStart: new Date(tile.start).toISOString(),
+      activeSeconds: unionSeconds(working, tile),
+      agentSeconds: summedSeconds(agents, tile),
       inputTokens: tokens?.inputTokens ?? null,
       outputTokens: tokens?.outputTokens ?? null,
       cacheCreationInputTokens: tokens?.cacheCreationInputTokens ?? null,
       cacheReadInputTokens: tokens?.cacheReadInputTokens ?? null,
-    });
-  }
-  return buckets;
+    };
+  });
 }
 
-/** The token counters summed over the usage buckets whose start falls inside the hour; null when none do. */
-function usageTokensInHour(usage: readonly AgentUsageBucketTotalRecord[], hour: Interval): TokenTotals | null {
+/** The token counters summed over the usage buckets whose start falls inside the tile; null when none do. */
+function usageTokensIn(usage: readonly AgentUsageBucketTotalRecord[], tile: Interval): TokenTotals | null {
   let totals: TokenTotals | null = null;
   for (const bucket of usage) {
     const bucketStart = bucket.bucketStartAt.getTime();
-    if (bucketStart < hour.start || bucketStart >= hour.end) continue;
+    if (bucketStart < tile.start || bucketStart >= tile.end) continue;
     totals ??= { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
     totals.inputTokens += safeInteger(bucket.inputTokens, "hourly input tokens");
     totals.outputTokens += safeInteger(bucket.outputTokens, "hourly output tokens");
@@ -903,7 +921,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       };
       const hourly = member === undefined
         ? []
-        : hourlySeries(workingIntervals(member, query), member.agents.map((agent) => agent.interval), usageBuckets, queryRange(query));
+        : timeSeries(workingIntervals(member, query), member.agents.map((agent) => agent.interval), usageBuckets, queryRange(query));
 
       const range = queryRange(query);
       const [commitCounts, repoRoots] = dependencies.shiftCommits === undefined
@@ -1010,6 +1028,21 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
 
     async agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse> {
       const board = await readShiftBoard(dependencies, subject, filters);
+      const { start, end } = board.range;
+      // The same range, scope and person the board shows, already authorized
+      // by the board's read. An unbounded range has no bars to draw, so its
+      // usage is never read.
+      const chart = dependencies.agentUsage === undefined || start === undefined || end === undefined
+        ? undefined
+        : await Promise.all([
+          dependencies.agentUsage.sumByBucketAndProject(subject, { ...normalizedQuery(filters), ...scopeQuery(filters.scope) }),
+          dependencies.reports.readDefaultProject(subject),
+        ]).then(([usage, defaultProject]) => tokenChart(
+          usage,
+          board.groups.flatMap((group) => group.shifts.map((shift) => shift.project ?? null)),
+          defaultProject,
+          { start, end },
+        ));
       return {
         filters,
         totalAgentSeconds: board.groups.reduce((sum, group) => sum + group.agentSeconds, 0),
@@ -1030,6 +1063,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           shiftCount: group.shifts.length,
           heldRate: heldRateOf(group.commits),
         })),
+        ...(chart === undefined ? {} : { tokenChart: chart }),
       };
     },
 
@@ -1268,6 +1302,63 @@ async function readShiftBoard(
     people,
     range,
   };
+}
+
+/**
+ * The Agents tab's token chart, built on `timeSeries` like the line graphs:
+ * hour bars across a one-day range, day bars across anything longer. Each bar
+ * is summed here into in, out and both, so a client draws numbers and adds
+ * none. Usage from shifts that named no project counts under the workspace's
+ * default project, the rule the project rows follow, and every project the
+ * range's shifts ran under is listed, one whose shifts reported no tokens at
+ * a total of zero.
+ */
+function tokenChart(
+  usage: readonly AgentUsageProjectBucketTotalRecord[],
+  shiftProjects: readonly (ReportLookupRecord | null)[],
+  defaultProject: ReportLookupRecord | null,
+  range: Interval,
+): TokenChart {
+  const bucketMs = range.end - range.start > millisecondsPerDay + HOUR_MS ? millisecondsPerDay : HOUR_MS;
+  const byProject = new Map<string, { project: ReportLookupRecord; usage: AgentUsageProjectBucketTotalRecord[] }>();
+  const projectEntry = (named: ReportLookupRecord | null) => {
+    const project = named ?? defaultProject;
+    if (project === null) return undefined;
+    const entry = byProject.get(project.id) ?? { project, usage: [] };
+    byProject.set(project.id, entry);
+    return entry;
+  };
+  for (const project of shiftProjects) projectEntry(project);
+  for (const row of usage) projectEntry(row.project)?.usage.push(row);
+  const bars = (rows: readonly AgentUsageProjectBucketTotalRecord[]): TokenBucket[] =>
+    timeSeries([], [], rows, range, bucketMs).map((bucket) => ({
+      start: bucket.hourStart,
+      ...tokenFigures(bucket.inputTokens === null ? null : {
+        inputTokens: bucket.inputTokens,
+        outputTokens: bucket.outputTokens ?? 0,
+        cacheCreationInputTokens: bucket.cacheCreationInputTokens ?? 0,
+        cacheReadInputTokens: bucket.cacheReadInputTokens ?? 0,
+      }),
+    }));
+  const wholeRange = { start: Number.NEGATIVE_INFINITY, end: Number.POSITIVE_INFINITY };
+  return {
+    bucketSeconds: bucketMs / 1_000,
+    buckets: bars(usage),
+    projects: [...byProject.values()]
+      .map((entry) => ({
+        project: entry.project,
+        tokens: tokenFigures(usageTokensIn(entry.usage, wholeRange)).tokens ?? 0,
+        buckets: bars(entry.usage),
+      }))
+      .sort((a, b) => b.tokens - a.tokens || a.project.name.localeCompare(b.project.name)),
+  };
+}
+
+/** A bar's figures from summed counters: in is fresh input plus both cache sides, and the bar is in plus out. */
+function tokenFigures(totals: TokenTotals | null): Omit<TokenBucket, "start"> {
+  if (totals === null) return { tokensIn: null, tokensOut: null, tokens: null };
+  const tokensIn = totals.inputTokens + totals.cacheCreationInputTokens + totals.cacheReadInputTokens;
+  return { tokensIn, tokensOut: totals.outputTokens, tokens: tokensIn + totals.outputTokens };
 }
 
 /**

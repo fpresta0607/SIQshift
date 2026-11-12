@@ -265,6 +265,13 @@ export interface RunningAgentSessionRecord {
 
 export interface ReportRepository {
   findProjectForOrganization(subject: AuthenticatedSubject, projectId: string): Promise<ReportLookupRecord | null>;
+  /**
+   * The project time lands in when nothing names one: the project marked
+   * default, else the workspace's oldest active project, which is the General
+   * every workspace starts with. Null only for a workspace with no active
+   * project.
+   */
+  readDefaultProject(subject: AuthenticatedSubject): Promise<ReportLookupRecord | null>;
   findUserForOrganization(subject: AuthenticatedSubject, userId: string): Promise<ReportLookupRecord | null>;
   /** Active-kind OS segments overlapping the range, org-wide or one member. Presence carries no project, so project scopes intersect these with session intervals in the service. */
   readPresenceIntervals(subject: AuthenticatedSubject, query: ReportQuery): Promise<PresenceIntervalRecord[]>;
@@ -706,6 +713,12 @@ export interface AgentUsageRepository {
    * series. A bucket counts by where its start falls.
    */
   sumByBucket(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageBucketTotalRecord[]>;
+  /**
+   * The same per-hour sums split by the project each shift named, for the
+   * Agents tab's token chart. A null project is usage from shifts that named
+   * none.
+   */
+  sumByBucketAndProject(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageProjectBucketTotalRecord[]>;
   /** The same per-hour sums narrowed to one agent, for the paystub's own series. */
   sumByBucketForAgent(subject: AuthenticatedSubject, agentId: string, query: ReportQuery): Promise<AgentUsageBucketTotalRecord[]>;
   /** Counters summed per agent over the query's scope, for the pay-run report and /me/stats rows. */
@@ -721,6 +734,11 @@ export interface AgentUsageBucketTotalRecord {
   outputTokens: number | string | bigint | null;
   cacheCreationInputTokens: number | string | bigint | null;
   cacheReadInputTokens: number | string | bigint | null;
+}
+
+/** One hour bucket's summed counters for one project; null when the shifts named no project. */
+export interface AgentUsageProjectBucketTotalRecord extends AgentUsageBucketTotalRecord {
+  project: ReportLookupRecord | null;
 }
 
 /**
