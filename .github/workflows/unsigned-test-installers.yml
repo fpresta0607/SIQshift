@@ -3,9 +3,12 @@ name: Unsigned test installers
 # Builds the desktop test installers, uploads them as workflow-run artifacts,
 # and (on a deliberate `workflow_dispatch` only) republishes the
 # `unsigned-latest` release so the website has something anonymous visitors
-# can actually download. The Windows build is code signed by SIQstack LLC
-# through Azure Artifact Signing; the macOS build is still unsigned. The tag
-# keeps its old name because every installed copy's updater polls it.
+# can actually download. Both builds are code signed by SIQstack LLC: the
+# Windows one through Azure Artifact Signing, the macOS one with its Developer
+# ID certificate and notarized by Apple. The macOS one is built only once the
+# release environment holds the Apple signing secrets; until then a run
+# builds and publishes nothing for the Mac. The tag keeps its old name because
+# every installed copy's updater polls it.
 #
 # Why a release and not the run artifact: GitHub requires authentication to
 # download a workflow artifact, so a raw artifact URL is useless to a signed-out
@@ -31,8 +34,9 @@ name: Unsigned test installers
 
 on:
   # Once this file is on the default branch: Actions -> Unsigned test
-  # installers -> Run workflow, from `main`. The Windows leg signs only from
-  # `main` or `unsigned-test/*`, so a run from any other branch fails there.
+  # installers -> Run workflow, from `main`. Every job that reads signing
+  # secrets runs only from `main` or `unsigned-test/*`, so a run from any
+  # other branch fails at its first job.
   workflow_dispatch:
   # workflow_dispatch only exists for workflows already on the default branch,
   # so this prefix is how you exercise the workflow from a branch before it
@@ -51,28 +55,67 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  installers:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
+  # Which installers this run builds. Windows always: it signs through Azure.
+  # The Mac only once the release environment holds every Apple signing
+  # secret, because a Mac installer is published signed and notarized or not
+  # at all. Partly configured Apple signing stops the run, since a half-built
+  # setup that quietly dropped the Mac would hide itself. Only whether each
+  # secret is set is read here, never its value.
+  legs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.legs.outputs.matrix }}
+    steps:
+      - id: legs
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
           # NSIS only: WiX's light.exe fails to bundle the unoptimized debug
           # binary into an MSI. The NSIS setup .exe is the installer to run.
-          - os: windows-latest
-            target: windows
-            bundle_args: "--bundles nsis"
-          # macOS bundles cleanly unsigned with the configured targets (.app
-          # and .dmg), so it takes no override.
-          - os: macos-latest
-            target: macos
-            bundle_args: ""
+          windows='{"os":"windows-latest","target":"windows","bundle_args":"--bundles nsis","rust_targets":"","cargo_targets":"","tauri_target":"","bundle_dir":"apps/desktop/src-tauri/target/debug/bundle"}'
+          # One universal app and .dmg for Apple silicon and Intel: each
+          # architecture is compiled on its own and lipo joins them.
+          macos='{"os":"macos-latest","target":"macos","bundle_args":"","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","cargo_targets":"--target aarch64-apple-darwin --target x86_64-apple-darwin","tauri_target":"--target universal-apple-darwin","bundle_dir":"apps/desktop/src-tauri/target/universal-apple-darwin/debug/bundle"}'
+          present=()
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
+            if [ -n "${!name}" ]; then present+=("$name"); else missing+=("$name"); fi
+          done
+          if [ "${#present[@]}" -eq 0 ]; then
+            echo "::notice title=No Mac installer in this run::The release environment holds no Apple signing secrets yet, so this run builds and publishes nothing for the Mac. The Mac installer is published only signed by SIQstack LLC and notarized by Apple."
+            echo "matrix={\"include\":[$windows]}" >> "$GITHUB_OUTPUT"
+          elif [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=Apple signing is partly configured::The release environment is missing ${missing[*]}. Nothing is built until every Apple signing secret is set, or none is."
+            exit 1
+          else
+            echo "matrix={\"include\":[$windows,$macos]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  installers:
+    needs: legs
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.legs.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    # The `release` environment holds the SIQstack LLC signing identity and
+    # Two architectures and Apple's notary service make the macOS leg the
+    # long one.
+    timeout-minutes: 90
+    # The `release` environment holds the SIQstack LLC signing identities and
     # admits only `main` and `unsigned-test/*`, so no other branch can sign.
     # Azure sign-in goes through GitHub's OpenID Connect: no password is
-    # stored. The macOS leg takes no environment and signs nothing.
-    environment: ${{ matrix.target == 'windows' && 'release' || '' }}
+    # stored. The macOS certificate and notary key are environment secrets.
+    environment: release
     permissions:
       contents: read
       id-token: write
@@ -95,6 +138,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
@@ -107,27 +152,36 @@ jobs:
       # build script and overwrites the helper the first one linked with the
       # empty stand-in, which staging below would then ship.
       - name: Build the helpers
-        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-hook --bin siqshift-browser-host
+        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml ${{ matrix.cargo_targets }} --bin siqshift-hook --bin siqshift-browser-host
 
       # `externalBin` resolves `binaries/<name>-<target-triple>`, so the helpers
       # have to sit there under that name before the bundler runs. Same staging
-      # rule as the release workflow; on Windows the bundler signs these copies.
+      # rule as the release workflow; the bundler signs these copies. A universal
+      # macOS build compiles each architecture against its own triple's copy and
+      # bundles the `universal-apple-darwin` one, which lipo joins from the two.
       - name: Stage the helpers for bundling
         shell: bash
         run: |
           set -euo pipefail
-          triple="$(rustc -vV | sed -n 's/^host: //p')"
-          suffix=""
-          if [ "${{ matrix.target }}" = windows ]; then
-            suffix=".exe"
-          fi
-          mkdir -p apps/desktop/src-tauri/binaries
-          for name in siqshift-hook siqshift-browser-host; do
-            staged="apps/desktop/src-tauri/binaries/$name-$triple$suffix"
-            cp "apps/desktop/src-tauri/target/debug/$name$suffix" "$staged"
-            if [ ! -s "$staged" ]; then
-              echo "$staged is empty: the helper build left a debug stand-in, not $name." >&2
+          binaries=apps/desktop/src-tauri/binaries
+          mkdir -p "$binaries"
+          stage() {
+            cp "$1" "$2"
+            if [ ! -s "$2" ]; then
+              echo "$2 is empty: the helper build left a debug stand-in, not $(basename "$1")." >&2
               exit 1
+            fi
+          }
+          for name in siqshift-hook siqshift-browser-host; do
+            if [ "${{ matrix.target }}" = windows ]; then
+              triple="$(rustc -vV | sed -n 's/^host: //p')"
+              stage "apps/desktop/src-tauri/target/debug/$name.exe" "$binaries/$name-$triple.exe"
+            else
+              for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+                stage "apps/desktop/src-tauri/target/$triple/debug/$name" "$binaries/$name-$triple"
+              done
+              lipo -create -output "$binaries/$name-universal-apple-darwin" \
+                "$binaries/$name-aarch64-apple-darwin" "$binaries/$name-x86_64-apple-darwin"
             fi
           done
 
@@ -160,7 +214,7 @@ jobs:
       # after the long compile and right before the bundler starts signing.
       - name: Build the app
         working-directory: apps/desktop
-        run: pnpm exec tauri build --debug --no-bundle
+        run: pnpm exec tauri build --debug --no-bundle ${{ matrix.tauri_target }}
 
       # Microsoft's Artifact Signing client is a dlib that signtool loads. It is
       # pinned by version and hash, and it signs in through the Azure CLI
@@ -230,6 +284,41 @@ jobs:
           $config | ConvertTo-Json -Depth 5 | Set-Content $configPath -Encoding utf8
           "config=$configPath" >> $env:GITHUB_OUTPUT
 
+      # The Developer ID certificate goes into a keychain of this job's own,
+      # and the notary key into a file beside it; both live only for this job.
+      # The `legs` job runs this leg only when every Apple secret is set.
+      - name: Prepare macOS signing
+        id: macos_signing
+        if: matrix.target == 'macos'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/siqshift-signing.keychain-db"
+          certificate="$RUNNER_TEMP/siqshift-signing.p12"
+          keychain_password="$(uuidgen)"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F '"' '/Developer ID Application:/{print $2; exit}')"
+          if [ "$identity" != "$APPLE_SIGNING_IDENTITY" ] || [[ "$identity" != *"($APPLE_TEAM_ID)" ]]; then
+            echo "The certificate in APPLE_CERTIFICATE is not the Developer ID Application identity APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID name." >&2
+            exit 1
+          fi
+          api_key_path="$RUNNER_TEMP/siqshift-notary.p8"
+          printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"
+
       - uses: azure/login@v3
         if: matrix.target == 'windows'
         with:
@@ -237,18 +326,95 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # On macOS the bundler signs the app and both helpers with the hardened
+      # runtime, has Apple notarize the app, and staples the ticket to it.
       - name: Bundle the installers
         working-directory: apps/desktop
         shell: bash
         env:
           SIGNING_CONFIG: ${{ steps.windows_signing.outputs.config }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.target == 'macos' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ matrix.target == 'macos' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ matrix.target == 'macos' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_PATH: ${{ steps.macos_signing.outputs.api_key_path }}
         run: |
           set -euo pipefail
           if [ -n "$SIGNING_CONFIG" ]; then
             pnpm exec tauri bundle --debug ${{ matrix.bundle_args }} --config "$SIGNING_CONFIG"
           else
-            pnpm exec tauri bundle --debug ${{ matrix.bundle_args }}
+            pnpm exec tauri bundle --debug ${{ matrix.bundle_args }} ${{ matrix.tauri_target }}
           fi
+
+      # The disk image people download is signed, notarized and stapled too,
+      # so Gatekeeper accepts it before the app inside is ever opened.
+      - name: Notarize the macOS disk image
+        if: matrix.target == 'macos'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ steps.macos_signing.outputs.api_key_path }}
+          BUNDLE_DIR: ${{ matrix.bundle_dir }}
+        run: |
+          set -euo pipefail
+          images=("$BUNDLE_DIR"/dmg/*.dmg)
+          if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then
+            echo "Expected one disk image in $BUNDLE_DIR/dmg." >&2
+            exit 1
+          fi
+          image="${images[0]}"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$image"
+          result="$RUNNER_TEMP/notary-result.json"
+          xcrun notarytool submit "$image" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --output-format json > "$result"
+          status="$(node -p 'require(process.argv[1]).status' "$result")"
+          if [ "$status" != Accepted ]; then
+            echo "Apple's notary service answered $status for the disk image." >&2
+            xcrun notarytool log "$(node -p 'require(process.argv[1]).id' "$result")" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" >&2 || true
+            exit 1
+          fi
+          xcrun stapler staple "$image"
+
+      # Nothing is published for the Mac unless what ships is a universal app
+      # whose every binary carries SIQstack LLC's Developer ID signature with
+      # the hardened runtime, and both the app and the disk image are notarized
+      # with the ticket stapled. The app is checked as the disk image delivers it.
+      - name: Verify the macOS signatures
+        if: matrix.target == 'macos'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_DIR: ${{ matrix.bundle_dir }}
+        run: |
+          set -euo pipefail
+          fail() { echo "$1" >&2; exit 1; }
+          image="$(find "$BUNDLE_DIR/dmg" -name '*.dmg' -print -quit)"
+          assessment="$(spctl --assess --type open --context context:primary-signature --verbose=4 "$image" 2>&1)" \
+            || fail "Gatekeeper rejects the disk image: $assessment"
+          grep -q 'source=Notarized Developer ID' <<< "$assessment" || fail "The disk image is not notarized Developer ID: $assessment"
+          xcrun stapler validate "$image"
+          mount="$RUNNER_TEMP/siqshift-image"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$image" > /dev/null
+          trap 'hdiutil detach "$mount" > /dev/null || true' EXIT
+          app="$(find "$mount" -maxdepth 1 -name '*.app' -print -quit)"
+          [ -n "$app" ] || fail "The disk image carries no app."
+          codesign --verify --deep --strict --verbose=2 "$app"
+          assessment="$(spctl --assess --type execute --verbose=4 "$app" 2>&1)" \
+            || fail "Gatekeeper rejects the app: $assessment"
+          grep -q 'source=Notarized Developer ID' <<< "$assessment" || fail "The app is not notarized Developer ID: $assessment"
+          xcrun stapler validate "$app"
+          for helper in siqshift-hook siqshift-browser-host; do
+            [ -f "$app/Contents/MacOS/$helper" ] || fail "The app does not carry $helper, so the check would prove nothing."
+          done
+          for binary in "$app"/Contents/MacOS/*; do
+            name="$(basename "$binary")"
+            details="$(codesign --display --verbose=2 "$binary" 2>&1)"
+            grep -q '^Authority=Developer ID Application: ' <<< "$details" || fail "$name is not signed with a Developer ID Application certificate."
+            grep -qx "TeamIdentifier=$APPLE_TEAM_ID" <<< "$details" || fail "$name is signed by another team."
+            grep -q 'flags=.*(runtime)' <<< "$details" || fail "$name lacks the hardened runtime."
+            grep -q '^Timestamp=' <<< "$details" || fail "$name carries no secure timestamp."
+            architectures=" $(lipo -archs "$binary") "
+            [[ "$architectures" == *' arm64 '* && "$architectures" == *' x86_64 '* ]] || fail "$name is not universal:$architectures"
+            echo "verified: $name"
+          done
 
       # Every Windows file that ships must carry a valid, timestamped signature
       # from the expected publisher, checked two ways, or nothing is published.
@@ -319,12 +485,8 @@ jobs:
         run: |
           set -euo pipefail
           out=test-artifacts
-          bundle=apps/desktop/src-tauri/target/debug/bundle
-          # Only the macOS build is unsigned, and its name keeps saying so.
+          bundle="${{ matrix.bundle_dir }}"
           prefix=TEST-
-          if [ "${{ matrix.target }}" = macos ]; then
-            prefix=UNSIGNED-TEST-
-          fi
           mkdir -p "$out"
           found=0
           while IFS= read -r -d '' installer; do
@@ -353,7 +515,10 @@ jobs:
             * The Windows installer and everything it installs are code signed
               by SIQstack LLC. SmartScreen may still warn on the first
               downloads, until the certificate has built a reputation.
-            * The macOS build is NOT signed or notarized.
+            * A macOS installer is built only once the release environment
+              holds the Apple signing secrets. It and the app in it are then
+              code signed by SIQstack LLC and notarized by Apple, for Apple
+              silicon and Intel Macs.
             * On Windows this build updates itself: it checks for a newer
               build at launch and every six hours, installs it quietly, and
               restarts. A copy installed before the updater shipped cannot,
@@ -416,7 +581,10 @@ jobs:
             cp "$found" "release-assets/$name"
           }
           take '*.exe' SIQshift-windows-x64-setup.exe
-          take '*.dmg' SIQshift-UNSIGNED-TEST-macos-aarch64.dmg
+          # The Mac installer exists only when this run could sign it.
+          if [ -n "$(find downloaded -type f -name '*.dmg' -print -quit)" ]; then
+            take '*.dmg' SIQshift-macos-universal.dmg
+          fi
           take '*.exe.sig' SIQshift-windows-x64-setup.exe.sig
           # Both matrix legs write an identical one, so either will do.
           take 'TEST-BUILD.txt' TEST-BUILD.txt
@@ -449,6 +617,11 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")-test.${{ github.run_number }}"
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ -e release-assets/SIQshift-macos-universal.dmg ]; then
+            mac_note="The macOS installer and the app in it are **code signed by SIQstack LLC and notarized by Apple**, for Apple silicon and Intel Macs."
+          else
+            mac_note="This build has **no macOS installer**: the Mac one is published only signed and notarized, and the Apple signing secrets are not set yet. A Mac file still on this release is an earlier, unsigned test build."
+          fi
           cat > release-notes.md <<EOF
           Test build of SIQshift **$version**, from commit
           \`${{ github.sha }}\` (run [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})).
@@ -457,8 +630,9 @@ jobs:
           SIQstack LLC**, and Windows names SIQstack LLC as the publisher.
           SmartScreen may still warn on the first downloads while the
           certificate builds a reputation: choose **More info**, then **Run
-          anyway**. The macOS build is **not signed or notarized** and needs
-          \`xattr -dr com.apple.quarantine "/Applications/SIQshift.app"\`.
+          anyway**.
+
+          $mac_note
 
           They are debug builds, so they are larger and slower than a release
           build.
@@ -487,7 +661,9 @@ jobs:
       # Edit-or-create, never delete-and-recreate: deleting would leave the
       # published download URL 404ing for the length of the upload. An asset
       # this run did not stage is removed only after the upload, so the
-      # release ends up carrying exactly this build and nothing stale.
+      # release ends up carrying exactly this build and nothing stale. The one
+      # exception: a run without a signed Mac build publishes nothing for the
+      # Mac, so it leaves the release's Mac file as it is.
       - name: Publish the release
         shell: bash
         run: |
@@ -502,7 +678,7 @@ jobs:
           fi
           gh release upload "$TAG" release-assets/* --clobber
           gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
-            if [ ! -e "release-assets/$asset" ]; then
+            if [ ! -e "release-assets/$asset" ] && { [ -e release-assets/SIQshift-macos-universal.dmg ] || [[ "$asset" != *.dmg ]]; }; then
               gh release delete-asset "$TAG" "$asset" --yes
             fi
           done
