@@ -1104,8 +1104,9 @@ describe("dashboard", () => {
     }));
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByText(/Recent sessions/));
-    const table = await stats.findByRole("table");
+    const drawer = stats.getByText(/Recent sessions/).closest("details")!;
+    await person.click(within(drawer).getByText(/Recent sessions/));
+    const table = await within(drawer).findByRole("table");
     const projectCells = within(table).getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("cell")[1]!.textContent);
     expect(projectCells).toEqual(["General", "General"]);
   });

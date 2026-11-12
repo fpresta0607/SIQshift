@@ -651,9 +651,9 @@ describe("today", () => {
       }),
     })} />);
 
-    const panel = await openAllStats(person);
-    expect(await within(panel).findByText("Claude Code")).toBeInTheDocument();
-    expect(within(panel).getByText("VS Code")).toBeInTheDocument();
+    const apps = await within(await openAllStats(person)).findByTestId("member-app-list");
+    expect(await within(apps).findByText("Claude Code")).toBeInTheDocument();
+    expect(within(apps).getByText("VS Code")).toBeInTheDocument();
   });
 
   it("keeps the agent session stats off the Humans tab - they belong to the agent", async () => {
