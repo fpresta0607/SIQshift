@@ -22,15 +22,51 @@ const pickableProjects = [
   { id: "p2", name: "Client", createdAt: "2026-08-11T12:00:00.000Z", isArchived: false, isDefault: false },
 ];
 
-const noMeasurement = {
-  concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
-  byAgent: [] as never[],
+const teamMembers = [
+  { rank: 1, user: { id: "u1", name: "Sam" }, activeSeconds: 8_040, agentSeconds: 10_800, project: { id: "p1", name: "General" } },
+  { rank: 2, user: { id: "u2", name: "Alex" }, activeSeconds: 3_600, agentSeconds: 0, project: { id: "p2", name: "Client" } },
+];
+
+/// The team view's one read, as `/reports/workspace` serves it: every total
+/// already added up on the server.
+const workspaceReport = {
+  filters: {},
+  activeSeconds: 11_640,
+  agentSeconds: 10_800,
+  hourly: [
+    { hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_000, agentSeconds: 3_600 },
+    { hourStart: "2026-08-06T14:00:00.000Z", activeSeconds: 1_800, agentSeconds: 0 },
+  ],
+  projects: [
+    { project: { id: "p1", name: "General" }, durationSeconds: 8_040 },
+    { project: { id: "p2", name: "Client" }, durationSeconds: 3_600 },
+  ],
+  agents: [{ source: "claude_code", durationSeconds: 10_800 }],
+  members: teamMembers,
 };
 
-const entries = [
-  { rank: 1, user: { id: "u1", name: "Sam" }, durationSeconds: 7_200, sessionCount: 3, attributedSeconds: 5_400, unattributedSeconds: 1_800, activeSeconds: 8_040, agentSeconds: 10_800, ...noMeasurement },
-  { rank: 2, user: { id: "u2", name: "Alex" }, durationSeconds: 3_600, sessionCount: 1, attributedSeconds: 3_600, unattributedSeconds: 0, activeSeconds: 3_600, agentSeconds: 0, ...noMeasurement },
-];
+/// Alex alone: the whole team is the viewer.
+const workspaceOfOne = {
+  ...workspaceReport,
+  activeSeconds: 3_600,
+  agentSeconds: 0,
+  hourly: [{ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_600, agentSeconds: 0 }],
+  projects: [{ project: { id: "p2", name: "Client" }, durationSeconds: 3_600 }],
+  agents: [],
+  members: [{ ...teamMembers[1]!, rank: 1 }],
+};
+
+/// A workspace whose roster recorded nothing in the range: the server still
+/// lists every member, at zero.
+const quietWorkspace = {
+  ...workspaceReport,
+  activeSeconds: 0,
+  agentSeconds: 0,
+  hourly: [],
+  projects: [],
+  agents: [],
+  members: [{ rank: 1, user: { id: "u2", name: "Alex" }, activeSeconds: 0, agentSeconds: 0, project: null }],
+};
 
 /// The signed-in viewer is Alex, so the board highlights u2 by default.
 const self = { id: "u2", email: "alex@example.com", name: "Alex" };
@@ -176,7 +212,7 @@ function clientFor(overrides: Partial<Client> = {}): Client {
     signOut: vi.fn().mockResolvedValue(undefined),
     organization: vi.fn().mockResolvedValue({ organization }),
     claimAdmin: vi.fn().mockRejectedValue(new ClientError("validation", "A workspace administrator already exists.")),
-    leaderboard: vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, medianSessionSeconds: 1_800, filters: {} }),
+    workspace: vi.fn().mockResolvedValue(workspaceReport),
     me: vi.fn().mockResolvedValue({ user: self }),
     meStats: vi.fn().mockResolvedValue(memberStats),
     projects: vi.fn().mockResolvedValue({ projects: [{ id: "p1", name: "General", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false, isDefault: true }], selectedProjectId: null }),
@@ -216,6 +252,11 @@ async function openAllStats(person: Person) {
   await person.click(await screen.findByRole("button", { name: "All stats" }));
   return within(await screen.findByRole("dialog", { name: "All stats" }));
 }
+
+/// The dialog's Humans or Agents switch. The team view's breakdown has an
+/// Agents toggle of its own, so the dialog holds two buttons by that name.
+const agentsTab = (dialog: ReturnType<typeof within>) =>
+  within(dialog.getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
 
 /// Projects, the team's invite code and signing out live in the settings
 /// panel, the way the desktop app files them.
@@ -283,19 +324,70 @@ describe("recorded basis", () => {
 });
 
 describe("dashboard", () => {
-  it("ranks the team by active hours, with agent time as its own muted line", async () => {
-    const person = await signIn(clientFor());
-
+  it("lays the team out as the home page's example workspace", async () => {
+    // Arrange
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ workspace }));
     expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+
+    // Act
     const stats = await openAllStats(person);
-    const board = within(await stats.findByTestId("board-list"));
-    const [first, second] = board.getAllByRole("listitem");
-    expect(first).toHaveTextContent("Sam");
-    expect(first).toHaveTextContent("2h 14m");
-    // Sam's 3h of agent runtime reads as leverage, never as hours worked.
-    expect(first).toHaveTextContent("Agent 3h 00m · 1.3×");
-    expect(second).toHaveTextContent("Alex");
-    expect(second).toHaveTextContent("1h 00m");
+    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+
+    // Assert
+    expect(view.getByText("SIQstack")).toBeInTheDocument();
+    expect(view.getByText("Last 30 days")).toBeInTheDocument();
+    expect(view.getByText("2 people across 2 projects")).toBeInTheDocument();
+    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 14m");
+    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("3h 00m");
+    const graph = view.getByTestId("hourly-graph");
+    expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
+    expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
+    const [, first, second] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    expect(first).toHaveTextContent(/^1SSamGeneral2h 14m3h 00m$/);
+    expect(second).toHaveTextContent(/^2AAlex youClient1h 00m0s$/);
+    const breakdown = within(view.getByRole("region", { name: "Workspace breakdown" }));
+    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
+    await person.click(within(breakdown.getByRole("group", { name: "Projects or agents" })).getByRole("button", { name: "Agents" }));
+    expect(breakdown.getByText("Runtime by agent")).toBeInTheDocument();
+    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
+    expect(view.getByText("Local agents, shared visibility").parentElement).toHaveTextContent("Claude Code");
+    expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
+  });
+
+  it("draws the team totals the server added up, never a sum of the rows", async () => {
+    // Arrange
+    const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue({ ...workspaceReport, activeSeconds: 12_000, agentSeconds: 20_000 }),
+    }));
+
+    // Act
+    const stats = await openAllStats(person);
+    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+
+    // Assert
+    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 20m");
+    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("5h 33m");
+  });
+
+  it("shows a workspace of one as a single row, the viewer's own", async () => {
+    // Arrange
+    const person = await signIn(clientFor({ workspace: vi.fn().mockResolvedValue(workspaceOfOne) }));
+
+    // Act
+    const stats = await openAllStats(person);
+    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+
+    // Assert
+    expect(view.getByText("1 person across 1 project")).toBeInTheDocument();
+    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("1h 00m");
+    const [, only, ...rest] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    expect(rest).toEqual([]);
+    expect(only).toHaveTextContent(/^1AAlex youClient1h 00m0s$/);
+    expect(within(only!).getByRole("button", { name: "Show Alex's work" })).toHaveAttribute("aria-pressed", "true");
+    // Nobody else to pick, so the board does not offer to.
+    expect(view.queryByText("Select a teammate to explore their work.")).toBeNull();
+    expect(view.queryByText("Local agents, shared visibility")).toBeNull();
   });
 
   it("shows the invite code and copies it on request", async () => {
@@ -327,12 +419,12 @@ describe("dashboard", () => {
   });
 
   it("keeps a board that fails after a successful join clear of the join form", async () => {
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
-    const person = await signIn(clientFor({ leaderboard }));
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ workspace }));
     await screen.findByRole("heading", { name: "SIQstack" });
     const settings = await openSettings(person);
 
-    leaderboard.mockRejectedValueOnce(new ClientError("transient", "The board is taking a break."));
+    workspace.mockRejectedValueOnce(new ClientError("transient", "The board is taking a break."));
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
     await person.click(settings.getByRole("button", { name: "Join this team" }));
 
@@ -349,10 +441,10 @@ describe("dashboard", () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockResolvedValue({ projects: newWorkspaceProjects, selectedProjectId: null });
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({
       projects,
-      leaderboard,
+      workspace,
       preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
     }));
     await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("Client"));
@@ -364,7 +456,7 @@ describe("dashboard", () => {
     // The old workspace's project is gone, so the page reads everything rather
     // than sending a scope the new workspace will refuse.
     await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects"));
-    expect(leaderboard.mock.calls.at(-1)?.[0]).not.toContain("scope=p2");
+    expect(workspace.mock.calls.at(-1)?.[0]).not.toContain("scope=p2");
     expect(settings.queryByRole("alert")).toBeNull();
 
     await person.click(settings.getByRole("button", { name: "Close settings" }));
@@ -425,14 +517,14 @@ describe("dashboard", () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({
       projects,
-      leaderboard,
+      workspace,
       preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
     }));
-    await waitFor(() => expect(leaderboard.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
-    const callsBeforeJoin = leaderboard.mock.calls.length;
+    await waitFor(() => expect(workspace.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+    const callsBeforeJoin = workspace.mock.calls.length;
 
     const settings = await openSettings(person);
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
@@ -442,8 +534,8 @@ describe("dashboard", () => {
     // The join went through, so p2 is a project of the workspace just left and
     // the new one's API refuses it. Not one request may still carry it.
     await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects"));
-    await waitFor(() => expect(leaderboard.mock.calls.length).toBeGreaterThan(callsBeforeJoin));
-    const queriesAfterJoin = leaderboard.mock.calls.slice(callsBeforeJoin).map((call) => call[0] as string);
+    await waitFor(() => expect(workspace.mock.calls.length).toBeGreaterThan(callsBeforeJoin));
+    const queriesAfterJoin = workspace.mock.calls.slice(callsBeforeJoin).map((call) => call[0] as string);
     expect(queriesAfterJoin.filter((query) => query.includes("scope=p2"))).toEqual([]);
   });
 
@@ -467,10 +559,10 @@ describe("dashboard", () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
-    const leaderboard = vi.fn()
-      .mockResolvedValueOnce({ entries, totalDurationSeconds: 10_800, filters: {} })
+    const workspace = vi.fn()
+      .mockResolvedValueOnce(workspaceReport)
       .mockRejectedValue(new ClientError("transient", "The board is taking a break."));
-    const person = await signIn(clientFor({ projects, leaderboard }));
+    const person = await signIn(clientFor({ projects, workspace }));
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const settings = await openSettings(person);
@@ -490,14 +582,13 @@ describe("dashboard", () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
-    const leaderboard = vi.fn()
-      .mockResolvedValueOnce({ entries, totalDurationSeconds: 10_800, filters: {} })
+    const workspace = vi.fn()
+      .mockResolvedValueOnce(workspaceReport)
       .mockResolvedValue({
-        entries: [{ rank: 1, user: { id: "u9", name: "Robin" }, durationSeconds: 1_800, sessionCount: 1, attributedSeconds: 1_800, unattributedSeconds: 0, activeSeconds: 1_800, agentSeconds: 0, ...noMeasurement }],
-        totalDurationSeconds: 1_800,
-        filters: {},
+        ...workspaceOfOne,
+        members: [{ rank: 1, user: { id: "u9", name: "Robin" }, activeSeconds: 3_600, agentSeconds: 0, project: null }],
       });
-    const person = await signIn(clientFor({ projects, leaderboard }));
+    const person = await signIn(clientFor({ projects, workspace }));
     const board = await openAllStats(person);
     expect(await board.findByRole("button", { name: /Sam/ })).toBeInTheDocument();
     await person.click(screen.getByRole("button", { name: "Close all stats" }));
@@ -522,12 +613,12 @@ describe("dashboard", () => {
     const projects = vi.fn()
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockResolvedValue({ projects: newWorkspaceProjects, selectedProjectId: null });
-    const leaderboard = vi.fn()
-      .mockResolvedValueOnce({ entries, totalDurationSeconds: 10_800, filters: {} })
+    const workspace = vi.fn()
+      .mockResolvedValueOnce(workspaceReport)
       .mockRejectedValue(new ClientError("transient", "The board is taking a break."));
     const person = await signIn(clientFor({
       projects,
-      leaderboard,
+      workspace,
       preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
     }));
     await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("Client"));
@@ -731,29 +822,29 @@ describe("dashboard", () => {
   });
 
   it("reloads with device-local instant bounds when the range changes", async () => {
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
-    const person = await signIn(clientFor({ leaderboard }));
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ workspace }));
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    const callsBefore = leaderboard.mock.calls.length;
+    const callsBefore = workspace.mock.calls.length;
     await person.click(stats.getByRole("button", { name: "7d" }));
 
-    await waitFor(() => expect(leaderboard.mock.calls.length).toBeGreaterThan(callsBefore));
-    const query = new URLSearchParams(leaderboard.mock.calls.at(-1)?.[0]);
+    await waitFor(() => expect(workspace.mock.calls.length).toBeGreaterThan(callsBefore));
+    const query = new URLSearchParams(workspace.mock.calls.at(-1)?.[0]);
     expect(query.get("fromAt")).not.toBeNull();
     expect(query.get("toExclusiveAt")).not.toBeNull();
   });
 
   it("asks for everything by sending no bounds on all time", async () => {
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
-    const person = await signIn(clientFor({ leaderboard }));
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ workspace }));
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
     await person.click(stats.getByRole("button", { name: "All time" }));
 
-    await waitFor(() => expect(leaderboard).toHaveBeenLastCalledWith(""));
+    await waitFor(() => expect(workspace).toHaveBeenLastCalledWith(""));
   });
 
   it("uses local calendar midnights across a daylight-saving boundary", () => {
@@ -854,7 +945,7 @@ describe("dashboard", () => {
 
   it("returns to sign-in with a readable message when the session expires", async () => {
     const client = clientFor({
-      leaderboard: vi.fn().mockRejectedValue(new ClientError("auth", "Your session expired. Sign in again.")),
+      workspace: vi.fn().mockRejectedValue(new ClientError("auth", "Your session expired. Sign in again.")),
     });
     await signIn(client);
 
@@ -864,7 +955,7 @@ describe("dashboard", () => {
 
   it("keeps the dashboard up and reports a transient failure without signing out", async () => {
     const client = clientFor({
-      leaderboard: vi.fn().mockRejectedValue(new ClientError("transient", "The server is unavailable. Try again shortly.")),
+      workspace: vi.fn().mockRejectedValue(new ClientError("transient", "The server is unavailable. Try again shortly.")),
     });
     await signIn(client);
 
@@ -886,7 +977,7 @@ describe("dashboard", () => {
     // away with them, so a server-side refusal read as an empty account.
     const refused = () => new ClientError("validation", "The server would not accept that request.");
     const person = await signIn(clientFor({
-      leaderboard: vi.fn().mockRejectedValue(refused()),
+      workspace: vi.fn().mockRejectedValue(refused()),
       meStats: vi.fn().mockRejectedValue(refused()),
     }));
 
@@ -899,7 +990,7 @@ describe("dashboard", () => {
   it("distinguishes a card that failed to load from a range with nothing in it", async () => {
     const refused = () => new ClientError("validation", "The server would not accept that request.");
     const person = await signIn(clientFor({
-      leaderboard: vi.fn().mockRejectedValue(refused()),
+      workspace: vi.fn().mockRejectedValue(refused()),
       meStats: vi.fn().mockRejectedValue(refused()),
     }));
 
@@ -912,7 +1003,7 @@ describe("dashboard", () => {
 
   it("says so plainly when a range has no recorded time", async () => {
     const person = await signIn(clientFor({
-      leaderboard: vi.fn().mockResolvedValue({ entries: [], totalDurationSeconds: 0, filters: {} }),
+      workspace: vi.fn().mockResolvedValue(quietWorkspace),
       meStats: vi.fn().mockResolvedValue({ ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [] }),
     }));
 
@@ -925,16 +1016,12 @@ describe("dashboard", () => {
 
   it("keeps the install hint beside a roster-only zero row", async () => {
     const person = await signIn(clientFor({
-      leaderboard: vi.fn().mockResolvedValue({
-        entries: [{ rank: 1, user: { id: "u2", name: "Alex" }, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0, activeSeconds: 0, agentSeconds: 0, ...noMeasurement }],
-        totalDurationSeconds: 0,
-        filters: {},
-      }),
+      workspace: vi.fn().mockResolvedValue(quietWorkspace),
     }));
 
     const board = await openAllStats(person);
     expect(await board.findByText(/No recorded time in this range yet/)).toBeInTheDocument();
-    expect(await board.findByRole("button", { name: /Alex/ })).toHaveTextContent("0s");
+    expect(await board.findByRole("row", { name: /Alex/ })).toHaveTextContent("0s");
   });
 
   it("claims the first admin role once on sign-in and swallows the existing-admin refusal", async () => {
@@ -983,15 +1070,12 @@ describe("dashboard", () => {
     const person = await signIn(clientFor());
 
     const stats = await openAllStats(person);
-    const board = await stats.findByTestId("board-list");
+    const board = await stats.findByRole("region", { name: "Team leaderboard" });
     const breakdown = await stats.findByTestId("breakdown");
-    const notes = stats.getAllByTestId("agent-time-limit");
-    expect(notes).toHaveLength(2);
-    expect(board.nextElementSibling).toBe(notes[0]);
-    expect(breakdown).toContainElement(notes[1]!);
-    for (const note of notes) expect(note).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    expect(within(board).getByText("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.")).toBeInTheDocument();
+    expect(within(breakdown).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
 
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const panel = within(await screen.findByTestId("agent-shifts"));
     expect(await panel.findByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
   });
@@ -1215,7 +1299,7 @@ describe("dashboard", () => {
     const person = await signIn(clientFor({
       joinOrganization,
       organization: organizationCall,
-      leaderboard: vi.fn().mockResolvedValue({ entries: [entries[1]], totalDurationSeconds: 3_600, filters: {} }),
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
     }));
     await screen.findByRole("heading", { name: "SIQstack" });
     const settings = await openSettings(person);
@@ -1234,7 +1318,7 @@ describe("dashboard", () => {
     );
     const person = await signIn(clientFor({
       joinOrganization,
-      leaderboard: vi.fn().mockResolvedValue({ entries: [entries[1]], totalDurationSeconds: 3_600, filters: {} }),
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
     }));
     await screen.findByRole("heading", { name: "SIQstack" });
     const settings = await openSettings(person);
@@ -1377,10 +1461,10 @@ describe("project management", () => {
   ];
 
   it("drops the Unassigned scope and reads a stored unassigned as everything", async () => {
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({
       preferences: vi.fn().mockResolvedValue({ scope: "unassigned", range: "30d" }),
-      leaderboard,
+      workspace,
     }));
 
     // The filing header says where the page is pointed, in the desktop app's
@@ -1392,18 +1476,18 @@ describe("project management", () => {
     expect(picker.queryByRole("radio", { name: "Unassigned" })).not.toBeInTheDocument();
     // The board fetched the unscoped view rather than passing "unassigned" through.
     await waitFor(() => {
-      const query = leaderboard.mock.calls.at(-1)?.[0] ?? "";
+      const query = workspace.mock.calls.at(-1)?.[0] ?? "";
       expect(query).not.toContain("scope=unassigned");
       expect(query).not.toContain("scope=");
     });
   });
 
   it("points every surface at one project when the filing header picks one", async () => {
-    const leaderboard = vi.fn().mockResolvedValue({ entries, totalDurationSeconds: 10_800, filters: {} });
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const meStats = vi.fn().mockResolvedValue(memberStats);
     const person = await signIn(clientFor({
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
-      leaderboard,
+      workspace,
       meStats,
     }));
     await screen.findByRole("heading", { name: "SIQstack" });
@@ -1412,7 +1496,7 @@ describe("project management", () => {
     await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
 
     expect(screen.getByTestId("filing-where")).toHaveTextContent("Client");
-    await waitFor(() => expect(leaderboard.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+    await waitFor(() => expect(workspace.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
     await waitFor(() => expect(meStats.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
   });
 
@@ -1546,7 +1630,7 @@ describe("the agents tab", () => {
     const person = await signIn(clientFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenChart }) }));
     await screen.findByRole("heading", { name: "SIQstack" });
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     return { person, chart: within(await screen.findByTestId("agent-shifts")).getByTestId("token-chart") };
   };
 
@@ -1577,7 +1661,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
 
     const panel = within(await screen.findByTestId("agent-shifts"));
     // The header mirrors a member's breakdown: the range and the recorded
@@ -1615,7 +1699,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
 
     const groups = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group");
     expect(groups).toHaveLength(2);
@@ -1633,7 +1717,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const heads = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group")
       .map((group) => group.querySelector(".shift-group-head"));
 
@@ -1657,7 +1741,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const board = within(await screen.findByTestId("agent-people"));
 
     const rows = board.getAllByRole("button");
@@ -1702,7 +1786,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
 
     const live = await screen.findByTestId("live-sessions");
     // The description renders verbatim, never re-derived: every clause is a
@@ -1733,7 +1817,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     await screen.findByTestId("live-sessions");
     // Sam has no live session, so picking him reads as "nobody", never as
     // Alex's rows filed under the wrong name.
@@ -1749,7 +1833,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     await person.click(within(await screen.findByTestId("agent-people")).getByRole("button", { name: /Sam/ }));
 
     // The failure is reported, but "All people" outlives it: without it a
@@ -1775,7 +1859,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     await screen.findByTestId("agent-people");
     const before = agentShifts.mock.calls.length;
 
@@ -1804,7 +1888,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     await screen.findByTestId("agent-shifts");
 
     // A board of one ranks nothing and filters nothing.
@@ -1816,7 +1900,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const group = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group")[0]!;
 
     // Never a visibility assertion here: jsdom has no rule hiding a closed
@@ -1837,7 +1921,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const groups = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group");
 
     // The head reads in the shared meter row, so a column of codebases scans
@@ -1863,7 +1947,7 @@ describe("the agents tab", () => {
       await screen.findByRole("heading", { name: "SIQstack" });
 
       const stats = await openAllStats(person);
-      await person.click(stats.getByRole("button", { name: "Agents" }));
+      await person.click(agentsTab(stats));
       const panel = within(await screen.findByTestId("agent-shifts"));
       // A bounded range folds an hourly line from the shifts on screen.
       expect(panel.getByTestId("hourly-graph")).toBeInTheDocument();
@@ -1885,7 +1969,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
 
     const panel = within(await screen.findByTestId("agent-shifts"));
     const group = panel.getAllByTestId("shift-group")[0]!;
@@ -1909,7 +1993,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const panel = within(await screen.findByTestId("agent-shifts"));
 
     // The whole point of the change: drawing the heads costs no rows at all.
@@ -1935,7 +2019,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const panel = within(await screen.findByTestId("agent-shifts"));
     const group = panel.getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
@@ -1990,7 +2074,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const panel = within(await screen.findByTestId("agent-shifts"));
     const group = panel.getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
@@ -2019,7 +2103,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
     const panel = within(await screen.findByTestId("agent-shifts"));
     const group = panel.getAllByTestId("shift-group")[0]!;
     const head = group.querySelector("summary")!;
@@ -2044,7 +2128,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "SIQstack" });
 
     const stats = await openAllStats(person);
-    await person.click(stats.getByRole("button", { name: "Agents" }));
+    await person.click(agentsTab(stats));
 
     expect(await screen.findByText("No agent worked in this range.")).toBeInTheDocument();
   });

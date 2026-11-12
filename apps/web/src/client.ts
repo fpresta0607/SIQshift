@@ -1,7 +1,6 @@
 import type {
   AgentShiftRowsResponse,
   AgentShiftsResponse,
-  LeaderboardResponse,
   LiveAgentSessionsResponse,
   MeResponse,
   MeStatsResponse,
@@ -13,6 +12,7 @@ import type {
   ReportResponse,
   ViewPreferences,
   ViewPreferencesUpdate,
+  WorkspaceReportResponse,
 } from "@siqshift/shared";
 
 /**
@@ -290,7 +290,8 @@ export function createClient(config: ClientConfig) {
     /** Who is running an agent right now, grouped by person; the scope narrows the live view. */
     liveAgentSessions: (query = "") => json<LiveAgentSessionsResponse>(`/reports/agent-sessions/live${query}`),
 
-    leaderboard: (query = "") => json<LeaderboardResponse>(`/reports/leaderboard${query}`),
+    /** The caller's workspace for the team view, every total added up on the server. */
+    workspace: (query = "") => json<WorkspaceReportResponse>(`/reports/workspace${query}`),
     report: (query = "") => json<ReportResponse>(`/reports${query}`),
     me: () => json<MeResponse>("/me"),
     /** One member's breakdown; `userId` in the query names a teammate. */

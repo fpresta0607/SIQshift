@@ -114,11 +114,11 @@ describe("web client", () => {
       }
       apiCalls += 1;
       // The first API call sees an expired token; the retry succeeds.
-      return apiCalls === 1 ? jsonResponse({}, 401) : jsonResponse({ entries: [] });
+      return apiCalls === 1 ? jsonResponse({}, 401) : jsonResponse({ members: [] });
     });
 
     await client.signIn({ email: "alex@example.com", password: "long-enough-password" });
-    await expect(client.leaderboard()).resolves.toEqual({ entries: [] });
+    await expect(client.workspace()).resolves.toEqual({ members: [] });
     expect(tokensIssued).toBe(2);
     expect(apiCalls).toBe(2);
   });
@@ -132,7 +132,7 @@ describe("web client", () => {
 
     await client.signIn({ email: "alex@example.com", password: "long-enough-password" });
 
-    await expect(client.leaderboard()).rejects.toMatchObject({ kind: "auth" });
+    await expect(client.workspace()).rejects.toMatchObject({ kind: "auth" });
   });
 
   it("names a wrong password without leaking whether the account exists", async () => {
@@ -231,10 +231,10 @@ describe("web client", () => {
   it("says a refused request is a version mismatch, because no reader composed it", async () => {
     const { client } = clientWith(async (url) => {
       if (url.endsWith("/token")) return jsonResponse({ token: "jwt" });
-      return jsonResponse({ error: { code: "validation_error", message: "Invalid leaderboard filters." } }, 400);
+      return jsonResponse({ error: { code: "validation_error", message: "Invalid workspace report filters." } }, 400);
     });
 
-    await expect(client.leaderboard("?fromAt=2026-07-13T05:00:00.000Z&toExclusiveAt=2026-08-12T05:00:00.000Z"))
+    await expect(client.workspace("?fromAt=2026-07-13T05:00:00.000Z&toExclusiveAt=2026-08-12T05:00:00.000Z"))
       .rejects.toMatchObject({ kind: "validation", message: expect.stringContaining("different versions") });
   });
 

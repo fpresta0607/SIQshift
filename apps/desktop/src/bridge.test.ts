@@ -452,4 +452,59 @@ describe("defaultBridge", () => {
     invoke.mockResolvedValueOnce({});
     await expect(defaultBridge.liveAgentSessions()).resolves.toEqual({ people: [] });
   });
+
+  it("reads the workspace's name and invite code with no range", async () => {
+    // Arrange
+    const organization = { id: ids.project, name: "Field team", inviteCode: "ACDEF-GHJKM" };
+    invoke.mockResolvedValueOnce({ organization });
+
+    // Act
+    const overview = await defaultBridge.orgOverview();
+
+    // Assert
+    expect(overview).toEqual({ organization });
+    expect(invoke).toHaveBeenLastCalledWith("org_overview", undefined);
+  });
+
+  it("decodes the workspace report with a member who has no project, and pins the command", async () => {
+    // Arrange
+    const report = {
+      activeSeconds: 3_600,
+      agentSeconds: 1_800,
+      hourly: [{ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_000, agentSeconds: 1_800 }],
+      projects: [{ project: { id: ids.project, name: "Field work" }, durationSeconds: 3_600 }],
+      // A runtime this build has never heard of still reads.
+      agents: [{ source: "a_runtime_from_the_future", durationSeconds: 1_800 }],
+      members: [
+        { rank: 1, user: { id: ids.user, name: "Timer" }, activeSeconds: 3_600, agentSeconds: 1_800, project: { id: ids.project, name: "Field work" } },
+        { rank: 2, user: { id: ids.other, name: "Alex" }, activeSeconds: 0, agentSeconds: 0, project: null },
+      ],
+    };
+    invoke.mockResolvedValueOnce({ filters: {}, ...report });
+
+    // Act
+    const decoded = await defaultBridge.workspaceReport("2026-08-06T00:00:00.000Z", "2026-08-07T00:00:00.000Z");
+
+    // Assert
+    expect(decoded).toEqual(report);
+    expect(invoke).toHaveBeenLastCalledWith("workspace_report", {
+      fromAt: "2026-08-06T00:00:00.000Z",
+      toExclusiveAt: "2026-08-07T00:00:00.000Z",
+    });
+  });
+
+  it.each([
+    ["a missing member list", { members: undefined }],
+    ["a negative total", { activeSeconds: -1 }],
+    ["a member without a name", { members: [{ rank: 1, user: { id: ids.user }, activeSeconds: 0, agentSeconds: 0, project: null }] }],
+  ])("rejects a workspace report with %s", async (_case, broken) => {
+    // Arrange
+    invoke.mockResolvedValueOnce({ activeSeconds: 0, agentSeconds: 0, hourly: [], projects: [], agents: [], members: [], ...broken });
+
+    // Act
+    const read = defaultBridge.workspaceReport();
+
+    // Assert
+    await expect(read).rejects.toMatchObject({ kind: "unknown" });
+  });
 });

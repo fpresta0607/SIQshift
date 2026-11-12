@@ -1,4 +1,4 @@
-import { agentShiftRowsFiltersSchema, agentShiftsFiltersSchema, leaderboardFiltersSchema, meStatsFiltersSchema } from "@siqshift/shared";
+import { agentShiftRowsFiltersSchema, agentShiftsFiltersSchema, meStatsFiltersSchema, workspaceReportFiltersSchema } from "@siqshift/shared";
 import { describe, expect, it } from "vitest";
 
 import { rangeQuery } from "./App.js";
@@ -6,7 +6,7 @@ import { rangeQuery } from "./App.js";
 /**
  * The dashboard and the API ship on separate manual deploys, so the only thing
  * holding them to the same request shape is this contract. `rangeQuery` is the
- * single place the dashboard composes a range; `leaderboardFiltersSchema`,
+ * single place the dashboard composes a range; `workspaceReportFiltersSchema`,
  * `meStatsFiltersSchema` and `agentShiftsFiltersSchema` are what the API parses
  * that range with, and all three are `.strict()`, so a parameter one side
  * invents and the other has never heard of is a flat `400` rather than a
@@ -21,7 +21,7 @@ import { rangeQuery } from "./App.js";
  */
 const boundedRanges = ["today", "7d", "30d", "90d"] as const;
 
-/** A member id shaped like the ones the leaderboard hands the drill-down. */
+/** A member id shaped like the ones the team board hands the drill-down. */
 const memberId = "b1c7e513-b094-4d4c-ae55-21790ae019a4";
 
 /** A project id shaped like the ones the scope picker sends. */
@@ -31,18 +31,19 @@ const parametersOf = (query: string): Record<string, string> =>
   Object.fromEntries(new URLSearchParams(query.replace(/^\?/, "")));
 
 describe("web and API report contract", () => {
-  it.each(boundedRanges)("accepts the leaderboard query the dashboard sends for %s", (range) => {
-    const parameters = parametersOf(rangeQuery(range));
+  it.each(boundedRanges)("accepts the workspace query the team view sends for %s", (range) => {
+    const parameters = parametersOf(`${rangeQuery(range)}&scope=${projectId}`);
 
-    const filters = leaderboardFiltersSchema.parse(parameters);
+    const filters = workspaceReportFiltersSchema.parse(parameters);
 
     expect(filters.fromAt).toBe(parameters.fromAt);
     expect(filters.toExclusiveAt).toBe(parameters.toExclusiveAt);
+    expect(filters.scope).toBe(projectId);
   });
 
   it("sends no bounds at all for all time, which both schemas accept", () => {
     expect(rangeQuery("all")).toBe("");
-    expect(() => leaderboardFiltersSchema.parse({})).not.toThrow();
+    expect(() => workspaceReportFiltersSchema.parse({})).not.toThrow();
     expect(() => meStatsFiltersSchema.parse({ userId: memberId })).not.toThrow();
   });
 
@@ -130,6 +131,6 @@ describe("web and API report contract", () => {
     const parameters = parametersOf(rangeQuery("today"));
 
     expect(Object.keys(parameters).sort()).toEqual(["fromAt", "toExclusiveAt"]);
-    expect(() => leaderboardFiltersSchema.parse({ ...parameters, from: "2026-08-06" })).toThrow();
+    expect(() => workspaceReportFiltersSchema.parse({ ...parameters, from: "2026-08-06" })).toThrow();
   });
 });

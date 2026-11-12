@@ -333,36 +333,7 @@ select:disabled { opacity: .55; }
 .join-form input { letter-spacing: .06em; text-transform: uppercase; }
 .join-form button { flex: none; min-height: 33px; border: 1px solid var(--glass-border); padding: 0 11px; background: rgba(3, 5, 10, 0.5); color: #ffffff; font-size: .76rem; text-transform: uppercase; }
 .join-form button:hover { border-color: var(--glass-border-hover); }
-/* Each row is the control that picks whose breakdown shows underneath, so the
-   list is bounded to keep that breakdown reachable - but the bound follows the
-   window rather than a fixed 11rem, which cut the human board to four rows and
-   the roster to five on any screen. Short lists size to their content and show
-   no scrollbar at all; only a long one scrolls, and it scrolls with the room
-   the window actually has. */
-.board-list { display: grid; gap: 4px; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; list-style: none; }
-.board-choice {
-  display: grid;
-  width: 100%;
-  align-items: baseline;
-  gap: 9px;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  border: 0;
-  border-radius: 6px;
-  padding: 5px 7px;
-  background: transparent;
-  color: inherit;
-  font-size: .84rem;
-  letter-spacing: normal;
-  text-align: left;
-}
-.board-choice:hover { background: rgba(163, 179, 194, 0.1); }
-.board-list li.is-selected .board-choice { background: rgba(0, 229, 155, .1); }
-.board-rank { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.board-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .you-tag { color: var(--text-secondary); font-size: .74rem; text-transform: uppercase; letter-spacing: .08em; }
-.board-hours { color: var(--mint); font-variant-numeric: tabular-nums; }
-.board-times { display: grid; justify-items: end; gap: 2px; }
-.board-agent { color: var(--text-secondary); font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* Settings overlay, same pattern as the web app's help dialog. */
 .modal-overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(3, 5, 10, .72); }
