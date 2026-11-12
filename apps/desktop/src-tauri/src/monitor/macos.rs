@@ -244,7 +244,9 @@ fn audio_object_list(object: u32, selector: u32) -> Option<Vec<u32>> {
 /// directions and music playing through it would read as a live microphone.
 /// Reading it needs no Microphone grant, because SIQshift never opens a
 /// device. `None` before macOS 14, which has no process list, or when
-/// CoreAudio errs; either never rescues.
+/// CoreAudio errs; either never rescues. Before macOS 14 there is
+/// deliberately no device-wide fallback, which would bring back that
+/// headset's music reading as a live microphone.
 fn microphone_in_use() -> Option<bool> {
     let processes = audio_object_list(AUDIO_SYSTEM_OBJECT, AUDIO_PROCESS_OBJECT_LIST)?;
     Some(processes.into_iter().any(|process| {
@@ -377,6 +379,21 @@ mod tests {
         assert!(
             idle.is_some(),
             "the HID system state always has a last input"
+        );
+    }
+
+    // The test process runs inside the runner's logged-in GUI session, so the
+    // window server must describe it; a `None` here means a wrong key or value
+    // type, and the fast user switching guard could never fire.
+    #[test]
+    fn session_probe_reads_the_window_server() {
+        // Act
+        let on_console = session_on_console();
+
+        // Assert
+        assert!(
+            on_console.is_some(),
+            "CGSession did not say whether this session is on the console"
         );
     }
 
