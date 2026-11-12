@@ -26,12 +26,12 @@ function mapping(pathPrefix: string, projectId: string, kind: "path_prefix" | "u
 
 describe("isHomeOrTempDirectory", () => {
   it.each([
-    "C:\\Users\\fpres",
-    "c:/users/fpres/",
+    "C:\\Users\\riley",
+    "c:/users/riley/",
     "/home/alex",
     "/Users/alex",
     "/root",
-    "C:/Users/fpres/AppData/Local/Temp/claude/run/scratchpad/steer-claude",
+    "C:/Users/riley/AppData/Local/Temp/claude/run/scratchpad/steer-claude",
     "C:\\Windows\\Temp\\build",
     "/tmp",
     "/tmp/checkout",
@@ -43,8 +43,8 @@ describe("isHomeOrTempDirectory", () => {
 
   it.each([
     "C:/dev/code-goblins",
-    "C:/Users/fpres/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
-    "C:/Users/Gianluca/coldOutreachPrecisionDocs",
+    "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
+    "C:/Users/Sam/fieldNotes",
     "/home/alex/src/quartermaster",
     "/tmpfiles/app",
   ])("leaves %s to its own name", (path) => {
@@ -221,8 +221,8 @@ describe("identityRepoKey", () => {
   // The defect, stated as a test: two worktrees, two paths, one repository.
   it("gives two worktrees of one remote the same key", () => {
     const remote = "git@github.com:fpresta0607/precisiondocs.git";
-    const first = identityRepoKey("C:/Users/fpres/.treehouse/precisiondocs-fdd5f2/1/precisiondocs", remote);
-    const second = identityRepoKey("C:/Users/fpres/.treehouse/precisiondocs-fdd5f2/2/precisiondocs", remote);
+    const first = identityRepoKey("C:/Users/riley/.treehouse/precisiondocs-fdd5f2/1/precisiondocs", remote);
+    const second = identityRepoKey("C:/Users/riley/.treehouse/precisiondocs-fdd5f2/2/precisiondocs", remote);
     expect(first).toBe("github.com/fpresta0607/precisiondocs");
     expect(second).toBe(first);
   });
@@ -254,7 +254,7 @@ describe("identityRepoKey", () => {
   it("keys nothing when neither a remote nor a codebase name is left", () => {
     expect(identityRepoKey(null, null)).toBeNull();
     expect(identityRepoKey("C:/w/dazzling-lamarr-0aacbd", null)).toBeNull();
-    expect(identityRepoKey("C:/Users/fpres/AppData/Local/Temp", null)).toBe("path:C:/Users/fpres/AppData/Local/Temp");
+    expect(identityRepoKey("C:/Users/riley/AppData/Local/Temp", null)).toBe("path:C:/Users/riley/AppData/Local/Temp");
   });
 });
 
@@ -382,7 +382,7 @@ describe("resolveProjectForCwd", () => {
   // outside the project root can never match by prefix at all.
   it("matches nothing for a worktree stored outside every mapped root", () => {
     const mappings = [mapping("C:/dev/peakCraftsman", projectA)];
-    expect(resolveProjectForCwd("C:\\Users\\fpres\\.treehouse\\peakcraftsman-4b3191\\peakcraftsman", mappings)).toBeNull();
+    expect(resolveProjectForCwd("C:\\Users\\riley\\.treehouse\\peakcraftsman-4b3191\\peakcraftsman", mappings)).toBeNull();
   });
 });
 

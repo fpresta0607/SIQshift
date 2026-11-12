@@ -366,7 +366,7 @@ integration(
     const ownerId = randomUUID();
     const otherOwnerId = randomUUID();
     const siqshift = "C:/dev/siqshift";
-    const worktree = "C:/Users/fpres/.treehouse/precisiondocs-fdd5f2/2/precisiondocs";
+    const worktree = "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/2/precisiondocs";
 
     beforeAll(async () => {
       if (!databaseUrl) return;

@@ -1928,10 +1928,10 @@ describe("agent shifts", () => {
         user: { id: ids.user, name: "Alex" },
         source: "claude_code",
         model: null,
-        cwd: "C:/Users/fpres/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
+        cwd: "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
         projectId: ids.project,
         agentId: ids.session,
-        agentRepoRoot: "C:/Users/fpres/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
+        agentRepoRoot: "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
         agentRepoKey: "github.com/fpresta0607/precisiondocs-ai",
         startedAt: at(10),
         endedAt: at(11),
@@ -1954,7 +1954,7 @@ describe("agent shifts", () => {
       { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
       // Worked in a per-run worktree whose repository nothing identified -
       // the operator's unassigned bucket has no repository to fall back to.
-      { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: "C:/Users/fpres/.no-mistakes/worktrees/4ddfd9c24f0e/01M1T5ZSHNS0TPA1W0D2YCQ1Y7", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
+      { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: "C:/Users/riley/.no-mistakes/worktrees/4ddfd9c24f0e/01M1T5ZSHNS0TPA1W0D2YCQ1Y7", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
     ];
     const service = createReportService({ reports });
 
@@ -2042,7 +2042,7 @@ describe("agent shifts", () => {
         model: null,
         // An opaque cwd would read as a run directory on its own; the commit
         // captured for this very shift names the repository, and it wins.
-        cwd: "C:/Users/fpres/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
+        cwd: "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
         projectId: ids.project,
         agentId: ids.session,
         agentRepoRoot: null,

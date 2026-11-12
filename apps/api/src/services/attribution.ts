@@ -239,8 +239,8 @@ const tempTree = /^(?:[a-z]:\/users\/[^/]+\/appdata\/local\/temp|[a-z]:\/windows
  * home folder, where a session opened from a fresh terminal works on whatever
  * it is asked to, and the operating system's temp tree, where test harnesses
  * make throwaway repositories by the dozen. Labelling either by its folder put
- * "fpres" and a run of one-off test repositories on the Agents tab as
- * codebases.
+ * a person's own user name and a run of one-off test repositories on the
+ * Agents tab as codebases.
  */
 export function isHomeOrTempDirectory(path: string): boolean {
   const normalized = normalizePath(path);

@@ -238,9 +238,9 @@ integration("agents operator-and-repo identity upsert", () => {
     const remote = "git@github.com:fpresta0607/precisiondocs.git";
     const base = { organizationId, ownerUserId, source: "claude_code", projectId: null, name: "Claude Code", now } as const;
     const worktrees = [
-      "C:/Users/fpres/.treehouse/precisiondocs-fdd5f2/1/precisiondocs",
-      "C:/Users/fpres/.treehouse/precisiondocs-fdd5f2/2/precisiondocs",
-      "C:/Users/fpres/.treehouse/precisiondocs-fdd5f2/3/precisiondocs",
+      "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/1/precisiondocs",
+      "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/2/precisiondocs",
+      "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/3/precisiondocs",
     ];
     const minted = [];
     for (const repoRoot of worktrees) {
@@ -308,7 +308,7 @@ integration("agents operator-and-repo identity upsert", () => {
     const base = { organizationId, ownerUserId, source: "amp", projectId: null, name: "Amp", now } as const;
     const slug = await repository.upsertForKey({
       ...base,
-      repoRoot: "C:/Users/fpres/.treehouse/goofy-haslett-4b3191",
+      repoRoot: "C:/Users/riley/.treehouse/goofy-haslett-4b3191",
       repoRemote: "git@github.com:acme/instantly-client.git",
     });
     const checkout = await repository.upsertForKey({

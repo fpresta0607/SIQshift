@@ -363,8 +363,8 @@ describe("agent-session service", () => {
     const { agentSessions, service } = createService({ mappings: [byRemote] });
     await service.ingest(subject, [
       event({
-        cwd: "C:\\Users\\fpres\\.treehouse\\siqshift-4b3191\\siqshift",
-        repoRoot: "C:\\Users\\fpres\\.treehouse\\siqshift-4b3191\\siqshift",
+        cwd: "C:\\Users\\riley\\.treehouse\\siqshift-4b3191\\siqshift",
+        repoRoot: "C:\\Users\\riley\\.treehouse\\siqshift-4b3191\\siqshift",
         repoRemote: "https://github.com/acme/siqshift.git",
       }),
     ]);
@@ -383,8 +383,8 @@ describe("agent-session service", () => {
     const { agentSessions, service } = createService({ mappings: [byRemote] });
     await service.ingest(subject, [
       event({
-        cwd: "C:\\Users\\fpres\\.treehouse\\unrelated-4b3191\\unrelated",
-        repoRoot: "C:\\Users\\fpres\\.treehouse\\unrelated-4b3191\\unrelated",
+        cwd: "C:\\Users\\riley\\.treehouse\\unrelated-4b3191\\unrelated",
+        repoRoot: "C:\\Users\\riley\\.treehouse\\unrelated-4b3191\\unrelated",
         repoRemote: "git@github.com:acme/unrelated.git",
       }),
     ]);
