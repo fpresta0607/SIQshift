@@ -225,6 +225,59 @@ export const leaderboardResponseSchema = z
   })
   .strict();
 
+/** The workspace view takes the leaderboard's range and project scope, and nothing else. */
+export const workspaceReportFiltersSchema = leaderboardFiltersSchema;
+
+/** One bucket of the team's line graph: every member's active time and agent runtime in it, added up. */
+export const workspaceHourlyBucketSchema = z
+  .object({
+    hourStart: timestampSchema,
+    activeSeconds: z.number().int().nonnegative().safe(),
+    agentSeconds: z.number().int().nonnegative().safe(),
+  })
+  .strict();
+
+/** A board row as the workspace view draws it: rank, person, their two numbers and the project they spent most time on. */
+export const workspaceMemberSchema = z
+  .object({
+    rank: z.number().int().positive(),
+    user: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+    activeSeconds: z.number().int().nonnegative().safe(),
+    agentSeconds: z.number().int().nonnegative().safe(),
+    /** The project with the most recorded time in range; null for a member who recorded none. */
+    project: z.object({ id: idSchema, name: z.string().min(1) }).strict().nullable(),
+  })
+  .strict();
+
+/**
+ * The caller's workspace in one read, laid out as the home page's example
+ * workspace: two totals, the two-line graph, the board and the breakdowns.
+ * Every sum is made on the server, so a dashboard draws the numbers as given.
+ */
+export const workspaceReportResponseSchema = z
+  .object({
+    filters: workspaceReportFiltersSchema,
+    /** The members' active time added up: two people working the same hour make two hours. */
+    activeSeconds: z.number().int().nonnegative().safe(),
+    /** The members' agent runtime added up. */
+    agentSeconds: z.number().int().nonnegative().safe(),
+    /** One bucket per local hour of a bounded range; empty for all time or with nothing to plot. */
+    hourly: z.array(workspaceHourlyBucketSchema),
+    /** Recorded time per project across the team, heaviest first. */
+    projects: z.array(z.object({
+      project: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+      durationSeconds: z.number().int().nonnegative().safe(),
+    }).strict()),
+    /** Agent runtime per agent runtime, heaviest first. */
+    agents: z.array(z.object({
+      source: agentSourceSchema,
+      durationSeconds: z.number().int().nonnegative().safe(),
+    }).strict()),
+    /** Every member, zeros included, ranked as the leaderboard ranks them. */
+    members: z.array(workspaceMemberSchema),
+  })
+  .strict();
+
 /**
  * The one dashboard view state both surfaces share: the project scope and the
  * time range last picked, stored server-side so opening one app lands where
@@ -1423,6 +1476,10 @@ export type ViewPreferences = z.infer<typeof viewPreferencesSchema>;
 export type ViewPreferencesUpdate = z.infer<typeof viewPreferencesUpdateSchema>;
 export type LeaderboardFilters = z.infer<typeof leaderboardFiltersSchema>;
 export type LeaderboardResponse = z.infer<typeof leaderboardResponseSchema>;
+export type WorkspaceReportFilters = z.infer<typeof workspaceReportFiltersSchema>;
+export type WorkspaceHourlyBucket = z.infer<typeof workspaceHourlyBucketSchema>;
+export type WorkspaceMember = z.infer<typeof workspaceMemberSchema>;
+export type WorkspaceReportResponse = z.infer<typeof workspaceReportResponseSchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
 export type MeStatsApp = z.infer<typeof meStatsAppSchema>;
 export type MeStatsFilters = z.infer<typeof meStatsFiltersSchema>;

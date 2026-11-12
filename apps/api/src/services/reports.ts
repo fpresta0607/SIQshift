@@ -19,6 +19,7 @@ import {
   type Concurrency,
   type HourlyBucket,
   type Interval,
+  type LeaderboardEntry,
   type LeaderboardFilters,
   type LeaderboardResponse,
   type LiveAgentSession,
@@ -34,6 +35,9 @@ import {
   type TokenBucket,
   type TokenChart,
   type TokenTotals,
+  type WorkspaceHourlyBucket,
+  type WorkspaceReportFilters,
+  type WorkspaceReportResponse,
 } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
@@ -74,6 +78,7 @@ export interface ReportService {
   list(subject: AuthenticatedSubject, filters: ReportFilters): Promise<ReportResponse>;
   export(subject: AuthenticatedSubject, filters: ReportFilters): Promise<ReportExport>;
   leaderboard(subject: AuthenticatedSubject, filters: LeaderboardFilters): Promise<LeaderboardResponse>;
+  workspace(subject: AuthenticatedSubject, filters: WorkspaceReportFilters): Promise<WorkspaceReportResponse>;
   meStats(subject: AuthenticatedSubject, filters: MeStatsFilters): Promise<MeStatsResponse>;
   agentsReport(subject: AuthenticatedSubject, filters: AgentsReportFilters): Promise<AgentsReportResponse>;
   agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse>;
@@ -482,6 +487,25 @@ function measureFromPlan(
 }
 
 /**
+ * Every member measured out of intervals already in hand, each spending only
+ * their own stored days: a card's way of measuring, for the whole workspace.
+ */
+function measureMembersFromPlan(
+  members: ReadonlyMap<string, MemberIntervals>,
+  plan: StoredDayPlan,
+  query: ReportQuery,
+): Map<string, MeasuredMember> {
+  const spentByUser = new Map<string, UserDailyRollupRecord[]>();
+  for (const row of plan.spent) spentByUser.set(row.userId, [...(spentByUser.get(row.userId) ?? []), row]);
+  const userIds = new Set([...spentByUser.keys(), ...members.keys()]);
+  return new Map([...userIds].map((userId): [string, MeasuredMember] => {
+    const member = members.get(userId);
+    const measurement = measureFromPlan(member, { spent: spentByUser.get(userId) ?? [], live: plan.live }, query);
+    return [userId, member === undefined ? { measurement } : { name: member.user.name, measurement }];
+  }));
+}
+
+/**
  * Every member's active and agent time over the range, spending whole finished
  * UTC days out of the rollup table and reading only what it cannot cover.
  *
@@ -591,6 +615,62 @@ function agentSplits(member: MemberIntervals, query: ReportQuery): AgentSplit[] 
   return [...splits.values()]
     .filter((split) => split.durationSeconds > 0)
     .sort((a, b) => b.durationSeconds - a.durationSeconds || a.source.localeCompare(b.source));
+}
+
+/**
+ * The board's rows: every member of the workspace ranked by active time. The
+ * leaderboard and the workspace view both draw these, so the two list the
+ * same people in the same order with the same numbers.
+ */
+function rankMembers(
+  rows: readonly LeaderboardRowRecord[],
+  roster: readonly ReportLookupRecord[],
+  measurements: ReadonlyMap<string, MeasuredMember>,
+): LeaderboardEntry[] {
+  const legacy = rows.map(asLeaderboardEntry);
+  const legacyById = new Map(legacy.map((entry) => [entry.user.id, entry]));
+  // Every member of the workspace is on the board, zeros included: a
+  // teammate with no recorded time today reads as "0s", never as missing.
+  for (const user of roster) {
+    if (legacyById.has(user.id)) continue;
+    const empty = { rank: 0, user, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
+    legacy.push(empty);
+    legacyById.set(user.id, empty);
+  }
+  // Measured evidence can name someone the roster no longer does (a member
+  // deleted mid-range); their work still counts. Everyone the roster does
+  // name is already on the board from the loop above, so this only ever
+  // runs for the deleted case - and the only name left for it is the one a
+  // live read carried, because a stored day names a user id and nothing
+  // else. Evidence with no name at all is skipped rather than shown blank.
+  for (const [userId, member] of measurements) {
+    if (legacyById.has(userId)) continue;
+    const name = member.name;
+    if (name === undefined) continue;
+    const empty = { rank: 0, user: { id: userId, name }, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
+    legacy.push(empty);
+    legacyById.set(userId, empty);
+  }
+  const measured = legacy.map((entry) => {
+    const member = measurements.get(entry.user.id);
+    const rounded = member === undefined
+      ? { activeSeconds: 0, agentSeconds: 0 }
+      : roundTimeMeasurement(member.measurement);
+    return { ...entry, activeSeconds: rounded.activeSeconds, agentSeconds: rounded.agentSeconds };
+  });
+  // The board ranks by active time - the human-hours number - with the
+  // legacy duration as a stable tiebreak. A rank is shared only when the
+  // whole ranking key ties, so equal work reads as equal and nothing else does.
+  measured.sort((a, b) => b.activeSeconds - a.activeSeconds
+    || b.durationSeconds - a.durationSeconds
+    || a.user.id.localeCompare(b.user.id));
+  const tied = (a: typeof measured[number], b: typeof measured[number]): boolean =>
+    a.activeSeconds === b.activeSeconds && a.durationSeconds === b.durationSeconds;
+  const entries = measured.map((entry, index) => ({ ...entry, rank: index + 1 }));
+  for (let i = 1; i < entries.length; i++) {
+    if (tied(measured[i]!, measured[i - 1]!)) entries[i]!.rank = entries[i - 1]!.rank;
+  }
+  return entries;
 }
 
 function asReportRow(record: ReportRowRecord): ReportRow {
@@ -838,54 +918,89 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         measureMembersMs(dependencies, subject, query, now()),
         dependencies.reports.readMedianSessionSeconds(subject, query),
       ]);
-      const legacy = rows.map(asLeaderboardEntry);
-      const legacyById = new Map(legacy.map((entry) => [entry.user.id, entry]));
-      // Every member of the workspace is on the board, zeros included: a
-      // teammate with no recorded time today reads as "0s", never as missing.
-      for (const user of roster) {
-        if (legacyById.has(user.id)) continue;
-        const empty = { rank: 0, user, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
-        legacy.push(empty);
-        legacyById.set(user.id, empty);
-      }
-      // Measured evidence can name someone the roster no longer does (a member
-      // deleted mid-range); their work still counts. Everyone the roster does
-      // name is already on the board from the loop above, so this only ever
-      // runs for the deleted case - and the only name left for it is the one a
-      // live read carried, because a stored day names a user id and nothing
-      // else. Evidence with no name at all is skipped rather than shown blank.
-      for (const [userId, member] of measurements) {
-        if (legacyById.has(userId)) continue;
-        const name = member.name;
-        if (name === undefined) continue;
-        const empty = { rank: 0, user: { id: userId, name }, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
-        legacy.push(empty);
-        legacyById.set(userId, empty);
-      }
-      const measured = legacy.map((entry) => {
-        const member = measurements.get(entry.user.id);
-        const rounded = member === undefined
-          ? { activeSeconds: 0, agentSeconds: 0 }
-          : roundTimeMeasurement(member.measurement);
-        return { ...entry, activeSeconds: rounded.activeSeconds, agentSeconds: rounded.agentSeconds };
-      });
-      // The board ranks by active time - the human-hours number - with the
-      // legacy duration as a stable tiebreak. A rank is shared only when the
-      // whole ranking key ties, so equal work reads as equal and nothing else does.
-      measured.sort((a, b) => b.activeSeconds - a.activeSeconds
-        || b.durationSeconds - a.durationSeconds
-        || a.user.id.localeCompare(b.user.id));
-      const tied = (a: typeof measured[number], b: typeof measured[number]): boolean =>
-        a.activeSeconds === b.activeSeconds && a.durationSeconds === b.durationSeconds;
-      const entries = measured.map((entry, index) => ({ ...entry, rank: index + 1 }));
-      for (let i = 1; i < entries.length; i++) {
-        if (tied(measured[i]!, measured[i - 1]!)) entries[i]!.rank = entries[i - 1]!.rank;
-      }
+      const entries = rankMembers(rows, roster, measurements);
       return {
         filters,
         totalDurationSeconds: entries.reduce((total, entry) => total + entry.durationSeconds, 0),
         medianSessionSeconds: median,
         entries,
+      };
+    },
+
+    async workspace(subject: AuthenticatedSubject, filters: WorkspaceReportFilters): Promise<WorkspaceReportResponse> {
+      const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
+      await authorizeFilters(dependencies.reports, subject, query);
+      const scoped = query.projectId !== undefined || query.unassignedOnly === true;
+      // Read once over the whole range, the way a member's card reads: the
+      // graph and the agent rows need the intervals themselves, and the live
+      // part of the totals is measured by clipping these same rows.
+      const [rows, roster, presence, sessions, agentIntervals, projectTotals, plan] = await Promise.all([
+        dependencies.reports.readLeaderboardForOrganization(subject, query),
+        dependencies.reports.readMembersForOrganization(subject),
+        dependencies.reports.readPresenceIntervals(subject, query),
+        scoped ? dependencies.reports.readSessionIntervals(subject, query) : Promise.resolve([]),
+        dependencies.reports.readAgentIntervals(subject, query),
+        dependencies.reports.readProjectTotalsByMemberForOrganization(subject, query),
+        planStoredDays(dependencies, subject, query, now()),
+      ]);
+      const members = collectMembers(presence, sessions, agentIntervals);
+      const entries = rankMembers(rows, roster, measureMembersFromPlan(members, plan, query));
+      const range = queryRange(query);
+
+      // Active time is a union per person, so the team's line is each
+      // member's own series added up, never one union across people.
+      const hourly: WorkspaceHourlyBucket[] = [];
+      for (const member of members.values()) {
+        const series = timeSeries(workingIntervals(member, query), member.agents.map((agent) => agent.interval), [], range);
+        series.forEach((bucket, index) => {
+          const total = hourly[index] ?? { hourStart: bucket.hourStart, activeSeconds: 0, agentSeconds: 0 };
+          total.activeSeconds += bucket.activeSeconds;
+          total.agentSeconds += bucket.agentSeconds;
+          hourly[index] = total;
+        });
+      }
+
+      const teamProjects = new Map<string, { project: ReportLookupRecord; durationSeconds: number }>();
+      const topProjects = new Map<string, { project: ReportLookupRecord; durationSeconds: number }>();
+      for (const record of projectTotals) {
+        const durationSeconds = safeInteger(record.durationSeconds, "project duration");
+        if (durationSeconds === 0) continue;
+        const team = teamProjects.get(record.project.id) ?? { project: record.project, durationSeconds: 0 };
+        team.durationSeconds += durationSeconds;
+        teamProjects.set(record.project.id, team);
+        const top = topProjects.get(record.userId);
+        if (top === undefined || durationSeconds > top.durationSeconds
+          || (durationSeconds === top.durationSeconds && record.project.id < top.project.id)) {
+          topProjects.set(record.userId, { project: record.project, durationSeconds });
+        }
+      }
+
+      const agentMs = new Map<string, number>();
+      for (const member of members.values()) {
+        for (const agent of member.agents) {
+          const clipped = clipInterval(agent.interval, range);
+          if (clipped !== null) agentMs.set(agent.source, (agentMs.get(agent.source) ?? 0) + clipped.end - clipped.start);
+        }
+      }
+
+      return {
+        filters,
+        activeSeconds: entries.reduce((total, entry) => total + entry.activeSeconds, 0),
+        agentSeconds: entries.reduce((total, entry) => total + entry.agentSeconds, 0),
+        hourly,
+        projects: [...teamProjects.values()]
+          .sort((a, b) => b.durationSeconds - a.durationSeconds || a.project.id.localeCompare(b.project.id)),
+        agents: [...agentMs]
+          .map(([source, ms]) => ({ source, durationSeconds: Math.round(ms / 1_000) }))
+          .filter((row) => row.durationSeconds > 0)
+          .sort((a, b) => b.durationSeconds - a.durationSeconds || a.source.localeCompare(b.source)),
+        members: entries.map((entry) => ({
+          rank: entry.rank,
+          user: entry.user,
+          activeSeconds: entry.activeSeconds,
+          agentSeconds: entry.agentSeconds,
+          project: topProjects.get(entry.user.id)?.project ?? null,
+        })),
       };
     },
 

@@ -1,4 +1,4 @@
-import { agentShiftRowsFiltersSchema, agentShiftRowsResponseSchema, agentShiftsFiltersSchema, agentShiftsResponseSchema, agentsReportFiltersSchema, agentsReportResponseSchema, leaderboardFiltersSchema, leaderboardResponseSchema, liveAgentSessionsFiltersSchema, liveAgentSessionsResponseSchema, reportFiltersSchema, reportResponseSchema } from "@siqshift/shared";
+import { agentShiftRowsFiltersSchema, agentShiftRowsResponseSchema, agentShiftsFiltersSchema, agentShiftsResponseSchema, agentsReportFiltersSchema, agentsReportResponseSchema, leaderboardFiltersSchema, leaderboardResponseSchema, liveAgentSessionsFiltersSchema, liveAgentSessionsResponseSchema, reportFiltersSchema, reportResponseSchema, workspaceReportFiltersSchema, workspaceReportResponseSchema } from "@siqshift/shared";
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 
@@ -23,6 +23,13 @@ export function createReportRoutes(service: ReportService): Hono<ApiEnvironment>
     if (!parsed.success) throw new AppError("validation_error", "Invalid leaderboard filters.");
     return context.json(leaderboardResponseSchema.parse(
       await service.leaderboard(getAuthenticatedSubject(context), parsed.data),
+    ));
+  });
+  routes.get("/workspace", async (context) => {
+    const parsed = workspaceReportFiltersSchema.safeParse(context.req.query());
+    if (!parsed.success) throw new AppError("validation_error", "Invalid workspace report filters.");
+    return context.json(workspaceReportResponseSchema.parse(
+      await service.workspace(getAuthenticatedSubject(context), parsed.data),
     ));
   });
   routes.get("/agents", async (context) => {

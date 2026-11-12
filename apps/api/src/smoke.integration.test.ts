@@ -440,6 +440,14 @@ integration(integrationDescription, () => {
 
     const report = await otherApp.request("/reports", { headers });
     expect((await report.json()).rows).toEqual([]);
+
+    // The workspace view is this account's own workspace and nobody else's.
+    const workspace = await otherApp.request("/reports/workspace", { headers });
+    expect(workspace.status).toBe(200);
+    const workspaceBody = await workspace.json();
+    expect(workspaceBody.members.map((member: { user: { name: string } }) => member.user.name)).toEqual(["Other User"]);
+    expect(workspaceBody.projects).toEqual([]);
+    expect(workspaceBody.activeSeconds).toBe(0);
   }, 60_000);
 
   it("joins a teammate through the invite code and ranks them on one leaderboard", async () => {
@@ -513,6 +521,21 @@ integration(integrationDescription, () => {
     const teammateBoard = await teammateApp.request("/reports/leaderboard", { headers: teammateAuth });
     expect((await teammateBoard.json()).entries.map((row: { user: { name: string } }) => row.user.name))
       .toEqual(["Teammate", "Smoke User"]);
+
+    // The workspace view lists the board's members in the board's order, the
+    // same for both of them, with the project each spent most time on.
+    type WorkspaceRow = { rank: number; user: { name: string }; project: { name: string } | null };
+    const workspaces = await Promise.all([
+      app.request("/reports/workspace", { headers: authorized }),
+      teammateApp.request("/reports/workspace", { headers: teammateAuth }),
+    ]);
+    expect(workspaces.map((response) => response.status)).toEqual([200, 200]);
+    const [own, teammates] = await Promise.all(workspaces.map((response) => response.json()));
+    expect(own).toEqual(teammates);
+    expect(own.members.map((row: WorkspaceRow) => ({ rank: row.rank, name: row.user.name })))
+      .toEqual(board.entries.map((row: WorkspaceRow) => ({ rank: row.rank, name: row.user.name })));
+    expect(own.members[0].project).toEqual({ id: sharedProject.id, name: "General" });
+    expect(own.projects).toContainEqual({ project: { id: sharedProject.id, name: "General" }, durationSeconds: expect.any(Number) });
   }, 90_000);
 
   it("refuses an invite code that matches no organization", async () => {

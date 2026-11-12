@@ -67,14 +67,23 @@ class Reports implements ReportRepository {
     if (this.failExport !== null) throw this.failExport;
     return { summary: { totalRows: 1, totalDurationSeconds: "3600" }, rows: this.rows };
   }
-  public async readLeaderboardForOrganization(): Promise<never> {
-    throw new Error("not used by these routes");
+  public async readLeaderboardForOrganization() {
+    return [{ user: { id: ids.user, name: "Alex" }, durationSeconds: "3600", sessionCount: 1, attributedSeconds: "3600" }];
   }
   public async readMedianSessionSeconds(): Promise<never> {
     throw new Error("not used by these routes");
   }
-  public async readMembersForOrganization(): Promise<never> {
-    throw new Error("not used by these routes");
+  public async readMembersForOrganization() {
+    return [{ id: ids.user, name: "Alex" }];
+  }
+  public async readPresenceIntervals() {
+    return [{ user: { id: ids.user, name: "Alex" }, startedAt: new Date("2026-08-06T13:00:00.000Z"), endedAt: new Date("2026-08-06T14:00:00.000Z") }];
+  }
+  public async readSessionIntervals() {
+    return [];
+  }
+  public async readProjectTotalsByMemberForOrganization() {
+    return [{ userId: ids.user, project: { id: ids.project, name: "Timer" }, durationSeconds: "3600" }];
   }
   public async readProjectTotalsForMember(): Promise<never> {
     throw new Error("not used by these routes");
@@ -131,6 +140,39 @@ describe("report routes", () => {
     const outside = await app().request(`http://api.test/reports?projectId=${ids.outsideProject}`, { headers });
     expect(outside.status).toBe(404);
     await expect(outside.json()).resolves.toEqual({ error: { code: "not_found", message: "Project not found." } });
+  });
+
+  it("serves the caller's workspace view through its strict schema", async () => {
+    const headers = { authorization: bearerHeader };
+
+    const response = await app().request("http://api.test/reports/workspace?fromAt=2026-08-06T00:00:00.000Z&toExclusiveAt=2026-08-07T00:00:00.000Z", { headers });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      filters: { fromAt: "2026-08-06T00:00:00.000Z", toExclusiveAt: "2026-08-07T00:00:00.000Z" },
+      activeSeconds: 3_600,
+      agentSeconds: 0,
+      projects: [{ project: { id: ids.project, name: "Timer" }, durationSeconds: 3_600 }],
+      agents: [],
+      members: [{ rank: 1, user: { id: ids.user, name: "Alex" }, activeSeconds: 3_600, agentSeconds: 0, project: { id: ids.project, name: "Timer" } }],
+    });
+    expect(body.hourly).toHaveLength(24);
+    expect(body.hourly[13]).toEqual({ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_600, agentSeconds: 0 });
+  });
+
+  it("refuses a workspace read without a token, outside the workspace, or naming one member", async () => {
+    const headers = { authorization: bearerHeader };
+
+    const unsigned = await app().request("http://api.test/reports/workspace");
+    const outside = await app().request(`http://api.test/reports/workspace?scope=${ids.outsideProject}`, { headers });
+    const oneMember = await app().request(`http://api.test/reports/workspace?userId=${ids.outsideUser}`, { headers });
+
+    expect(unsigned.status).toBe(401);
+    expect(outside.status).toBe(404);
+    await expect(outside.json()).resolves.toEqual({ error: { code: "not_found", message: "Project not found." } });
+    expect(oneMember.status).toBe(400);
+    await expect(oneMember.json()).resolves.toEqual({ error: { code: "validation_error", message: "Invalid workspace report filters." } });
   });
 
   it("returns the shared JSON report and a safe CSV attachment", async () => {

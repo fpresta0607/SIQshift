@@ -70,6 +70,7 @@ import {
   type CreateRunningSession,
   type InsertEndedAgentSession,
   type LeaderboardRowRecord,
+  type MemberProjectTotalRecord,
   type ObservedSessionInsert,
   type RollupCoverage,
   type UserDailyRollupRecord,
@@ -1161,6 +1162,33 @@ export class DrizzleReportRepository implements ReportRepository {
       durationSeconds: row.durationSeconds,
       attributedSeconds: row.attributedSeconds,
       sessionCount: row.sessionCount,
+    }));
+  }
+
+  /** One row per member and project with recorded time, the member predicate left to the query alone. */
+  public async readProjectTotalsByMemberForOrganization(
+    subject: AuthenticatedSubject,
+    query: ReportQuery,
+  ): Promise<MemberProjectTotalRecord[]> {
+    const rows = await this.db
+      .select({
+        userId: timeSessions.userId,
+        projectId: projects.id,
+        projectName: projects.name,
+        durationSeconds: sum(timeSessions.durationSeconds),
+      })
+      .from(timeSessions)
+      .innerJoin(projects, and(
+        eq(projects.organizationId, timeSessions.organizationId),
+        eq(projects.id, timeSessions.projectId),
+      ))
+      .where(and(...this.predicates(subject, query), eq(projects.organizationId, subject.organizationId)))
+      .groupBy(timeSessions.userId, projects.id, projects.name);
+
+    return rows.map((row) => ({
+      userId: row.userId,
+      project: { id: row.projectId, name: row.projectName },
+      durationSeconds: row.durationSeconds,
     }));
   }
 
