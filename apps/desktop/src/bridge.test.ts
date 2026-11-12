@@ -520,4 +520,56 @@ describe("defaultBridge", () => {
     // Assert
     await expect(read).rejects.toMatchObject({ kind: "unknown" });
   });
+
+  it("decodes the macOS permissions and names the permission on every action", async () => {
+    // Arrange
+    invoke.mockResolvedValueOnce([
+      { id: "login-item", state: "granted" },
+      { id: "protected-folders", state: "not-asked" },
+    ]);
+    invoke.mockResolvedValueOnce([
+      { id: "login-item", state: "missing" },
+      { id: "protected-folders", state: "granted" },
+    ]);
+    invoke.mockResolvedValueOnce([{ id: "protected-folders", state: "declined" }]);
+    invoke.mockResolvedValueOnce(null);
+
+    // Act
+    const statuses = await defaultBridge.permissionsStatus();
+    const requested = await defaultBridge.permissionRequest("protected-folders");
+    const declined = await defaultBridge.permissionDecline("protected-folders");
+    await defaultBridge.permissionOpenSettings("login-item");
+
+    // Assert
+    expect(statuses).toEqual([
+      { id: "login-item", state: "granted" },
+      { id: "protected-folders", state: "not-asked" },
+    ]);
+    expect(requested).toEqual([
+      { id: "login-item", state: "missing" },
+      { id: "protected-folders", state: "granted" },
+    ]);
+    expect(declined).toEqual([{ id: "protected-folders", state: "declined" }]);
+    expect(invoke.mock.calls.slice(-4)).toEqual([
+      ["permissions_status", undefined],
+      ["permission_request", { permissionId: "protected-folders" }],
+      ["permission_decline", { permissionId: "protected-folders" }],
+      ["permission_open_settings", { permissionId: "login-item" }],
+    ]);
+  });
+
+  it.each([
+    ["an unknown permission", [{ id: "screen-recording", state: "granted" }]],
+    ["an unknown state", [{ id: "login-item", state: "maybe" }]],
+    ["no list at all", { id: "login-item", state: "granted" }],
+  ])("rejects a permission list with %s", async (_case, payload) => {
+    // Arrange
+    invoke.mockResolvedValueOnce(payload);
+
+    // Act
+    const result = defaultBridge.permissionsStatus();
+
+    // Assert
+    await expect(result).rejects.toMatchObject({ kind: "unknown" });
+  });
 });

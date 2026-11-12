@@ -476,9 +476,25 @@ a check that cannot answer never rescues, so a broken signal reads idle exactly
 as before, and the checks run only past the idle threshold, never on an
 active-work tick.
 
+On macOS the same task asks the same two questions through APIs that need no
+privacy permission: seconds since the last input
+(`CGEventSourceSecondsSinceLastEventType`) and the frontmost app
+(`NSWorkspace.frontmostApplication`), recorded as its bundle's name, never a window
+title. Screen lock arrives as the `com.apple.screenIsLocked` distributed
+notification and sleep as an IOKit power message (`kIOMessageSystemWillSleep`).
+Two rescue checks stand in for the Windows three: an app holding the display awake
+(`PreventUserIdleDisplaySleep`, which video, calls and presentations take; music
+alone does not) and a microphone in use (CoreAudio's
+`kAudioDevicePropertyDeviceIsRunningSomewhere` on the default input). The main
+screen lists the two grants that still decide what reaches the server: the login
+item, without which nothing is recorded until the app is opened, and Files and
+Folders access to Documents, Desktop and Downloads, without which commits in
+repositories kept there are not linked to shifts.
+
 There are no input hooks, no injection, and no per-keystroke cost. Everything
-above the `platform` module is pure logic over an injected clock, so the Win32
-calls never run under test.
+above the `platform` module is pure logic over an injected clock, so the OS calls
+never run under the pure tests; the macOS module's own tests run on a Mac in CI
+(`.github/workflows/macos.yml`).
 
 The **phase-3 precision work** (event-driven foreground changes, UWP process
 resolution, clock-gap sleep detection, session-disconnect handling) is designed in
@@ -803,8 +819,9 @@ Behavior first, plumbing second:
 - **React Testing Library** covers the recording card, the project override, the stats views,
   and every state of the "what's recorded" panel.
 - **Rust tests** are pure: the clock and the activity source are injected as traits, so the
-  Win32 calls never run under test. The session tracker is driven tick by tick, exactly as the
-  poll task drives it.
+  OS calls never run under them. The session tracker is driven tick by tick, exactly as the
+  poll task drives it. The macOS platform module's tests are the exception: they read the real
+  system, and run on a macOS runner for pull requests that touch the desktop app.
 
 `pnpm test` and the Rust suite are the gate; a manual GUI checklist lives at the end of
 [`docs/plans/2026-08-07-phase-2-implementation.md`](docs/plans/2026-08-07-phase-2-implementation.md)
@@ -833,9 +850,11 @@ rejected and why.
 Recording is automatic. Browser attribution is built; the monitor-precision half of phase 3 is
 still designed and not started. What's deliberately not built yet:
 
-- **Recording is Windows-only.** The `ActivitySource` trait admits macOS and Linux
-  implementations, and without one there are no session boundaries to record. Installers are
-  built for Windows and macOS today, but a macOS install records nothing until that lands.
+- **Recording runs on Windows and macOS.** Linux has no `ActivitySource`, and without one
+  there are no session boundaries to record.
+- **On macOS, two Windows conveniences are missing.** The usage meter shows a fallback glyph
+  instead of app icons, and the browser extension is added from its store page by hand:
+  macOS browsers take the force-install policy only from device management.
 - **A foreground process name alone names no project.** It proves the machine was working, not
   what it was working on; only an agent's working directory, a matched browser rule, or a pinned
   project names one, and time with none of those lands in the default project and counts in

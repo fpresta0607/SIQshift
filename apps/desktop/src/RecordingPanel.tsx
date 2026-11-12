@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { AgentRuntimeIcon } from "@siqshift/shared/ui";
 import { sourceLabel } from "./agent-sources.js";
 import type { BrowserHealth, MonitorStatus } from "./bridge.js";
+import { PermissionsList, type PermissionsListProps } from "./PermissionsList.js";
 
 /// What the panel says is happening right now. `paused` is "switched on but
 /// the host is not running the tasks" (signed out, unsupported platform);
@@ -91,6 +92,9 @@ type RecordingPanelProps = {
   onConnectBrowser: (browserId: string) => void;
   /// The [Repair] click: re-register the host for that browser.
   onRepairBrowser: (browserId: string) => void;
+  /// The macOS grants and their actions; an empty list (every other
+  /// platform) shows no permissions section.
+  permissionProps: PermissionsListProps;
 };
 
 /**
@@ -111,6 +115,7 @@ export const RecordingPanel = ({
   onConnectAgent,
   onConnectBrowser,
   onRepairBrowser,
+  permissionProps,
 }: RecordingPanelProps) => {
   useEffect(() => {
     if (!open) return undefined;
@@ -263,6 +268,13 @@ export const RecordingPanel = ({
                 ))}
               </ul>
             )}
+          </>
+        )}
+
+        {permissionProps.permissions.length > 0 && (
+          <>
+            <h3>Permissions on this Mac</h3>
+            <PermissionsList {...permissionProps} />
           </>
         )}
 

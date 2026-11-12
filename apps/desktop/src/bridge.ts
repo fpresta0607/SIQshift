@@ -143,6 +143,19 @@ export type BrowserHealth = {
   storeUrl: string;
 };
 
+/// A macOS grant recording depends on. Other platforms report none.
+export type PermissionId = "login-item" | "protected-folders";
+
+/// `not-asked` and `declined` are the folders' alone: macOS cannot say whether
+/// access was granted until SIQshift has asked once, and a person whose code
+/// lives elsewhere can say the folders are not needed.
+export type PermissionState = "granted" | "missing" | "not-asked" | "declined";
+
+export type PermissionStatus = {
+  id: PermissionId;
+  state: PermissionState;
+};
+
 /// One limit a coding-agent provider reports — a rolling session window, a
 /// weekly window, or a per-model bound. Several apply at once; the smallest is
 /// what the dial shows.
@@ -415,6 +428,14 @@ export interface TimerBridge {
   browserRepair(browserId: string): Promise<BrowserHealth>;
   /// Opens one browser's extension store page in the system browser.
   browserOpenStore(browserId: string): Promise<void>;
+  /// The macOS grants recording depends on; empty on other platforms.
+  permissionsStatus(): Promise<PermissionStatus[]>;
+  /// Raises macOS's own prompt for a grant that has one, then reports all.
+  permissionRequest(permissionId: PermissionId): Promise<PermissionStatus[]>;
+  /// Records that a grant is not needed, so it stops being offered.
+  permissionDecline(permissionId: PermissionId): Promise<PermissionStatus[]>;
+  /// Opens the System Settings pane that holds the grant.
+  permissionOpenSettings(permissionId: PermissionId): Promise<void>;
   /// Pins recording to one project, or clears the pin with `null`.
   sessionSelectProject(projectId: string | null): Promise<MonitorStatus>;
   hookRegister(source: string): Promise<HookRegisterResult>;
@@ -754,6 +775,20 @@ const decodeBrowserHealthList = (value: unknown): BrowserHealth[] => {
   return (value as unknown[]).map(decodeBrowserHealth);
 };
 
+const decodePermissionStatus = (value: unknown): PermissionStatus => {
+  const candidate = record(value);
+  const id = string(candidate.id);
+  const state = string(candidate.state);
+  if (id !== "login-item" && id !== "protected-folders") invalidResponse();
+  if (state !== "granted" && state !== "missing" && state !== "not-asked" && state !== "declined") invalidResponse();
+  return { id: id as PermissionId, state: state as PermissionState };
+};
+
+const decodePermissionStatusList = (value: unknown): PermissionStatus[] => {
+  if (!Array.isArray(value)) invalidResponse();
+  return (value as unknown[]).map(decodePermissionStatus);
+};
+
 export const decodeMonitorSettings = (value: unknown): MonitorSettings => {
   const candidate = record(value);
   return {
@@ -1076,6 +1111,10 @@ export const defaultBridge: TimerBridge = {
   browserStatus: () => invokeDecoded("browser_status", decodeBrowserHealthList),
   browserRepair: (browserId) => invokeDecoded("browser_repair", decodeBrowserHealth, { browserId }),
   browserOpenStore: (browserId) => invokeDecoded("browser_open_store", decodeVoid, { browserId }),
+  permissionsStatus: () => invokeDecoded("permissions_status", decodePermissionStatusList),
+  permissionRequest: (permissionId) => invokeDecoded("permission_request", decodePermissionStatusList, { permissionId }),
+  permissionDecline: (permissionId) => invokeDecoded("permission_decline", decodePermissionStatusList, { permissionId }),
+  permissionOpenSettings: (permissionId) => invokeDecoded("permission_open_settings", decodeVoid, { permissionId }),
   sessionSelectProject: (projectId) => invokeDecoded("session_select_project", decodeMonitorStatus, { projectId }),
   hookRegister: (source) => invokeDecoded("hook_register", decodeHookRegisterResult, { source }),
   monitorSetEnabled: (enabled) => invokeDecoded("monitor_set_enabled", decodeMonitorSettings, { enabled }),

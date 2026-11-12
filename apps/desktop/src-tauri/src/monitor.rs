@@ -88,9 +88,9 @@ const MAX_OPEN_ACTIVE_SECONDS: u64 = 300;
 
 /// What the OS reports. `Locked` and `Suspended` are pushed by the event
 /// thread; `Active` and `Idle` come from the 30-second poll.
-// Constructors are Windows-only today (event thread + poll source); non-Windows
+// Constructors are Windows and macOS only (event thread + poll source); other
 // builds only consume signals in tests.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActivitySignal {
     /// `idle_seconds` is the age of the last keyboard or mouse input when the
@@ -163,9 +163,9 @@ fn signal_process_name(signal: &ActivitySignal) -> Option<String> {
 /// behavior the monitor had before rescue existed. Probes run in order and
 /// the first engaged answer wins, so a positive media check skips the
 /// registry read entirely.
-// Only the Windows poll source consults this; non-Windows builds keep it for
-// tests and documentation.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// Only the Windows and macOS poll sources consult this; other builds keep it
+// for tests and documentation.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn rescued(probes: &[&dyn Fn() -> Option<bool>]) -> bool {
     probes.iter().any(|probe| probe() == Some(true))
 }
@@ -175,9 +175,9 @@ fn rescued(probes: &[&dyn Fn() -> Option<bool>]) -> bool {
 /// unless `is_engaged` says otherwise. The probes behind `is_engaged` run only
 /// past the threshold, so they never cost an active-work tick. A failed input
 /// read fails toward active: a guessed idle span would trim worked time.
-// Only the Windows poll source reads the OS; non-Windows builds keep this for
-// tests and documentation.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// Only the Windows and macOS poll sources read the OS; other builds keep this
+// for tests and documentation.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn read_poll(
     idle_seconds: Option<u32>,
     is_engaged: impl FnOnce() -> bool,
@@ -996,7 +996,7 @@ impl PlatformEvents {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     fn push(&self, at: u64, signal: ActivitySignal) {
         let mut queue = lock(&self.queue);
         if queue.len() >= 1_024 {
@@ -1696,7 +1696,7 @@ pub struct MonitorConfig {
 }
 
 struct MonitorTasks {
-    /// No poll task on non-Windows builds (no `ActivitySource` ships there);
+    /// No poll task outside Windows and macOS (no `ActivitySource` ships there);
     /// the upload task still drains the agent spool.
     poll: Option<tokio::task::JoinHandle<()>>,
     codex: tokio::task::JoinHandle<()>,
@@ -1707,7 +1707,7 @@ struct MonitorTasks {
 /// tasks run only while monitoring is enabled and a session is signed in.
 pub struct Monitor {
     shared: Arc<Mutex<MonitorShared>>,
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     events: Arc<PlatformEvents>,
     settings_path: PathBuf,
     segments_path: PathBuf,
@@ -1715,8 +1715,8 @@ pub struct Monitor {
     sessions_path: Mutex<PathBuf>,
     sessions_path_base: PathBuf,
     client: ApiClient,
-    // Written by the Windows-gated poll task, which persists the open session.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    // Written by the poll task (Windows and macOS), which persists the open session.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     recovery_path: PathBuf,
     shift_windows_path: PathBuf,
     shift_commits_path: PathBuf,
@@ -1724,7 +1724,7 @@ pub struct Monitor {
     recovery: Arc<tokio::sync::Mutex<RecoveryState>>,
     tasks: tokio::sync::Mutex<Option<MonitorTasks>>,
     upload_now: Arc<Notify>,
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     event_thread_once: std::sync::Once,
 }
 
@@ -1777,7 +1777,7 @@ impl Monitor {
             return;
         }
 
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let poll = {
             self.event_thread_once.call_once(|| {
                 platform::spawn_event_thread(Arc::clone(&self.events));
@@ -1793,7 +1793,7 @@ impl Monitor {
                 Arc::clone(&self.upload_now),
             )))
         };
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let poll: Option<tokio::task::JoinHandle<()>> = None;
 
         let codex = tokio::spawn(codex_loop(
@@ -2137,7 +2137,7 @@ fn append_segment_line(path: &Path, segment: &Segment, device_id: &str) {
 
 /// The 30-second poll task: drain pushed session events, poll the OS, fold
 /// signals into segments, spool transitions, enforce the auto-stop policy.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 // The task's inputs are each a distinct handle or path it owns for the
 // process's lifetime; bundling them into a struct would name the same things
 // twice without making the task any easier to read.
@@ -2761,9 +2761,13 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "monitor/macos.rs"]
+mod platform;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
-    //! No activity source ships for this OS yet (Phase 2 is Windows-only), so
+    //! No activity source ships for this OS (Windows and macOS only), so
     //! `Monitor::start` never spawns a poll task here and nothing is recorded.
 
     use super::{ActivitySignal, ActivitySource};

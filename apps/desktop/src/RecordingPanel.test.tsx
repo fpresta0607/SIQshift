@@ -44,6 +44,7 @@ const panelFor = (overrides: Partial<Parameters<typeof RecordingPanel>[0]> = {})
     onConnectAgent: vi.fn(),
     onConnectBrowser: vi.fn(),
     onRepairBrowser: vi.fn(),
+    permissionProps: { permissions: [], busy: undefined, onAsk: vi.fn(), onDecline: vi.fn(), onOpenSettings: vi.fn() },
     ...overrides,
   };
   render(<RecordingPanel {...props} />);
@@ -260,5 +261,35 @@ describe("RecordingPanel", () => {
 
     await person.keyboard("{Escape}");
     expect(props.onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("lists the macOS permissions only where there are any", () => {
+    // Arrange
+    panelFor({
+      permissionProps: {
+        permissions: [
+          { id: "login-item", state: "granted" },
+          { id: "protected-folders", state: "declined" },
+        ],
+        busy: undefined,
+        onAsk: vi.fn(),
+        onDecline: vi.fn(),
+        onOpenSettings: vi.fn(),
+      },
+    });
+
+    // Assert: a declined grant stays reachable here, where it can be asked again.
+    const panel = screen.getByRole("dialog", { name: "What SIQshift is recording" });
+    expect(within(panel).getByRole("heading", { name: "Permissions on this Mac" })).toBeInTheDocument();
+    expect(within(panel).getByTestId("permission-protected-folders")).toHaveTextContent("Not needed");
+    expect(within(panel).getByRole("button", { name: "Ask now" })).toBeInTheDocument();
+  });
+
+  it("shows no permissions section on other platforms", () => {
+    // Act
+    panelFor();
+
+    // Assert
+    expect(screen.queryByRole("heading", { name: "Permissions on this Mac" })).not.toBeInTheDocument();
   });
 });
