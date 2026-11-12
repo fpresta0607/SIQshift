@@ -40,8 +40,8 @@ use tokio::sync::Mutex;
 
 use api::{
     AgentShiftCursor, AgentShiftRows, AgentShifts, ApiClient, ApiResult, BridgeError, ErrorKind,
-    LeaderboardEntry, LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject,
-    TimerUser, ViewPreferences,
+    LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject, TimerUser,
+    ViewPreferences, WorkspaceReport,
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
@@ -363,7 +363,6 @@ async fn auth_signup(state: State<'_, AppState>, input: SignupInput) -> ApiResul
 #[serde(rename_all = "camelCase")]
 struct OrganizationOverview {
     organization: Organization,
-    entries: Vec<LeaderboardEntry>,
 }
 
 #[tauri::command]
@@ -374,14 +373,8 @@ async fn org_join(state: State<'_, AppState>, input: JoinInput) -> ApiResult<Org
         .join_organization(&access_token, input.invite_code.trim())
         .await?;
     // Return the new workspace so the window updates without a reload.
-    let (organization, entries) = tokio::try_join!(
-        state.client.organization(&access_token),
-        state.client.leaderboard(&access_token, None, None, None)
-    )?;
-    Ok(OrganizationOverview {
-        organization,
-        entries,
-    })
+    let organization = state.client.organization(&access_token).await?;
+    Ok(OrganizationOverview { organization })
 }
 
 #[derive(serde::Deserialize)]
@@ -391,26 +384,10 @@ pub struct JoinInput {
 }
 
 #[tauri::command]
-async fn org_overview(
-    state: State<'_, AppState>,
-    from_at: Option<String>,
-    to_exclusive_at: Option<String>,
-    scope: Option<String>,
-) -> ApiResult<OrganizationOverview> {
+async fn org_overview(state: State<'_, AppState>) -> ApiResult<OrganizationOverview> {
     let access_token = state.access_token().await?;
-    let (organization, entries) = tokio::try_join!(
-        state.client.organization(&access_token),
-        state.client.leaderboard(
-            &access_token,
-            from_at.as_deref(),
-            to_exclusive_at.as_deref(),
-            scope.as_deref()
-        )
-    )?;
-    Ok(OrganizationOverview {
-        organization,
-        entries,
-    })
+    let organization = state.client.organization(&access_token).await?;
+    Ok(OrganizationOverview { organization })
 }
 
 #[tauri::command]
@@ -556,6 +533,25 @@ async fn me_stats(
             to_exclusive_at.as_deref(),
             user_id.as_deref(),
             scope.as_deref(),
+        )
+        .await
+}
+
+/// The team view All stats opens on, over the overlay's range. Bounds arrive
+/// together or not at all; both absent asks for all time.
+#[tauri::command]
+async fn workspace_report(
+    state: State<'_, AppState>,
+    from_at: Option<String>,
+    to_exclusive_at: Option<String>,
+) -> ApiResult<WorkspaceReport> {
+    let access_token = state.access_token().await?;
+    state
+        .client
+        .workspace_report(
+            &access_token,
+            from_at.as_deref(),
+            to_exclusive_at.as_deref(),
         )
         .await
 }
@@ -1018,6 +1014,7 @@ pub fn run() {
             settings_get,
             settings_update,
             me_stats,
+            workspace_report,
             agent_shifts,
             agent_shift_rows,
             agent_live_sessions,

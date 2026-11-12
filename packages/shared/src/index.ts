@@ -214,7 +214,6 @@ export {
   addTimeMeasurementsMs,
   clipInterval,
   intersectIntervals,
-  leverage,
   measureTime,
   measureTimeMs,
   mergeIntervals,

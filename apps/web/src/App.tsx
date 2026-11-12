@@ -3,9 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   formatDuration,
   formatHumanDuration,
-  leverage,
   type AgentShiftsResponse,
-  type LeaderboardEntry,
   type LiveAgentSessionsResponse,
   type MeStatsResponse,
   type Organization,
@@ -14,6 +12,8 @@ import {
   type ProjectUsageResponse,
   type ReportRow,
   type ViewPreferences,
+  type WorkspaceMember,
+  type WorkspaceReportResponse,
 } from "@siqshift/shared";
 import {
   AGENT_TIME_LIMIT_NOTE,
@@ -38,6 +38,7 @@ import { HelpModal } from "./HelpModal.js";
 import { AuthDialog } from "./AuthDialog.js";
 import { LandingPage } from "./LandingPage.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
+import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
 
 type AppProps = { client: Client };
 
@@ -92,12 +93,11 @@ const withParams = (base: string, params: Record<string, string>): string => {
   return text === "" ? "" : `?${text}`;
 };
 
-type BoardSort = "active" | "agent" | "leverage";
+type BoardSort = "active" | "agent";
 
-const boardSorters: Record<BoardSort, (a: LeaderboardEntry, b: LeaderboardEntry) => number> = {
+const boardSorters: Record<BoardSort, (a: WorkspaceMember, b: WorkspaceMember) => number> = {
   active: (a, b) => b.activeSeconds - a.activeSeconds,
   agent: (a, b) => b.agentSeconds - a.agentSeconds,
-  leverage: (a, b) => (leverage(b) ?? 0) - (leverage(a) ?? 0),
 };
 
 const messageFor = (error: unknown): string =>
@@ -139,7 +139,7 @@ export const App = ({ client }: AppProps) => {
   const [selfId, setSelfId] = useState<string | undefined>();
   const [selfName, setSelfName] = useState<string | undefined>();
   const [projects, setProjects] = useState<readonly ProjectListItem[]>([]);
-  const [entries, setEntries] = useState<readonly LeaderboardEntry[]>([]);
+  const [workspace, setWorkspace] = useState<WorkspaceReportResponse | undefined>();
   const [boardSort, setBoardSort] = useState<BoardSort>("active");
   /// Humans is the leaderboard; Agents is what ran and where, every shift
   /// grouped by the codebase it worked.
@@ -155,7 +155,6 @@ export const App = ({ client }: AppProps) => {
   /// is why it cannot borrow `member`: that one falls back to the signed-in
   /// user, so "nobody picked" would silently open the tab on yourself.
   const [shiftsMember, setShiftsMember] = useState<{ id: string; name: string } | undefined>();
-  const [loading, setLoading] = useState(false);
   const [dataError, setDataError] = useState<string | undefined>();
   const [boardFailed, setBoardFailed] = useState(false);
   const [member, setMember] = useState<{ id: string; name: string } | undefined>();
@@ -291,28 +290,34 @@ export const App = ({ client }: AppProps) => {
   // The board, refetched whenever scope or range move. It reports its own
   // failure to the page banner and hands the message back, so a caller behind
   // an overlay that covers the banner can repeat it where it can be read.
+  const boardRequest = useRef(0);
   const reloadBoard = useCallback(async (): Promise<string | undefined> => {
-    setLoading(true);
+    boardRequest.current += 1;
+    const request = boardRequest.current;
     setBoardFailed(false);
     try {
-      const board = await client.leaderboard(scopeParams(rangeQuery(range)));
-      setEntries(board.entries);
+      const report = await client.workspace(scopeParams(rangeQuery(range)));
+      if (request !== boardRequest.current) return undefined;
+      setWorkspace(report);
       setDataError(undefined);
       return undefined;
     } catch (error: unknown) {
+      if (request !== boardRequest.current) return undefined;
       if (error instanceof ClientError && error.kind === "auth") {
         expireSession();
         return undefined;
       }
       setBoardFailed(true);
-      setEntries([]);
+      setWorkspace(undefined);
       const message = messageFor(error);
       setDataError(message);
       return message;
-    } finally {
-      setLoading(false);
     }
   }, [client, range, scopeParams, expireSession]);
+
+  useEffect(() => {
+    setWorkspace(undefined);
+  }, [range, scope]);
 
   useEffect(() => {
     if (!signedIn || !preferencesReady) return;
@@ -537,7 +542,7 @@ export const App = ({ client }: AppProps) => {
   /// picked from a board would go on being sent as filters the API refuses.
   /// Signing out and joining a workspace both leave the workspace behind.
   const clearWorkspaceView = (): void => {
-    setEntries([]);
+    setWorkspace(undefined);
     setBoardFailed(false);
     setMember(undefined);
     setMemberStats(undefined);
@@ -752,15 +757,21 @@ export const App = ({ client }: AppProps) => {
     );
   }
 
-  const activeTotal = entries.reduce((total, entry) => total + entry.activeSeconds, 0);
-  const boardHasTime = entries.some(
-    (entry) => entry.activeSeconds > 0 || entry.agentSeconds > 0 || entry.durationSeconds > 0,
-  );
+  const boardHasTime = workspace !== undefined
+    && (workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0);
   // Rank follows the column being sorted by; showing the server's active-time
   // rank under an agent-time sort reads as 1, 4, 2, 3.
-  const sortedEntries = [...entries]
+  const boardMembers = [...workspace?.members ?? []]
     .sort(boardSorters[boardSort])
-    .map((entry, index) => ({ ...entry, rank: boardSort === "active" ? entry.rank : index + 1 }));
+    .map((entry, index) => ({
+      id: entry.user.id,
+      rank: boardSort === "active" ? entry.rank : index + 1,
+      name: entry.user.name,
+      project: entry.project?.name ?? null,
+      activeSeconds: entry.activeSeconds,
+      agentSeconds: entry.agentSeconds,
+      isSelf: entry.user.id === selfId,
+    }));
   const memberAppRows = memberStats === undefined ? [] : buildAppRows(memberStats.apps, memberStats.totalDurationSeconds);
   const viewedName = member?.name ?? selfName ?? "You";
 
@@ -1030,62 +1041,44 @@ export const App = ({ client }: AppProps) => {
               />
             ) : (
               <>
-                <div className="board-head">
-                  <h3 className="visually-hidden">Leaderboard</h3>
-                  <span className="board-tools">
-                    <span className="total">{boardFailed ? "Not loaded" : `${formatHumanDuration(activeTotal)} total`}</span>
-                    <label className="board-sort">
-                      <span className="visually-hidden">Sort by</span>
-                      <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
-                        <option value="active">By active time</option>
-                        <option value="agent">By agent time</option>
-                        <option value="leverage">By leverage</option>
-                      </select>
-                    </label>
-                  </span>
-                </div>
+                {/* The home page's example workspace, drawn from the server's
+                    report as given. A row is also the selector: whoever is
+                    picked is whose breakdown the panel underneath shows. */}
                 {boardFailed ? (
                   <p className="subtle">Could not load hours for this range.</p>
-                ) : loading && entries.length === 0 ? (
+                ) : workspace === undefined ? (
                   <p className="subtle" role="status">Loading hours…</p>
                 ) : (
-                  <>
-                    {!boardHasTime && (
-                      <p className="subtle">
-                        {scope === "all"
+                  <WorkspaceView
+                    workspaceName={organization?.name ?? "Your workspace"}
+                    logoUrl="/favicon.png"
+                    periodLabel={rangeSentence[range]}
+                    activeSeconds={workspace.activeSeconds}
+                    agentSeconds={workspace.agentSeconds}
+                    hourly={workspace.hourly}
+                    members={boardMembers}
+                    boardTool={(
+                      <label className="board-sort">
+                        <span className="visually-hidden">Sort by</span>
+                        <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
+                          <option value="active">By active time</option>
+                          <option value="agent">By agent time</option>
+                        </select>
+                      </label>
+                    )}
+                    selectedMemberId={viewedId}
+                    onSelectMember={(picked) => setMember({ id: picked.id, name: picked.name })}
+                    boardNotes={[
+                      ...boardHasTime
+                        ? []
+                        : [scope === "all"
                           ? "No recorded time in this range yet. Install the desktop app and it records on its own."
-                          : "Nothing recorded here in this range. Pick another range, or All projects."}
-                      </p>
-                    )}
-                    {entries.length > 0 && (
-                      <ol className="board-list" data-testid="board-list">
-                        {sortedEntries.map((entry) => (
-                          <li key={entry.user.id} className={entry.user.id === viewedId ? "is-selected" : undefined}>
-                            <button
-                              type="button"
-                              className="board-choice"
-                              aria-pressed={entry.user.id === viewedId}
-                              onClick={() => setMember({ id: entry.user.id, name: entry.user.name })}
-                            >
-                              <span className="board-rank">{entry.rank}</span>
-                              <span className="board-name">
-                                {entry.user.name}
-                                {entry.user.id === selfId && <span className="you-tag"> you</span>}
-                              </span>
-                              <span className="board-times">
-                                <span className="board-hours">{formatHumanDuration(entry.activeSeconds)}</span>
-                                <span className="board-agent">
-                                  Agent {formatHumanDuration(entry.agentSeconds)}
-                                  {leverage(entry) !== null && ` · ${leverage(entry)}×`}
-                                </span>
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                    {entries.length > 0 && <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>}
-                  </>
+                          : "Nothing recorded here in this range. Pick another range, or All projects."],
+                      ...boardMembers.length > 1 ? ["Select a teammate to explore their work."] : [],
+                      AGENT_TIME_LIMIT_NOTE,
+                    ]}
+                    {...workspaceBreakdownRows(workspace)}
+                  />
                 )}
 
                 {viewedId !== undefined && (
