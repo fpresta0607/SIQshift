@@ -417,6 +417,75 @@ describe("dashboard", () => {
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
+  it("renames the workspace from the Team section, and the new name shows at once", async () => {
+    // Arrange
+    const renameOrganization = vi.fn().mockResolvedValue({ organization: { ...organization, name: "Field Crew" } });
+    const person = await signIn(clientFor({ renameOrganization }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+
+    // Act
+    await person.click(settings.getByRole("button", { name: "Rename the workspace" }));
+    const input = settings.getByRole("textbox", { name: "New name for the workspace" });
+    await person.clear(input);
+    await person.type(input, "  Field Crew  ");
+    await person.click(settings.getByRole("button", { name: "Save" }));
+
+    // Assert: trimmed before it is sent; the page heading follows without a reload.
+    expect(renameOrganization).toHaveBeenCalledWith("Field Crew");
+    expect(await screen.findByRole("heading", { name: "Field Crew" })).toBeInTheDocument();
+    expect(settings.getByText("Field Crew")).toBeInTheDocument();
+    expect(settings.queryByRole("textbox", { name: "New name for the workspace" })).not.toBeInTheDocument();
+  });
+
+  it("shows a member why the server refused a rename, and keeps them signed in with the old name", async () => {
+    // Arrange: a 403 reaches the page as an auth error carrying the server's sentence.
+    const refusal = "Only a workspace administrator can rename the workspace.";
+    const renameOrganization = vi.fn().mockRejectedValue(new ClientError("auth", refusal));
+    const person = await signIn(clientFor({ renameOrganization }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+
+    // Act
+    await person.click(settings.getByRole("button", { name: "Rename the workspace" }));
+    await person.type(settings.getByRole("textbox", { name: "New name for the workspace" }), " Crew");
+    await person.click(settings.getByRole("button", { name: "Save" }));
+
+    // Assert
+    expect(await settings.findByRole("alert")).toHaveTextContent(refusal);
+    expect(screen.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+  });
+
+  it("leaves the name as it was when the rename is cancelled", async () => {
+    // Arrange
+    const renameOrganization = vi.fn();
+    const person = await signIn(clientFor({ renameOrganization }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+
+    // Act
+    await person.click(settings.getByRole("button", { name: "Rename the workspace" }));
+    await person.type(settings.getByRole("textbox", { name: "New name for the workspace" }), " Crew");
+    await person.click(settings.getByRole("button", { name: "Cancel" }));
+
+    // Assert
+    expect(renameOrganization).not.toHaveBeenCalled();
+    expect(settings.getByText("SIQstack")).toBeInTheDocument();
+  });
+
+  it("says the workspace is the team and anyone with the code joins it, on any email domain", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    // Act
+    const settings = await openSettings(person);
+
+    // Assert
+    expect(settings.getByText(/This workspace is your team\. Anyone who enters this code joins it, whatever their email domain\./)).toBeInTheDocument();
+  });
+
   it("reports a denied clipboard inside the settings panel that covers the page", async () => {
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });

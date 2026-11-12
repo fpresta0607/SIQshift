@@ -405,6 +405,9 @@ export interface TimerBridge {
   preferencesGet(): Promise<ViewPreferences>;
   preferencesSet(input: { scope?: string; range?: string }): Promise<ViewPreferences>;
   orgJoin(inviteCode: string): Promise<OrganizationOverview>;
+  /// Renames the caller's workspace. Whether this member may is the server's
+  /// call, and a refusal rejects with its own sentence.
+  orgRename(name: string): Promise<OrganizationOverview>;
   monitorStatus(): Promise<MonitorStatus>;
   /// One card per installed browser, for the "what's switched on" list.
   browserStatus(): Promise<BrowserHealth[]>;
@@ -1068,6 +1071,7 @@ export const defaultBridge: TimerBridge = {
   preferencesGet: () => invokeDecoded("preferences_get", decodeViewPreferences),
   preferencesSet: (input) => invokeDecoded("preferences_set", decodeViewPreferences, { input }),
   orgJoin: (inviteCode) => invokeDecoded("org_join", decodeOrganizationOverview, { input: { inviteCode } }),
+  orgRename: (name) => invokeDecoded("org_rename", decodeOrganizationOverview, { input: { name } }),
   monitorStatus: () => invokeDecoded("monitor_status", decodeMonitorStatus),
   browserStatus: () => invokeDecoded("browser_status", decodeBrowserHealthList),
   browserRepair: (browserId) => invokeDecoded("browser_repair", decodeBrowserHealth, { browserId }),

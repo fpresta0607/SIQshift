@@ -4,6 +4,7 @@ import {
   normalizeInviteCode,
   organizationResponseSchema,
   provisionAccountRequestSchema,
+  renameOrganizationRequestSchema,
 } from "@siqshift/shared";
 import { bodyLimit } from "hono/body-limit";
 import type { JWTVerifyGetKey } from "jose";
@@ -303,6 +304,30 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     const subject = getAuthenticatedSubject(context);
     const organization = await dependencies.accounts.findOrganization(subject.organizationId, subject);
     if (organization === null) throw new AppError("not_found", "Organization not found.");
+    return context.json(organizationResponseSchema.parse({ organization }));
+  });
+  app.patch("/organization", async (context) => {
+    if (dependencies.accounts.renameOrganization === undefined) {
+      throw new AppError("internal_error", "Renaming a workspace is unavailable.");
+    }
+    const forbidden = new AppError("forbidden", "Only a workspace administrator can rename the workspace.");
+    const subject = getAuthenticatedSubject(context);
+    if (subject.role !== "admin") throw forbidden;
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      throw new AppError("validation_error", "The request body is not valid JSON.");
+    }
+    const input = renameOrganizationRequestSchema.safeParse(body);
+    if (!input.success) {
+      const [issue] = input.error.issues;
+      throw new AppError("validation_error", issue?.code === "unrecognized_keys"
+        ? `The server does not accept the field ${issue.keys.join(", ")}.`
+        : "A workspace name needs 1 to 80 characters.");
+    }
+    const organization = await dependencies.accounts.renameOrganization(subject, input.data.name);
+    if (organization === null) throw forbidden;
     return context.json(organizationResponseSchema.parse({ organization }));
   });
   app.post("/organization/claim-admin", async (context) => {

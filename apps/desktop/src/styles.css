@@ -293,6 +293,7 @@ select:disabled { opacity: .55; }
   overflow-wrap: anywhere;
 }
 .team-join-label { display: grid; gap: 4px; flex: 1 1 12rem; min-width: 0; font-size: .78rem; color: var(--text-secondary); }
+.workspace-name { flex: 1 1 auto; min-width: 0; color: #ffffff; font-size: .9rem; overflow-wrap: anywhere; }
 
 /* Lives inside the all-stats overlay, which scrolls as a whole; rows fold
    into "Everything else" past the cap, so no inner scrollbar. */

@@ -976,6 +976,31 @@ impl ApiClient {
         Ok(body.organization)
     }
 
+    /// Renames the caller's workspace. Whether they may is the server's call,
+    /// so its refusal comes back in its own words.
+    pub async fn rename_organization(
+        &self,
+        access_token: &str,
+        name: &str,
+    ) -> ApiResult<Organization> {
+        let response = self
+            .http
+            .patch(format!("{}/organization", self.api_base_url))
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let body: OrganizationResponse = response
+            .json()
+            .await
+            .map_err(|_| BridgeError::unknown("The workspace response could not be read."))?;
+        Ok(body.organization)
+    }
+
     /// The team view for a range. Bounds arrive together or not at all; none
     /// means all time, exactly as `/reports/workspace` reads it.
     pub async fn workspace_report(
@@ -2113,10 +2138,13 @@ mod tests {
     );
 
     /// Answers each connection in turn with the next scripted answer and
-    /// returns every request it read as ("METHOD /path", body).
+    /// returns every request it read as ("METHOD /path", body, authorization).
     async fn scripted_stub(
         answers: Vec<StubAnswer>,
-    ) -> (ApiClient, tokio::task::JoinHandle<Vec<(String, String)>>) {
+    ) -> (
+        ApiClient,
+        tokio::task::JoinHandle<Vec<(String, String, Option<String>)>>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2163,8 +2191,13 @@ mod tests {
                     .take(2)
                     .collect::<Vec<_>>()
                     .join(" ");
+                let authorization = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_string())
+                });
                 let sent = String::from_utf8_lossy(&request[body_start..body_start + length]);
-                requests.push((target, sent.into_owned()));
+                requests.push((target, sent.into_owned(), authorization));
                 let response = format!(
                     "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -2186,8 +2219,8 @@ mod tests {
     }
 
     async fn requests_seen(
-        served: tokio::task::JoinHandle<Vec<(String, String)>>,
-    ) -> Vec<(String, String)> {
+        served: tokio::task::JoinHandle<Vec<(String, String, Option<String>)>>,
+    ) -> Vec<(String, String, Option<String>)> {
         tokio::time::timeout(std::time::Duration::from_secs(5), served)
             .await
             .expect("the stub saw every scripted request")
@@ -2217,7 +2250,11 @@ mod tests {
             let requests = requests_seen(served).await;
             assert_eq!(
                 requests,
-                vec![("POST /accounts".to_string(), expected_body.to_string())]
+                vec![(
+                    "POST /accounts".to_string(),
+                    expected_body.to_string(),
+                    Some("Bearer access-jwt".to_string())
+                )]
             );
         }
     }
@@ -2243,6 +2280,65 @@ mod tests {
         assert_eq!(
             error.message,
             "That invite code is not in the right format."
+        );
+        assert_eq!(requests_seen(served).await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_organization_patches_the_name_and_reads_the_renamed_workspace() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "200 OK",
+            "",
+            r#"{"organization":{"id":"00000000-0000-4000-8000-000000000900","name":"Atlas Studio","inviteCode":"ACDEF-GHJKM"}}"#,
+        )])
+        .await;
+
+        // Act
+        let organization = client
+            .rename_organization("access-jwt", "Atlas Studio")
+            .await
+            .expect("the rename lands");
+
+        // Assert
+        assert_eq!(
+            organization,
+            Organization {
+                id: "00000000-0000-4000-8000-000000000900".to_string(),
+                name: "Atlas Studio".to_string(),
+                invite_code: "ACDEF-GHJKM".to_string(),
+            }
+        );
+        assert_eq!(
+            requests_seen(served).await,
+            vec![(
+                "PATCH /organization".to_string(),
+                r#"{"name":"Atlas Studio"}"#.to_string(),
+                Some("Bearer access-jwt".to_string())
+            )]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_organization_refused_for_a_member_says_what_the_server_said() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "403 Forbidden",
+            "",
+            r#"{"error":{"code":"forbidden","message":"Only a workspace administrator can rename the workspace."}}"#,
+        )])
+        .await;
+
+        // Act
+        let error = client
+            .rename_organization("access-jwt", "Atlas Studio")
+            .await
+            .expect_err("the rename is refused");
+
+        // Assert
+        assert_eq!(
+            error.message,
+            "Only a workspace administrator can rename the workspace."
         );
         assert_eq!(requests_seen(served).await.len(), 1);
     }
@@ -2323,7 +2419,10 @@ mod tests {
         assert_eq!(signed_up.session, "signed.value");
         assert_eq!(signed_up.access_token, "access-jwt");
         let requests = requests_seen(served).await;
-        let targets: Vec<&str> = requests.iter().map(|(target, _)| target.as_str()).collect();
+        let targets: Vec<&str> = requests
+            .iter()
+            .map(|(target, _, _)| target.as_str())
+            .collect();
         assert_eq!(
             targets,
             vec![

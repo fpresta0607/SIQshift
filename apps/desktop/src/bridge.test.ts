@@ -466,6 +466,19 @@ describe("defaultBridge", () => {
     expect(invoke).toHaveBeenLastCalledWith("org_overview", undefined);
   });
 
+  it("renames the workspace under the command name and input the host reads", async () => {
+    // Arrange
+    const organization = { id: ids.project, name: "Atlas Studio", inviteCode: "ACDEF-GHJKM" };
+    invoke.mockResolvedValueOnce({ organization });
+
+    // Act
+    const overview = await defaultBridge.orgRename("Atlas Studio");
+
+    // Assert
+    expect(overview).toEqual({ organization });
+    expect(invoke).toHaveBeenLastCalledWith("org_rename", { input: { name: "Atlas Studio" } });
+  });
+
   it("decodes the workspace report with a member who has no project, and pins the command", async () => {
     // Arrange
     const report = {

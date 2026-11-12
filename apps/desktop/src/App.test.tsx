@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
 import { sourceLabel } from "./agent-sources.js";
-import type { LiveAgentSessions, TimerBridge, WorkspaceReport } from "./bridge.js";
+import type { LiveAgentSessions, OrganizationOverview, TimerBridge, WorkspaceReport } from "./bridge.js";
 
 vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
@@ -251,6 +251,9 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   orgJoin: vi.fn().mockResolvedValue({
     organization: { id: "00000000-0000-4000-8000-000000000901", name: "Joined Team", inviteCode: "PQRTU-VWXY3" },
   }),
+  orgRename: vi.fn().mockResolvedValue({
+    organization: { id: "00000000-0000-4000-8000-000000000900", name: "Field Crew", inviteCode: "ACDEF-GHJKM" },
+  }),
   // The default is "the host cannot report": every recording surface stays
   // quiet rather than claiming something it cannot see.
   monitorStatus: vi.fn().mockRejectedValue({ kind: "unknown", message: "Recording unavailable" }),
@@ -306,6 +309,15 @@ const openAgentsTab = async (person: ReturnType<typeof userEvent.setup>): Promis
 const openSettings = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
   await person.click(await screen.findByRole("button", { name: "Settings" }));
   return screen.getByRole("dialog", { name: "Settings" });
+};
+
+/// Opens settings and unfolds its Team group, returning the group.
+const openTeamGroup = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
+  const summary = await within(await openSettings(person)).findByText("Team");
+  await person.click(summary);
+  const group = summary.closest("details");
+  if (group === null) throw new Error("The Team summary is outside its group.");
+  return group;
 };
 
 afterEach(() => {
@@ -1717,6 +1729,111 @@ describe("the team board", () => {
 
     expect(await screen.findByRole("radio", { name: "Work it out for me (Joined project)" })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /Field work/ })).not.toBeInTheDocument();
+  });
+
+  it("renames the workspace with the trimmed name and shows it in the Team group and the header at once", async () => {
+    // Arrange
+    const orgRename = vi.fn().mockResolvedValue({
+      organization: { id: "00000000-0000-4000-8000-000000000900", name: "Atlas Studio", inviteCode: "ACDEF-GHJKM" },
+    });
+    const bridge = bridgeFor({ orgRename });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const team = within(await openTeamGroup(person));
+    await person.click(team.getByRole("button", { name: "Rename the workspace" }));
+    const field = team.getByLabelText("New name for the workspace");
+
+    // Act
+    await person.clear(field);
+    await person.type(field, "  Atlas Studio ");
+    await person.click(team.getByRole("button", { name: "Save" }));
+
+    // Assert
+    expect(orgRename).toHaveBeenCalledWith("Atlas Studio");
+    expect(await team.findByText("Atlas Studio")).toBeInTheDocument();
+    expect(team.queryByLabelText("New name for the workspace")).not.toBeInTheDocument();
+    expect(screen.getByTestId("filing-where")).toHaveTextContent("Atlas Studio");
+    expect(screen.getByTestId("filing-where")).not.toHaveTextContent("SIQstack");
+    // The answer to the rename is the new name: nothing is read again.
+    expect(bridge.orgOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a member who is not an administrator", "auth", "Only a workspace administrator can rename the workspace."],
+    ["a name the server will not take", "validation", "A workspace name needs 1 to 80 characters."],
+  ])("shows the server's sentence and keeps the old name when it refuses %s", async (_case, kind, message) => {
+    // Arrange
+    const orgRename = vi.fn().mockRejectedValue({ kind, message });
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ orgRename })} />);
+    const team = within(await openTeamGroup(person));
+    await person.click(team.getByRole("button", { name: "Rename the workspace" }));
+
+    // Act
+    await person.type(team.getByLabelText("New name for the workspace"), " Crew");
+    await person.click(team.getByRole("button", { name: "Save" }));
+
+    // Assert
+    const alert = await team.findByText(message);
+    expect(alert).toHaveAttribute("role", "alert");
+    // The sentence sits in the form it answers, which stays open to fix.
+    expect(alert.closest("form")).toContainElement(team.getByLabelText("New name for the workspace"));
+    expect(screen.getByTestId("filing-where")).toHaveTextContent("SIQstack");
+    expect(screen.getByTestId("filing-where")).not.toHaveTextContent("SIQstack Crew");
+    // A refusal is not a lost session: the settings stay open, signed in.
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("leaves the name as it was when the rename is cancelled", async () => {
+    // Arrange
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const team = within(await openTeamGroup(person));
+    await person.click(team.getByRole("button", { name: "Rename the workspace" }));
+    await person.type(team.getByLabelText("New name for the workspace"), " Crew");
+
+    // Act
+    await person.click(team.getByRole("button", { name: "Cancel" }));
+
+    // Assert
+    expect(bridge.orgRename).not.toHaveBeenCalled();
+    expect(team.getByText("SIQstack")).toBeInTheDocument();
+    expect(team.queryByLabelText("New name for the workspace")).not.toBeInTheDocument();
+    expect(team.getByRole("button", { name: "Rename the workspace" })).toBeInTheDocument();
+  });
+
+  it("holds Save while the new name is blank", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+    const team = within(await openTeamGroup(person));
+    await person.click(team.getByRole("button", { name: "Rename the workspace" }));
+
+    // Act
+    const field = team.getByLabelText("New name for the workspace");
+    await person.clear(field);
+    await person.type(field, "   ");
+
+    // Assert
+    expect(team.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("reads Saving… and holds Save while the rename is in flight", async () => {
+    // Arrange
+    const orgRename = vi.fn(() => new Promise<OrganizationOverview>(() => undefined));
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ orgRename })} />);
+    const team = within(await openTeamGroup(person));
+    await person.click(team.getByRole("button", { name: "Rename the workspace" }));
+
+    // Act
+    await person.type(team.getByLabelText("New name for the workspace"), " Crew");
+    await person.click(team.getByRole("button", { name: "Save" }));
+
+    // Assert
+    expect(await team.findByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(orgRename).toHaveBeenCalledTimes(1);
   });
 });
 

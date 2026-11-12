@@ -228,6 +228,24 @@ describe("web client", () => {
       .toBe("application/json");
   });
 
+  it("renames the workspace with one PATCH to /organization and returns the renamed workspace", async () => {
+    // Arrange
+    const renamed = { id: "00000000-0000-4000-8000-000000000001", name: "Field Crew", inviteCode: "ACDEF-GHJKM" };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse({ organization: renamed })
+    ));
+
+    // Act
+    const response = await client.renameOrganization("Field Crew");
+
+    // Assert
+    expect(response).toEqual({ organization: renamed });
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/organization`);
+    expect(call?.[1]?.method).toBe("PATCH");
+    expect(call?.[1]?.body).toBe(JSON.stringify({ name: "Field Crew" }));
+    expect((call?.[1]?.headers as Record<string, string> | undefined)?.["content-type"]).toBe("application/json");
+  });
+
   it("reads the team view from the API's workspace report, with the query as given", async () => {
     // Arrange
     const { client, fetchMock } = clientWith(async (url) => (
