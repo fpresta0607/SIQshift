@@ -627,6 +627,7 @@ organization are derived from verified claims, never from the request body.
 | `POST` | `/accounts` | first call after sign-up: create a workspace, or join one by invite code |
 | `GET` | `/me` | the signed-in user |
 | `GET` | `/organization` | workspace name and invite code |
+| `PATCH` | `/organization` | an administrator renames the workspace; `403` for a member |
 | `POST` | `/organization/join` | move an account into another workspace |
 | `POST` | `/organization/claim-admin` | first signed-in member claims the administrator role in a workspace that has none; refused (`409`) once one exists |
 | `GET` | `/projects` | projects the caller belongs to; `?includeArchived=true` lists archived ones so an archive can be undone |

@@ -601,6 +601,27 @@ export class DrizzleAccountStore implements AccountStore {
     return rows[0] ?? null;
   }
 
+  public async renameOrganization(subject: AuthenticatedSubject, name: string): Promise<OrganizationRecord | null> {
+    // One statement: the role is checked in the same write that renames, so
+    // an administrator demoted a moment ago cannot rename on a stale read.
+    const rows = await this.db
+      .update(organizations)
+      .set({ name, updatedAt: new Date() })
+      .where(and(
+        eq(organizations.id, subject.organizationId),
+        exists(this.db
+          .select({ id: users.id })
+          .from(users)
+          .where(and(
+            eq(users.id, subject.userId),
+            eq(users.organizationId, subject.organizationId),
+            eq(users.role, "admin"),
+          ))),
+      ))
+      .returning({ id: organizations.id, name: organizations.name, inviteCode: organizations.inviteCode });
+    return rows[0] ?? null;
+  }
+
   /**
    * Places a new account in the organization an invite code names, with access
    * to every project that organization is currently running.
