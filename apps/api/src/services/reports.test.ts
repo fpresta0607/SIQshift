@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { summedSeconds } from "@siqshift/shared";
-import type { AgentShiftsFilters, ReportFilters } from "@siqshift/shared";
+import { summedSeconds, unionSeconds } from "@siqshift/shared";
+import type { AgentShiftsFilters, Interval, ReportFilters } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
 import type {
@@ -30,7 +30,7 @@ import type {
   RunningAgentSessionRecord,
   SiteTotalRecord,
 } from "../repositories.js";
-import { createReportService, normalizedQuery, type ReportService } from "./reports.js";
+import { createReportService, normalizedQuery, timeSeries, type ReportService } from "./reports.js";
 
 const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
@@ -1021,6 +1021,66 @@ describe("workspace report", () => {
     expect(result.hourly).toEqual([]);
     expect(result.activeSeconds).toBe(10_800);
     expect(result.members).toHaveLength(3);
+  });
+});
+
+describe("time series", () => {
+  const hourMs = 60 * 60 * 1_000;
+  const dayMs = 24 * hourMs;
+  const rangeStart = Date.UTC(2026, 7, 1, 4);
+
+  it.each([
+    { name: "hours across ninety days", bucketMs: hourMs, rangeEnd: rangeStart + 90 * dayMs, tileCount: 2_160 },
+    { name: "days across a range with a spare daylight-saving hour", bucketMs: dayMs, rangeEnd: rangeStart + 40 * dayMs + hourMs, tileCount: 40 },
+  ])("matches the plain union and sum per tile over $name", ({ bucketMs, rangeEnd, tileCount }) => {
+    // Arrange: many overlapping, unsorted intervals and usage buckets, some
+    // crossing tile edges and some reaching past either end of the range.
+    const spanMs = rangeEnd - rangeStart + 4 * hourMs;
+    const spread = (index: number, multiplier: number, maxLengthMs: number): Interval => {
+      const start = rangeStart - 2 * hourMs + ((index * multiplier) % spanMs);
+      return { start, end: start + ((index * 104_729) % maxLengthMs) };
+    };
+    const working = [
+      ...Array.from({ length: 600 }, (_, index) => spread(index, 1_000_003_987, 3 * hourMs)),
+      { start: rangeStart + 5 * dayMs + 30 * 60 * 1_000, end: rangeStart + 7 * dayMs + 10 * 60 * 1_000 },
+    ];
+    const agents = [
+      ...Array.from({ length: 400 }, (_, index) => spread(index, 2_999_999_929, 10 * hourMs)),
+      { start: rangeStart - dayMs, end: rangeEnd + dayMs },
+      { start: rangeStart - dayMs, end: rangeStart },
+      { start: rangeEnd, end: rangeEnd + hourMs },
+    ];
+    const usage: AgentUsageBucketTotalRecord[] = Array.from({ length: 300 }, (_, index) => ({
+      bucketStartAt: new Date(spread(index, 1_999_999_973, 1).start),
+      inputTokens: index,
+      outputTokens: 1,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: String(index * 10),
+    }));
+    const expected = Array.from({ length: tileCount }, (_, tileIndex) => {
+      const tile = {
+        start: rangeStart + tileIndex * bucketMs,
+        end: tileIndex === tileCount - 1 ? rangeEnd : rangeStart + (tileIndex + 1) * bucketMs,
+      };
+      const indices = usage.flatMap((bucket, index) =>
+        bucket.bucketStartAt.getTime() >= tile.start && bucket.bucketStartAt.getTime() < tile.end ? [index] : []);
+      const indexSum = indices.reduce((sum, index) => sum + index, 0);
+      return {
+        hourStart: new Date(tile.start).toISOString(),
+        activeSeconds: unionSeconds(working, tile),
+        agentSeconds: summedSeconds(agents, tile),
+        inputTokens: indices.length === 0 ? null : indexSum,
+        outputTokens: indices.length === 0 ? null : indices.length,
+        cacheCreationInputTokens: indices.length === 0 ? null : 0,
+        cacheReadInputTokens: indices.length === 0 ? null : indexSum * 10,
+      };
+    });
+
+    // Act
+    const series = timeSeries(working, agents, usage, { start: rangeStart, end: rangeEnd }, bucketMs);
+
+    // Assert
+    expect(series).toEqual(expected);
   });
 });
 

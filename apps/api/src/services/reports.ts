@@ -5,9 +5,8 @@ import {
   intersectIntervals,
   isAttributed,
   measureTimeMs,
+  mergeIntervals,
   roundTimeMeasurement,
-  summedSeconds,
-  unionSeconds,
   type AgentShiftRow,
   type AgentShiftRowsFilters,
   type AgentShiftRowsResponse,
@@ -323,12 +322,32 @@ export function timeSeries(
     beforeLast.end = last.end;
     tiles.pop();
   }
-  return tiles.map((tile) => {
-    const tokens = usageTokensIn(usage, tile);
+  const tileIndex = (instant: number): number => Math.min(Math.floor((instant - start) / bucketMs), tiles.length - 1);
+  const msPerTile = (intervals: readonly Interval[]): number[] => {
+    const totals = tiles.map(() => 0);
+    for (const interval of intervals) {
+      const clipped = clipInterval(interval, range);
+      if (clipped === null) continue;
+      for (let index = tileIndex(clipped.start); index < tiles.length && tiles[index]!.start < clipped.end; index++) {
+        const tile = tiles[index]!;
+        totals[index] = totals[index]! + (Math.min(clipped.end, tile.end) - Math.max(clipped.start, tile.start));
+      }
+    }
+    return totals;
+  };
+  const activeMs = msPerTile(mergeIntervals(working));
+  const agentMs = msPerTile(agents);
+  const usagePerTile: AgentUsageBucketTotalRecord[][] = tiles.map(() => []);
+  for (const bucket of usage) {
+    const bucketStart = bucket.bucketStartAt.getTime();
+    if (bucketStart >= start && bucketStart < end) usagePerTile[tileIndex(bucketStart)]!.push(bucket);
+  }
+  return tiles.map((tile, index) => {
+    const tokens = usageTokensIn(usagePerTile[index]!, tile);
     return {
       hourStart: new Date(tile.start).toISOString(),
-      activeSeconds: unionSeconds(working, tile),
-      agentSeconds: summedSeconds(agents, tile),
+      activeSeconds: Math.round(activeMs[index]! / 1_000),
+      agentSeconds: Math.round(agentMs[index]! / 1_000),
       inputTokens: tokens?.inputTokens ?? null,
       outputTokens: tokens?.outputTokens ?? null,
       cacheCreationInputTokens: tokens?.cacheCreationInputTokens ?? null,
