@@ -2,21 +2,22 @@
 //! away/auto-stop policy the stop flow and the UI both consume.
 //!
 //! Lightweight by construction: one Tokio task wakes every 30 seconds and asks
-//! the OS read-only questions (`GetLastInputInfo`, the foreground process
+//! Windows read-only questions (`GetLastInputInfo`, the foreground process
 //! name - the name only, never a window title). When the input answer says
 //! idle, three more read-only checks can still rescue the tick as hands-off
 //! work (media playing, presentation or busy state, microphone in use), each
 //! fail-closed: a check that cannot answer never rescues. Lock and suspend
 //! arrive as broadcasts on a hidden window owned by a dedicated thread, so
 //! between events the monitor costs nothing. There are no hooks, no injection,
-//! and no per-keystroke cost.
+//! and no per-keystroke cost. `monitor/macos.rs` asks macOS the same
+//! questions.
 //!
 //! The signal stream folds into transition-based segments (`active`, `idle`,
 //! `locked`, `suspended`), so a workday produces dozens of rows, not ticks.
 //! Closed segments are appended to a local spool immediately (same durability
 //! discipline as the agent spool) and the uploader in `uploader.rs` batches
 //! them to the API. Everything above the `platform` module is pure logic with
-//! an injected clock; the Win32 calls never run in tests.
+//! an injected clock; the OS calls never run in its tests.
 //!
 //! Monitoring is gated behind `MonitorSettings.enabled` (on by default for
 //! new installs); disabling it aborts both tasks, so a paused monitor records
@@ -107,8 +108,9 @@ pub enum ActivitySignal {
     Suspended,
 }
 
-/// The read-only OS question the poll task asks. The Windows implementation
-/// lives in `platform`; tests inject fakes and never touch the OS.
+/// The read-only OS question the poll task asks. The Windows and macOS
+/// implementations live in `platform`; tests inject fakes and never touch
+/// the OS.
 pub trait ActivitySource: Send {
     fn poll(&self) -> ActivitySignal;
 }

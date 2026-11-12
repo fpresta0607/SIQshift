@@ -6,7 +6,9 @@
 //! configured released extension id, the app writes a host manifest beside the
 //! spools (its `allowed_origins` pins the extension id) and points the
 //! browser's HKCU `NativeMessagingHosts` key at it. The keys are SIQshift's
-//! own and need no elevation.
+//! own and need no elevation. macOS has no registry: there the manifest is
+//! written into the browser's own per-user `NativeMessagingHosts` folder,
+//! which is the registration itself.
 //!
 //! The manifest's `path` is the `siqshift-browser-host` binary installed next
 //! to the app executable (both ship as `externalBin` siblings, exactly like
@@ -14,13 +16,14 @@
 //! "beside the running app" rule the hook registration uses.
 //!
 //! The other half is getting the extension onto the machine: for Chrome and
-//! Edge the app maintains an `ExtensionInstallForcelist` policy entry under
-//! HKCU, so the browser force-installs the extension from its store on next
-//! launch. The settings toggle strips the entry again, and removing it is
-//! what uninstalls the extension. Firefox has no store-free force-install
-//! policy, so it keeps the manual store flow. Every policy path gates on the
-//! build-time extension ids, exactly like registration, so an unsigned build
-//! without them touches nothing.
+//! Edge on Windows the app maintains an `ExtensionInstallForcelist` policy
+//! entry under HKCU, so the browser force-installs the extension from its
+//! store on next launch. The settings toggle strips the entry again, and
+//! removing it is what uninstalls the extension. Firefox has no store-free
+//! force-install policy, and macOS browsers honor it only from device
+//! management, so both keep the manual store flow. Every policy path gates on
+//! the build-time extension ids, exactly like registration, so an unsigned
+//! build without them touches nothing.
 
 use std::io;
 use std::path::{Path, PathBuf};
