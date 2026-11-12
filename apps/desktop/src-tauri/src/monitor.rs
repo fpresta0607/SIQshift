@@ -55,7 +55,7 @@ const IDLE_THRESHOLD_SECONDS: u32 = POLL_INTERVAL_SECONDS as u32;
 
 /// How long an open agent session without a fresh event still counts as
 /// active for the away override. Matches the server's staleness window
-/// (`defaultStaleThresholdMs` in `agent-sessions.ts`); tighten them together.
+/// (`AGENT_STALE_WINDOW_MS` in `agent-sessions.ts`); tighten them together.
 pub const AGENT_ACTIVE_WINDOW_SECONDS: u64 = 30 * 60;
 
 /// How stale the last poll may be before the monitor stops claiming it is

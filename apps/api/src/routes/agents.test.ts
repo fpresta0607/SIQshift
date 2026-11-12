@@ -166,10 +166,8 @@ class MemoryShiftCommits implements ShiftCommitRepository {
   }
 }
 
-/** Only reapStale is exercised by these routes. */
-const reaperOnlySessions = {
-  reapStale: async () => 0,
-} as unknown as AgentSessionRepository;
+/** No agent route reads it; the agent-session and shift-commit blocks need one to mount. */
+const unusedSessions = {} as AgentSessionRepository;
 
 /** The agent-session block mounts too, so it gets inert mapping/session fakes. */
 const emptyPathMappings = {
@@ -208,7 +206,7 @@ function createTestApp(agents = new MemoryAgents([agentRecord()]), shiftCommits?
     keys,
     accounts: { resolve: async (identity) => users[identity.authUserId as keyof typeof users] },
     clock: () => new Date("2026-08-06T14:00:00.000Z"),
-    agentSessionRepository: reaperOnlySessions,
+    agentSessionRepository: unusedSessions,
     agentRepository: agents,
     ...(shiftCommits === undefined ? {} : { shiftCommitRepository: shiftCommits }),
     reportRepository: membershipReports,

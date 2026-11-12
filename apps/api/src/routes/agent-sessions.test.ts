@@ -137,19 +137,6 @@ class MemoryAgentSessions implements AgentSessionRepository {
     existing.model ??= model;
     return { session: existing, previousEnd };
   }
-
-  public async reapStale(subject: { organizationId: string; userId: string }, cutoff: Date, _now: Date) {
-    let reaped = 0;
-    for (const record of this.records) {
-      if (record.organizationId !== subject.organizationId || record.userId !== subject.userId) continue;
-      if (record.status === "running" && record.lastEventAt < cutoff) {
-        record.status = "ended";
-        record.endedAt = record.lastEventAt;
-        reaped += 1;
-      }
-    }
-    return reaped;
-  }
 }
 
 class MemoryPathMappings implements PathMappingRepository {
@@ -413,22 +400,6 @@ describe("agent-session routes", () => {
     expect(agentSessions.records).toHaveLength(2);
     expect(agentSessions.records[0]).toMatchObject({ organizationId: ids.organization, status: "running" });
     expect(agentSessions.records[1]).toMatchObject({ organizationId: ids.otherOrganization, status: "ended" });
-  });
-
-  it("reaps sessions stale beyond thirty minutes when a batch arrives", async () => {
-    const headers = { authorization: bearerHeader, "content-type": "application/json" };
-    const agentSessions = new MemoryAgentSessions();
-    const app = createTestApp(agentSessions);
-
-    await app.request("http://api.test/agent-sessions", {
-      method: "POST", headers, body: JSON.stringify({ events: [event({ occurredAt: "2026-08-06T07:00:00.000Z" })] }),
-    });
-    await app.request("http://api.test/agent-sessions", {
-      method: "POST", headers, body: JSON.stringify({ events: [event({ externalSessionId: "fresh" })] }),
-    });
-
-    expect(agentSessions.records[0]).toMatchObject({ status: "ended", endedAt: new Date("2026-08-06T07:00:00.000Z") });
-    expect(agentSessions.records[1]).toMatchObject({ externalSessionId: "fresh", status: "running" });
   });
 
 

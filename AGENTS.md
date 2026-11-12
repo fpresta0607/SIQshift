@@ -67,10 +67,11 @@ session; a person with none is absent, never a stale row, and browser spans are 
 same `rosterEligibleSource` rule as everywhere else. Each row's `description` is composed once,
 server-side, from captured facts alone (runtime, attested model, the project or codebase the
 directory resolved to, how long the session has been up): there is no summary field behind it, and
-none may be invented on the client. Stale running rows close through the reaper before the read, so
-a session the 30-minute staleness window ended can never appear live. In the All Stats agents view
-the ordering is project-tie first: group heads keep the label-less group last, and within a drawer
-the project-tied shifts read above the untied ones (which stay visible below, sorted not hidden);
+none may be invented on the client. The read lists only running rows heard from inside the
+30-minute staleness window, so a session silent for longer never appears live, though no write has
+ended it. In the All Stats agents view the ordering is project-tie first: group heads keep the
+label-less group last, and within a drawer the project-tied shifts read above the untied ones
+(which stay visible below, sorted not hidden);
 the drawer cursor therefore carries `projectTied` beside its `startedAt`/`id` pair, and a cursor
 sent without it reads as untied.
 
@@ -350,7 +351,7 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   is SessionStart/SessionEnd only, so the transcript is also the shift's liveness:
   `agent_usage.rs` spools one plain heartbeat per `ACTIVITY_HEARTBEAT_SECONDS` of
   entries, stamped with the entry's own time. Before it, a live-delivered Claude Code
-  shift never outlived the 30-minute reaper, and only a late upload read longer.
+  shift never outlived the 30-minute staleness window, and only a late upload read longer.
   Activity after the server ended the current shift - past the staleness window, or
   after an end, which `claude --continue` follows under the same session id - opens a
   continuation shift, `<session id>~<unix start>`, carrying the hook's repository so it
@@ -362,9 +363,12 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   500 at a time and a timed-out batch is re-sent forever. Ingest writes a batch's shifts
   side by side (`concurrentShifts`), each shift's own events in event order. The staleness
   rule is applied in event time on every write (`lapsedBefore`), so a backlog measures
-  what a live upload would have. Never let a heartbeat reopen or extend an ended row: the
-  transcript reader's model heartbeat and Codex heartbeats are stamped at read time and
-  legitimately arrive after a real end.
+  what a live upload would have, and never on the server's clock: a desktop behind on its
+  uploads splits one shift's events across batches, and an end the server wrote between
+  them turned away every heartbeat in the next. Reads that ask what runs now compare
+  `lastEventAt` with `AGENT_STALE_WINDOW_MS` instead. Never let a heartbeat reopen or
+  extend an ended row: the transcript reader's model heartbeat and Codex heartbeats are
+  stamped at read time and legitimately arrive after a real end.
 - A live Codex terminal is a held `~/.codex/thread-writer-locks/<thread>.lock`, not a
   `codex.exe` process. `codex_sessions.rs` reads local state-only app-server metadata
   for held threads and admits only `cli` and `exec`, excluding app-server, editor and

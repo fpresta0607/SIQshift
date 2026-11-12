@@ -43,7 +43,7 @@ import { createReportRoutes } from "./routes/reports.js";
 import { createSessionRoutes } from "./routes/sessions.js";
 import { createShiftCommitRoutes } from "./routes/shift-commits.js";
 import { createActivityService } from "./services/activity.js";
-import { createAgentSessionReaper, createAgentSessionService } from "./services/agent-sessions.js";
+import { createAgentSessionService } from "./services/agent-sessions.js";
 import { createAgentUsageService } from "./services/agent-usage.js";
 import { createAgentService } from "./services/agents.js";
 import { createPathMappingService } from "./services/path-mappings.js";
@@ -356,16 +356,11 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     app.route("/sessions", createSessionRoutes(sessionService));
   }
   if (dependencies.reportRepository !== undefined) {
-    if (dependencies.agentSessionRepository === undefined) {
-      throw new Error("An agent session repository is required for report routes.");
-    }
     if (dependencies.agentRepository === undefined) {
       throw new Error("An agent repository is required for report routes.");
     }
     const reportService = createReportService({
       reports: dependencies.reportRepository,
-      // Report aggregation reads agent sessions, so stale ones close first.
-      reaper: createAgentSessionReaper({ agentSessions: dependencies.agentSessionRepository, clock }),
       agents: dependencies.agentRepository,
       ...(dependencies.shiftCommitRepository === undefined ? {} : { shiftCommits: dependencies.shiftCommitRepository }),
       ...(dependencies.agentUsageRepository === undefined ? {} : { agentUsage: dependencies.agentUsageRepository }),
@@ -405,15 +400,11 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     app.route("/agent-sessions", createAgentSessionRoutes(agentSessionService));
   }
   if (dependencies.agentRepository !== undefined) {
-    if (dependencies.agentSessionRepository === undefined) {
-      throw new Error("An agent session repository is required for agent routes.");
-    }
     if (dependencies.reportRepository === undefined) {
       throw new Error("A report repository is required for agent routes.");
     }
     const agentService = createAgentService({
       agents: dependencies.agentRepository,
-      reaper: createAgentSessionReaper({ agentSessions: dependencies.agentSessionRepository, clock }),
       reports: dependencies.reportRepository,
       ...(dependencies.shiftCommitRepository === undefined ? {} : { shiftCommits: dependencies.shiftCommitRepository }),
       ...(dependencies.agentUsageRepository === undefined ? {} : { agentUsage: dependencies.agentUsageRepository }),

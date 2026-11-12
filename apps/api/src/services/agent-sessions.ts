@@ -13,7 +13,7 @@ import { RETENTION_WINDOW_MS, utcDaysBetween } from "./utc-days.js";
 
 const futureEventToleranceMs = 30_000;
 /**
- * No event for this long ends a running shift at its last event. A working
+ * No event for this long means a shift is over, at its last event. A working
  * agent heartbeats while it works - Claude Code from its transcript, Codex
  * from its held writer lock, both every five minutes of activity - so half an
  * hour of silence means the agent stopped, crashed, or the machine slept.
@@ -21,8 +21,16 @@ const futureEventToleranceMs = 30_000;
  * and reclassify a person's own active time as agent-assisted. The desktop
  * monitor's agent-active window (`AGENT_ACTIVE_WINDOW_SECONDS` in
  * monitor.rs) is this constant's Rust-side pairing; tighten them together.
+ *
+ * Silence is measured between a shift's own events, never against the
+ * server's clock: a desktop behind on its uploads still holds the next
+ * heartbeats of a shift the server last heard from an hour ago, and an end
+ * written on the server's clock turned them away. So no write ever ends a
+ * shift for being quiet now; only a read asking what is running right now
+ * (the live view, a paystub shift's open end) holds a row's last event
+ * against the clock.
  */
-const defaultStaleThresholdMs = 30 * 60 * 1_000;
+export const AGENT_STALE_WINDOW_MS = 30 * 60 * 1_000;
 
 /**
  * How many shifts one batch writes at once. A full batch is 500 events and
@@ -112,45 +120,17 @@ export interface AgentSessionServiceDependencies {
   staleThresholdMs?: number;
 }
 
-export interface AgentSessionReaper {
-  /** Closes running sessions with no event for the staleness window, ending them at lastEventAt. */
-  reapStale(subject: AuthenticatedSubject): Promise<number>;
-}
-
-/**
- * Just the staleness reaper, for read paths (reports, stats) that close stale
- * agent sessions before report aggregation without the full ingestion service.
- */
-export function createAgentSessionReaper(
-  dependencies: Pick<AgentSessionServiceDependencies, "agentSessions" | "clock" | "staleThresholdMs">,
-): AgentSessionReaper {
-  const clock = dependencies.clock ?? (() => new Date());
-  const staleThresholdMs = dependencies.staleThresholdMs ?? defaultStaleThresholdMs;
-  return {
-    reapStale(subject: AuthenticatedSubject): Promise<number> {
-      const now = clock();
-      return dependencies.agentSessions.reapStale(subject, new Date(now.getTime() - staleThresholdMs), now);
-    },
-  };
-}
-
 export interface AgentSessionService {
   ingest(subject: AuthenticatedSubject, events: AgentSessionEventInput[]): Promise<AgentSessionEventBatchResponse>;
-  /** Closes running sessions with no event for the staleness window; also runs before every batch. */
-  reapStale(subject: AuthenticatedSubject): Promise<number>;
 }
 
 export function createAgentSessionService(dependencies: AgentSessionServiceDependencies): AgentSessionService {
   const clock = dependencies.clock ?? (() => new Date());
-  const staleThresholdMs = dependencies.staleThresholdMs ?? defaultStaleThresholdMs;
-  const reaper = createAgentSessionReaper(dependencies);
+  const staleThresholdMs = dependencies.staleThresholdMs ?? AGENT_STALE_WINDOW_MS;
 
   return {
-    reapStale: (subject) => reaper.reapStale(subject),
-
     async ingest(subject: AuthenticatedSubject, events: AgentSessionEventInput[]): Promise<AgentSessionEventBatchResponse> {
       const now = clock();
-      await dependencies.agentSessions.reapStale(subject, new Date(now.getTime() - staleThresholdMs), now);
 
       // Mappings rarely change; one lookup per batch attributes every event in it.
       let mappings: Promise<PathMappingCandidate[]> | null = null;
@@ -261,9 +241,9 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
         const floor = Math.max(from.getTime(), to.getTime() - RETENTION_WINDOW_MS);
         folded.push(...utcDaysBetween(new Date(floor), to));
       };
-      // The reaper's staleness rule, judged against the event's own time: a
-      // running shift silent for longer than the window before this event was
-      // already over when it happened, however late the upload carrying both.
+      // The staleness rule, judged against the event's own time: a running
+      // shift silent for longer than the window before this event was already
+      // over when it happened, however late the upload carrying both.
       const lapsedBefore = (event: AgentSessionEventInput): Date => new Date(event.occurredAt.getTime() - staleThresholdMs);
 
       const apply = async (event: AgentSessionEventInput): Promise<void> => {

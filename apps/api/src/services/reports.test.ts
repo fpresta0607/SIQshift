@@ -57,17 +57,6 @@ function row(overrides: Partial<ReportRowRecord> = {}): ReportRowRecord {
   };
 }
 
-/** Records every reap so tests can prove read paths close stale agent sessions first. */
-class Reaper {
-  public readonly subjects: AuthenticatedSubject[] = [];
-  public async reapStale(subject: AuthenticatedSubject) {
-    this.subjects.push(subject);
-    return 0;
-  }
-}
-
-const silentReaper = { reapStale: async () => 0 };
-
 class Reports implements ReportRepository {
   public lastPage: { query: Parameters<ReportRepository["readPageForOrganization"]>[1]; options: ReportPageOptions } | null = null;
   public lastLeaderboardQuery: ReportQuery | null = null;
@@ -142,8 +131,8 @@ class Reports implements ReportRepository {
     return null;
   }
 
-  public async readRunningAgentSessions() {
-    return this.runningSessions;
+  public async readRunningAgentSessions(_subject: AuthenticatedSubject, freshSince: Date) {
+    return this.runningSessions.filter((row) => row.lastEventAt >= freshSince);
   }
   public async findProjectForOrganization(_subject: AuthenticatedSubject, projectId: string) {
     return this.accessible.has(projectId) ? { id: projectId, name: "Timer" } : null;
@@ -435,7 +424,7 @@ const noBoardMeasurement = {
 describe("report service", () => {
   it("scopes report queries to the authenticated organization and normalizes inclusive UTC calendar bounds", async () => {
     const reports = new Reports([row({ id: ids.otherProject, durationSeconds: 60, startedAt: new Date("2026-08-06T16:00:00.000Z") }), row()]);
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await expect(service.list(subject, { from: "2026-08-01", to: "2026-08-06", projectId: ids.project, userId: ids.user, page: 1, pageSize: 50 })).resolves.toMatchObject({
       filters: { from: "2026-08-01", to: "2026-08-06", projectId: ids.project, userId: ids.user, page: 1, pageSize: 50 },
@@ -454,12 +443,12 @@ describe("report service", () => {
   });
 
   it("returns an empty report with a zero total", async () => {
-    await expect(createReportService({ reports: new Reports(), reaper: silentReaper, agents }).list(subject, { page: 1, pageSize: 50 })).resolves.toEqual({ filters: { page: 1, pageSize: 50 }, totalDurationSeconds: 0, pagination: { page: 1, pageSize: 50, totalRows: 0, totalPages: 0 }, rows: [] });
+    await expect(createReportService({ reports: new Reports(), agents }).list(subject, { page: 1, pageSize: 50 })).resolves.toEqual({ filters: { page: 1, pageSize: 50 }, totalDurationSeconds: 0, pagination: { page: 1, pageSize: 50, totalRows: 0, totalPages: 0 }, rows: [] });
   });
 
   it("passes device-local instant bounds as an exact clipped report range", async () => {
     const reports = new Reports([row()]);
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.list(subject, {
       fromAt: "2026-03-08T06:00:00.000Z",
@@ -479,24 +468,24 @@ describe("report service", () => {
   });
 
   it("rejects reversed or excessive date ranges", async () => {
-    const service = createReportService({ reports: new Reports(), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports(), agents });
     await expect(service.list(subject, { from: "2026-08-07", to: "2026-08-06", page: 1, pageSize: 50 })).rejects.toMatchObject({ code: "validation_error" });
     await expect(service.list(subject, { from: "2025-01-01", to: "2026-01-02", page: 1, pageSize: 50 })).rejects.toMatchObject({ code: "validation_error" });
   });
 
   it("defends the repository from pathological page offsets", async () => {
-    const service = createReportService({ reports: new Reports(), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports(), agents });
     await expect(service.list(subject, { page: 10_001, pageSize: 1 } as ReportFilters)).rejects.toMatchObject({ code: "validation_error" });
   });
 
   it("returns stable not_found for project and user filters outside the subject organization", async () => {
-    const service = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports([], new Set()), agents });
     await expect(service.list(subject, { projectId: ids.otherProject, page: 1, pageSize: 50 })).rejects.toMatchObject({ code: "not_found", message: "Project not found." });
     await expect(service.list(subject, { userId: ids.otherUser, page: 1, pageSize: 50 })).rejects.toMatchObject({ code: "not_found", message: "User not found." });
   });
 
   it("rejects unsafe report duration totals", async () => {
-    const service = createReportService({ reports: new Reports([row({ durationSeconds: Number.MAX_SAFE_INTEGER }), row({ id: ids.otherProject, durationSeconds: 1 })]), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports([row({ durationSeconds: Number.MAX_SAFE_INTEGER }), row({ id: ids.otherProject, durationSeconds: 1 })]), agents });
     await expect(service.list(subject, { page: 1, pageSize: 50 })).rejects.toThrow(RangeError);
   });
 
@@ -505,7 +494,7 @@ describe("report service", () => {
       row({ id: "b1c7e513-b094-4d4c-ae55-21790ae019a4", startedAt: new Date("2026-08-06T14:00:00.000Z") }),
       row({ id: "a1c7e513-b094-4d4c-ae55-21790ae019a4", startedAt: new Date("2026-08-06T14:00:00.000Z"), durationSeconds: 60 }),
     ]);
-    const result = await createReportService({ reports, reaper: silentReaper, agents }).list(subject, { page: 2, pageSize: 1 });
+    const result = await createReportService({ reports, agents }).list(subject, { page: 2, pageSize: 1 });
 
     expect(result).toMatchObject({
       totalDurationSeconds: 3_600,
@@ -520,27 +509,15 @@ describe("report service", () => {
       oversized.exportReads += 1;
       return { summary: { totalRows: 10_001, totalDurationSeconds: 0 }, rows: [] };
     };
-    const oversizedService = createReportService({ reports: oversized, reaper: silentReaper, agents });
+    const oversizedService = createReportService({ reports: oversized, agents });
     await expect(oversizedService.export(subject, { page: 1, pageSize: 50 })).rejects.toMatchObject({ code: "validation_error" });
     expect(oversized.exportReads).toBe(1);
 
     const exported = new Reports([row()]);
-    const exportService = createReportService({ reports: exported, reaper: silentReaper, agents });
+    const exportService = createReportService({ reports: exported, agents });
     const result = await exportService.export(subject, { page: 1, pageSize: 50 });
     expect(result.rows).toHaveLength(1);
     expect(exported.exportReads).toBe(1);
-  });
-
-  it("closes stale agent sessions before every report aggregation", async () => {
-    const reaper = new Reaper();
-    const service = createReportService({ reports: new Reports(), reaper, agents });
-
-    await service.list(subject, { page: 1, pageSize: 50 });
-    await service.export(subject, { page: 1, pageSize: 50 });
-    await service.leaderboard(subject, {});
-    await service.meStats(subject, {});
-
-    expect(reaper.subjects).toEqual([subject, subject, subject, subject]);
   });
 
   it("splits each row into attributed and unattributed by how it learned its project", async () => {
@@ -549,7 +526,7 @@ describe("report service", () => {
       row({ id: ids.otherProject, attribution: "default" }),
       row({ id: ids.session, attribution: "manual" }),
     ]);
-    const result = await createReportService({ reports, reaper: silentReaper, agents }).list(subject, { page: 1, pageSize: 50 });
+    const result = await createReportService({ reports, agents }).list(subject, { page: 1, pageSize: 50 });
 
     expect(result.rows.map((record) => [record.attributedSeconds, record.unattributedSeconds])).toEqual([
       [3_540, 0],
@@ -560,7 +537,7 @@ describe("report service", () => {
 
   it("never lets a row's two halves disagree with its duration", async () => {
     const reports = new Reports([row({ durationSeconds: 3_540, attribution: "default" })]);
-    const result = await createReportService({ reports, reaper: silentReaper, agents }).list(subject, { page: 1, pageSize: 50 });
+    const result = await createReportService({ reports, agents }).list(subject, { page: 1, pageSize: 50 });
 
     const [only] = result.rows;
     expect((only?.attributedSeconds ?? 0) + (only?.unattributedSeconds ?? 0)).toBe(only?.durationSeconds);
@@ -581,7 +558,7 @@ describe("leaderboard", () => {
       entry(ids.user, "Alex", 7_200, 3, 5_400),
       entry(ids.otherUser, "Sam", 3_600, 1, "3600"),
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, {});
 
@@ -614,7 +591,7 @@ describe("leaderboard", () => {
       { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
       { user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, {});
 
@@ -658,7 +635,7 @@ describe("leaderboard", () => {
     reports.agentIntervals = [
       { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "browser", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(11) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, {});
 
@@ -695,7 +672,7 @@ describe("leaderboard", () => {
       { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(10), endedAt: hour(12) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, { fromAt: hour(9).toISOString(), toExclusiveAt: hour(12).toISOString() });
 
@@ -728,7 +705,7 @@ describe("leaderboard", () => {
       entry(ids.otherUser, "Sam", 3_600, 1),
       entry(ids.project, "Jo", 60, 1),
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, {});
 
@@ -746,7 +723,7 @@ describe("leaderboard", () => {
     reports.sessionIntervals = [
       { user: { id: ids.user, name: "Alex" }, projectId: ids.project, attribution: "selected", startedAt: hour(9), stoppedAt: hour(10) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, { scope: ids.project });
 
@@ -764,7 +741,7 @@ describe("leaderboard", () => {
       { id: ids.user, name: "Alex" },
       { id: ids.otherUser, name: "Sam" },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, {});
 
@@ -776,7 +753,7 @@ describe("leaderboard", () => {
 
   it("maps the unassigned scope onto default-attributed sessions", async () => {
     const reports = new Reports();
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await service.leaderboard(subject, { scope: "unassigned" });
 
@@ -785,7 +762,7 @@ describe("leaderboard", () => {
   });
 
   it("refuses a scope naming a project outside the workspace", async () => {
-    const service = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports([], new Set()), agents });
 
     await expect(service.leaderboard(subject, { scope: ids.otherProject }))
       .rejects.toMatchObject({ code: "not_found", message: "Project not found." });
@@ -793,7 +770,7 @@ describe("leaderboard", () => {
 
   it("carries the dashboard scope into the session list and the export", async () => {
     const reports = new Reports();
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await service.list(subject, { scope: ids.project, page: 1, pageSize: 50 });
     expect(reports.lastPage?.query.projectId).toBe(ids.project);
@@ -806,7 +783,7 @@ describe("leaderboard", () => {
   it("reads postgres sum strings and a null total without losing precision", async () => {
     const reports = new Reports();
     reports.leaderboardRows = [entry(ids.user, "Alex", "9007199254740990", 2), entry(ids.otherUser, "Sam", null, 0, null)];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.leaderboard(subject, {});
 
@@ -818,7 +795,7 @@ describe("leaderboard", () => {
 
   it("applies the same inclusive calendar bounds the reports use", async () => {
     const reports = new Reports();
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await service.leaderboard(subject, { from: "2026-08-01", to: "2026-08-06" });
 
@@ -828,7 +805,7 @@ describe("leaderboard", () => {
 
   it("uses device-local instant bounds for clipped leaderboard totals", async () => {
     const reports = new Reports();
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await service.leaderboard(subject, {
       fromAt: "2026-03-08T06:00:00.000Z",
@@ -843,7 +820,7 @@ describe("leaderboard", () => {
 
   it("rejects a range wider than a year and returns an empty board for no activity", async () => {
     const reports = new Reports();
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await expect(service.leaderboard(subject, { from: "2024-01-01", to: "2026-01-01" })).rejects.toMatchObject({
       code: "validation_error",
@@ -858,7 +835,7 @@ describe("leaderboard", () => {
 });
 
 describe("me/stats", () => {
-  it("scopes per-project totals to the caller with inclusive calendar bounds and reaps stale agents first", async () => {
+  it("scopes per-project totals to the caller with inclusive calendar bounds", async () => {
     const reports = new Reports();
     reports.projectTotals = [
       { project: { id: ids.project, name: "Timer" }, durationSeconds: 7_200, attributedSeconds: 5_400, sessionCount: 2 },
@@ -871,8 +848,7 @@ describe("me/stats", () => {
     reports.siteTotals = [
       { mapping: { id: "01c7e513-b094-4d4c-ae55-21790ae019a4", pattern: "github.com/acme/*", projectId: ids.project }, durationSeconds: "900" },
     ];
-    const reaper = new Reaper();
-    const service = createReportService({ reports, reaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.meStats(subject, { from: "2026-08-01", to: "2026-08-06" });
 
@@ -904,11 +880,10 @@ describe("me/stats", () => {
     });
     expect(reports.lastAppTotalsQuery).toEqual(reports.lastProjectTotalsQuery);
     expect(reports.lastSiteTotalsQuery).toEqual(reports.lastProjectTotalsQuery);
-    expect(reaper.subjects).toEqual([subject]);
   });
 
   it("returns an empty stats response when the caller recorded nothing", async () => {
-    const result = await createReportService({ reports: new Reports(), reaper: silentReaper, agents }).meStats(subject, {});
+    const result = await createReportService({ reports: new Reports(), agents }).meStats(subject, {});
 
     expect(result).toEqual({ filters: {}, totalDurationSeconds: 0, attributedSeconds: 0, unattributedSeconds: 0, ...noMeasurement, hourly: [], projects: [], apps: [], sites: [], agents: [] });
   });
@@ -927,7 +902,7 @@ describe("me/stats", () => {
       { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
       { user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.meStats(subject, {
       fromAt: "2026-08-05T00:00:00.000Z",
@@ -963,7 +938,7 @@ describe("me/stats", () => {
       // A teammate's bucket never surfaces on the caller's series.
       usageSeed({ userId: ids.otherUser, bucketStartAt: hour(9), inputTokens: 9_999 }),
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents, agentUsage: usage });
+    const service = createReportService({ reports, agents, agentUsage: usage });
 
     const result = await service.meStats(subject, {
       fromAt: "2026-08-05T00:00:00.000Z",
@@ -998,7 +973,7 @@ describe("me/stats", () => {
     reports.agentIntervals = [
       { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: hour(9), endedAt: hour(10) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     const result = await service.meStats(subject, {});
 
@@ -1008,7 +983,7 @@ describe("me/stats", () => {
 
   it("reads a named teammate's stats instead of the caller's when asked", async () => {
     const reports = new Reports([], new Set([ids.user, ids.otherUser]));
-    const service = createReportService({ reports, reaper: silentReaper, agents });
+    const service = createReportService({ reports, agents });
 
     await service.meStats(subject, { userId: ids.otherUser });
 
@@ -1017,14 +992,14 @@ describe("me/stats", () => {
   });
 
   it("refuses a stats userId from outside the workspace, like the org report does", async () => {
-    const service = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports([], new Set()), agents });
 
     await expect(service.meStats(subject, { userId: ids.otherUser }))
       .rejects.toMatchObject({ code: "not_found", message: "User not found." });
   });
 
   it("rejects reversed or excessive date ranges like the org reports do", async () => {
-    const service = createReportService({ reports: new Reports(), reaper: silentReaper, agents });
+    const service = createReportService({ reports: new Reports(), agents });
 
     await expect(service.meStats(subject, { from: "2026-08-07", to: "2026-08-06" })).rejects.toMatchObject({ code: "validation_error" });
     await expect(service.meStats(subject, { from: "2025-01-01", to: "2026-01-02" })).rejects.toMatchObject({ code: "validation_error" });
@@ -1038,7 +1013,7 @@ describe("me/stats", () => {
     // A roster with an identity this member never ran: reading it would be
     // bytes off the wire on every 60-second refresh, for a row nothing renders.
     const roster = new Agents([agentRecord({ id: ids.session }), agentRecord({ id: ids.otherAgent, source: "codex" })]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster });
+    const service = createReportService({ reports, agents: roster });
 
     const result = await service.meStats(subject, {});
 
@@ -1048,7 +1023,7 @@ describe("me/stats", () => {
 
   it("asks for nothing at all when no shift in range names an identity", async () => {
     const roster = new Agents([agentRecord({ id: ids.session })]);
-    const service = createReportService({ reports: new Reports(), reaper: silentReaper, agents: roster });
+    const service = createReportService({ reports: new Reports(), agents: roster });
 
     const result = await service.meStats(subject, {});
 
@@ -1069,7 +1044,7 @@ describe("me/stats", () => {
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "merged", authoredAt },
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "merged", authoredAt },
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, shiftCommits });
+    const service = createReportService({ reports, agents: roster, shiftCommits });
 
     const result = await service.meStats(subject, {});
 
@@ -1105,7 +1080,7 @@ describe("me/stats", () => {
       usageSeed({ userId: ids.user, inputTokens: 600, outputTokens: 60 }),
       usageSeed({ userId: ids.otherUser, inputTokens: 300, outputTokens: 30 }),
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, shiftCommits, agentUsage: usage });
+    const service = createReportService({ reports, agents: roster, shiftCommits, agentUsage: usage });
 
     const own = await service.meStats(subject, {});
 
@@ -1155,7 +1130,7 @@ describe("me/stats", () => {
     // A bucket whose counters are all zero is still a report: tokensReported
     // reads true, and the row ranks above agents that reported nothing.
     const usage = new Usage([usageSeed({ userId: ids.user })]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, agentUsage: usage });
+    const service = createReportService({ reports, agents: roster, agentUsage: usage });
 
     const result = await service.agentsReport(subject, {});
 
@@ -1183,7 +1158,7 @@ describe("agents report", () => {
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "merged", authoredAt },
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "reverted", authoredAt },
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, shiftCommits });
+    const service = createReportService({ reports, agents: roster, shiftCommits });
 
     const result = await service.agentsReport(subject, {});
 
@@ -1222,10 +1197,9 @@ describe("agents report", () => {
     expect(result.headcount).toEqual({ total: 2, active: 2, retired: 0 });
   });
 
-  it("works with no commit repository configured, reaps stale sessions first, and rejects a scope outside the workspace", async () => {
-    const reaper = new Reaper();
+  it("works with no commit repository configured, and rejects a scope outside the workspace", async () => {
     const roster = new Agents([agentRecord()]);
-    const service = createReportService({ reports: new Reports(), reaper, agents: roster });
+    const service = createReportService({ reports: new Reports(), agents: roster });
 
     const result = await service.agentsReport(subject, {});
     expect(result.rows).toEqual([{
@@ -1242,9 +1216,8 @@ describe("agents report", () => {
       repos: [],
       ...noTokens,
     }]);
-    expect(reaper.subjects).toEqual([subject]);
 
-    const outsideScopeService = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper, agents });
+    const outsideScopeService = createReportService({ reports: new Reports([], new Set()), agents });
     await expect(outsideScopeService.agentsReport(subject, { scope: ids.otherProject }))
       .rejects.toMatchObject({ code: "not_found" });
   });
@@ -1259,7 +1232,7 @@ describe("agents report", () => {
       // A shift that recorded no directory contributes nothing rather than a blank.
       { user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: new Date("2026-08-06T17:00:00.000Z"), endedAt: new Date("2026-08-06T18:00:00.000Z") },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, agents: new Agents([agentRecord({ id: ids.session })]) });
+    const service = createReportService({ reports, agents: new Agents([agentRecord({ id: ids.session })]) });
 
     const result = await service.agentsReport(subject, {});
 
@@ -1279,7 +1252,7 @@ describe("agents report", () => {
       agentRecord({ id: ids.session, name: "Pi @ unassigned", source: "pi", status: "retired" }),
       agentRecord({ id: ids.otherAgent, name: "Codex @ Side", source: "codex", status: "retired" }),
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster });
+    const service = createReportService({ reports, agents: roster });
 
     const result = await service.agentsReport(subject, {});
 
@@ -1300,7 +1273,7 @@ describe("agents report", () => {
     const shiftCommits = new ShiftCommits([
       { userId: ids.user, agentId: ids.otherAgent, projectId: ids.project, verification: "merged", authoredAt: new Date("2026-08-06T14:30:00.000Z") },
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, shiftCommits });
+    const service = createReportService({ reports, agents: roster, shiftCommits });
 
     const result = await service.agentsReport(subject, {});
 
@@ -1320,7 +1293,7 @@ describe("agents report", () => {
     const shiftCommits = new ShiftCommits([
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "pending", authoredAt: new Date("2026-08-06T14:30:00.000Z"), agentSessionId: "shift-1", repoRoot: "C:/dev/siqshift" },
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: new Agents([agentRecord({ id: ids.session })]), shiftCommits });
+    const service = createReportService({ reports, agents: new Agents([agentRecord({ id: ids.session })]), shiftCommits });
 
     const result = await service.agentsReport(subject, {});
 
@@ -1342,7 +1315,7 @@ describe("agents report", () => {
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "merged", authoredAt },
       { userId: ids.user, agentId: ids.otherAgent, projectId: ids.otherProject, verification: "merged", authoredAt },
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, shiftCommits });
+    const service = createReportService({ reports, agents: roster, shiftCommits });
 
     const result = await service.agentsReport(subject, { scope: ids.project });
 
@@ -1395,7 +1368,7 @@ describe("agents report", () => {
       usageSeed({ agentId: ids.otherAgent, inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 20_000 }),
       usageSeed({ agentId: ids.session, inputTokens: 1_000, outputTokens: 100 }),
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, agents: roster, agentUsage: usage });
+    const service = createReportService({ reports, agents: roster, agentUsage: usage });
 
     // Absent sort keeps the roster's own order.
     const unsorted = await service.agentsReport(subject, {});
@@ -1423,7 +1396,6 @@ describe("agents report", () => {
 
     const flipped = createReportService({
       reports,
-      reaper: silentReaper,
       agents: new Agents([
         agentRecord({ id: ids.otherProject, name: "Kimi @ Field", source: "kimi_code" }),
         agentRecord({ id: ids.session }),
@@ -1461,7 +1433,7 @@ describe("agent shifts", () => {
       // Browser spans are attention, never shifts.
       { sessionId: "s5", user: { id: ids.user, name: "Alex" }, source: "browser", model: null, cwd: null, projectId: ids.project, agentId: null, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(16) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1497,7 +1469,7 @@ describe("agent shifts", () => {
       startedAt: at(hour),
       endedAt: at(hour + 1),
     }));
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const first = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 2 });
     const second = await service.agentShiftRows(subject, {
@@ -1542,7 +1514,7 @@ describe("agent shifts", () => {
     });
     const reports = new Reports();
     reports.agentIntervals = [10, 11, 12, 13].map(interval);
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const first = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 2 });
     // A newer shift starts while the reader is looking at page one.
@@ -1568,7 +1540,7 @@ describe("agent shifts", () => {
       // rather than vanish from the axis.
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12, 30), endedAt: at(13) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const bounded = await service.agentShifts(subject, {
       fromAt: at(10).toISOString(),
@@ -1614,7 +1586,7 @@ describe("agent shifts", () => {
         endedAt: at(11),
       },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1633,7 +1605,7 @@ describe("agent shifts", () => {
       // the operator's unassigned bucket has no repository to fall back to.
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "codex", model: null, cwd: "C:/Users/fpres/.no-mistakes/worktrees/4ddfd9c24f0e/01M1T5ZSHNS0TPA1W0D2YCQ1Y7", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1656,7 +1628,7 @@ describe("agent shifts", () => {
       { ...goblin, sessionId: "s2", cwd: "C:\\dev\\code-goblins\\.worktrees\\gb-cg-flakes-3", startedAt: at(11), endedAt: at(12) },
       { ...goblin, sessionId: "s3", cwd: "C:\\dev\\code-goblins", startedAt: at(12), endedAt: at(13) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1674,7 +1646,7 @@ describe("agent shifts", () => {
       // No identity key at all, only a folder spelled another way.
       { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/Users/alex/ColdOutreachPrecisionDocs", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1696,7 +1668,7 @@ describe("agent shifts", () => {
       // A clone of a real repository that happens to sit in temp is still that repository.
       { ...alex, sessionId: "s4", cwd: "/tmp/checkout", agentId: ids.otherAgent, agentRepoRoot: "/tmp/checkout", agentRepoKey: "github.com/acme/app", startedAt: at(13), endedAt: at(14) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1728,7 +1700,7 @@ describe("agent shifts", () => {
         endedAt: at(11),
       },
     ];
-    const service = createReportService({ reports, reaper: silentReaper, shiftCommits });
+    const service = createReportService({ reports, shiftCommits });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1751,7 +1723,7 @@ describe("agent shifts", () => {
   };
 
   it("opens on a board of people, heaviest first, that sums back to the recorded total", async () => {
-    const service = createReportService({ reports: twoOwners(), reaper: silentReaper });
+    const service = createReportService({ reports: twoOwners() });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1769,7 +1741,7 @@ describe("agent shifts", () => {
   });
 
   it("keeps every person on the board while narrowing everything else to one of them", async () => {
-    const service = createReportService({ reports: twoOwners(), reaper: silentReaper });
+    const service = createReportService({ reports: twoOwners() });
 
     const result = await service.agentShifts(subject, { userId: ids.user });
 
@@ -1795,7 +1767,7 @@ describe("agent shifts", () => {
       { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1806,7 +1778,7 @@ describe("agent shifts", () => {
   });
 
   it("refuses a shifts userId from outside the workspace, like the org report does", async () => {
-    const service = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper });
+    const service = createReportService({ reports: new Reports([], new Set()) });
 
     await expect(service.agentShifts(subject, { userId: ids.otherUser }))
       .rejects.toMatchObject({ code: "not_found", message: "User not found." });
@@ -1822,7 +1794,7 @@ describe("agent shifts", () => {
     const pendingOnly = new ShiftCommits([
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "pending", authoredAt: at(10, 30), agentSessionId: "s1", repoRoot: "C:/dev/siqshift", subject: "fix: the thing" },
     ]);
-    const service = createReportService({ reports, reaper: silentReaper, shiftCommits: pendingOnly });
+    const service = createReportService({ reports, shiftCommits: pendingOnly });
 
     const result = await service.agentShifts(subject, {});
 
@@ -1839,7 +1811,7 @@ describe("agent shifts", () => {
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "merged", authoredAt: at(10, 30), agentSessionId: "s1", repoRoot: "C:/dev/siqshift" },
       { userId: ids.user, agentId: ids.session, projectId: ids.project, verification: "reverted", authoredAt: at(12, 30), agentSessionId: "s2", repoRoot: "C:/dev/siqshift" },
     ]);
-    const decidedService = createReportService({ reports, reaper: silentReaper, shiftCommits: decided });
+    const decidedService = createReportService({ reports, shiftCommits: decided });
     const decidedResult = await decidedService.agentShifts(subject, {});
     expect(decidedResult.groups[0]!.heldRate).toBe(0.5);
   });
@@ -1850,7 +1822,7 @@ describe("agent shifts", () => {
       { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(9), endedAt: at(11) },
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(5), endedAt: at(6) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, { fromAt: at(10).toISOString(), toExclusiveAt: at(12).toISOString() });
 
@@ -1882,7 +1854,7 @@ describe("agent shifts", () => {
     // Both owners are members here, so the selection authorizes and the test
     // reaches the held rate rather than stopping at the tenancy check.
     reports.accessible.add(ids.otherUser);
-    const service = createReportService({ reports, reaper: silentReaper, shiftCommits: commits });
+    const service = createReportService({ reports, shiftCommits: commits });
 
     // One merged, one reverted, in the same codebase: half of it held.
     expect((await service.agentShifts(subject, {})).groups[0]!.heldRate).toBe(0.5);
@@ -1909,7 +1881,7 @@ describe("agent shifts", () => {
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: null, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(14), endedAt: at(15) },
       { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const result = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 50 });
 
@@ -1929,7 +1901,7 @@ describe("agent shifts", () => {
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: null, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(14), endedAt: at(15) },
       { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const first = await service.agentShiftRows(subject, { groupKey: "siqshift", pageSize: 2 });
     expect(first.shifts.map((shift) => shift.id)).toEqual(["s3", "s1"]);
@@ -1955,7 +1927,7 @@ describe("agent shifts", () => {
       { sessionId: "s1", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: ids.project, projectName: "Timer", agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(10), endedAt: at(11) },
       { sessionId: "s2", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/dev/siqshift", projectId: null, agentId: ids.session, agentRepoRoot: null, agentRepoKey: null, startedAt: at(14), endedAt: at(15) },
     ];
-    const service = createReportService({ reports, reaper: silentReaper });
+    const service = createReportService({ reports });
 
     const page = await service.agentShiftRows(subject, {
       groupKey: "siqshift",
@@ -2008,7 +1980,7 @@ describe("live agent sessions", () => {
       running({ sessionId: "s2", user: { id: ids.otherUser, name: "Sam" }, source: "browser", cwd: null, projectId: null, projectName: null, startedAt: at(9) }),
       // A finished shift is history, and the live view never shows history.
     ];
-    const service = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+    const service = createReportService({ reports, now: () => at(12, 30) });
 
     const result = await service.liveAgentSessions(subject, {});
 
@@ -2025,7 +1997,7 @@ describe("live agent sessions", () => {
       running({ model: "claude-opus-5", startedAt: at(12) }),
       running({ sessionId: "s2", source: "pi", model: "deepseek-v4-pro", cwd: null, projectId: null, projectName: null, agentRepoRoot: "C:/dev/quartermaster", agentRepoKey: "path:C:/dev/quartermaster", startedAt: at(10, 30) }),
     ];
-    const service = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+    const service = createReportService({ reports, now: () => at(12, 30) });
 
     const result = await service.liveAgentSessions(subject, {});
 
@@ -2049,7 +2021,7 @@ describe("live agent sessions", () => {
       running({ sessionId: "s2", startedAt: at(12, 5) }),
       running({ sessionId: "s3", startedAt: at(11) }),
     ];
-    const service = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+    const service = createReportService({ reports, now: () => at(12, 30) });
 
     const result = await service.liveAgentSessions(subject, {});
 
@@ -2062,7 +2034,7 @@ describe("live agent sessions", () => {
   });
 
   it("answers an honest empty roster when nothing is running, and narrows by scope", async () => {
-    const empty = createReportService({ reports: new Reports(), reaper: silentReaper, now: () => at(12, 30) });
+    const empty = createReportService({ reports: new Reports(), now: () => at(12, 30) });
     await expect(empty.liveAgentSessions(subject, {})).resolves.toEqual({ people: [] });
 
     const reports = new Reports();
@@ -2070,7 +2042,7 @@ describe("live agent sessions", () => {
       running(),
       running({ sessionId: "s2", cwd: "C:/dev/siqshift", projectId: null, projectName: null, agentRepoRoot: null, agentRepoKey: null, startedAt: at(11) }),
     ];
-    const scoped = createReportService({ reports, reaper: silentReaper, now: () => at(12, 30) });
+    const scoped = createReportService({ reports, now: () => at(12, 30) });
     const narrowed = await scoped.liveAgentSessions(subject, { scope: ids.project });
     expect(narrowed.people[0]!.sessions.map((session) => session.id)).toEqual(["s1"]);
 
@@ -2079,18 +2051,22 @@ describe("live agent sessions", () => {
   });
 
   it("refuses a scope from outside the workspace, like every report read", async () => {
-    const service = createReportService({ reports: new Reports([], new Set()), reaper: silentReaper });
+    const service = createReportService({ reports: new Reports([], new Set()) });
 
     await expect(service.liveAgentSessions(subject, { scope: ids.project }))
       .rejects.toMatchObject({ code: "not_found", message: "Project not found." });
   });
 
-  it("closes stale sessions before reading, so the live view cannot show one the window ended", async () => {
-    const reaper = new Reaper();
-    const service = createReportService({ reports: new Reports(), reaper, now: () => at(12, 30) });
+  it("leaves a shift silent for longer than the staleness window off the live view", async () => {
+    const reports = new Reports();
+    reports.runningSessions = [
+      running({ sessionId: "s1", lastEventAt: at(12) }),
+      running({ sessionId: "s2", lastEventAt: at(11, 59) }),
+    ];
+    const service = createReportService({ reports, now: () => at(12, 30) });
 
-    await service.liveAgentSessions(subject, {});
+    const result = await service.liveAgentSessions(subject, {});
 
-    expect(reaper.subjects).toEqual([subject]);
+    expect(result.people.flatMap((person) => person.sessions.map((session) => session.id))).toEqual(["s1"]);
   });
 });

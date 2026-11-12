@@ -34,7 +34,7 @@ export { createReportRoutes } from "./routes/reports.js";
 export { createSessionRoutes } from "./routes/sessions.js";
 export { createShiftCommitRoutes } from "./routes/shift-commits.js";
 export { createActivityService } from "./services/activity.js";
-export { createAgentSessionReaper, createAgentSessionService, rosterEligibleSource } from "./services/agent-sessions.js";
+export { createAgentSessionService, rosterEligibleSource } from "./services/agent-sessions.js";
 export { createAgentUsageService } from "./services/agent-usage.js";
 export type { AgentUsageService, AgentUsageServiceDependencies } from "./services/agent-usage.js";
 export { asAgentView, createAgentService } from "./services/agents.js";
@@ -93,7 +93,7 @@ export type {
   UpsertStartedAgentSession,
 } from "./repositories.js";
 export type { ActivityService, ActivityServiceDependencies, ActivitySegmentInput } from "./services/activity.js";
-export type { AgentSessionEventInput, AgentSessionReaper, AgentSessionService, AgentSessionServiceDependencies } from "./services/agent-sessions.js";
+export type { AgentSessionEventInput, AgentSessionService, AgentSessionServiceDependencies } from "./services/agent-sessions.js";
 export type { PathMappingCandidate } from "./services/attribution.js";
 export type {
   CreatePathMappingInput,

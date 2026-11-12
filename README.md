@@ -708,13 +708,11 @@ SIQshift on one coherent grid. Those are deliberately *not* imitations of anyone
 (which cannot be redistributed in a third-party app); they are SIQshift's own marks naming a
 runtime inside its own UI, and need no licence from anyone.
 
-Because `session-end` is never guaranteed (a crash, a `kill -9`), the server reaps agent
-sessions with no event for 30 minutes and closes them at their last-seen timestamp - a working
-agent heartbeats while it works, so half an hour of silence means it is gone. The same rule is
-applied in event time as each event arrives, so a backlog uploaded days late measures what it
-would have live: an event more than 30 minutes after a running shift's last one finds that shift
-already over at its last event, instead of stretching it across the gap. An `end` that arrives
-before its `start` is tolerated by upsert, not rejected.
+Because `session-end` is never guaranteed (a crash, a `kill -9`), an agent session with no event for 30 minutes counts as over at its last-seen timestamp - a working agent heartbeats while it works, so half an hour of silence means it is gone.
+The silence is measured between a shift's own events, never on the server's clock, so a backlog uploaded days late, even one split across several uploads, measures what it would have live.
+An event more than 30 minutes after a running shift's last one finds that shift already over at its last event, instead of stretching it across the gap.
+Reports read a running shift as ending at its last event, and the live view leaves out one silent for 30 minutes.
+An `end` that arrives before its `start` is tolerated by upsert, not rejected.
 
 An ended shift never reopens, so a Claude Code session that works again after its shift ended - after half an hour waiting on CI, or resumed with `claude --continue` under the same session id - continues on a new shift.
 The desktop opens it from the session's transcript as `<session id>~<unix start>`, with the repository the hook probed, and the hook's next end closes it.
@@ -790,7 +788,7 @@ software's.
 Behavior first, plumbing second:
 
 - **Services and routes** are tested against explicit repository fakes: authorization,
-  session validation, idempotent replay, attribution ties, staleness reaping, and the
+  session validation, idempotent replay, attribution ties, the staleness window, and the
   attributed/unattributed split. No database required.
 - **PostgreSQL integration tests** cover migrations and database-level invariants, and skip
   cleanly unless `TEST_DATABASE_URL` points at a disposable branch. Never point them at production.
