@@ -384,6 +384,25 @@ pub struct JoinInput {
 }
 
 #[tauri::command]
+async fn org_rename(
+    state: State<'_, AppState>,
+    input: RenameInput,
+) -> ApiResult<OrganizationOverview> {
+    let access_token = state.access_token().await?;
+    let organization = state
+        .client
+        .rename_organization(&access_token, input.name.trim())
+        .await?;
+    Ok(OrganizationOverview { organization })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameInput {
+    name: String,
+}
+
+#[tauri::command]
 async fn org_overview(state: State<'_, AppState>) -> ApiResult<OrganizationOverview> {
     let access_token = state.access_token().await?;
     let organization = state.client.organization(&access_token).await?;
@@ -1003,6 +1022,7 @@ pub fn run() {
             auth_logout,
             org_overview,
             org_join,
+            org_rename,
             session_select_project,
             monitor_status,
             browser_status,

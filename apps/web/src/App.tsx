@@ -37,6 +37,7 @@ import { DownloadInstaller } from "./DownloadInstaller.js";
 import { HelpModal } from "./HelpModal.js";
 import { AuthDialog } from "./AuthDialog.js";
 import { LandingPage } from "./LandingPage.js";
+import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
 import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
 
@@ -636,6 +637,18 @@ export const App = ({ client }: AppProps) => {
       // Clipboard access can be denied; the code is on screen to copy by hand.
       // The page banner sits under this overlay, so report it in the panel.
       setSettingsError("Could not copy. Select the code and copy it manually.");
+    }
+  };
+
+  const renameWorkspace = async (name: string): Promise<string | undefined> => {
+    try {
+      const renamed = await client.renameOrganization(name);
+      setOrganization(renamed.organization);
+      return undefined;
+    } catch (error: unknown) {
+      // A refusal is the server's to explain; a non-administrator keeps the
+      // session, so this is said here rather than signing anyone out.
+      return messageFor(error);
     }
   };
 
@@ -1246,9 +1259,10 @@ export const App = ({ client }: AppProps) => {
             {organization && (
               <details className="settings-group">
                 <summary>Team</summary>
+                <WorkspaceName name={organization.name} onRename={renameWorkspace} />
                 <p className="subtle">
-                  You are keeping time with <strong>{organization.name}</strong>. Anyone who enters
-                  this code at sign-up joins this workspace.
+                  This workspace is your team. Anyone who enters this code joins it, whatever their
+                  email domain.
                 </p>
                 <div className="team-code-row">
                   <code className="invite-code" data-testid="invite-code">{organization.inviteCode}</code>

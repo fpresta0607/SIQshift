@@ -56,13 +56,16 @@ export const organizationSchema = z
 
 export const organizationResponseSchema = z.object({ organization: organizationSchema }).strict();
 
+/** A workspace's name, as sign-up names it and a rename changes it. */
+const workspaceNameSchema = z.string().trim().min(1).max(80);
+
 /** Sent once, right after sign-up, to place the new account in an existing organization. */
 export const provisionAccountRequestSchema = z
   .object({
     /** Null means no code: desktop builds up to 0.2.2 send it that way. */
     inviteCode: z.string().min(1).nullish(),
     /** Names the workspace this account starts; ignored when an invite code joins one instead. */
-    workspaceName: z.string().trim().min(1).max(80).optional(),
+    workspaceName: workspaceNameSchema.optional(),
   })
   .strict();
 
@@ -70,6 +73,9 @@ export const provisionAccountRequestSchema = z
 export const joinOrganizationRequestSchema = z
   .object({ inviteCode: z.string().min(1), expectedOrganizationId: idSchema.optional() })
   .strict();
+
+/** Sent by a workspace administrator to change the name of the caller's own workspace. */
+export const renameOrganizationRequestSchema = z.object({ name: workspaceNameSchema }).strict();
 
 function validateCalendarAndInstantBounds(
   value: { from?: string | undefined; to?: string | undefined; fromAt?: string | undefined; toExclusiveAt?: string | undefined },
@@ -1500,6 +1506,7 @@ export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
 export type ProjectUpdateRequest = z.infer<typeof projectUpdateRequestSchema>;
 export type ProjectPathMapping = z.infer<typeof projectPathMappingSchema>;
 export type ProvisionAccountRequest = z.infer<typeof provisionAccountRequestSchema>;
+export type RenameOrganizationRequest = z.infer<typeof renameOrganizationRequestSchema>;
 export type ReportFilters = z.infer<typeof reportFiltersSchema>;
 export type ReportRow = z.infer<typeof reportRowSchema>;
 export type ReportResponse = z.infer<typeof reportResponseSchema>;

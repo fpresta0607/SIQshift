@@ -51,6 +51,12 @@ export interface AccountStore {
    * omit it when they do not expose organization administration routes.
    */
   claimFirstAdmin?(subject: AuthenticatedSubject): Promise<FirstAdminClaimResult>;
+  /**
+   * Renames the subject's own organization while the subject is still its
+   * administrator, and returns it; null when they no longer are. The name
+   * is all that changes.
+   */
+  renameOrganization?(subject: AuthenticatedSubject, name: string): Promise<OrganizationRecord | null>;
 }
 
 export interface OrganizationRecord {

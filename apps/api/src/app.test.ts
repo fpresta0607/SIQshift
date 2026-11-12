@@ -428,6 +428,125 @@ describe("API composition", () => {
     });
   });
 
+  describe("renaming the workspace", () => {
+    const inviteCode = "ACDEF-GHJKM";
+    const renamingApp = (role: AuthenticatedUser["role"]) => {
+      const organization = { id: ids.organization, name: "Alex Morgan's workspace", inviteCode };
+      const accounts: AccountStore = {
+        resolve: async () => ({ ...account, role }),
+        findOrganization: async () => organization,
+        previewOrganizationJoin: async () => organization,
+        joinOrganization: async () => account,
+        renameOrganization: async (subject, name) => {
+          if (subject.organizationId !== organization.id) return null;
+          organization.name = name;
+          return organization;
+        },
+      };
+      return createTestApp({ accounts }).app;
+    };
+    const rename = async (app: ReturnType<typeof renamingApp>, body: string) => app.request("http://api.test/organization", {
+      method: "PATCH",
+      headers: { authorization: await bearer(), "content-type": "application/json" },
+      body,
+    });
+
+    it("lets an administrator rename it, and every read of the workspace returns the new name", async () => {
+      // Arrange
+      const app = renamingApp("admin");
+      const headers = { authorization: await bearer(), "content-type": "application/json" };
+
+      // Act
+      const response = await rename(app, JSON.stringify({ name: "  Field Crew  " }));
+
+      // Assert: trimmed as sign-up trims it; the code and the id stay.
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ organization: { id: ids.organization, name: "Field Crew", inviteCode } });
+      const read = await app.request("http://api.test/organization", { headers });
+      await expect(read.json()).resolves.toMatchObject({ organization: { name: "Field Crew", inviteCode } });
+      const preview = await app.request("http://api.test/organization/join-preview", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ inviteCode }),
+      });
+      await expect(preview.json()).resolves.toMatchObject({ organization: { name: "Field Crew" } });
+    });
+
+    it("refuses a member who is not an administrator, and says why", async () => {
+      // Arrange
+      const app = renamingApp("member");
+
+      // Act
+      const response = await rename(app, JSON.stringify({ name: "Field Crew" }));
+
+      // Assert
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "forbidden", message: "Only a workspace administrator can rename the workspace." },
+      });
+      const read = await app.request("http://api.test/organization", { headers: { authorization: await bearer() } });
+      await expect(read.json()).resolves.toMatchObject({ organization: { name: "Alex Morgan's workspace" } });
+    });
+
+    it.each([
+      ["an empty name", JSON.stringify({ name: "" })],
+      ["a name of spaces only", JSON.stringify({ name: "   " })],
+      ["a name of 81 characters", JSON.stringify({ name: "x".repeat(81) })],
+      ["no name", JSON.stringify({})],
+      ["a name that is not text", JSON.stringify({ name: 7 })],
+    ])("refuses %s with the sign-up's rule", async (_case, body) => {
+      // Arrange
+      const app = renamingApp("admin");
+
+      // Act
+      const response = await rename(app, body);
+
+      // Assert
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "validation_error", message: "A workspace name needs 1 to 80 characters." },
+      });
+    });
+
+    it("takes a name of exactly 80 characters", async () => {
+      // Arrange
+      const app = renamingApp("admin");
+      const name = "x".repeat(80);
+
+      // Act
+      const response = await rename(app, JSON.stringify({ name }));
+
+      // Assert
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ organization: { name } });
+    });
+
+    it("refuses a body that is not JSON", async () => {
+      // Arrange
+      const app = renamingApp("admin");
+
+      // Act
+      const response = await rename(app, "{name");
+
+      // Assert
+      expect(response.status).toBe(400);
+    });
+
+    it("names a field it does not take, so a rename carries the name and nothing else", async () => {
+      // Arrange
+      const app = renamingApp("admin");
+
+      // Act
+      const response = await rename(app, JSON.stringify({ name: "Field Crew", inviteCode: "ZZZZZ-ZZZZZ" }));
+
+      // Assert
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "validation_error", message: "The server does not accept the field inviteCode." },
+      });
+    });
+  });
+
   it("moves an existing account into a workspace, however the code was typed", async () => {
     const seen: string[] = [];
     const { app } = createTestApp({

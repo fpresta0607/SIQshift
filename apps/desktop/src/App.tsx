@@ -45,6 +45,7 @@ import {
   type ShiftPage,
 } from "@siqshift/shared/ui";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
+import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
 import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
 
@@ -1019,6 +1020,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     }
   };
 
+  /// The answer to a rename is the renamed workspace, so the header and the
+  /// team view take the new name from it without reading anything again.
+  const renameWorkspace = async (newName: string): Promise<string | undefined> => {
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    try {
+      const result = await service.orgRename(newName);
+      if (isCurrent(service, generation)) setOverview(result);
+      return undefined;
+    } catch (error: unknown) {
+      return bridgeError(error).message;
+    }
+  };
+
   const logout = async (): Promise<void> => {
     if (logoutBusy) return;
     const service = bridge;
@@ -1848,8 +1863,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 {overview && (
                   <details className="settings-group">
                     <summary>Team</summary>
+                    <WorkspaceName name={overview.organization.name} onRename={renameWorkspace} />
                     <p className="subtle">
-                      You are keeping time with <strong>{overview.organization.name}</strong>.
+                      This workspace is your team. Anyone who enters this code joins it, whatever their email domain.
                     </p>
                     <div className="team-code-row">
                       <span className="team-code" data-testid="invite-code">{overview.organization.inviteCode}</span>

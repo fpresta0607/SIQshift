@@ -281,6 +281,16 @@ export function createClient(config: ClientConfig) {
       });
     },
 
+    /** Renames the caller's workspace; the server refuses anyone who is not its administrator. */
+    async renameOrganization(name: string): Promise<OrganizationResponse> {
+      const response = await apiRequest("/organization", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      return response.json() as Promise<OrganizationResponse>;
+    },
+
     /** Every shift in the range grouped by the codebase it worked - the group heads alone. */
     agentShifts: (query = "") => json<AgentShiftsResponse>(`/reports/agent-shifts${query}`),
 
