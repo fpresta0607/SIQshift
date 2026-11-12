@@ -136,7 +136,8 @@ Every session belongs to exactly one project, resolved in this order:
    A lane matching two different projects is ambiguous and resolves to nothing rather than to a guess.
 3. **The default project**, which is the oldest project on the account. Every new workspace
    already starts with `General`, so there is always somewhere for the time to go.
-   Breakdowns list that time as **Unattributed** rather than under the default project's name, because nothing chose the project for it.
+   That time is stored under the default project and counts in that project's row in every breakdown and in the session history.
+   The API and the CSV export still report it apart, as unattributed seconds.
 
 The project cannot change under an open session: when the answer changes, the
 session closes at its last active moment and the next one picks up there. No
@@ -360,10 +361,11 @@ reads it directly:
 
 A session is attributed whole or not at all, so `attributedSeconds +
 unattributedSeconds` always equals `durationSeconds`. Unattributed hours are not
-penalized or hidden; they are labelled, so a project total nobody vouched for
-reads differently from one that something did. `GET /reports`,
-`/reports/leaderboard`, `/me/stats`, and the CSV export all carry both figures;
-the `attribution = 'default'` bucket is the unattributed one.
+penalized or hidden: they are stored under the default project and count in
+that project's row in every breakdown and in the session history. `GET /reports`,
+`/reports/leaderboard`, `/me/stats`, and the CSV export still carry both
+`attributedSeconds` and `unattributedSeconds`; the `attribution = 'default'`
+bucket is the unattributed one.
 
 ### The project scope
 
@@ -829,8 +831,8 @@ still designed and not started. What's deliberately not built yet:
   built for Windows and macOS today, but a macOS install records nothing until that lands.
 - **A foreground process name alone names no project.** It proves the machine was working, not
   what it was working on; only an agent's working directory, a matched browser rule, or a pinned
-  project names one, and time with none of those lands in the default project and reads as
-  unattributed.
+  project names one, and time with none of those lands in the default project and counts in
+  that project's row, while the API and the CSV export report it as unattributed.
 - **One project at a time.** Concurrent agent sessions in different projects do not split a
   session; the last one to report wins, and the boundary between them is a session close.
 - **No tagged release yet.** The **Unsigned test installers** workflow is the
