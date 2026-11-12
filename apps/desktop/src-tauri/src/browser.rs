@@ -1996,6 +1996,8 @@ mod registry {
         Ok(())
     }
 
+    // macOS reads the manifest from its fixed per-user folder instead.
+    #[cfg(not(target_os = "macos"))]
     pub fn read_key(_key: &str) -> Option<String> {
         None
     }
