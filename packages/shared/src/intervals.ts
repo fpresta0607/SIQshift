@@ -267,9 +267,3 @@ export function measureTime(
 ): TimeMeasurement {
   return roundTimeMeasurement(measureTimeMs(workingIntervals, agentIntervals, range));
 }
-
-/** `agent time ÷ active time`, rounded to one decimal; null when there is no active time. */
-export function leverage(measurement: Pick<TimeMeasurement, "activeSeconds" | "agentSeconds">): number | null {
-  if (measurement.activeSeconds === 0) return null;
-  return Math.round((measurement.agentSeconds / measurement.activeSeconds) * 10) / 10;
-}
