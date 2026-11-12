@@ -22,7 +22,7 @@ import type {
   ShiftCommitRecord,
   ShiftCommitRepository,
 } from "../repositories.js";
-import type { AgentSessionReaper } from "./agent-sessions.js";
+import { AGENT_STALE_WINDOW_MS } from "./agent-sessions.js";
 import { agentCodebaseLabel, repoLabel } from "./attribution.js";
 import { hourlySeries, maxConcurrentCount, medianDurationSeconds, normalizedQuery, safeInteger } from "./reports.js";
 
@@ -34,8 +34,6 @@ export interface AgentPatchInput {
 
 export interface AgentServiceDependencies {
   agents: AgentRepository;
-  /** Paystub reads close stale shifts first, like every other report path. */
-  reaper: AgentSessionReaper;
   /** Without it, the paystub's commit record stays at zeros and null heldRate. */
   shiftCommits?: ShiftCommitRepository;
   /** Without it, the paystub's token totals stay at zeros under tokensReported false, models at null tokens. */
@@ -231,7 +229,6 @@ export function createAgentService(dependencies: AgentServiceDependencies): Agen
     },
 
     async paystub(subject: AuthenticatedSubject, agentId: string, filters: AgentPaystubFilters): Promise<AgentPaystubResponse> {
-      await dependencies.reaper.reapStale(subject);
       const agent = await requireAgent(subject, agentId);
       const query = normalizedQuery(filters);
       const range = rangeOf(query);
@@ -257,12 +254,16 @@ export function createAgentService(dependencies: AgentServiceDependencies): Agen
       }
 
       const showRepoRoot = mayReadRepoRoot(subject, agent.owner.id);
+      // Only a shift heard from inside the staleness window is still open; one
+      // silent for longer is over at its last event, though no write ended it.
+      const freshSince = clock().getTime() - AGENT_STALE_WINDOW_MS;
       const shiftViews = shifts.map((shift) => {
         const shiftCommits = commitsBySession.get(shift.id) ?? [];
+        const isOpen = shift.endedAt === null && shift.lastEventAt.getTime() >= freshSince;
         return {
           id: shift.id,
           startedAt: shift.startedAt.toISOString(),
-          endedAt: shift.endedAt === null ? null : shift.endedAt.toISOString(),
+          endedAt: isOpen ? null : (shift.endedAt ?? shift.lastEventAt).toISOString(),
           model: shift.model,
           durationSeconds: clippedSeconds(shift, range),
           repo: shiftRepoLabel(shift.cwd, shiftCommits),

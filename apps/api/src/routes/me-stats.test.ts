@@ -7,14 +7,10 @@ import type { AuthenticatedSubject } from "../auth.js";
 import { parseEnv } from "../env.js";
 import type {
   AgentRepository,
-  AgentSessionRepository,
   AppTotalRecord,
-  PathMappingRepository,
-  ProjectRepository,
   ProjectTotalRecord,
   ReportQuery,
   ReportRepository,
-  SessionRepository,
   SiteTotalRecord,
 } from "../repositories.js";
 import { createTestAuth } from "../test-tokens.js";
@@ -312,30 +308,6 @@ class MemoryReports implements ReportRepository {
   }
 }
 
-/** Only the reaper runs on this read path; it records every invocation. */
-class ReapRecorder implements Partial<AgentSessionRepository> {
-  public readonly reapCalls: { subject: AuthenticatedSubject; cutoff: Date; now: Date }[] = [];
-  public async reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date) {
-    this.reapCalls.push({ subject, cutoff, now });
-    return 0;
-  }
-}
-
-// The agent-session route group refuses to mount without its sibling
-// repositories, so the app needs these stubs even though me/stats never calls them.
-class Projects implements Partial<ProjectRepository> {
-  public async listForMember() { return []; }
-  public async findForMember() { return null; }
-}
-
-class Timers implements Partial<SessionRepository> {
-  public async findRunning() { return null; }
-}
-
-class PathMappings implements Partial<PathMappingRepository> {
-  public async listForSubject() { return []; }
-}
-
 /** The pay-run report's roster; empty since these tests never seed a roster agent. */
 class Agents implements Partial<AgentRepository> {
   public async listForOrganization() { return []; }
@@ -358,17 +330,13 @@ function session(overrides: Partial<StoredSession> = {}): StoredSession {
   };
 }
 
-function createTestApp(reports = new MemoryReports(), agentSessions = new ReapRecorder()) {
+function createTestApp(reports = new MemoryReports()) {
   return createApp({
     config,
     keys,
     accounts: { resolve: async (identity) => users[identity.authUserId as keyof typeof users] },
     clock: () => clockNow,
     reportRepository: reports,
-    agentSessionRepository: agentSessions as AgentSessionRepository,
-    projectRepository: new Projects() as ProjectRepository,
-    sessionRepository: new Timers() as SessionRepository,
-    pathMappingRepository: new PathMappings() as PathMappingRepository,
     agentRepository: new Agents() as AgentRepository,
   });
 }
@@ -629,18 +597,6 @@ describe("me/stats routes", () => {
 
     const empty = await app.request("http://api.test/me/stats?from=2026-08-01&to=2026-08-02", { headers });
     await expect(empty.json()).resolves.toEqual({ filters: { from: "2026-08-01", to: "2026-08-02" }, totalDurationSeconds: 0, attributedSeconds: 0, unattributedSeconds: 0, ...noMeasurement, projects: [], apps: [], sites: [] });
-  });
-
-  it("closes stale agent sessions on the read path before computing stats", async () => {
-    const agentSessions = new ReapRecorder();
-    const response = await createTestApp(new MemoryReports(), agentSessions).request("http://api.test/me/stats", { headers: { authorization: bearerHeader } });
-
-    expect(response.status).toBe(200);
-    expect(agentSessions.reapCalls).toEqual([{
-      subject: { organizationId: ids.organization, userId: ids.user, role: "member" },
-      cutoff: new Date(clockNow.getTime() - 30 * 60 * 1_000),
-      now: clockNow,
-    }]);
   });
 
   it("never includes another member's sessions or evidence in the caller's stats", async () => {

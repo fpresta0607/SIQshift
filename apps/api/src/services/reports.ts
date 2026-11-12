@@ -64,7 +64,7 @@ import type {
 import { asAgentView } from "./agents.js";
 import { isSpentDay, planRollupRange, rollupWindow, type LiveSpan } from "./rollup-ranges.js";
 import { isHomeOrTempDirectory, shiftCodebase } from "./attribution.js";
-import { rosterEligibleSource, type AgentSessionReaper } from "./agent-sessions.js";
+import { AGENT_STALE_WINDOW_MS, rosterEligibleSource } from "./agent-sessions.js";
 
 export interface ReportService {
   list(subject: AuthenticatedSubject, filters: ReportFilters): Promise<ReportResponse>;
@@ -84,8 +84,6 @@ export interface ReportExport {
 
 export interface ReportServiceDependencies {
   reports: ReportRepository;
-  /** Stale running agent sessions close at lastEventAt before report aggregation. */
-  reaper: AgentSessionReaper;
   /** The roster behind the pay-run report and /me/stats's own-agent rows. */
   agents: AgentRepository;
   /** Without it, every agent row's commit counts stay at zero and heldRate null. */
@@ -779,7 +777,6 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       validatePagination(filters);
       const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
       await authorizeFilters(dependencies.reports, subject, query);
-      await dependencies.reaper.reapStale(subject);
       const offset = (filters.page - 1) * filters.pageSize;
       if (!Number.isSafeInteger(offset)) throw new AppError("validation_error", "Invalid report pagination.");
       const page = await dependencies.reports.readPageForOrganization(subject, query, { limit: filters.pageSize, offset });
@@ -801,7 +798,6 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       validatePagination(filters);
       const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
       await authorizeFilters(dependencies.reports, subject, query);
-      await dependencies.reaper.reapStale(subject);
       const exportRead = await dependencies.reports.readExportForOrganization(subject, query, reportExportRowCap);
       const summary = summaryValues(exportRead.summary);
       if (summary.totalRows > reportExportRowCap) {
@@ -818,7 +814,6 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
     async leaderboard(subject: AuthenticatedSubject, filters: LeaderboardFilters): Promise<LeaderboardResponse> {
       const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
       await authorizeFilters(dependencies.reports, subject, query);
-      await dependencies.reaper.reapStale(subject);
       const [rows, roster, measurements, median] = await Promise.all([
         dependencies.reports.readLeaderboardForOrganization(subject, query),
         dependencies.reports.readMembersForOrganization(subject),
@@ -884,7 +879,6 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         ...(filters.userId === undefined ? {} : { userId: filters.userId }),
         ...(query.projectId === undefined ? {} : { projectId: query.projectId }),
       });
-      await dependencies.reaper.reapStale(subject);
       const [projects, apps, sites, presence, sessionIntervals, agentIntervals, usageBuckets, usageByAgent, plan] = await Promise.all([
         dependencies.reports.readProjectTotalsForMember(subject, query).then((rows) => rows.map(asProjectTotal)),
         dependencies.reports.readAppTotalsForMember(subject, query).then((rows) => rows.map(asAppTotal)),
@@ -957,7 +951,6 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
     async agentsReport(subject: AuthenticatedSubject, filters: AgentsReportFilters): Promise<AgentsReportResponse> {
       const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
       await authorizeFilters(dependencies.reports, subject, query);
-      await dependencies.reaper.reapStale(subject);
       const [roster, agentIntervals, commitCounts, repoRoots, usageByAgent] = await Promise.all([
         dependencies.agents.listForOrganization(subject),
         dependencies.reports.readAgentIntervals(subject, query),
@@ -1077,9 +1070,8 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       if (scope.projectId !== undefined && await dependencies.reports.findProjectForOrganization(subject, scope.projectId) === null) {
         throw new AppError("not_found", "Project not found.");
       }
-      await dependencies.reaper.reapStale(subject);
-      const rows = await dependencies.reports.readRunningAgentSessions(subject);
       const at = now();
+      const rows = await dependencies.reports.readRunningAgentSessions(subject, new Date(at.getTime() - AGENT_STALE_WINDOW_MS));
       const people = new Map<string, { owner: LiveAgentSessionsResponse["people"][number]["owner"]; sessions: LiveAgentSession[] }>();
       for (const row of rows) {
         // Browser spans are attention, not workers, the roster's own rule.
@@ -1182,7 +1174,6 @@ async function readShiftBoard(
 }> {
   const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
   await authorizeFilters(dependencies.reports, subject, query);
-  await dependencies.reaper.reapStale(subject);
   // Authorize the selection, then read without it. `normalizedQuery`
   // forwards `userId` into the query and `readAgentIntervals` turns it
   // into a predicate, so reading with it would narrow the rows `people`

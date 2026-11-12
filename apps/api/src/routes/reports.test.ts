@@ -7,12 +7,8 @@ import type {
   AgentIntervalRecord,
   AgentRecord,
   AgentRepository,
-  AgentSessionRepository,
-  PathMappingRepository,
-  ProjectRepository,
   ReportRepository,
   ReportRowRecord,
-  SessionRepository,
 } from "../repositories.js";
 import type { AuthenticatedSubject } from "../auth.js";
 import { createReportRoutes } from "./reports.js";
@@ -101,47 +97,19 @@ class Reports implements ReportRepository {
   }
 }
 
-/** Report routes reap stale agent sessions before report aggregation; nothing else is used. */
-class AgentSessions implements Partial<AgentSessionRepository> {
-  public reapCalls = 0;
-  public async reapStale() {
-    this.reapCalls += 1;
-    return 0;
-  }
-}
-
-// The agent-session route group refuses to mount without its sibling
-// repositories, so the app needs these stubs even though reports never call them.
-class Projects implements Partial<ProjectRepository> {
-  public async listForMember() { return []; }
-  public async findForMember() { return null; }
-}
-
-class Timers implements Partial<SessionRepository> {
-  public async findRunning() { return null; }
-}
-
-class PathMappings implements Partial<PathMappingRepository> {
-  public async listForSubject() { return []; }
-}
-
 /** The pay-run report's roster; empty by default so these tests are unaffected unless they seed one. */
 class Agents implements Partial<AgentRepository> {
   public constructor(public records: AgentRecord[] = []) {}
   public async listForOrganization() { return this.records; }
 }
 
-function app(reports = new Reports(), agentSessions = new AgentSessions(), agents = new Agents()) {
+function app(reports = new Reports(), agents = new Agents()) {
   return createApp({
     config,
     keys,
     accounts: { resolve: async () => user },
     clock: () => new Date("2026-08-06T14:00:00.000Z"),
     reportRepository: reports,
-    agentSessionRepository: agentSessions as AgentSessionRepository,
-    projectRepository: new Projects() as ProjectRepository,
-    sessionRepository: new Timers() as SessionRepository,
-    pathMappingRepository: new PathMappings() as PathMappingRepository,
     agentRepository: agents as AgentRepository,
   });
 }
@@ -208,14 +176,6 @@ describe("report routes", () => {
     await expect(outside.json()).resolves.toEqual({ error: { code: "not_found", message: "Project not found." } });
   });
 
-  it("closes stale agent sessions on the read path before reporting", async () => {
-    const agentSessions = new AgentSessions();
-    const response = await app(new Reports(), agentSessions).request("http://api.test/reports", { headers: { authorization: bearerHeader } });
-
-    expect(response.status).toBe(200);
-    expect(agentSessions.reapCalls).toBe(1);
-  });
-
   it("returns a stable JSON error before a CSV stream begins when the snapshot read fails", async () => {
     const reports = new Reports();
     reports.failExport = new Error("database unavailable");
@@ -252,7 +212,7 @@ describe("report routes", () => {
       repoKey: null,
       createdAt: new Date("2026-08-01T00:00:00.000Z"),
     };
-    const response = await app(reports, new AgentSessions(), new Agents([agentRecord]))
+    const response = await app(reports, new Agents([agentRecord]))
       .request("http://api.test/reports/agents", { headers: { authorization: bearerHeader } });
 
     expect(response.status).toBe(200);
@@ -289,7 +249,7 @@ describe("report routes", () => {
     };
     const mine: AgentRecord = { ...theirs, id: ids.project, owner: { id: ids.user, name: "Alex" } };
 
-    const response = await app(new Reports(), new AgentSessions(), new Agents([theirs, mine]))
+    const response = await app(new Reports(), new Agents([theirs, mine]))
       .request("http://api.test/reports/agents", { headers: { authorization: bearerHeader } });
 
     expect(response.status).toBe(200);

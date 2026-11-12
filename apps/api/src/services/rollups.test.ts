@@ -199,7 +199,6 @@ const storedDay = (on: Date, activeMs = 0): UserDailyRollupRecord => ({
   computedAt: readAt,
 });
 
-const silentReaper = { reapStale: async (): Promise<number> => 0 };
 const agents = { listForOrganization: async () => [], listByIds: async () => [] } as unknown as AgentRepository;
 
 describe("utc days", () => {
@@ -1175,7 +1174,6 @@ describe("the board with and without the fold", () => {
   ])("answers %s the same either way", async (_label, filters) => {
     const live = createReportService({
       reports: seed() as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       now: () => now,
     });
@@ -1185,7 +1183,6 @@ describe("the board with and without the fold", () => {
       .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
     const folded = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,
@@ -1205,7 +1202,6 @@ describe("the board with and without the fold", () => {
       .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
     const service = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,
@@ -1237,7 +1233,6 @@ describe("the board with and without the fold", () => {
     reports.agentIntervals = reports.agentIntervals.filter((row) => row.startedAt >= day(3));
     const service = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,
@@ -1267,7 +1262,6 @@ describe("the board with and without the fold", () => {
       .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
     const service = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,
@@ -1303,7 +1297,6 @@ describe("the board with and without the fold", () => {
       .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
     const service = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,
@@ -1333,7 +1326,6 @@ describe("the board with and without the fold", () => {
       .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
     const service = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,
@@ -1359,7 +1351,6 @@ describe("the board with and without the fold", () => {
       .refresh(subject, [at(0, 12), at(1, 12), at(2, 12)]);
     const service = createReportService({
       reports: reports as unknown as ReportRepository,
-      reaper: silentReaper,
       agents,
       rollups,
       now: () => now,

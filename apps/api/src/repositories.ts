@@ -287,11 +287,11 @@ export interface ReportRepository {
    */
   readNewestEvidenceReceivedAt(subject: AuthenticatedSubject, query: ReportQuery): Promise<Date | null>;
   /**
-   * Every agent session still running, with its person, project name and codebase
-   * evidence. Stale rows close before this read - the live view must never show
-   * a session the staleness window has already ended - so the caller reaps first.
+   * Every agent session still running and heard from at or after `freshSince`,
+   * with its person, project name and codebase evidence. A running row silent
+   * since before it is over at its last event, and the live view never shows it.
    */
-  readRunningAgentSessions(subject: AuthenticatedSubject): Promise<RunningAgentSessionRecord[]>;
+  readRunningAgentSessions(subject: AuthenticatedSubject, freshSince: Date): Promise<RunningAgentSessionRecord[]>;
   readPageForOrganization(subject: AuthenticatedSubject, query: ReportQuery, options: ReportPageOptions): Promise<ReportPageRead>;
   readExportForOrganization(subject: AuthenticatedSubject, query: ReportQuery, maxRows: number): Promise<ReportExportRead>;
   readLeaderboardForOrganization(subject: AuthenticatedSubject, query: ReportQuery): Promise<LeaderboardRowRecord[]>;
@@ -567,18 +567,14 @@ export interface AgentSessionRepository {
    * backfill can land after the end that closed a short session - without
    * advancing lastEventAt or reopening it, which is a shift of nothing.
    *
-   * `lapsedBefore` is occurredAt minus the staleness window: the reaper's rule
-   * measured in event time rather than on the server's clock. A running row
-   * whose last event is older than it had already stopped, at that last event,
-   * before this heartbeat happened, so it closes there and the heartbeat
-   * carries nothing forward. Live, the reaper would have closed it first; a
-   * backlog uploaded late never gives the reaper that chance, and a start and
-   * an end a day and a half apart landed in one batch and read as one shift a
-   * day and a half long.
+   * `lapsedBefore` is occurredAt minus the staleness window: silence measured
+   * in event time, never on the server's clock. A running row whose last event
+   * is older than it had already stopped, at that last event, before this
+   * heartbeat happened, so it closes there and the heartbeat carries nothing
+   * forward. Without it a start and an end a day and a half apart landed in one
+   * batch and read as one shift a day and a half long.
    */
   advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null>;
-  /** Closes running rows whose lastEventAt is older than cutoff, ending them at lastEventAt. Returns the reaped count. */
-  reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number>;
   /**
    * Assigns an identity to a session whose agent_id is still null - how a
    * shift that started before the roster existed takes commits after it. The

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { AuthenticatedSubject } from "../auth.js";
 import { AppError } from "../errors.js";
@@ -123,7 +123,6 @@ function createService(
   presence: PresenceIntervalRecord[] = [],
   shiftCommits?: MemoryShiftCommits,
 ) {
-  const reapStale = vi.fn().mockResolvedValue(0);
   const presenceQueries: ReportQuery[] = [];
   const reports = {
     async findUserForOrganization(_subject: AuthenticatedSubject, userId: string) {
@@ -139,13 +138,12 @@ function createService(
   } as ReportRepository;
   const service = createAgentService({
     agents,
-    reaper: { reapStale },
     reports,
     clock: () => now,
     ...(usage === undefined ? {} : { agentUsage: usage }),
     ...(shiftCommits === undefined ? {} : { shiftCommits }),
   });
-  return { service, reapStale, presenceQueries };
+  return { service, presenceQueries };
 }
 
 /** The paystub's usage sums, grouped per model and per hour exactly like the SQL. */
@@ -306,7 +304,27 @@ describe("agent service", () => {
     expect(agents.merges).toEqual([{ winnerId: ids.agent, loserId: ids.otherAgent }]);
   });
 
-  it("builds a paystub: reaps first, clips shifts to the range, rounds once per shift", async () => {
+  it.each([
+    { lastEventAt: "2026-08-06T13:29:59.000Z", endedAt: "2026-08-06T13:29:59.000Z" },
+    { lastEventAt: "2026-08-06T13:30:00.000Z", endedAt: null },
+    { lastEventAt: "2026-08-06T13:45:00.000Z", endedAt: null },
+  ])("reads a running shift last heard from at $lastEventAt as ended at $endedAt", async ({ lastEventAt, endedAt }) => {
+    // Nothing on the server ends a shift on its own clock: a late upload may
+    // still carry its next heartbeat. Silent for longer than the staleness
+    // window, it reads as over at its last event; inside it, as still running.
+    const agents = new MemoryAgents([agentRecord()]);
+    agents.shifts = [shift({ status: "running", startedAt: new Date("2026-08-06T13:00:00.000Z"), endedAt: null, lastEventAt: new Date(lastEventAt) })];
+    const { service } = createService(agents);
+
+    const paystub = await service.paystub(member, ids.agent, {
+      fromAt: "2026-08-06T09:00:00.000Z",
+      toExclusiveAt: "2026-08-06T14:00:00.000Z",
+    });
+
+    expect(paystub.shifts.map((row) => row.endedAt)).toEqual([endedAt]);
+  });
+
+  it("builds a paystub: clips shifts to the range, rounds once per shift", async () => {
     const agents = new MemoryAgents([agentRecord()]);
     agents.shifts = [
       // Fully inside the range: one hour.
@@ -318,7 +336,7 @@ describe("agent service", () => {
         endedAt: new Date("2026-08-06T09:30:00.000Z"),
         lastEventAt: new Date("2026-08-06T09:30:00.000Z"),
       }),
-      // Still running: its effective end is its last event, never "open".
+      // Still running, silent since 12:30: its effective end is its last event, never "open".
       shift({
         id: "d3c7e513-b094-4d4c-ae55-21790ae019a4",
         model: null,
@@ -328,14 +346,13 @@ describe("agent service", () => {
         lastEventAt: new Date("2026-08-06T12:30:00.000Z"),
       }),
     ];
-    const { service, reapStale } = createService(agents);
+    const { service } = createService(agents);
 
     const paystub = await service.paystub(member, ids.agent, {
       fromAt: "2026-08-06T09:00:00.000Z",
       toExclusiveAt: "2026-08-06T14:00:00.000Z",
     });
 
-    expect(reapStale).toHaveBeenCalledWith(member);
     expect(paystub.agent).toMatchObject({ id: ids.agent, createdAt: "2026-08-01T00:00:00.000Z" });
     expect(paystub.totals).toMatchObject({
       agentSeconds: 3_600 + 1_800 + 1_800,
@@ -347,7 +364,7 @@ describe("agent service", () => {
       tokensReported: false,
     });
     const running = paystub.shifts.find((row) => row.id === "d3c7e513-b094-4d4c-ae55-21790ae019a4");
-    expect(running).toMatchObject({ endedAt: null, durationSeconds: 1_800 });
+    expect(running).toMatchObject({ endedAt: "2026-08-06T12:30:00.000Z", durationSeconds: 1_800 });
 
     // The model mix folds per-shift seconds under each named model, unnamed
     // shifts under null, in first-seen order. With no usage data each model's

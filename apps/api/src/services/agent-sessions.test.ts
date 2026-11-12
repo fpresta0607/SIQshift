@@ -15,7 +15,7 @@ import type {
   UpsertAgentForKey,
   UpsertStartedAgentSession,
 } from "../repositories.js";
-import { createAgentSessionReaper, createAgentSessionService, type AgentSessionEventInput } from "./agent-sessions.js";
+import { createAgentSessionService, type AgentSessionEventInput } from "./agent-sessions.js";
 import { identityRepoKey } from "./attribution.js";
 import { foldableDays } from "./rollups.js";
 import { RETENTION_WINDOW_MS } from "./utc-days.js";
@@ -152,20 +152,6 @@ class MemoryAgentSessions implements AgentSessionRepository {
     // A model-bearing heartbeat also fills a still-null model on an ended row.
     existing.model ??= model;
     return { session: existing, previousEnd };
-  }
-
-  /** Mirrors staleness reaping: running rows older than the cutoff end at lastEventAt. */
-  public async reapStale(current: AuthenticatedSubject, cutoff: Date): Promise<number> {
-    let reaped = 0;
-    for (const record of this.records) {
-      if (record.organizationId !== current.organizationId || record.userId !== current.userId) continue;
-      if (record.status === "running" && record.lastEventAt < cutoff) {
-        record.status = "ended";
-        record.endedAt = record.lastEventAt;
-        reaped += 1;
-      }
-    }
-    return reaped;
   }
 }
 
@@ -502,7 +488,7 @@ describe("agent-session service", () => {
     // the days it names are foldable is exactly what "already over" means.
     const handed: string[][] = [];
     // The staleness window is widened rather than simulated: this session has
-    // been reporting all along, and reaping it is not what is under test.
+    // been reporting all along, and ending it is not what is under test.
     let current = new Date("2026-08-05T22:00:00.000Z");
     const { service } = createService({
       clock: () => current,
@@ -589,27 +575,39 @@ describe("agent-session service", () => {
     expect(agentSessions.records[0]).toMatchObject({ model: "claude-opus-4-8" });
   });
 
-  it("reaps running sessions stale beyond thirty minutes at their lastEventAt before a batch", async () => {
-    const { agentSessions, service } = createService();
-    await service.ingest(subject, [event({ occurredAt: new Date("2026-08-06T07:00:00.000Z") })]);
+  it("carries a shift uploaded late in two batches to its last heartbeat, whatever the server's clock reads", async () => {
+    // A desktop an hour behind on its uploads sends a shift's first events in
+    // one batch and the rest in the next. Between the two, the server's own
+    // clock already reads the shift as silent for half an hour, but the events
+    // themselves are five minutes apart.
+    let clock = new Date("2026-08-06T14:30:00.000Z");
+    const { agentSessions, service } = createService({ clock: () => clock });
+    await service.ingest(subject, [
+      event({ occurredAt: new Date("2026-08-06T13:30:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:35:00.000Z") }),
+    ]);
+    clock = new Date("2026-08-06T14:35:00.000Z");
 
-    const result = await service.ingest(subject, [event({ externalSessionId: "fresh" })]);
+    await service.ingest(subject, [
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:40:00.000Z") }),
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:45:00.000Z") }),
+    ]);
 
-    expect(result.results).toEqual([{ externalSessionId: "fresh", accepted: true }]);
+    expect(agentSessions.records).toHaveLength(1);
     expect(agentSessions.records[0]).toMatchObject({
-      externalSessionId: "session-1",
-      status: "ended",
-      endedAt: new Date("2026-08-06T07:00:00.000Z"),
+      status: "running",
+      startedAt: new Date("2026-08-06T13:30:00.000Z"),
+      endedAt: null,
+      lastEventAt: new Date("2026-08-06T13:45:00.000Z"),
     });
-    expect(agentSessions.records[1]).toMatchObject({ externalSessionId: "fresh", status: "running" });
   });
 
   it("ends a shift at its last event when the next one comes after the staleness window, however late the upload", async () => {
     // The shape a backlog took after the 2026-09-11 outage: a no-mistakes gate
     // reviewer started, beat once, went quiet, and its end fired a day and a
-    // half later when the worktree was cleaned up. Uploaded live, the reaper
-    // closes it at its heartbeat long before that end arrives. Uploaded late,
-    // start and end reach the server together and nothing had reaped it.
+    // half later when the worktree was cleaned up. Start and end reach the
+    // server together in one late upload, and the gap between the shift's own
+    // events is what ends it at its heartbeat.
     const { agentSessions, service } = createService({ clock: () => new Date("2026-08-08T02:00:00.000Z") });
 
     await service.ingest(subject, [
@@ -715,15 +713,6 @@ describe("agent-session service", () => {
     // round trip is worth the measured batch cost spread over every call.
     const msPerRoundTrip = (measuredMsPerEvent * batch.length) / network.calls;
     expect(network.trips * msPerRoundTrip).toBeLessThan(desktopTimeoutMs / 2);
-  });
-
-  it("exposes reaping for read paths", async () => {
-    const { agentSessions, service } = createService();
-    await service.ingest(subject, [event({ occurredAt: new Date("2026-08-06T07:30:00.000Z") })]);
-
-    await expect(service.reapStale(subject)).resolves.toBe(1);
-    await expect(service.reapStale(subject)).resolves.toBe(0);
-    expect(agentSessions.records[0]).toMatchObject({ status: "ended", endedAt: new Date("2026-08-06T07:30:00.000Z") });
   });
 
   it("refuses an event from the distant past, so one cannot be expanded into a day per year", async () => {
@@ -991,17 +980,5 @@ describe("roster minting", () => {
 
     expect(result.results).toEqual([{ externalSessionId: "session-1", accepted: true }]);
     expect(agentSessions.records[0]!.agentId).toBeNull();
-  });
-});
-
-describe("agent-session reaper", () => {
-  it("closes stale running sessions at lastEventAt for report read paths", async () => {
-    const { agentSessions, service } = createService();
-    await service.ingest(subject, [event({ occurredAt: new Date("2026-08-06T07:30:00.000Z") })]);
-    const reaper = createAgentSessionReaper({ agentSessions, clock: () => now });
-
-    await expect(reaper.reapStale(subject)).resolves.toBe(1);
-    await expect(reaper.reapStale(subject)).resolves.toBe(0);
-    expect(agentSessions.records[0]).toMatchObject({ status: "ended", endedAt: new Date("2026-08-06T07:30:00.000Z") });
   });
 });

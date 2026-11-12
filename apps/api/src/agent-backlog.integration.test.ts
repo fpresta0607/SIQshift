@@ -36,7 +36,7 @@ integration("a late agent backlog over a real database", () => {
   let app: ReturnType<typeof createApp>;
   let headers: Record<string, string>;
   let projectId: string;
-  // Two days ago, well inside the retention window and far outside the reaper's.
+  // Two days ago, well inside the retention window and far outside the staleness window.
   const origin = Date.now() - minutes(2 * 24 * 60);
   const at = (offsetMinutes: number): string => new Date(origin + minutes(offsetMinutes)).toISOString();
 
@@ -116,6 +116,37 @@ integration("a late agent backlog over a real database", () => {
     expect(await shift("gate")).toMatchObject({ status: "ended", ended_at: at(1), last_event_at: at(1), model: "claude-opus-5" });
     expect(await shift("resumed")).toMatchObject({ status: "ended", ended_at: at(20), last_event_at: at(20) });
     expect(await shift("steady")).toMatchObject({ status: "ended", ended_at: at(75), project_id: projectId });
+  }, 120_000);
+
+  it("carries a shift uploaded late in two batches to its last heartbeat", async () => {
+    const cwd = "C:/dev/app";
+    await upload([
+      { source: "claude_code", externalSessionId: "behind", event: "started", occurredAt: at(0), cwd },
+      { source: "claude_code", externalSessionId: "behind", event: "heartbeat", occurredAt: at(5), cwd },
+    ]);
+
+    await upload([
+      { source: "claude_code", externalSessionId: "behind", event: "heartbeat", occurredAt: at(10), cwd },
+      { source: "claude_code", externalSessionId: "behind", event: "heartbeat", occurredAt: at(15), cwd },
+    ]);
+
+    expect(await shift("behind")).toMatchObject({ status: "running", ended_at: null, last_event_at: at(15) });
+  }, 120_000);
+
+  it("lists a shift on the live view only while its last event is inside the staleness window", async () => {
+    const cwd = "C:/dev/live";
+    await upload([
+      { source: "claude_code", externalSessionId: "live-recent", event: "started", occurredAt: new Date(Date.now() - minutes(5)).toISOString(), cwd },
+      { source: "claude_code", externalSessionId: "live-quiet", event: "started", occurredAt: new Date(Date.now() - minutes(45)).toISOString(), cwd },
+    ]);
+    const recent = await database.client<{ id: string }[]>`select id from agent_sessions where external_session_id = 'live-recent'`;
+
+    const response = await app.request("/reports/agent-sessions/live", { headers });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { people: { sessions: { id: string }[] }[] };
+    expect(body.people.flatMap((person) => person.sessions.map((session) => session.id))).toEqual([recent[0]!.id]);
+    expect(await shift("live-quiet")).toMatchObject({ status: "running", ended_at: null });
   }, 120_000);
 
   it("still fills a model on a closed shift from a heartbeat that arrives after its end", async () => {

@@ -961,7 +961,7 @@ export class DrizzleReportRepository implements ReportRepository {
     return times.length === 0 ? null : new Date(Math.max(...times));
   }
 
-  public async readRunningAgentSessions(subject: AuthenticatedSubject): Promise<RunningAgentSessionRecord[]> {
+  public async readRunningAgentSessions(subject: AuthenticatedSubject, freshSince: Date): Promise<RunningAgentSessionRecord[]> {
     const rows = await this.db
       .select({
         sessionId: agentSessions.id,
@@ -990,6 +990,7 @@ export class DrizzleReportRepository implements ReportRepository {
       .where(and(
         eq(agentSessions.organizationId, subject.organizationId),
         eq(agentSessions.status, "running"),
+        gte(agentSessions.lastEventAt, freshSince),
       ))
       .orderBy(asc(agentSessions.startedAt));
     return rows.map((row) => ({
@@ -1427,7 +1428,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         // A later start that names a model fills one in — a session can be
         // resumed on a different model — but never blanks one already recorded.
         // A running row silent past the staleness window before this start was
-        // already over at its last event, where the reaper closes it live.
+        // already over at its last event, and ends there.
         set: {
           ...(input.model === null ? {} : { model: input.model }),
           // The first assignment wins: a shift never changes identity, and a
@@ -1448,7 +1449,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
 
   public async closeRunning(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, endedAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null> {
     // Silent past the staleness window before this end: already over, at its
-    // last event, exactly where the reaper would have closed it live.
+    // last event.
     const lapsed = sql`${agentSessions.lastEventAt} < ${lapsedBefore.toISOString()}::timestamptz`;
     const rows = await this.db
       .update(agentSessions)
@@ -1527,7 +1528,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       priorLastEventAt: priorAgentSession.lastEventAt,
     };
     // Silent past the staleness window before this heartbeat: already over, at
-    // its last event, exactly where the reaper would have closed it live.
+    // its last event.
     const lapsed = sql`${agentSessions.lastEventAt} < ${lapsedBefore.toISOString()}::timestamptz`;
     const running = await this.db
       .update(agentSessions)
@@ -1565,20 +1566,6 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
     const backfilled = ended[0];
     if (backfilled === undefined) return null;
     return { session: asAgentSessionRecord(backfilled), previousEnd: agentSessionKnownEnd({ endedAt: backfilled.priorEndedAt, lastEventAt: backfilled.priorLastEventAt }) };
-  }
-
-  public async reapStale(subject: AuthenticatedSubject, cutoff: Date, now: Date): Promise<number> {
-    const rows = await this.db
-      .update(agentSessions)
-      .set({ status: "ended", endedAt: sql`${agentSessions.lastEventAt}`, updatedAt: now })
-      .where(and(
-        eq(agentSessions.organizationId, subject.organizationId),
-        eq(agentSessions.userId, subject.userId),
-        eq(agentSessions.status, "running"),
-        lt(agentSessions.lastEventAt, cutoff),
-      ))
-      .returning({ id: agentSessions.id });
-    return rows.length;
   }
 
   public async stampAgent(subject: AuthenticatedSubject, sessionId: string, agentId: string, now: Date): Promise<void> {
