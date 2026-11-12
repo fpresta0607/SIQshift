@@ -1032,7 +1032,7 @@ export const liveAgentSessionSchema = z
     owner: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
     model: z.string().min(1).max(200).nullable(),
     startedAt: timestampSchema,
-    /** The session's last event, so a client can tell a live one from one about to be reaped. */
+    /** The session's last event, so a client can tell a live one from one about to leave the staleness window. */
     lastEventAt: timestampSchema,
     /**
      * The codebase the session works in, as a label - a name, never a path,
