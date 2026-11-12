@@ -10,15 +10,23 @@ import { fileURLToPath } from "node:url";
 // made-up users instead; a new one joins this list, never a real name.
 const MADE_UP_HOME_FOLDERS = new Set(["a", "alex", "dev", "op", "riley", "sam"]);
 
-// A drive's Users folder with forward slashes, single backslashes or the
-// doubled backslashes of a string literal, and the POSIX /home and /Users
-// folders when they start a path rather than sit inside one.
+// A drive's Users folder, with the drive written as C:, or as Git Bash /c,
+// WSL /mnt/c or Cygwin /cygdrive/c when it starts a path, and forward slashes
+// or the one, two or four backslashes of a path, a string literal or an
+// escaped literal; and the POSIX /home and /Users folders when they start a
+// path rather than sit inside one.
 const HOME_FOLDER_PATTERNS = [
-  /[a-z]:(?:\/|\\{1,2})users(?:\/|\\{1,2})([a-z0-9][\w.-]*)/gi,
+  /(?:[a-z]:|(?<![\w.-])\/(?:mnt\/|cygdrive\/)?[a-z])(?:\/|\\+)users(?:\/|\\+)([a-z0-9][\w.-]*)/gi,
   /(?<![\w.-])\/(?:home|users)\/([a-z0-9][\w.-]*)/gi,
 ];
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+
+function gitListedFiles(...options) {
+  return execFileSync("git", ["ls-files", "-z", ...options], { cwd: repositoryRoot, encoding: "utf8" })
+    .split("\0")
+    .filter((file) => file !== "");
+}
 
 function homeFolderNames(text) {
   const names = HOME_FOLDER_PATTERNS.flatMap((pattern) => [...text.matchAll(pattern)].map((match) => match[1]));
@@ -30,12 +38,17 @@ describe("home folder names", () => {
     ["C:/Users/riley/.treehouse/siqshift-4b3191/siqshift", ["riley"]],
     ["C:\\Users\\Sam\\fieldNotes", ["Sam"]],
     ["\"C:\\\\Users\\\\riley\\\\.treehouse\"", ["riley"]],
+    ["\"cwd\":\"C:\\\\\\\\Users\\\\\\\\riley\\\\\\\\.no-mistakes\"", ["riley"]],
+    ["cd /c/Users/riley/.no-mistakes/worktrees", ["riley"]],
+    ["/mnt/c/Users/riley/src", ["riley"]],
+    ["/cygdrive/c/Users/riley/src", ["riley"]],
     ["c:/users/riley/", ["riley"]],
     ["cd /home/riley/src/quartermaster", ["riley"]],
     ["cwd: \"/Users/sam/dev\"", ["sam"]],
     ["C:/Users/alex/AppData/Local/Temp/steer-proof/home/worktrees/project", ["alex"]],
     ["/^(?:[a-z]:\\/users\\/[^/]+|\\/home\\/[^/]+)$/", []],
     ["https://example.com/users/alex", []],
+    ["https://example.com/c/users/alex", []],
   ];
 
   for (const [text, names] of cases) {
@@ -47,9 +60,8 @@ describe("home folder names", () => {
 
 test("every home folder a tracked file names belongs to a made-up user", () => {
   // Arrange
-  const trackedFiles = execFileSync("git", ["ls-files", "-z"], { cwd: repositoryRoot, encoding: "utf8" })
-    .split("\0")
-    .filter((file) => file !== "");
+  const deletedFiles = new Set(gitListedFiles("--deleted"));
+  const trackedFiles = gitListedFiles().filter((file) => !deletedFiles.has(file));
 
   // Act
   const personal = [];
