@@ -4,7 +4,6 @@ import {
   addTimeMeasurementsMs,
   clipInterval,
   intersectIntervals,
-  leverage,
   measureTime,
   measureTimeMs,
   mergeIntervals,
@@ -95,7 +94,6 @@ describe("measureTime", () => {
 
     expect(measurement.activeSeconds).toBe(3_600);
     expect(measurement.agentSeconds).toBe(7_200);
-    expect(leverage(measurement)).toBe(2);
   });
 
   it("books an agent running while the person is away as away time, not active time", () => {
@@ -121,7 +119,6 @@ describe("measureTime", () => {
   it("measures zero for an empty range or zero-length intervals", () => {
     expect(measureTime([], []).activeSeconds).toBe(0);
     expect(measureTime([span(5, 5)], [span(3, 3)]).agentSeconds).toBe(0);
-    expect(leverage({ activeSeconds: 0, agentSeconds: 100 })).toBeNull();
   });
 
   it("books every second of a goblin fleet exactly once: unassisted, assisted by n agents, or away", () => {
@@ -225,12 +222,5 @@ describe("measuring in pieces", () => {
 
   it("adds nothing to nothing", () => {
     expect(addTimeMeasurementsMs([])).toEqual(measureTimeMs([], [], whole));
-  });
-});
-
-describe("leverage", () => {
-  it("rounds to one decimal and reads 0 for fully manual work", () => {
-    expect(leverage({ activeSeconds: 3_600, agentSeconds: 8_640 })).toBe(2.4);
-    expect(leverage({ activeSeconds: 3_600, agentSeconds: 0 })).toBe(0);
   });
 });

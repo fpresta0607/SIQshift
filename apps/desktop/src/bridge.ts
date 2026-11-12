@@ -17,18 +17,30 @@ export type SignupInput = LoginInput & {
   inviteCode?: string;
 };
 
-export type LeaderboardEntry = {
-  rank: number;
-  user: { id: string; name: string };
-  durationSeconds: number;
-  sessionCount: number;
-  activeSeconds: number;
-  agentSeconds: number;
-};
-
 export type OrganizationOverview = {
   organization: { id: string; name: string; inviteCode: string };
-  entries: readonly LeaderboardEntry[];
+};
+
+/// One board row: ranked as the leaderboard ranks, with the project the
+/// member spent most time on, null when none had any.
+export type WorkspaceMember = {
+  rank: number;
+  user: { id: string; name: string };
+  activeSeconds: number;
+  agentSeconds: number;
+  project: { id: string; name: string } | null;
+};
+
+/// The team view's one read: the caller's workspace laid out as the home
+/// page's example, every total added up on the server and drawn as given.
+export type WorkspaceReport = {
+  activeSeconds: number;
+  agentSeconds: number;
+  /// One bucket per local hour of a bounded range; empty over all time.
+  hourly: readonly MeStatsHourlyBucket[];
+  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[];
+  agents: readonly { source: string; durationSeconds: number }[];
+  members: readonly WorkspaceMember[];
 };
 
 export type HookRegistration = {
@@ -387,9 +399,8 @@ export interface TimerBridge {
   login(input: LoginInput): Promise<AccountSnapshot>;
   signup(input: SignupInput): Promise<AccountSnapshot>;
   logout(): Promise<void>;
-  /// The workspace board. Instant bounds scope the entries; both absent
-  /// means all time. `scope` narrows to one project or the unassigned bucket.
-  orgOverview(fromAt?: string, toExclusiveAt?: string, scope?: string): Promise<OrganizationOverview>;
+  /// The caller's workspace: its name and invite code.
+  orgOverview(): Promise<OrganizationOverview>;
   /// The scope shared with the web dashboard.
   preferencesGet(): Promise<ViewPreferences>;
   preferencesSet(input: { scope?: string; range?: string }): Promise<ViewPreferences>;
@@ -412,6 +423,9 @@ export interface TimerBridge {
   /// `userId` names a teammate, which is how the leaderboard opens one
   /// member's breakdown; absent means the caller.
   meStats(fromAt?: string, toExclusiveAt?: string, userId?: string, scope?: string): Promise<MeStats>;
+  /// The team view All stats opens on, over instant bounds. Both absent asks
+  /// for all time.
+  workspaceReport(fromAt?: string, toExclusiveAt?: string): Promise<WorkspaceReport>;
   /// Every shift in the range grouped by the codebase it worked, for the
   /// Agents tab - the group heads alone. Both bounds absent asks for all time.
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
@@ -520,31 +534,15 @@ export const decodeAccountSnapshot = (value: unknown): AccountSnapshot => {
   };
 };
 
-const decodeLeaderboardEntry = (value: unknown): LeaderboardEntry => {
-  const candidate = record(value);
-  const member = record(candidate.user);
-  return {
-    rank: nonnegativeInteger(candidate.rank),
-    user: { id: uuid(member.id), name: string(member.name) },
-    durationSeconds: nonnegativeInteger(candidate.durationSeconds),
-    sessionCount: nonnegativeInteger(candidate.sessionCount),
-    activeSeconds: nonnegativeInteger(candidate.activeSeconds),
-    agentSeconds: nonnegativeInteger(candidate.agentSeconds),
-  };
-};
-
 export const decodeOrganizationOverview = (value: unknown): OrganizationOverview => {
   const candidate = record(value);
   const organization = record(candidate.organization);
-  const entries = candidate.entries;
-  if (!Array.isArray(entries)) invalidResponse();
   return {
     organization: {
       id: uuid(organization.id),
       name: string(organization.name),
       inviteCode: string(organization.inviteCode),
     },
-    entries: (entries as unknown[]).map(decodeLeaderboardEntry),
   };
 };
 
@@ -814,6 +812,42 @@ const decodeHourlyBucket = (value: unknown): MeStatsHourlyBucket => {
   };
 };
 
+const decodeNamed = (value: unknown): { id: string; name: string } => {
+  const candidate = record(value);
+  return { id: uuid(candidate.id), name: string(candidate.name) };
+};
+
+const decodeWorkspaceMember = (value: unknown): WorkspaceMember => {
+  const candidate = record(value);
+  return {
+    rank: nonnegativeInteger(candidate.rank),
+    user: decodeNamed(candidate.user),
+    activeSeconds: nonnegativeInteger(candidate.activeSeconds),
+    agentSeconds: nonnegativeInteger(candidate.agentSeconds),
+    project: candidate.project === null ? null : decodeNamed(candidate.project),
+  };
+};
+
+export const decodeWorkspaceReport = (value: unknown): WorkspaceReport => {
+  const candidate = record(value);
+  const { hourly, projects, agents, members } = candidate;
+  if (!Array.isArray(hourly) || !Array.isArray(projects) || !Array.isArray(agents) || !Array.isArray(members)) invalidResponse();
+  return {
+    activeSeconds: nonnegativeInteger(candidate.activeSeconds),
+    agentSeconds: nonnegativeInteger(candidate.agentSeconds),
+    hourly: (hourly as unknown[]).map(decodeHourlyBucket),
+    projects: (projects as unknown[]).map((entry) => {
+      const total = record(entry);
+      return { project: decodeNamed(total.project), durationSeconds: nonnegativeInteger(total.durationSeconds) };
+    }),
+    agents: (agents as unknown[]).map((entry) => {
+      const total = record(entry);
+      return { source: string(total.source), durationSeconds: nonnegativeInteger(total.durationSeconds) };
+    }),
+    members: (members as unknown[]).map(decodeWorkspaceMember),
+  };
+};
+
 export const decodeMeStats = (value: unknown): MeStats => {
   const candidate = record(value);
   const filters = record(candidate.filters);
@@ -1030,7 +1064,7 @@ export const defaultBridge: TimerBridge = {
   login: (input) => invokeDecoded("auth_login", decodeAccountSnapshot, { input }),
   signup: (input) => invokeDecoded("auth_signup", decodeAccountSnapshot, { input }),
   logout: () => invokeDecoded("auth_logout", decodeVoid),
-  orgOverview: (fromAt, toExclusiveAt, scope) => invokeDecoded("org_overview", decodeOrganizationOverview, { fromAt, toExclusiveAt, scope }),
+  orgOverview: () => invokeDecoded("org_overview", decodeOrganizationOverview),
   preferencesGet: () => invokeDecoded("preferences_get", decodeViewPreferences),
   preferencesSet: (input) => invokeDecoded("preferences_set", decodeViewPreferences, { input }),
   orgJoin: (inviteCode) => invokeDecoded("org_join", decodeOrganizationOverview, { input: { inviteCode } }),
@@ -1044,6 +1078,7 @@ export const defaultBridge: TimerBridge = {
   settingsGet: () => invokeDecoded("settings_get", decodeMonitorSettings),
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
+  workspaceReport: (fromAt, toExclusiveAt) => invokeDecoded("workspace_report", decodeWorkspaceReport, { fromAt, toExclusiveAt }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
   liveAgentSessions: () => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions),
   agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>

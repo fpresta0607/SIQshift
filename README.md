@@ -43,8 +43,8 @@ decides the hours:
 Reports measure four things, deliberately distinct: **active time** — the union of a
 person's working intervals, overlaps collapsed, which can never exceed wall clock and is what
 the leaderboard ranks by; **agent time** — the summed runtime of every agent, which parallel
-agents can legitimately push past active time; **leverage** — agent ÷ active, shown as
-`2.4x`; and **token usage** — the tokens an AI coding agent consumed and produced, read from
+agents can legitimately push past active time; **leverage** — agent ÷ active, a ratio the
+apps' help explains rather than a figure they draw; and **token usage** — the tokens an AI coding agent consumed and produced, read from
 its own session logs and reported only where the tool logs them. Concurrency then splits active time into how many agents ran at once. The older
 **attributed** / **unattributed** split remains as a per-session label in the API and the CSV
 export: hours something named a project for versus hours that fell to the default project
@@ -154,8 +154,8 @@ The leaderboard reports three time measurements, deliberately distinct:
 - **Agent time** is the summed runtime of every agent session. Three agents running for an
   hour in parallel is 3h of agent time inside 1h of active time; that excess is leverage, not
   a bug. Agent time is a consumption number, never an effort number.
-- **Leverage** is agent time ÷ active time, shown as `2.4x`; with no active time there is no
-  leverage to show.
+- **Leverage** is agent time ÷ active time. Both apps' help explains it as that ratio; neither
+  app draws it as a figure.
 
 Active time is then partitioned by **concurrency** — the share with no agent (t0), exactly
 one (t1), two (t2), or three-plus (t3+). Both dashboards render that split as labeled rows,

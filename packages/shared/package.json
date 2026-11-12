@@ -18,6 +18,10 @@
     "./ui": {
       "types": "./dist/ui.d.ts",
       "import": "./dist/ui.js"
+    },
+    "./workspace-view": {
+      "types": "./dist/workspace-view.d.ts",
+      "import": "./dist/workspace-view.js"
     }
   },
   "files": [

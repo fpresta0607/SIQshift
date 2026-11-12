@@ -394,10 +394,13 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   with no light one to match, so use the tokens rather than literals; it also holds
   `.meter-row`, the four-column scan line (mark, name with a `·` subtitle, share bar
   or quota dial, duration) that the Today card and the Agents tab both read a
-  breakdown in. Shared React lives behind two entries and **never** `src/index.ts`:
+  breakdown in. Shared React lives behind three entries and **never** `src/index.ts`:
   `./webgl-shader` (the background) and `./ui` (the hourly chart, the member
   breakdown, `MeterRowItem` and the row builders, the runtime marks, the Agents-tab
-  drawers). React and three are those entries' optional peers, so re-exporting either
+  drawers). The third, `@siqshift/shared/workspace-view` (the team view both apps and
+  the home page's example draw), stands alone because it imports from `./ui`, so
+  re-exporting it from there would make the two modules import each other.
+  React and three are those entries' optional peers, so re-exporting any
   from `src/index.ts` would start pulling them into the API; `tsconfig.browser.json`
   is the project that compiles them, and the modules they import from `src` are
   emitted by both projects with identical JS, since `lib` decides what type-checks

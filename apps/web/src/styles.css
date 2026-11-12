@@ -25,7 +25,6 @@
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 11px; }
 .panel-head h2 { font-size: .92rem; }
-.total { color: var(--mint); font-variant-numeric: tabular-nums; font-size: .87rem; }
 
 a.ghost { border-radius: 9999px; font-size: .84rem; font-weight: 650; letter-spacing: .06em; text-decoration: none; }
 a.link { display: inline-block; width: auto; margin-top: 0; }
@@ -142,9 +141,8 @@ a.primary { display: inline-block; text-decoration: none; }
 .range-toggle button:hover { color: #ffffff; }
 .range-toggle button.is-active { border-bottom-color: var(--accent-green); color: var(--accent-green); }
 
-/* The board mirrors the desktop app: each row is the control that picks whose
-   breakdown shows underneath, and the viewed member's row is highlighted. */
-.board-head { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; margin-bottom: 10px; }
+/* The Agents tab's people: each row is the control that picks whose shifts
+   show underneath, and the picked person's row is highlighted. */
 .board-list { display: grid; gap: 4px; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; list-style: none; }
 .board-choice {
   display: grid;
@@ -204,8 +202,7 @@ a.primary { display: inline-block; text-decoration: none; }
 .shift-facts { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .shift-duration { flex: none; font-variant-numeric: tabular-nums; }
 
-/* The board head's total and sort, matching the range toggle's quiet weight. */
-.board-tools { display: flex; align-items: baseline; gap: 14px; }
+/* The team board's sort, matching the range toggle's quiet weight. */
 .board-sort select { border: 0; padding: 2px 0; background: transparent; background-image: none; color: var(--text-secondary); font-size: .8rem; cursor: pointer; }
 .board-sort select:hover { color: #ffffff; }
 

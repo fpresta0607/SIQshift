@@ -180,21 +180,6 @@ pub struct Organization {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LeaderboardEntry {
-    pub rank: u32,
-    pub user: LeaderboardMember,
-    pub duration_seconds: u64,
-    pub session_count: u32,
-    /// The active/agent split arrived with effort reporting; an API that
-    /// predates it still decodes, the entry just carries no measured split.
-    #[serde(default)]
-    pub active_seconds: u64,
-    #[serde(default)]
-    pub agent_seconds: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct LeaderboardMember {
     pub id: String,
     pub name: String,
@@ -205,9 +190,47 @@ struct OrganizationResponse {
     organization: Organization,
 }
 
-#[derive(Deserialize)]
-struct LeaderboardResponse {
-    entries: Vec<LeaderboardEntry>,
+/// The team view: the caller's one workspace laid out as the home page's
+/// example workspace. Every total is added up on the server; the webview
+/// draws them as given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReport {
+    pub active_seconds: u64,
+    pub agent_seconds: u64,
+    /// One bucket per local hour of a bounded range; empty over all time.
+    pub hourly: Vec<MeStatsHourlyBucket>,
+    pub projects: Vec<WorkspaceProjectTotal>,
+    pub agents: Vec<WorkspaceAgentTotal>,
+    pub members: Vec<WorkspaceMember>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectTotal {
+    pub project: LeaderboardMember,
+    pub duration_seconds: u64,
+}
+
+/// A runtime id as the server sent it, so one this build has never heard of
+/// still reads rather than failing the whole view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceAgentTotal {
+    pub source: String,
+    pub duration_seconds: u64,
+}
+
+/// One board row, ranked as the leaderboard ranks, with the project the member
+/// spent most time on, `None` when none had any.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMember {
+    pub rank: u32,
+    pub user: LeaderboardMember,
+    pub active_seconds: u64,
+    pub agent_seconds: u64,
+    pub project: Option<LeaderboardMember>,
 }
 
 /// The Agents tab's whole story: what ran, where, grouped by codebase. Every
@@ -953,32 +976,25 @@ impl ApiClient {
         Ok(body.organization)
     }
 
-    /// The workspace board for a range. Bounds arrive together or not at all;
-    /// none means all time, exactly as `/reports/leaderboard` reads it.
-    pub async fn leaderboard(
+    /// The team view for a range. Bounds arrive together or not at all; none
+    /// means all time, exactly as `/reports/workspace` reads it.
+    pub async fn workspace_report(
         &self,
         access_token: &str,
         from_at: Option<&str>,
         to_exclusive_at: Option<&str>,
-        scope: Option<&str>,
-    ) -> ApiResult<Vec<LeaderboardEntry>> {
-        // ISO-8601 UTC instants and scope values (uuid / "all" / "unassigned")
-        // contain no characters that need escaping in a query string, so they
-        // are interpolated as-is.
-        let mut query = match (from_at, to_exclusive_at) {
+    ) -> ApiResult<WorkspaceReport> {
+        match (from_at, to_exclusive_at) {
             (Some(from_at), Some(to_exclusive_at)) => {
-                format!("?fromAt={from_at}&toExclusiveAt={to_exclusive_at}")
+                self.get_json_query(
+                    access_token,
+                    "/reports/workspace",
+                    &[("fromAt", from_at), ("toExclusiveAt", to_exclusive_at)],
+                )
+                .await
             }
-            _ => String::new(),
-        };
-        if let Some(scope) = scope.filter(|scope| *scope != "all") {
-            query.push(if query.is_empty() { '?' } else { '&' });
-            query.push_str(&format!("scope={scope}"));
+            _ => self.get_json(access_token, "/reports/workspace").await,
         }
-        let body: LeaderboardResponse = self
-            .get_json(access_token, &format!("/reports/leaderboard{query}"))
-            .await?;
-        Ok(body.entries)
     }
 
     /// Every shift in the range grouped by the codebase it worked, for the
@@ -1855,25 +1871,67 @@ mod tests {
         assert_eq!(stats.apps[0].duration_seconds, 4800);
     }
 
-    #[test]
-    fn reads_leaderboard_entries_from_before_the_active_agent_split() {
-        let body: LeaderboardResponse = serde_json::from_str(
-            r#"{
-                "entries": [
-                    {
-                        "rank": 1,
-                        "user": {"id": "u1", "name": "Alex"},
-                        "durationSeconds": 7200,
-                        "sessionCount": 3
-                    }
-                ]
-            }"#,
-        )
-        .expect("previous-release leaderboard parses");
+    /// The team view asks the workspace route with the overlay's bounds, and
+    /// the report rides on to the webview in the camelCase it arrived in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reads_the_workspace_report_for_the_overlays_range() {
+        const WORKSPACE: StubAnswer = (
+            "200 OK",
+            "",
+            r#"{"filters": {}, "activeSeconds": 11640, "agentSeconds": 10800,
+                "hourly": [{"hourStart": "2026-08-06T13:00:00.000Z", "activeSeconds": 3000, "agentSeconds": 3600}],
+                "projects": [{"project": {"id": "p1", "name": "General"}, "durationSeconds": 8040}],
+                "agents": [{"source": "a_runtime_from_the_future", "durationSeconds": 10800}],
+                "members": [
+                    {"rank": 1, "user": {"id": "u1", "name": "Sam"}, "activeSeconds": 8040, "agentSeconds": 10800,
+                     "project": {"id": "p1", "name": "General"}},
+                    {"rank": 2, "user": {"id": "u2", "name": "Alex"}, "activeSeconds": 3600, "agentSeconds": 0,
+                     "project": null}
+                ]}"#,
+        );
+        let (client, served) = scripted_stub(vec![WORKSPACE]).await;
 
-        assert_eq!(body.entries[0].duration_seconds, 7_200);
-        assert_eq!(body.entries[0].active_seconds, 0);
-        assert_eq!(body.entries[0].agent_seconds, 0);
+        let report = client
+            .workspace_report(
+                "token",
+                Some("2026-08-06T00:00:00.000Z"),
+                Some("2026-08-07T00:00:00.000Z"),
+            )
+            .await
+            .expect("the report reads");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(
+            requests[0].0,
+            "GET /reports/workspace?fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z"
+        );
+        assert_eq!(report.active_seconds, 11_640);
+        assert_eq!(report.members[1].project, None);
+        // A runtime this build has never heard of still reads.
+        assert_eq!(report.agents[0].source, "a_runtime_from_the_future");
+        let sent = serde_json::to_value(&report).expect("the report serializes");
+        assert_eq!(sent["members"][0]["project"]["name"], "General");
+        assert_eq!(sent["members"][1]["project"], serde_json::Value::Null);
+        assert_eq!(sent["hourly"][0]["hourStart"], "2026-08-06T13:00:00.000Z");
+        assert_eq!(sent["projects"][0]["durationSeconds"], 8_040);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_the_workspace_report_for_all_time_with_no_bounds() {
+        const WORKSPACE: StubAnswer = (
+            "200 OK",
+            "",
+            r#"{"activeSeconds": 0, "agentSeconds": 0, "hourly": [], "projects": [], "agents": [], "members": []}"#,
+        );
+        let (client, served) = scripted_stub(vec![WORKSPACE]).await;
+
+        client
+            .workspace_report("token", None, None)
+            .await
+            .expect("the report reads");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(requests[0].0, "GET /reports/workspace");
     }
 
     #[test]

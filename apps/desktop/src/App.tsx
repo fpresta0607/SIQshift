@@ -18,6 +18,7 @@ import {
   type QuotaSnapshot,
   type SettingsPatch,
   type TimerBridge,
+  type WorkspaceReport,
 } from "./bridge.js";
 import { QuotaDial } from "./QuotaDial.js";
 import {
@@ -25,7 +26,6 @@ import {
   findAgentRuntime,
   formatDuration,
   formatHumanDuration as formatHuman,
-  leverage,
   type AgentRuntimeReportsModel,
 } from "@siqshift/shared";
 import {
@@ -46,6 +46,7 @@ import {
 } from "@siqshift/shared/ui";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
+import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
 
 type AppProps = {
   bridge?: TimerBridge;
@@ -206,6 +207,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [boardMember, setBoardMember] = useState<{ id: string; name: string } | undefined>();
   const [boardStats, setBoardStats] = useState<MeStats | undefined>();
   const [boardStatsError, setBoardStatsError] = useState<string | undefined>();
+  /// The team view the Humans tab draws, over the overlay's range.
+  const [workspace, setWorkspace] = useState<WorkspaceReport | undefined>();
+  const [workspaceError, setWorkspaceError] = useState<string | undefined>();
   /// Humans is the existing board + breakdown; Agents is what ran and where,
   /// every shift grouped by the codebase it worked - no roster to pick from.
   const [overlayTab, setOverlayTab] = useState<"humans" | "agents">("humans");
@@ -250,6 +254,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const statsFailures = useRef(0);
   const overviewFailures = useRef(0);
   const boardStatsFailures = useRef(0);
+  const workspaceFailures = useRef(0);
   const agentShiftsFailures = useRef(0);
   const liveSessionsFailures = useRef(0);
 
@@ -272,6 +277,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     setBoardMember(undefined);
     setBoardStats(undefined);
     setBoardStatsError(undefined);
+    setWorkspace(undefined);
+    setWorkspaceError(undefined);
     setAgentShifts(undefined);
     setAgentShiftsError(undefined);
     setLiveSessions(undefined);
@@ -279,6 +286,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     statsFailures.current = 0;
     overviewFailures.current = 0;
     boardStatsFailures.current = 0;
+    workspaceFailures.current = 0;
     agentShiftsFailures.current = 0;
     liveSessionsFailures.current = 0;
     setSettings(undefined);
@@ -453,36 +461,41 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, allStatsOpen, boardRange, boardMember?.id, signedIn?.user.id, statsTick]);
 
-  // The board itself follows the overlay's range too: hours beside a name and
+  // The team view follows the overlay's range too: hours beside a name and
   // the breakdown under it must answer for the same days. All time sends no
-  // bounds, which is also what the masthead's one boot-time read shows.
+  // bounds.
+  const lastWorkspaceRange = useRef<StatsRange | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
+    const blanked = lastWorkspaceRange.current !== boardRange;
+    if (blanked) {
+      lastWorkspaceRange.current = boardRange;
+      workspaceFailures.current = 0;
+      setWorkspace(undefined);
+      setWorkspaceError(undefined);
+    }
     let active = true;
     const service = bridge;
     const generation = bridgeGeneration.current;
     const bounds = rangeBounds(boardRange);
-    void service.orgOverview(
-      bounds?.fromAt,
-      bounds?.toExclusiveAt,
-    ).then(
+    void service.workspaceReport(bounds?.fromAt, bounds?.toExclusiveAt).then(
       (result) => {
         if (active && isCurrent(service, generation)) {
-          overviewFailures.current = 0;
-          setOverview(result);
-          setOverviewError(undefined);
+          workspaceFailures.current = 0;
+          setWorkspace(result);
+          setWorkspaceError(undefined);
         }
       },
       (error: unknown) => {
         if (!active || !isCurrent(service, generation)) return;
         const problem = bridgeError(error);
         if (problem.kind === "auth") return;
-        overviewFailures.current += 1;
-        if (overviewFailures.current >= 3 || overview === undefined) setOverviewError(problem.message);
+        workspaceFailures.current += 1;
+        if (workspaceFailures.current >= 3 || blanked || workspace === undefined) setWorkspaceError(problem.message);
       },
     );
     return () => { active = false; };
-    // `overview` is read only to tell "nothing to show" from "stale";
+    // `workspace` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, allStatsOpen, boardRange, signedIn?.user.id, statsTick]);
@@ -992,6 +1005,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       const snapshot = await service.bootstrap();
       if (isCurrent(service, generation)) {
         setOverview(result);
+        // The team view lists the workspace just left; the next one is read
+        // when All stats opens.
+        setWorkspace(undefined);
         setAccount(snapshot);
         setJoinCode("");
       }
@@ -1507,43 +1523,41 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
             </>
           ) : (
             <>
-              {/* The board is the selector, not just a scoreboard: whoever is
-                  picked here is whose breakdown the panel underneath shows. It
-                  opens on you, and every member's is open to the whole team. */}
-              {overview && (
-                <>
-                  {overviewError && <p className="form-error" role="alert">{overviewError}</p>}
-                  {overview.entries.length === 0 ? (
-                    <p className="subtle">No recorded time yet.</p>
-                  ) : (
-                    <ol className="board-list" data-testid="board-list">
-                      {overview.entries.map((entry) => (
-                        <li key={entry.user.id} className={entry.user.id === viewedMember.id ? "is-selected" : undefined}>
-                          <button
-                            type="button"
-                            className="board-choice"
-                            aria-pressed={entry.user.id === viewedMember.id}
-                            onClick={() => setBoardMember({ id: entry.user.id, name: entry.user.name })}
-                          >
-                            <span className="board-rank">{entry.rank}</span>
-                            <span className="board-name">
-                              {entry.user.name}
-                              {entry.user.id === ready.user.id && <span className="you-tag"> you</span>}
-                            </span>
-                            <span className="board-times">
-                              <span className="board-hours">{formatHuman(entry.activeSeconds)}</span>
-                              <span className="board-agent">
-                                Agent {formatHuman(entry.agentSeconds)}
-                                {leverage(entry) !== null && ` · ${leverage(entry)}×`}
-                              </span>
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                  {overview.entries.length > 0 && <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>}
-                </>
+              {/* The home page's example workspace, drawn from the server's
+                  report as given. A row is also the selector: whoever is
+                  picked is whose breakdown the panel underneath shows. It opens
+                  on you, and every member's is open to the whole team. */}
+              {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
+              {workspace === undefined ? (
+                !workspaceError && <p className="subtle">Loading…</p>
+              ) : (
+                <WorkspaceView
+                  workspaceName={overview?.organization.name ?? "Your workspace"}
+                  periodLabel={RANGE_LABEL[boardRange]}
+                  activeSeconds={workspace.activeSeconds}
+                  agentSeconds={workspace.agentSeconds}
+                  hourly={workspace.hourly}
+                  members={workspace.members.map((member) => ({
+                    id: member.user.id,
+                    rank: member.rank,
+                    name: member.user.name,
+                    project: member.project?.name ?? null,
+                    activeSeconds: member.activeSeconds,
+                    agentSeconds: member.agentSeconds,
+                    isSelf: member.user.id === ready.user.id,
+                  }))}
+                  boardTool={<span>By active hours</span>}
+                  selectedMemberId={viewedMember.id}
+                  onSelectMember={(picked) => setBoardMember({ id: picked.id, name: picked.name })}
+                  boardNotes={[
+                    ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0
+                      ? []
+                      : ["No recorded time in this range."],
+                    ...workspace.members.length > 1 ? ["Select a teammate to explore their work."] : [],
+                    AGENT_TIME_LIMIT_NOTE,
+                  ]}
+                  {...workspaceBreakdownRows(workspace)}
+                />
               )}
 
               <section className="member-stats" aria-labelledby="member-stats-title" data-testid="member-stats">
