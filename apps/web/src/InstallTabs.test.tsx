@@ -45,7 +45,6 @@ describe("InstallTabs", () => {
     const download = within(panel).getByRole("link", { name: "Download for Windows" });
     expect(download).toHaveAttribute("href", windowsInstallerUrl);
     expect(download).toHaveAccessibleDescription(installerNote);
-    expect(panel).toHaveTextContent("For 64-bit Windows. Updates install themselves.");
   });
 
   it("offers the signed Mac release and says how it is signed", () => {
@@ -60,7 +59,6 @@ describe("InstallTabs", () => {
     const download = within(panel).getByRole("link", { name: "Download for Mac" });
     expect(download).toHaveAttribute("href", macInstallerUrl);
     expect(download).toHaveAccessibleDescription(macInstallerNote);
-    expect(panel).toHaveTextContent("Signed with an Apple Developer ID and notarized by Apple, for Apple silicon and Intel Macs.");
   });
 
   // The Mac build is signed with a Developer ID that is not SIQstack LLC's.
@@ -77,29 +75,19 @@ describe("InstallTabs", () => {
     expect(panel).not.toHaveTextContent("Coming soon");
   });
 
-  it("says plainly what differs on a Mac", () => {
+  it.each([
+    { system: "Windows", userAgent: WINDOWS_USER_AGENT },
+    { system: "Mac", userAgent: MAC_USER_AGENT },
+  ])("holds nothing but the download in the $system panel", ({ system, userAgent }) => {
     // Arrange
-    browseFrom(MAC_USER_AGENT);
-
-    // Act
-    render(<InstallTabs />);
-
-    // Assert
-    const panel = screen.getByRole("tabpanel", { name: "Mac" });
-    for (const difference of [/Documents, Desktop and Downloads/, /opens at login/, /Music on its own/, /macOS 14 or later/]) {
-      expect(panel).toHaveTextContent(difference);
-    }
-  });
-
-  it("says both systems record into the same workspace", () => {
-    // Arrange
-    browseFrom(WINDOWS_USER_AGENT);
+    browseFrom(userAgent);
 
     // Act
     const { container } = render(<InstallTabs />);
 
     // Assert
-    expect(container).toHaveTextContent(/same workspace/);
+    expect(screen.getByRole("tabpanel", { name: system })).toHaveTextContent(new RegExp(`^Download for ${system}$`));
+    expect(container.querySelectorAll("p, ul")).toHaveLength(0);
   });
 
   it("switches system when a tab is clicked", async () => {

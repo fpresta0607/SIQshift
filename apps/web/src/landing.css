@@ -12,21 +12,18 @@
 .landing-siq-logo { display: block; width: 150px; height: auto; }
 .landing-header nav { display: flex; align-items: center; gap: 28px; font-size: .875rem; color: var(--text-secondary); }
 .landing-header nav a { display: inline-flex; align-items: center; min-height: 44px; }
-.landing-header nav button { min-height: 44px; padding: 10px 23px; border: 1px solid var(--glass-border-hover); background: var(--glass-bg); color: white; font-weight: 500; }
+.landing-header nav button { min-height: 44px; padding: 10px 23px; border: 1px solid var(--glass-border-hover); background: var(--glass-bg); color: white; font-weight: 500; white-space: nowrap; }
 .landing-header nav a:hover, .landing-footer a:hover { color: var(--mint); }
+.landing-header nav .landing-header-sign-in { padding: 10px 6px; border: 0; background: none; color: var(--text-secondary); font-size: inherit; }
+.landing-header nav .landing-header-sign-in:hover { color: white; }
 .landing-hero { padding: 82px 24px 68px; text-align: center; }
 .landing-wordmark { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 30px; font-size: 1.85rem; font-weight: 650; letter-spacing: -.04em; }
 .landing-wordmark img { object-fit: contain; }
 .landing-hero h1 { font-size: clamp(3.35rem, 6.3vw, 5.4rem); line-height: 1.05; letter-spacing: -.06em; font-weight: 650; }
 .landing-hero h1 span, .landing-section-heading h2 span, .landing-closing h2 span { color: var(--mint); background: linear-gradient(110deg, var(--mint), #72b9ef 52%, #d0a2fa); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.landing-hero > p { max-width: 640px; margin: 26px auto 0; font-size: 1.125rem; line-height: 1.7; color: var(--text-secondary); }
-.landing-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 30px; }
-.landing-primary, .landing-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 18px; min-height: 54px; padding: 13px 26px; font-size: .98rem; font-weight: 600; transition: background .2s, border-color .2s, box-shadow .2s; }
-.landing-primary { border: 1px solid var(--mint); background: linear-gradient(110deg, var(--accent-green), var(--mint)); color: var(--body-bg); box-shadow: 0 0 28px color-mix(in srgb, var(--accent-green) 10%, transparent); }
+.landing-primary { display: inline-flex; align-items: center; justify-content: center; gap: 18px; min-height: 54px; padding: 13px 26px; font-size: .98rem; font-weight: 600; transition: background .2s, border-color .2s, box-shadow .2s; border: 1px solid var(--mint); background: linear-gradient(110deg, var(--accent-green), var(--mint)); color: var(--body-bg); box-shadow: 0 0 28px color-mix(in srgb, var(--accent-green) 10%, transparent); }
 .landing-primary:hover { background: var(--mint); box-shadow: 0 0 32px color-mix(in srgb, var(--accent-green) 22%, transparent); }
 .landing-primary > span { font-size: 1.2rem; }
-.landing-secondary { border: 1px solid var(--glass-border-hover); background: var(--glass-bg); color: white; }
-.landing-secondary:hover { border-color: var(--mint); }
 /* The hero's install control (InstallTabs.tsx). Both panels share one grid
    cell and the unselected one is only invisible, so the hero keeps the height
    of the taller panel whichever system is picked. */
@@ -38,12 +35,8 @@
 .landing-install-panels { display: grid; margin-top: 20px; }
 .landing-install-panel { grid-area: 1 / 1; min-width: 0; }
 .landing-install-panel.is-hidden { visibility: hidden; }
-.landing-install-download { gap: 12px; border-radius: 999px; }
-.landing-install-download .download-icon { width: 16px; height: 16px; }
-.landing-install-note { margin: 12px 0 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
-.landing-install-differences { margin: 16px 0 0; padding: 14px 18px 14px 36px; border: 1px solid var(--glass-border); border-radius: 16px; background: color-mix(in srgb, var(--body-bg) 78%, transparent); backdrop-filter: blur(18px); color: var(--text-secondary); font-size: .85rem; line-height: 1.6; text-align: left; }
-.landing-install-differences li + li { margin-top: 6px; }
-.landing-install-shared { margin: 14px auto 0; max-width: 460px; color: var(--text-secondary); font-size: .8rem; line-height: 1.6; }
+.landing .landing-install-download { gap: 12px; min-height: 60px; padding: 15px 34px; border-radius: 999px; color: var(--body-bg); font-size: 1.05rem; }
+.landing-install-download .download-icon { width: 18px; height: 18px; color: var(--body-bg); }
 .landing-scroll { display: inline-flex; min-height: 44px; align-items: center; gap: 12px; margin-top: 30px; font-size: .84rem; color: var(--text-secondary) !important; }
 .landing-content { max-width: 1180px; margin: auto; padding: 48px 24px 0; scroll-margin-top: calc(136px + env(safe-area-inset-top)); }
 #landing-main { scroll-margin-top: calc(136px + env(safe-area-inset-top)); }
@@ -83,8 +76,8 @@
   .landing-wordmark { margin-bottom: 26px; font-size: 1.6rem; }
   .landing-wordmark img { width: 44px; height: 44px; }
   .landing-hero h1 { font-size: clamp(3rem, 11vw, 4.5rem); }
-  .landing-hero > p { font-size: 1rem; max-width: 390px; }
   .landing-install { margin-top: 28px; scroll-margin-top: calc(104px + env(safe-area-inset-top)); }
+  .landing .landing-install-download { width: 100%; max-width: 330px; }
   .landing-desktop-break { display: none; }
   .landing-content { padding: 42px 20px 0; }
   .landing-content, #landing-main { scroll-margin-top: calc(104px + env(safe-area-inset-top)); }
@@ -110,6 +103,7 @@
 .landing-siq-logo { width: 88px; }
 .landing-header nav { gap: 20px; font-size: .95rem; }
 .landing-header nav .landing-primary { background: linear-gradient(110deg, var(--accent-green), var(--mint)); color: var(--body-bg); border-color: var(--mint); font-weight: 650; }
+.landing-header nav .landing-header-cta { padding: 8px 20px; border-radius: 999px; font-size: .92rem; }
 .landing-hero { padding-top: 84px; }
 .landing-wordmark { margin-bottom: 25px; font-size: .8rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--mint); }
 @media (max-width: 1000px) {
@@ -119,11 +113,19 @@
   .landing-header { width: calc(100% - 28px); margin-top: 14px; padding: 14px 16px; border-radius: 18px; gap: 12px; }
   .landing-product-brand { font-size: 1.65rem; gap: 9px; }
   .landing-product-brand img { width: 42px; height: 42px; }
-  .landing-header nav { gap: 0; }
-  .landing-header nav button { padding: 10px 18px; font-size: .88rem; }
-  .landing-header nav .landing-header-cta { display: none; }
+  .landing-header nav { gap: 6px; }
+  .landing-header nav .landing-header-sign-in { padding: 8px; font-size: .9rem; }
+  .landing-header nav .landing-header-cta { padding: 7px 15px; font-size: .88rem; }
   .landing-hero { padding-top: 58px; }
   .landing-wordmark { font-size: .7rem; letter-spacing: .12em; }
   .landing-hero h1 { font-size: clamp(2.5rem, 10vw, 4.5rem); }
+}
+/* Keeps Sign in and Sign up beside the brand on the narrowest phones. */
+@media (max-width: 359px) {
+  .landing-header { padding: 14px 12px; }
+  .landing-product-brand { font-size: 1.25rem; gap: 7px; }
+  .landing-product-brand img { width: 30px; height: 30px; }
+  .landing-header nav .landing-header-sign-in { padding: 8px 4px; }
+  .landing-header nav .landing-header-cta { padding: 7px 12px; }
 }
 

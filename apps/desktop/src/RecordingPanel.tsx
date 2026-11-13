@@ -289,6 +289,8 @@ export const RecordingPanel = ({
       <ul className="record-list">
           <li>Recorded is the whole of your sessions, quiet inside them included - a break too short to end one, or an agent left running while you were away. It is always at least your hours, and the difference is time away from the keyboard, not agent time.</li>
           <li>Your hours are wall-clock time you were actually at the machine. They can never exceed real elapsed time.</li>
+          <li>On a Mac, music on its own does not keep you active. Video and calls do.</li>
+          <li>On a Mac, a live microphone keeps you active on macOS 14 or later.</li>
           <li>Human work is the time you worked with no agent running - the share you verified yourself.</li>
           <li>The 1, 2, and 3+ agent splits are your agent-assisted share - still your hours, split by how many agents ran beside you at once.</li>
           <li>Agent time is the summed runtime of every AI tool working for you. Three agents in parallel for an hour is 3h of agent time inside 1h of yours - that ratio is your leverage, never extra hours.</li>
