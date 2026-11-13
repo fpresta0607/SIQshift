@@ -29,6 +29,36 @@ test("lists no macOS platform, which the updater could not install from a dmg", 
   assert.deepEqual(Object.keys(manifest.platforms), ["windows-x86_64"]);
 });
 
+test("points both Mac architectures at the one universal app archive a release builds", () => {
+  const manifest = buildUpdaterManifest({
+    ...valid,
+    version: "0.2.2",
+    baseUrl: "https://github.com/fpresta0607/SIQshift/releases/download/v0.2.2",
+    macArchiveName: "SIQshift-macos-universal.app.tar.gz",
+    macSignature: "bWFjIHNpZ25hdHVyZQo=\n",
+  });
+
+  for (const platform of ["darwin-aarch64", "darwin-x86_64"]) {
+    assert.deepEqual(manifest.platforms[platform], {
+      signature: "bWFjIHNpZ25hdHVyZQo=",
+      url: "https://github.com/fpresta0607/SIQshift/releases/download/v0.2.2/SIQshift-macos-universal.app.tar.gz",
+    });
+  }
+});
+
+test("refuses a Mac archive without its signature", () => {
+  assert.throws(
+    () => buildUpdaterManifest({ ...valid, macArchiveName: "SIQshift-macos-universal.app.tar.gz", macSignature: " " }),
+    /Mac app archive/,
+  );
+});
+
+test("carries the notes a release gives it", () => {
+  const manifest = buildUpdaterManifest({ ...valid, version: "0.2.2", notes: "SIQshift 0.2.2" });
+
+  assert.equal(manifest.notes, "SIQshift 0.2.2");
+});
+
 test("survives a base URL that already ends in a slash", () => {
   const manifest = buildUpdaterManifest({ ...valid, baseUrl: `${valid.baseUrl}/` });
 

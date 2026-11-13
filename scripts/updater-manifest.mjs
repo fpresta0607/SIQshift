@@ -7,12 +7,13 @@ import { readFileSync, writeFileSync } from "node:fs";
  * running, so `version` is the whole mechanism: get it wrong and either every
  * machine reinstalls in a loop, or none of them ever updates.
  *
- * Windows is the only platform listed on purpose. The macOS updater installs
- * from an app archive, not the `.dmg` the unsigned workflow builds, so
- * advertising a `darwin` entry here would hand the updater something it cannot
- * apply and fail on every Mac.
+ * The Mac is listed only when the build published an app archive. The macOS
+ * updater installs from that archive, not from the `.dmg` the unsigned
+ * workflow builds, so a `darwin` entry without one would hand the updater
+ * something it cannot apply and fail on every Mac. A release builds one
+ * universal archive, which serves both Mac architectures.
  */
-export function buildUpdaterManifest({ version, baseUrl, signature, installerName, pubDate, notes }) {
+export function buildUpdaterManifest({ version, baseUrl, signature, installerName, macArchiveName, macSignature, pubDate, notes }) {
   const trimmedVersion = version?.trim();
   if (!trimmedVersion) {
     throw new Error("The update manifest needs the version this build published.");
@@ -35,16 +36,27 @@ export function buildUpdaterManifest({ version, baseUrl, signature, installerNam
     throw new Error("The update manifest needs the installer's published name.");
   }
 
+  const platforms = {
+    "windows-x86_64": {
+      signature: trimmedSignature,
+      url: `${trimmedBase}/${installerName.trim()}`,
+    },
+  };
+  if (macArchiveName !== undefined) {
+    const trimmedMacSignature = macSignature?.trim();
+    if (!macArchiveName.trim() || !trimmedMacSignature) {
+      throw new Error("The update manifest needs both the Mac app archive's name and its minisign signature.");
+    }
+    const mac = { signature: trimmedMacSignature, url: `${trimmedBase}/${macArchiveName.trim()}` };
+    platforms["darwin-aarch64"] = mac;
+    platforms["darwin-x86_64"] = mac;
+  }
+
   return {
     version: trimmedVersion,
     notes: notes ?? "Automatic update of the SIQshift unsigned test build.",
     pub_date: pubDate ?? new Date().toISOString(),
-    platforms: {
-      "windows-x86_64": {
-        signature: trimmedSignature,
-        url: `${trimmedBase}/${installerName.trim()}`,
-      },
-    },
+    platforms,
   };
 }
 
@@ -55,6 +67,10 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith("updater-manifest.
     baseUrl: process.env.BASE_URL,
     signature: readFileSync(process.env.SIGNATURE_PATH, "utf8"),
     installerName,
+    ...(process.env.MAC_ARCHIVE_NAME
+      ? { macArchiveName: process.env.MAC_ARCHIVE_NAME, macSignature: readFileSync(process.env.MAC_SIGNATURE_PATH, "utf8") }
+      : {}),
+    ...(process.env.NOTES ? { notes: process.env.NOTES } : {}),
     ...(process.env.PUB_DATE ? { pubDate: process.env.PUB_DATE } : {}),
   });
   writeFileSync(process.env.MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);

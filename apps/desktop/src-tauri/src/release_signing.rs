@@ -7,7 +7,9 @@ use std::path::Path;
 pub struct SigningConfiguration {
     pub updater_artifacts_requested: bool,
     pub updater_public_key: Option<String>,
-    pub windows_certificate_thumbprint: Option<String>,
+    /// The program `bundle.windows.signCommand` runs, which signs through
+    /// Azure Artifact Signing.
+    pub windows_sign_command: Option<String>,
 }
 
 pub fn effective_tauri_config(mut base: Value, override_config: Option<&Value>) -> Value {
@@ -27,8 +29,8 @@ pub fn signing_configuration(config: &Value) -> SigningConfiguration {
             .pointer("/plugins/updater/pubkey")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        windows_certificate_thumbprint: config
-            .pointer("/bundle/windows/certificateThumbprint")
+        windows_sign_command: config
+            .pointer("/bundle/windows/signCommand/cmd")
             .and_then(Value::as_str)
             .map(str::to_owned),
     }
@@ -54,7 +56,7 @@ pub fn validate_build_signing(
     )?;
 
     match target_os {
-        "windows" => validate_windows_signing(config.windows_certificate_thumbprint.clone()),
+        "windows" => validate_windows_signing(config.windows_sign_command.as_deref()),
         "macos" => validate_macos_signing(get),
         _ => Ok(()),
     }
@@ -131,15 +133,14 @@ fn minisign_key_text(value: &str, name: &str) -> Result<String, String> {
     String::from_utf8(decoded).map_err(|_| format!("{name} must contain a Minisign key."))
 }
 
-fn validate_windows_signing(configured_thumbprint: Option<String>) -> Result<(), String> {
-    let thumbprint = configured_thumbprint
-        .as_deref()
-        .and_then(normalized_windows_thumbprint)
+fn validate_windows_signing(sign_command: Option<&str>) -> Result<(), String> {
+    sign_command
+        .filter(|program| Path::new(program).is_file())
+        .map(|_| ())
         .ok_or_else(|| {
-            "Windows release builds require bundle.windows.certificateThumbprint in the effective Tauri configuration."
+            "Windows release builds require bundle.windows.signCommand naming a signing tool that exists, in the effective Tauri configuration."
                 .to_string()
-        })?;
-    validate_windows_thumbprint(&thumbprint)
+        })
 }
 
 fn validate_macos_signing(get: impl Fn(&str) -> Option<String>) -> Result<(), String> {
@@ -153,13 +154,13 @@ pub(crate) fn validate_macos_signing_with_verifier(
     get: impl Fn(&str) -> Option<String>,
     verify_identity: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<(), String> {
+    // The certificate is imported into the job's keychain before the build,
+    // and Apple notarizes with an App Store Connect API key.
     let required_names = [
-        "APPLE_CERTIFICATE",
-        "APPLE_CERTIFICATE_PASSWORD",
         "APPLE_SIGNING_IDENTITY",
-        "APPLE_ID",
-        "APPLE_PASSWORD",
-        "APPLE_TEAM_ID",
+        "APPLE_API_KEY",
+        "APPLE_API_ISSUER",
+        "APPLE_API_KEY_PATH",
     ];
     let missing = required_names
         .into_iter()
@@ -170,6 +171,11 @@ pub(crate) fn validate_macos_signing_with_verifier(
             "macOS release builds require {}.",
             missing.join(", ")
         ));
+    }
+    let api_key_path =
+        required(get("APPLE_API_KEY_PATH")).expect("APPLE_API_KEY_PATH was checked above");
+    if !Path::new(api_key_path.trim()).is_file() {
+        return Err("APPLE_API_KEY_PATH must name the App Store Connect API key file.".to_string());
     }
     let identity =
         required(get("APPLE_SIGNING_IDENTITY")).expect("APPLE_SIGNING_IDENTITY was checked above");
@@ -220,34 +226,4 @@ fn validate_macos_notarization_tool() -> Result<(), String> {
 
 fn required(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
-}
-
-fn normalized_windows_thumbprint(value: &str) -> Option<String> {
-    let compact = value
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>();
-    ((compact.len() == 40 || compact.len() == 64)
-        && compact.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then_some(compact)
-}
-
-#[cfg(windows)]
-fn validate_windows_thumbprint(thumbprint: &str) -> Result<(), String> {
-    let command = format!(
-        "$ErrorActionPreference = 'Stop'; $certificate = Get-Item -LiteralPath 'Cert:\\CurrentUser\\My\\{thumbprint}'; if (-not $certificate.HasPrivateKey) {{ exit 1 }}"
-    );
-    let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .status()
-        .map_err(|_| "The configured Windows signing certificate is unavailable.".to_string())?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "The configured Windows signing certificate is unavailable.".to_string())
-}
-
-#[cfg(not(windows))]
-fn validate_windows_thumbprint(_thumbprint: &str) -> Result<(), String> {
-    Err("Windows signing configuration can only be validated on Windows.".to_string())
 }

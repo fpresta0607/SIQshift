@@ -835,7 +835,7 @@ for what automation can't click.
 ## Deploying
 
 The API runs on Railway from `apps/api/Dockerfile`, the dashboard on Vercel, and desktop
-installers are published to GitHub Releases by tagging (`git tag v0.1.0 && git push origin v0.1.0`).
+installers are published to GitHub Releases by running the *Release desktop* workflow from `main`.
 Full runbook, DNS records, and rollback steps: **[DEPLOY.md](DEPLOY.md)**.
 
 ## Design notes

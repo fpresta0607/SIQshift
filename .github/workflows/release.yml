@@ -1,87 +1,126 @@
 name: Release desktop
 
-# Tag a release to publish installers:  git tag v0.1.0 && git push origin v0.1.0
+# Publishes a signed, updatable SIQshift release: Actions -> Release desktop ->
+# Run workflow, from main. The release takes the version in
+# apps/desktop/src-tauri/tauri.conf.json, creates its tag v<version> on the
+# commit it built, and refuses to run when that tag already exists, so raise
+# the version before each release.
 #
-# Production releases require installer and updater signing credentials. When
-# none are configured, a version tag is not an error: the project's accepted
-# distribution today is the unsigned `unsigned-latest` release, so this
-# workflow says so and skips rather than painting every tag red forever.
-# Partially configured signing still fails hard, because a half-built signing
-# setup that silently downgraded would hide itself for as long as nobody looked.
+# There is no tag trigger. Every job that reads signing credentials runs in
+# the `release` environment, which admits only `main` and `unsigned-test/*`,
+# so a run started by pushing a tag could never sign anything.
+#
+# Nothing unsigned is published. Windows signs through Azure Artifact Signing
+# and is always built; the Mac is built only once every Apple signing secret
+# is set, signed by SIQstack LLC and notarized by Apple, and otherwise left
+# out of the release and said so. `build.rs` refuses a release compile that
+# lacks the updater key or this platform's signing, so the gate holds for
+# anyone building outside this workflow too.
+#
+# The assets carry fixed names, and the release is marked latest, so
+# releases/latest/download/<name> always serves the newest signed release.
+# Release installs update from releases/latest/download/latest.json, never
+# from the `unsigned-latest` test channel that tauri.conf.json names.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop
+  cancel-in-progress: false
+
 jobs:
-  # Decides signed / unsigned / misconfigured before anything is built, so the
-  # build job can be *skipped* rather than failed. The logic lives in
-  # `scripts/release-signing-state.mjs` where it is unit-tested against all
-  # three states.
-  signing-preflight:
+  # Which version this release takes and which installers it builds. Only
+  # whether each signing credential is set is read here, never its value.
+  plan:
     runs-on: ubuntu-latest
-    # `actions: write` is only for dispatching the unsigned publish below.
-    # This job builds nothing and never writes to the repository.
+    timeout-minutes: 5
+    environment: release
     permissions:
       contents: read
-      actions: write
     outputs:
-      mode: ${{ steps.state.outputs.mode }}
+      matrix: ${{ steps.legs.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - id: state
-        name: Resolve the signing state for this tag
+      - name: Release only from main
+        if: github.ref != 'refs/heads/main'
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          REF: ${{ github.ref_name }}
+        run: |
+          echo "::error title=A release is cut from main::This run started from $REF. Run it from main."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - id: version
+        name: Read the version this release takes
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Not a release version::tauri.conf.json carries $version. A release takes a plain major.minor.patch version."
+            exit 1
+          fi
+          # ls-remote exits 2 when the tag is absent; anything else but 0 is a
+          # failed lookup, which must not read as "not released yet".
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error title=v$version is already released::Raise the version in apps/desktop/src-tauri/tauri.conf.json, then run this again."
+            exit 1
+          elif [ "$status" -ne 2 ]; then
+            echo "::error title=Could not read the tags::git ls-remote exited $status, so whether v$version exists is unknown."
+            exit 1
+          fi
+          echo "::notice title=Releasing v$version::This run builds, signs and publishes SIQshift $version."
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - id: legs
+        name: Decide which installers this release builds
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' }}
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT != '' }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT != '' }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE != '' }}
+          SIGNING_PUBLISHER: ${{ vars.SIGNING_PUBLISHER != '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY != '' }}
         run: node scripts/release-signing-state.mjs
 
-      # A version tag should still leave something installable behind. The
-      # unsigned workflow already publishes to the fixed `unsigned-latest`
-      # release, so this reuses it rather than building a second path. Its
-      # `publish` job is `workflow_dispatch`-only, which is exactly what this
-      # dispatch satisfies.
-      #
-      # Best-effort on purpose: the tag is not a failure just because the
-      # dispatch was refused, so this never fails the preflight.
-      - name: Publish unsigned installers for this tag
-        if: steps.state.outputs.mode == 'unsigned'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh workflow run "Unsigned test installers" --ref "${{ github.ref_name }}"; then
-            echo "::notice::Dispatched the unsigned installer publish for ${{ github.ref_name }}."
-          else
-            echo "::warning::Could not dispatch the unsigned installer publish; run it by hand from the Actions tab."
-          fi
-
   installers:
-    needs: signing-preflight
-    # Skipped, not failed, when this target has no signing configured. A
-    # skipped job reports neutral, which is what keeps the tag out of the red.
-    if: needs.signing-preflight.outputs.mode == 'signed'
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: windows
-          - os: macos-latest
-            target: macos
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    # A release build compiles the crate twice (the helpers, then the app),
+    # and the Mac does it per architecture before Apple's notary service.
+    timeout-minutes: 150
+    # Azure sign-in goes through GitHub's OpenID Connect: no password is
+    # stored. The macOS certificate and notary key are environment secrets.
+    # This job can read the repository but never write to it.
+    environment: release
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+    # Job-level so every compile sees identical values; `build.rs` reruns on
+    # any change to these. Compiled in, so the release talks to production.
+    env:
+      SIQSHIFT_AUTH_URL: ${{ vars.SIQSHIFT_AUTH_URL }}
+      SIQSHIFT_API_URL: ${{ vars.SIQSHIFT_API_URL }}
+      SIQSHIFT_CHROME_EXTENSION_ID: ${{ vars.SIQSHIFT_CHROME_EXTENSION_ID }}
+      SIQSHIFT_EDGE_EXTENSION_ID: ${{ vars.SIQSHIFT_EDGE_EXTENSION_ID }}
+      SIQSHIFT_FIREFOX_EXTENSION_ID: ${{ vars.SIQSHIFT_FIREFOX_EXTENSION_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -90,239 +129,413 @@ jobs:
           node-version: 22
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
+          key: release
       - run: pnpm install --frozen-lockfile
 
-      - name: Verify production signing configuration
-        shell: bash
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          missing=()
-          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || missing+=(TAURI_SIGNING_PRIVATE_KEY)
-          if [ "${{ matrix.target }}" = windows ]; then
-            if [ -z "$WINDOWS_CERTIFICATE" ] && [ -z "$WINDOWS_CERTIFICATE_THUMBPRINT" ]; then
-              missing+=(WINDOWS_CERTIFICATE-or-WINDOWS_CERTIFICATE_THUMBPRINT)
-            fi
-            if [ -n "$WINDOWS_CERTIFICATE" ] && [ -z "$WINDOWS_CERTIFICATE_PASSWORD" ]; then
-              missing+=(WINDOWS_CERTIFICATE_PASSWORD)
-            fi
-          else
-            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-              [ -n "${!name}" ] || missing+=("$name")
-            done
-          fi
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'Refusing to publish an unsigned or non-updatable production release. Configure: %s\n' "${missing[*]}" >&2
-            exit 1
-          fi
-
-      # tauri-action signs the app binary and the installers itself, but the
-      # helper binaries (siqshift-hook, siqshift-browser-host) are ours to
-      # sign. Build them first and sign them with the same certificate; the
-      # subsequent tauri-action build reuses the untouched cargo artifacts,
-      # so the signed binaries are what end up in the installer. The build is
-      # unconditional: both helpers ship inside the installer as externalBin
-      # siblings of the app.
-      # TAURI_CONFIG neutralizes bundle.externalBin for this step only:
-      # tauri-build would otherwise try to copy binaries/<name>-<triple>,
-      # which does not exist until the staging steps below run.
-      - name: Prepare Windows signing identity
+      # Microsoft's Artifact Signing client is a dlib that signtool loads. It is
+      # pinned by version and hash, and it signs in through the Azure CLI
+      # session the login step below leaves behind, so every other credential
+      # source is excluded.
+      - name: Prepare Windows code signing
         id: windows_signing
         if: matrix.target == 'windows'
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE }}
+          CLIENT_VERSION: 1.0.128
+          CLIENT_SHA256: 74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:WINDOWS_CERTIFICATE) {
-            $pfx = Join-Path $env:RUNNER_TEMP 'siqshift-codesign.pfx'
-            try {
-              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-              $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
-              $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password |
-                Where-Object { $_.HasPrivateKey } |
-                Select-Object -First 1
-            } finally {
-              Remove-Item $pfx -Force -ErrorAction SilentlyContinue
-            }
-          } else {
-            $certificate = Get-ChildItem Cert:\CurrentUser\My |
-              Where-Object { $_.Thumbprint -eq $env:WINDOWS_CERTIFICATE_THUMBPRINT } |
-              Select-Object -First 1
-          }
-          if ($null -eq $certificate -or -not $certificate.HasPrivateKey) {
-            throw 'The configured Windows code-signing certificate is unavailable or lacks a private key.'
-          }
-          "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+          $package = Join-Path $env:RUNNER_TEMP 'artifact-signing-client.zip'
+          Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/$env:CLIENT_VERSION/microsoft.artifactsigning.client.$env:CLIENT_VERSION.nupkg" -OutFile $package
+          $hash = (Get-FileHash $package -Algorithm SHA256).Hash
+          if ($hash -ne $env:CLIENT_SHA256) { throw "The Artifact Signing client hashed to $hash, not the pinned $env:CLIENT_SHA256." }
+          $client = Join-Path $env:RUNNER_TEMP 'artifact-signing-client'
+          Expand-Archive $package -DestinationPath $client
+          $metadata = Join-Path $env:RUNNER_TEMP 'artifact-signing-metadata.json'
+          @{
+            Endpoint = $env:SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:SIGNING_ACCOUNT
+            CertificateProfileName = $env:SIGNING_PROFILE
+            ExcludeCredentials = @(
+              'EnvironmentCredential', 'ManagedIdentityCredential', 'WorkloadIdentityCredential',
+              'SharedTokenCacheCredential', 'VisualStudioCredential', 'VisualStudioCodeCredential',
+              'AzurePowerShellCredential', 'AzureDeveloperCliCredential', 'InteractiveBrowserCredential'
+            )
+          } | ConvertTo-Json | Set-Content $metadata -Encoding utf8
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { $_.VersionInfo.ProductVersion } -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw 'signtool.exe is not on this runner.' }
+          "signtool=$signtool" >> $env:GITHUB_OUTPUT
+          "dlib=$(Join-Path $client 'bin\x64\Azure.CodeSigning.Dlib.dll')" >> $env:GITHUB_OUTPUT
+          "metadata=$metadata" >> $env:GITHUB_OUTPUT
 
-      - name: Prepare macOS signing identity
+      # The Developer ID certificate goes into a keychain of this job's own,
+      # and the notary key into a file beside it; both live only for this job.
+      # The keychain has to exist before the compile, because `build.rs`
+      # checks the signing identity is in it.
+      - name: Prepare macOS signing
         id: macos_signing
         if: matrix.target == 'macos'
-        shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          keychain="$RUNNER_TEMP/siqshift-release.keychain-db"
-          certificate="$RUNNER_TEMP/siqshift-release.p12"
+          keychain="$RUNNER_TEMP/siqshift-signing.keychain-db"
+          certificate="$RUNNER_TEMP/siqshift-signing.p12"
           keychain_password="$(uuidgen)"
-          printf '%s' "$APPLE_CERTIFICATE" | python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' > "$certificate"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
           security create-keychain -p "$keychain_password" "$keychain"
-          security default-keychain -s "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
           security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity="$(security find-identity -v -p codesigning "$keychain" | awk -F '"' '/Developer ID Application:/{print $2; exit}')"
-          [ -n "$identity" ]
-          [ "$identity" = "$APPLE_SIGNING_IDENTITY" ]
-          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+          if [ "$identity" != "$APPLE_SIGNING_IDENTITY" ] || [[ "$identity" != *"($APPLE_TEAM_ID)" ]]; then
+            echo "The certificate in APPLE_CERTIFICATE is not the Developer ID Application identity APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID name." >&2
+            exit 1
+          fi
+          api_key_path="$RUNNER_TEMP/siqshift-notary.p8"
+          printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"
 
-      - name: Build helper binaries
+      - name: Write the release configuration
+        id: release_config
         shell: bash
         env:
-          SIQSHIFT_AUTH_URL: ${{ vars.SIQSHIFT_AUTH_URL }}
-          SIQSHIFT_API_URL: ${{ vars.SIQSHIFT_API_URL }}
-          SIQSHIFT_CHROME_EXTENSION_ID: ${{ vars.SIQSHIFT_CHROME_EXTENSION_ID }}
-          SIQSHIFT_EDGE_EXTENSION_ID: ${{ vars.SIQSHIFT_EDGE_EXTENSION_ID }}
-          SIQSHIFT_FIREFOX_EXTENSION_ID: ${{ vars.SIQSHIFT_FIREFOX_EXTENSION_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ steps.macos_signing.outputs.identity }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           SIQSHIFT_RELEASE_TARGET: ${{ matrix.target }}
-          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ steps.windows_signing.outputs.thumbprint }}
-          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          SIQSHIFT_UPDATER_ENDPOINT: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/latest.json
+          SIQSHIFT_SIGNTOOL: ${{ steps.windows_signing.outputs.signtool }}
+          SIQSHIFT_SIGNING_DLIB: ${{ steps.windows_signing.outputs.dlib }}
+          SIQSHIFT_SIGNING_METADATA: ${{ steps.windows_signing.outputs.metadata }}
+          SIQSHIFT_CONFIG_PATH: ${{ runner.temp }}/tauri.release.conf.json
+        run: node scripts/release-tauri-config.mjs
+
+      # `build.rs` checks the updater key and this platform's signing in every
+      # release compile, so both compiles carry them. The helpers compile
+      # first because the app bundles them as sidecars.
+      - name: Build the helpers
+        shell: bash
+        env:
+          TAURI_CONFIG: ${{ steps.release_config.outputs.helper_config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.target == 'macos' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ matrix.target == 'macos' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ matrix.target == 'macos' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_PATH: ${{ steps.macos_signing.outputs.api_key_path }}
+        run: cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml ${{ matrix.cargo_targets }} --bin siqshift-hook --bin siqshift-browser-host
+
+      # `externalBin` resolves `binaries/<name>-<target-triple>`, so the helpers
+      # have to sit there under that name before the app compiles; the bundler
+      # signs these copies. A universal macOS build compiles each architecture
+      # against its own triple's copy and bundles the `universal-apple-darwin`
+      # one, which lipo joins from the two.
+      - name: Stage the helpers for bundling
+        shell: bash
         run: |
           set -euo pipefail
-          TAURI_CONFIG="$(node -e '
-            const bundle = { externalBin: [] };
-            if (process.env.SIQSHIFT_RELEASE_TARGET === "windows") {
-              bundle.windows = {
-                certificateThumbprint: process.env.WINDOWS_CERTIFICATE_THUMBPRINT,
-                digestAlgorithm: "sha256",
-                timestampUrl: process.env.WINDOWS_TIMESTAMP_URL || "http://timestamp.digicert.com",
-              };
-            }
-            process.stdout.write(JSON.stringify({ bundle }));
-          ')" cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml
+          binaries=apps/desktop/src-tauri/binaries
+          mkdir -p "$binaries"
+          for name in siqshift-hook siqshift-browser-host; do
+            if [ "${{ matrix.target }}" = windows ]; then
+              triple="$(rustc -vV | sed -n 's/^host: //p')"
+              cp "apps/desktop/src-tauri/target/release/$name.exe" "$binaries/$name-$triple.exe"
+            else
+              for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+                cp "apps/desktop/src-tauri/target/$triple/release/$name" "$binaries/$name-$triple"
+              done
+              lipo -create -output "$binaries/$name-universal-apple-darwin" \
+                "$binaries/$name-aarch64-apple-darwin" "$binaries/$name-x86_64-apple-darwin"
+            fi
+          done
 
-      - name: Sign helper binaries (Authenticode)
+      # Compiling and bundling are separate steps because GitHub's sign-in
+      # token for Azure lasts about five minutes: the Azure login has to come
+      # after the long compile and right before the bundler starts signing.
+      - name: Build the app
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          RELEASE_CONFIG: ${{ steps.release_config.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.target == 'macos' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ matrix.target == 'macos' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ matrix.target == 'macos' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_PATH: ${{ steps.macos_signing.outputs.api_key_path }}
+        run: pnpm exec tauri build --no-bundle --config "$RELEASE_CONFIG" ${{ matrix.tauri_target }}
+
+      - uses: azure/login@v3
+        if: matrix.target == 'windows'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # The bundler signs the app, both helpers and the installer, then signs
+      # each installer for the updater. On macOS it uses the hardened runtime,
+      # has Apple notarize the app and staples the ticket to it.
+      - name: Bundle the installers
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          RELEASE_CONFIG: ${{ steps.release_config.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.target == 'macos' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ matrix.target == 'macos' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ matrix.target == 'macos' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_PATH: ${{ steps.macos_signing.outputs.api_key_path }}
+        run: pnpm exec tauri bundle ${{ matrix.bundle_args }} --config "$RELEASE_CONFIG" ${{ matrix.tauri_target }}
+
+      # The disk image people download is signed, notarized and stapled too,
+      # so Gatekeeper accepts it before the app inside is ever opened.
+      - name: Notarize the macOS disk image
+        if: matrix.target == 'macos'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ steps.macos_signing.outputs.api_key_path }}
+          BUNDLE_DIR: ${{ matrix.target_dir }}/bundle
+        run: |
+          set -euo pipefail
+          images=("$BUNDLE_DIR"/dmg/*.dmg)
+          if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then
+            echo "Expected one disk image in $BUNDLE_DIR/dmg." >&2
+            exit 1
+          fi
+          image="${images[0]}"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$image"
+          result="$RUNNER_TEMP/notary-result.json"
+          xcrun notarytool submit "$image" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --output-format json > "$result"
+          status="$(node -p 'require(process.argv[1]).status' "$result")"
+          if [ "$status" != Accepted ]; then
+            echo "Apple's notary service answered $status for the disk image." >&2
+            xcrun notarytool log "$(node -p 'require(process.argv[1]).id' "$result")" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" >&2 || true
+            exit 1
+          fi
+          xcrun stapler staple "$image"
+
+      # Nothing is published for the Mac unless what ships is a universal app
+      # whose every binary carries SIQstack LLC's Developer ID signature with
+      # the hardened runtime, and both the app and the disk image are notarized
+      # with the ticket stapled. The app is checked as the disk image delivers it.
+      - name: Verify the macOS signatures
+        if: matrix.target == 'macos'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_DIR: ${{ matrix.target_dir }}/bundle
+        run: |
+          set -euo pipefail
+          fail() { echo "$1" >&2; exit 1; }
+          image="$(find "$BUNDLE_DIR/dmg" -name '*.dmg' -print -quit)"
+          assessment="$(spctl --assess --type open --context context:primary-signature --verbose=4 "$image" 2>&1)" \
+            || fail "Gatekeeper rejects the disk image: $assessment"
+          grep -q 'source=Notarized Developer ID' <<< "$assessment" || fail "The disk image is not notarized Developer ID: $assessment"
+          xcrun stapler validate "$image"
+          mount="$RUNNER_TEMP/siqshift-image"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$image" > /dev/null
+          trap 'hdiutil detach "$mount" > /dev/null || true' EXIT
+          app="$(find "$mount" -maxdepth 1 -name '*.app' -print -quit)"
+          [ -n "$app" ] || fail "The disk image carries no app."
+          codesign --verify --deep --strict --verbose=2 "$app"
+          assessment="$(spctl --assess --type execute --verbose=4 "$app" 2>&1)" \
+            || fail "Gatekeeper rejects the app: $assessment"
+          grep -q 'source=Notarized Developer ID' <<< "$assessment" || fail "The app is not notarized Developer ID: $assessment"
+          xcrun stapler validate "$app"
+          for helper in siqshift-hook siqshift-browser-host; do
+            [ -f "$app/Contents/MacOS/$helper" ] || fail "The app does not carry $helper, so the check would prove nothing."
+          done
+          for binary in "$app"/Contents/MacOS/*; do
+            name="$(basename "$binary")"
+            details="$(codesign --display --verbose=2 "$binary" 2>&1)"
+            grep -q '^Authority=Developer ID Application: ' <<< "$details" || fail "$name is not signed with a Developer ID Application certificate."
+            grep -qx "TeamIdentifier=$APPLE_TEAM_ID" <<< "$details" || fail "$name is signed by another team."
+            grep -q 'flags=.*(runtime)' <<< "$details" || fail "$name lacks the hardened runtime."
+            grep -q '^Timestamp=' <<< "$details" || fail "$name carries no secure timestamp."
+            architectures=" $(lipo -archs "$binary") "
+            [[ "$architectures" == *' arm64 '* && "$architectures" == *' x86_64 '* ]] || fail "$name is not universal:$architectures"
+            echo "verified: $name"
+          done
+
+      # Every Windows file that ships must carry a valid, timestamped signature
+      # from the expected publisher, checked two ways, or nothing is published.
+      # What is checked is the installer and what 7-Zip unpacks from it, not
+      # the build tree: the bundler signs a patched copy of the app.
+      - name: Verify the Windows signatures
         if: matrix.target == 'windows'
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ steps.windows_signing.outputs.thumbprint }}
-          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          SIGNING_PUBLISHER: ${{ vars.SIGNING_PUBLISHER }}
+          BUNDLE_DIR: ${{ matrix.target_dir }}/bundle
         run: |
           $ErrorActionPreference = 'Stop'
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object { $_.VersionInfo.ProductVersion } -Descending |
             Select-Object -First 1 -ExpandProperty FullName
-          $ts = if ($env:WINDOWS_TIMESTAMP_URL) { $env:WINDOWS_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
-          $certArgs = @('/sha1', $env:WINDOWS_CERTIFICATE_THUMBPRINT)
-          foreach ($bin in 'siqshift-hook.exe', 'siqshift-browser-host.exe') {
-            $path = Join-Path 'apps/desktop/src-tauri/target/release' $bin
-            & $signtool sign /fd sha256 /td sha256 /tr $ts @certArgs $path
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $bin" }
+          $installers = @(Get-ChildItem $env:BUNDLE_DIR -Recurse -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
+          $payload = Join-Path $env:RUNNER_TEMP 'installer-payload'
+          & 7z x $installers[0].FullName "-o$payload" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip could not unpack $($installers[0].Name) (exit code $LASTEXITCODE)." }
+          $contents = @(Get-ChildItem $payload -Recurse -File -Include '*.exe', '*.dll')
+          $contents | ForEach-Object { Write-Host "payload: $($_.FullName.Substring($payload.Length + 1))" }
+          foreach ($helper in 'siqshift-hook.exe', 'siqshift-browser-host.exe') {
+            if ($contents.Name -notcontains $helper) { throw "The installer does not carry $helper, so the check would prove nothing." }
+          }
+          $files = @($installers[0].FullName) + @($contents.FullName)
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -FilePath $file
+            if ($signature.Status -ne 'Valid') { throw "$file is not validly signed: $($signature.Status) $($signature.StatusMessage)" }
+            if ($signature.SignerCertificate.GetNameInfo('SimpleName', $false) -ne $env:SIGNING_PUBLISHER) { throw "$file is signed by '$($signature.SignerCertificate.Subject)', not '$env:SIGNING_PUBLISHER'" }
+            if (-not $signature.TimeStamperCertificate) { throw "$file carries no timestamp, so its signature would lapse with the certificate" }
+            & $signtool verify /pa /tw $file
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify /pa failed for $file with exit code $LASTEXITCODE" }
           }
 
-      # externalBin resolves `binaries/<name>-<target-triple>`; stage the
-      # (signed, on Windows) helpers under those names for the bundler.
-      - name: Stage helper binaries for bundling (Windows)
-        if: matrix.target == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force 'apps/desktop/src-tauri/binaries' | Out-Null
-          foreach ($bin in 'siqshift-hook', 'siqshift-browser-host') {
-            Copy-Item "apps/desktop/src-tauri/target/release/$bin.exe" "apps/desktop/src-tauri/binaries/$bin-x86_64-pc-windows-msvc.exe" -Force
-          }
-
-      - name: Stage helper binaries for bundling (macOS)
-        if: matrix.target == 'macos'
+      # The installer, plus on the Mac the app archive the updater installs
+      # from, each beside the updater signature the bundler made for it.
+      - name: Collect the release files
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ matrix.target_dir }}/bundle
         run: |
           set -euo pipefail
-          mkdir -p apps/desktop/src-tauri/binaries
-          for bin in siqshift-hook siqshift-browser-host; do
-            cp "apps/desktop/src-tauri/target/release/$bin" "apps/desktop/src-tauri/binaries/$bin-aarch64-apple-darwin"
-          done
+          mkdir -p release-files
+          take() {
+            local matches=($1)
+            if [ "${#matches[@]}" -ne 1 ] || [ ! -f "${matches[0]}" ]; then
+              echo "Expected one file matching $1." >&2
+              find "$BUNDLE_DIR" -maxdepth 2 >&2 || true
+              exit 1
+            fi
+            cp "${matches[0]}" release-files/
+          }
+          if [ "${{ matrix.target }}" = windows ]; then
+            take "$BUNDLE_DIR/nsis/*-setup.exe"
+            take "$BUNDLE_DIR/nsis/*-setup.exe.sig"
+          else
+            take "$BUNDLE_DIR/dmg/*.dmg"
+            take "$BUNDLE_DIR/macos/*.app.tar.gz"
+            take "$BUNDLE_DIR/macos/*.app.tar.gz.sig"
+          fi
+          ls -l release-files
 
-      - name: Create Tauri bundle configuration
-        id: tauri_config
-        env:
-          SIQSHIFT_UPDATER_ENABLED: "true"
-          SIQSHIFT_WINDOWS_SIGNING: ${{ matrix.target == 'windows' && 'true' || 'false' }}
-          SIQSHIFT_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ steps.windows_signing.outputs.thumbprint }}
-          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
-        run: node scripts/release-tauri-config.mjs
-
-      # These are read at compile time, so they must be set before the build.
-      # Without them the installer ships pointing at localhost.
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          SIQSHIFT_AUTH_URL: ${{ vars.SIQSHIFT_AUTH_URL }}
-          SIQSHIFT_API_URL: ${{ vars.SIQSHIFT_API_URL }}
-          SIQSHIFT_CHROME_EXTENSION_ID: ${{ vars.SIQSHIFT_CHROME_EXTENSION_ID }}
-          SIQSHIFT_EDGE_EXTENSION_ID: ${{ vars.SIQSHIFT_EDGE_EXTENSION_ID }}
-          SIQSHIFT_FIREFOX_EXTENSION_ID: ${{ vars.SIQSHIFT_FIREFOX_EXTENSION_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_CONFIG: ${{ steps.tauri_config.outputs.config }}
-          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ steps.windows_signing.outputs.thumbprint }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ steps.macos_signing.outputs.identity }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Updater signing. Together with the createUpdaterArtifacts override
-          # above, tauri-action publishes the .sig files and latest.json
-          # beside the installers, which the in-app updater verifies against.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - uses: actions/upload-artifact@v4
         with:
-          projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: SIQshift ${{ github.ref_name }}
-          # Published (not draft) so the web app's download links work immediately.
-          releaseDraft: false
-          # A hyphen in the tag (v0.2.0-rc.1) marks a prerelease, so the
-          # updater's latest-release endpoint never ships an RC to installs.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: release-${{ matrix.target }}
+          path: release-files/*
+          if-no-files-found: error
 
-      # Ship the helper binaries beside the installers as well, for anyone
-      # who needs them outside the installer (managed fleets, debugging).
-      - name: Publish helper binaries to the release
-        if: matrix.target == 'windows'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  publish:
+    needs: [plan, installers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only job that can write to the repository, and it compiles nothing:
+    # it renames what `installers` built and signed, and publishes it.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      TAG: v${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      # Fixed names are what let the website link
+      # releases/latest/download/<name> as a constant.
+      - name: Stage the release assets under their permanent names
         run: |
-          $ErrorActionPreference = 'Stop'
-          Compress-Archive `
-            -Path 'apps/desktop/src-tauri/target/release/siqshift-hook.exe', 'apps/desktop/src-tauri/target/release/siqshift-browser-host.exe' `
-            -DestinationPath 'siqshift-helpers-windows.zip' -Force
-          gh release upload $env:GITHUB_REF_NAME 'siqshift-helpers-windows.zip' --clobber
+          set -euo pipefail
+          mkdir -p release-assets
+          take() {
+            local pattern="$1" name="$2"
+            local found
+            found="$(find downloaded -type f -name "$pattern" -print -quit)"
+            if [ -z "$found" ]; then
+              echo "No artifact matched $pattern" >&2
+              find downloaded -type f >&2
+              exit 1
+            fi
+            cp "$found" "release-assets/$name"
+          }
+          take '*-setup.exe' SIQshift-windows-x64-setup.exe
+          take '*-setup.exe.sig' SIQshift-windows-x64-setup.exe.sig
+          # The Mac files exist only when this release could sign them.
+          if [ -n "$(find downloaded -type f -name '*.dmg' -print -quit)" ]; then
+            take '*.dmg' SIQshift-macos-universal.dmg
+            take '*.app.tar.gz' SIQshift-macos-universal.app.tar.gz
+            take '*.app.tar.gz.sig' SIQshift-macos-universal.app.tar.gz.sig
+          fi
+          ls -l release-assets
+
+      # The manifest release installs poll, through
+      # releases/latest/download/latest.json.
+      - name: Write the update manifest
+        env:
+          BASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ needs.plan.outputs.version }}
+          INSTALLER_NAME: SIQshift-windows-x64-setup.exe
+          SIGNATURE_PATH: release-assets/SIQshift-windows-x64-setup.exe.sig
+          MANIFEST_PATH: release-assets/latest.json
+          NOTES: SIQshift ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -e release-assets/SIQshift-macos-universal.app.tar.gz ]; then
+            export MAC_ARCHIVE_NAME=SIQshift-macos-universal.app.tar.gz
+            export MAC_SIGNATURE_PATH=release-assets/SIQshift-macos-universal.app.tar.gz.sig
+          fi
+          node scripts/updater-manifest.mjs
+
+      - name: Write the release notes
+        env:
+          COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -e release-assets/SIQshift-macos-universal.dmg ]; then
+            mac_note="The macOS installer and the app in it are **code signed by SIQstack LLC and notarized by Apple**, for Apple silicon and Intel Macs, and the Mac app updates itself from here too."
+          else
+            mac_note="This release has **no macOS installer**: the Mac one is published only signed and notarized, and the Apple signing secrets are not set yet."
+          fi
+          {
+            echo "SIQshift **$VERSION**, built from commit $COMMIT ([run]($RUN_URL))."
+            echo
+            echo "The Windows installer, and everything it installs, is **code signed by SIQstack LLC**, and Windows names SIQstack LLC as the publisher. SmartScreen may still warn on the first downloads while the certificate builds a reputation: choose **More info**, then **Run anyway**."
+            echo
+            echo "$mac_note"
+            echo
+            echo "**SIQshift updates itself from the newest release.** It checks at launch and every six hours, installs a newer release quietly, and restarts into it. A test build installed from the unsigned-latest release keeps updating from that test channel; install this release once to move onto releases."
+          } > release-notes.md
+          cat release-notes.md
+
+      # Published as a draft first, so the release goes public, and becomes the
+      # one releases/latest points at, only once every asset is on it.
+      - name: Publish the release
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" release-assets/* --draft --target "$COMMIT" \
+            --title "SIQshift $VERSION" --notes-file release-notes.md
+          gh release edit "$TAG" --draft=false --latest

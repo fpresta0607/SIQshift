@@ -11,7 +11,7 @@ said Azure for a while and sent people to the wrong portal.
 |---|---|---|
 | API | `api.siqshift.siqstack.com` | Railway, from `apps/api/Dockerfile` |
 | Web dashboard | `siqshift.siqstack.com` | Vercel, from `apps/web` |
-| Desktop installers | GitHub Releases | Signed: `.github/workflows/release.yml`, on a tag. Unsigned, and what the site links today: `.github/workflows/unsigned-test-installers.yml`, on **Run workflow** |
+| Desktop installers | GitHub Releases | Releases: `.github/workflows/release.yml`, on **Run workflow** from `main`. Test builds, and what the site links today: `.github/workflows/unsigned-test-installers.yml`, on **Run workflow** |
 
 Do these in order. The API has to exist before the other two can point at it.
 
@@ -710,14 +710,14 @@ Variables). They are baked into a public binary, so do not use secrets:
 | `SIQSHIFT_EDGE_EXTENSION_ID` | Released Edge Add-ons ID, when available |
 | `SIQSHIFT_FIREFOX_EXTENSION_ID` | Released Firefox add-on ID, when available |
 
-Then tag a release:
+Then run Actions → *Release desktop* → **Run workflow**, from `main`.
+The release takes the version in `apps/desktop/src-tauri/tauri.conf.json` and creates its tag `v<version>` on the commit it built.
+It refuses to run when that tag already exists, so raise the version before each release.
+There is no tag trigger: the signing credentials live in the `release` environment, which admits only `main` and `unsigned-test/*`, so a run started by pushing a tag could never sign.
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The workflow builds Windows and macOS installers and **publishes** the release
-immediately, so the download links work as soon as the build finishes.
+The workflow builds the Windows installer, and the macOS one once every Apple signing secret is set, signs and checks them, and only then **publishes** the release as the repository's latest.
+Its assets carry fixed names, so `releases/latest/download/SIQshift-windows-x64-setup.exe` (and `SIQshift-macos-universal.dmg`, once a release carries it) always serves the newest release.
+The test channel's `unsigned-latest` release is published with `--latest=false`, so it never takes that place.
 
 The API and auth URL variables are required: the build **fails** rather than
 shipping an installer that points at localhost —
@@ -728,27 +728,18 @@ so the extension does not auto-install.
 
 ### Code signing and auto-update
 
-Production release builds fail closed when signing credentials are missing —
-`build.rs` and `src/release_signing.rs` gate every build. The release workflow
-(`release.yml`) runs a signing preflight first: when no platform-signing
-secrets are configured it skips the signed build job and dispatches the
-unsigned installer publish instead, so a version tag never runs red (unsigned
-is the project's accepted distribution today). Partial configuration still
-fails hard. Local unsigned builds are explicit development-only builds and
-cannot create production updater artifacts.
+Production release builds fail closed when signing credentials are missing: `build.rs` and `src/release_signing.rs` gate every release compile.
+A Windows release compile needs `bundle.windows.signCommand` naming a signing tool that exists, and a macOS one needs `APPLE_SIGNING_IDENTITY` in the keychain plus `APPLE_API_KEY`, `APPLE_API_ISSUER` and the key file at `APPLE_API_KEY_PATH`; both need the updater key.
+Local unsigned builds are explicit development-only builds and cannot create production updater artifacts.
 
-The certificates have days-to-weeks of identity-verification lead time, so
-start procurement before the release, not after:
+A release signs with the same credentials as the test installers, described under *Windows code signing* and *macOS code signing* below: Azure Artifact Signing for Windows, and the seven Apple secrets for the Mac.
+A first `plan` job reads only whether each one is set, never its value.
+Every Azure credential, signing variable and the updater key has to be set, or the run stops before building anything.
+With no Apple secret set the release carries Windows only and says so in a notice; with some but not all set the run stops.
 
-- **Windows:** an OV/EV code-signing certificate (~$200-600/yr)
-- **macOS:** Apple Developer Program ($99/yr) for signing and notarization
-
-The three desktop binaries (the app, `siqshift-hook`, and
-`siqshift-browser-host`) sign with the same certificate. On Windows the
-workflow imports the `.pfx` into the runner's certificate store, or uses the
-configured store thumbprint directly, then signs the helpers with `signtool`
-and configures Tauri to sign the app and installers with that thumbprint; on
-macOS the bundler deep-signs everything inside the `.app` and notarizes it.
+The three desktop binaries (the app, `siqshift-hook`, and `siqshift-browser-host`) sign with the same identity.
+On Windows the bundler signs the app, both helpers, the uninstaller and the setup through the Artifact Signing dlib; on macOS it signs everything inside the `.app` with the hardened runtime and notarizes it, and the workflow then notarizes the `.dmg`.
+The same checks as the test installers run before anything is published.
 
 The helpers ship inside the installer via `externalBin` in
 `apps/desktop/src-tauri/tauri.conf.json`: the workflow stages them as
@@ -759,29 +750,19 @@ rule is how the app finds them at runtime — hook registration quotes the
 `siqshift-hook` path beside the running app, and the native-messaging manifest
 points at the `siqshift-browser-host` path beside it.
 
-Set these under Settings → Secrets and variables → Actions → **Secrets**:
+The updater key is a pair of **repository** secrets (Settings → Secrets and variables → Actions → **Secrets**), shared with the test installers:
 
 | Secret | Value |
 |---|---|
-| `WINDOWS_CERTIFICATE` | Base64 of the exported `.pfx` (`[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`) |
-| `WINDOWS_CERTIFICATE_PASSWORD` | The `.pfx` export password |
-| `WINDOWS_TIMESTAMP_URL` | Optional RFC 3161 timestamp server; defaults to `http://timestamp.digicert.com` |
-| `WINDOWS_CERTIFICATE_THUMBPRINT` | Optional; use instead of the `.pfx` pair when the certificate already lives in the runner's store (Azure Key Vault / SafeNet flow) |
-| `APPLE_CERTIFICATE` | Base64 of the exported Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | The `.p12` export password |
-| `APPLE_SIGNING_IDENTITY` | Developer ID Application signing identity |
-| `APPLE_ID` | Apple ID email used for notarization |
-| `APPLE_PASSWORD` | App-specific password for that Apple ID (from appleid.apple.com) |
-| `APPLE_TEAM_ID` | The 10-character team id |
 | `TAURI_SIGNING_PRIVATE_KEY` | The updater private key from `pnpm tauri signer generate` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The password chosen when generating that key |
 
-The workflow always enables `bundle.createUpdaterArtifacts`, so the release
-carries the updater signatures and `latest.json` beside the installers, which
-is what the in-app updater verifies against. The matching public key goes into
-the updater config in
-`apps/desktop/src-tauri/tauri.conf.json`. Back the private key up somewhere
-durable: losing it means existing installs can never verify an update again.
+The workflow always enables `bundle.createUpdaterArtifacts`, so the bundler signs the Windows setup, and on the Mac a `.app.tar.gz` app archive, for the updater.
+The release carries those signatures and a `latest.json` listing Windows, and the Mac when it carries one, which is what the in-app updater verifies against.
+A release install polls `releases/latest/download/latest.json`, set by the release configuration (`scripts/release-tauri-config.mjs`), never the `unsigned-latest` test channel that `tauri.conf.json` names, so it never updates itself to a debug test build.
+A test build keeps updating from the test channel until a release is installed over it.
+The matching public key goes into the updater config in `apps/desktop/src-tauri/tauri.conf.json`.
+Back the private key up somewhere durable: losing it means existing installs can never verify an update again.
 
 ### Unsigned test installers
 
@@ -791,9 +772,7 @@ still runs with read-only `contents` permission and cannot publish anything; a
 separate `publish` job, which compiles nothing, uploads what that job produced.
 
 This is not a way around the signing gate — `build.rs` still classifies a
-`--debug` build as development and keeps `createUpdaterArtifacts` off. When a
-version tag has no signing configured, `release.yml` dispatches this workflow
-automatically so every tag leaves something installable behind. It builds with `tauri build --debug`, which
+`--debug` build as development and keeps `createUpdaterArtifacts` off. It builds with `tauri build --debug`, which
 `apps/desktop/src-tauri/build.rs` already classifies as a development build:
 signing credentials are not required. `bundle.createUpdaterArtifacts` stays
 off (`build.rs` refuses it for unsigned builds), but the workflow signs the
@@ -822,7 +801,7 @@ It is one universal build for Apple silicon and Intel Macs: each architecture co
 The bundler signs the app and both helpers with the hardened runtime, has Apple notarize the app and staples the ticket; the workflow then signs, notarizes and staples the `.dmg` itself.
 Before anything is uploaded, it mounts the `.dmg` and checks that Gatekeeper accepts both the image and the app as notarized Developer ID, and that every binary in the app carries the team's signature, the hardened runtime, a secure timestamp and both architectures.
 
-The Mac leg reads these secrets of the `release` environment, not of the repository, so `release.yml` does not see them:
+The Mac leg reads these secrets of the `release` environment, not of the repository, so only jobs that run in that environment, here and in `release.yml`, see them:
 
 | Secret | Value |
 |---|---|

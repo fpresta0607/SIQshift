@@ -10,15 +10,10 @@ fn main() {
         "SIQSHIFT_FIREFOX_EXTENSION_ID",
         "TAURI_SIGNING_PRIVATE_KEY",
         "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-        "WINDOWS_CERTIFICATE",
-        "WINDOWS_CERTIFICATE_PASSWORD",
-        "WINDOWS_CERTIFICATE_THUMBPRINT",
-        "APPLE_CERTIFICATE",
-        "APPLE_CERTIFICATE_PASSWORD",
         "APPLE_SIGNING_IDENTITY",
-        "APPLE_ID",
-        "APPLE_PASSWORD",
-        "APPLE_TEAM_ID",
+        "APPLE_API_KEY",
+        "APPLE_API_ISSUER",
+        "APPLE_API_KEY_PATH",
         "TAURI_CONFIG",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
