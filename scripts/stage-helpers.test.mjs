@@ -54,12 +54,11 @@ test("the staged helpers are every binary the desktop crate builds beside the ap
   const binEntries = readdirSync(new URL("src/bin/", tauriDir), { withFileTypes: true });
 
   // Act
-  const app = tables.find((table) => table.name === "package").keys["default-run"];
   const declared = tables.filter((table) => table.name === "bin").map((table) => table.keys.name);
   const discovered = binEntries
     .filter((entry) => entry.isDirectory() || entry.name.endsWith(".rs"))
     .map((entry) => path.parse(entry.name).name);
-  const crateHelpers = [...new Set([...declared, ...discovered])].filter((name) => name !== app);
+  const crateHelpers = [...new Set([...declared, ...discovered])];
 
   // Assert
   assert.deepEqual([...HELPERS].sort(), crateHelpers.sort());
