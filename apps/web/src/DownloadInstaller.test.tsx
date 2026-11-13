@@ -1,5 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 import { render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -17,14 +19,16 @@ import {
 /**
  * The contract under test is the release the workflow publishes, which is a
  * machine-consumed declarative artifact: `unsigned-test-installers.yml` is read
- * by GitHub Actions, and its `publish` job decides the one tag and the two file
- * names that make up the URLs this app hard-codes. Nothing else checks that the
- * two sides agree. The rendered-href tests below compare the constant to
- * itself, so a rename on either side alone would leave every test green and
- * 404 the Download button in production.
+ * by GitHub Actions, and its `publish` job decides the one tag and the file
+ * names that make up the URLs this app hard-codes, and which files a run
+ * leaves on the release. Nothing else checks that the two sides agree. The
+ * rendered-href tests below compare the constant to itself, so a rename on
+ * either side alone would leave every test green and 404 the Download button
+ * in production.
  *
  * So the workflow is parsed into a model and asked what it actually publishes,
- * rather than searched for strings.
+ * rather than searched for strings, and its publish scripts are run to see
+ * what the release keeps.
  */
 const workflowPath = ((relative: string): string => {
   // Walked up from the vitest root rather than `import.meta.url`, which Vite
@@ -37,7 +41,14 @@ const workflowPath = ((relative: string): string => {
 })(".github/workflows/unsigned-test-installers.yml");
 
 type Job = { env?: Record<string, string>; steps?: { name?: string; run?: string }[] };
-type PublishedRelease = { tag: string; assetNames: readonly string[]; stagingDir: string; uploadGlob: string };
+type PublishedRelease = {
+  tag: string;
+  assetNames: readonly string[];
+  stagingDir: string;
+  uploadGlob: string;
+  stagingScript: string;
+  publishScript: string;
+};
 
 const publishedRelease = (): PublishedRelease => {
   const workflow = parseYaml(readFileSync(workflowPath, "utf8")) as { jobs?: Record<string, Job> };
@@ -52,9 +63,69 @@ const publishedRelease = (): PublishedRelease => {
   const assetNames = [...staging.matchAll(/^\s*take\s+'[^']*'\s+(\S+)\s*$/gm)]
     .flatMap(([, name]) => (name === undefined ? [] : [name]));
   const [, stagingDir = ""] = /cp "\$found" "([^/"]+)\//.exec(staging) ?? [];
-  const [, uploadGlob = ""] = /gh release upload "\$TAG" (\S+)/.exec(scriptOf("Publish the release")) ?? [];
+  const publishScript = scriptOf("Publish the release");
+  const [, uploadGlob = ""] = /gh release upload "\$TAG" (\S+)/.exec(publishScript) ?? [];
 
-  return { tag: publish?.env?.TAG ?? "", assetNames, stagingDir, uploadGlob };
+  return { tag: publish?.env?.TAG ?? "", assetNames, stagingDir, uploadGlob, stagingScript: staging, publishScript };
+};
+
+const releaseStateFile = "release-state.txt";
+
+/** `gh` for the publish scripts, against a release whose asset names live in `release-state.txt`. */
+const fakeGh = `#!/usr/bin/env bash
+set -euo pipefail
+state=${releaseStateFile}
+case "$1 $2" in
+  "release view") if [ "$#" -gt 3 ]; then assets="$(cat "$state")"; printf '%s\\n' "$assets"; fi ;;
+  "release edit") ;;
+  "release upload")
+    shift 3
+    for file in "$@"; do
+      name="$(basename -- "$file")"
+      if [ "$file" != --clobber ] && ! grep -qxF -- "$name" "$state"; then echo "$name" >> "$state"; fi
+    done ;;
+  "release delete-asset") assets="$(grep -vxF -- "$4" "$state" || true)"; printf '%s\\n' "$assets" > "$state" ;;
+  *) echo "unexpected: gh $*" >&2; exit 1 ;;
+esac
+`;
+
+/**
+ * What the release holds after a run that built Windows alone, as every run
+ * does while the Apple signing secrets are unset. The publish job's own
+ * staging and publishing scripts run under bash, as on its ubuntu runner,
+ * over the Windows leg's artifact. `gh` is the one external boundary, so a
+ * stand-in keeps the release's asset names in a file.
+ */
+const releaseAfterWindowsOnlyRun = (release: PublishedRelease, assetsBefore: readonly string[]): string[] => {
+  const runDir = mkdtempSync(join(tmpdir(), "siqshift-publish-"));
+  try {
+    const artifactDir = join(runDir, "downloaded", "TEST-BUILD-windows-1");
+    mkdirSync(artifactDir, { recursive: true });
+    for (const name of ["TEST-SIQshift_0.0.0_x64-setup.exe", "TEST-SIQshift_0.0.0_x64-setup.exe.sig", "TEST-BUILD.txt"]) {
+      writeFileSync(join(artifactDir, name), "");
+    }
+    mkdirSync(join(runDir, "bin"));
+    writeFileSync(join(runDir, "bin", "gh"), fakeGh, { mode: 0o755 });
+    writeFileSync(join(runDir, releaseStateFile), assetsBefore.map((name) => `${name}\n`).join(""));
+
+    for (const script of [release.stagingScript, release.publishScript]) {
+      // The runner substitutes every `${{ }}` expression before bash sees the script.
+      const { status, stderr } = spawnSync("bash", ["-c", script.replaceAll(/\$\{\{[^}]*\}\}/g, "0")], {
+        cwd: runDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${join(runDir, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+          TAG: release.tag,
+          VERSION: "0.0.0-test.1",
+        },
+      });
+      expect(status, stderr).toBe(0);
+    }
+    return readFileSync(join(runDir, releaseStateFile), "utf8").split("\n").filter((name) => name !== "");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
 };
 
 /** `https://…/releases/download/<tag>/<asset>` split back into its two halves. */
@@ -63,8 +134,15 @@ const releaseRefOf = (url: string): { tag: string; assetName: string } => {
   return { tag: segments.at(-2) ?? "", assetName: segments.at(-1) ?? "" };
 };
 
+/**
+ * The earlier unsigned Mac file the live `unsigned-latest` release still holds,
+ * which no run stages any more. It goes once the site links the signed Mac
+ * file the publish job stages.
+ */
+const earlierUnsignedMacAssetName = "SIQshift-UNSIGNED-TEST-macos-aarch64.dmg";
+
 describe("installer URLs", () => {
-  it("name the tag and the assets the workflow's publish job actually publishes", () => {
+  it("name the tag and the assets the release holds after the workflow's publish job", () => {
     const release = publishedRelease();
 
     // Fail loudly rather than vacuously if the workflow is restructured so that
@@ -75,11 +153,29 @@ describe("installer URLs", () => {
     expect(release.uploadGlob).toBe(`${release.stagingDir}/*`);
 
     for (const url of [windowsInstallerUrl, macInstallerUrl]) {
-      const { tag, assetName } = releaseRefOf(url);
-      expect(tag).toBe(release.tag);
-      expect(release.assetNames).toContain(assetName);
+      expect(releaseRefOf(url).tag).toBe(release.tag);
     }
+    expect(release.assetNames).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+    expect([...release.assetNames, earlierUnsignedMacAssetName]).toContain(releaseRefOf(macInstallerUrl).assetName);
   });
+
+  // The publish job runs on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
+  it.skipIf(process.platform === "win32")(
+    "keep the earlier unsigned Mac file on the release when a run builds no signed Mac one",
+    () => {
+      // Arrange: the release already holds the earlier Mac file and an asset no run stages any more.
+      const release = publishedRelease();
+      const retiredAssetName = "SIQshift-retired.zip";
+
+      // Act
+      const assetsAfter = releaseAfterWindowsOnlyRun(release, [earlierUnsignedMacAssetName, retiredAssetName]);
+
+      // Assert: the run really published and cleaned up, and left the Mac file in place.
+      expect(assetsAfter).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+      expect(assetsAfter).not.toContain(retiredAssetName);
+      expect(assetsAfter).toContain(earlierUnsignedMacAssetName);
+    },
+  );
 });
 
 describe("DownloadInstaller in the masthead", () => {
