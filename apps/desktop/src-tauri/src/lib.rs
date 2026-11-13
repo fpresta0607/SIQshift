@@ -29,6 +29,7 @@ mod uploader;
 pub mod spool;
 
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -964,13 +965,25 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// waits until no work session is open, because the restart's flush closes the
 /// open session and doing it mid-session would cut one stretch of work in two.
 ///
-/// The flush happens here, before the restart is requested, because Tauri
-/// ignores `prevent_exit` for a restart: the `ExitRequested` handler could not
-/// hold it back while it flushed. Marking the flush as started first lets both
-/// exit paths through without flushing again. Tauri then re-runs the bundle's
-/// new binary with this launch's arguments, so a login launch stays hidden,
-/// and the new process checks for updates at its own launch. Only verifiable
-/// on a Mac: a test would need a live event loop.
+/// The new build is launched through LaunchServices (`open -n`) rather than as
+/// a plain child of this process, which is how Tauri's own restart does it.
+/// The login start is a LaunchAgent whose plist (written by auto-launch 0.5.0)
+/// sets no `AbandonProcessGroup`, so launchd kills the login job's process
+/// group when this process exits, and a child spawned by Tauri's restart would
+/// die with it. `open` passes this launch's arguments on, so a login launch
+/// stays hidden, and the new process checks for updates at its own launch.
+///
+/// The single-instance socket is released first, so the new build claims it
+/// instead of handing its launch to this one. This process then ends through
+/// `cleanup_before_exit` and `exit` rather than `AppHandle::exit`: Tauri's exit
+/// runs the single-instance plugin's `RunEvent::Exit` hook, which would delete
+/// the socket the new build may already have bound. With no bundle to open, or
+/// when `open` fails, it falls back to Tauri's restart, which ignores
+/// `prevent_exit`; that is why the flush runs here first, and marking it as
+/// started lets both exit paths through without flushing again.
+///
+/// Proven only by a login-started instance on a real signed Mac release: a
+/// test would need a live event loop and launchd.
 #[cfg(target_os = "macos")]
 async fn restart_into_staged_update(handle: &tauri::AppHandle) {
     let state = handle.state::<AppState>();
@@ -980,7 +993,65 @@ async fn restart_into_staged_update(handle: &tauri::AppHandle) {
         .await;
     EXIT_FLUSH_STARTED.store(true, Ordering::SeqCst);
     flush_monitor(handle).await;
-    handle.request_restart();
+    tauri_plugin_single_instance::destroy(handle);
+    if let Err(error) = open_this_bundle_as_a_new_instance() {
+        eprintln!("siqshift: could not relaunch through LaunchServices: {error}");
+        handle.request_restart();
+        return;
+    }
+    handle.cleanup_before_exit();
+    std::process::exit(0);
+}
+
+/// Launches the `.app` bundle this process runs from as a new instance with
+/// this launch's arguments, returning once `open` has handed it off.
+#[cfg(target_os = "macos")]
+fn open_this_bundle_as_a_new_instance() -> std::io::Result<()> {
+    let executable = std::env::current_exe()?;
+    let bundle = enclosing_app_bundle(&executable).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "{} is not inside a .app bundle",
+            executable.display()
+        ))
+    })?;
+    let status = std::process::Command::new("/usr/bin/open")
+        .args(launch_services_relaunch_arguments(
+            bundle,
+            std::env::args_os().skip(1),
+        ))
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!("open exited with {status}")));
+    }
+    Ok(())
+}
+
+/// The `.app` bundle holding `executable` at `<bundle>.app/Contents/MacOS/`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn enclosing_app_bundle(executable: &Path) -> Option<&Path> {
+    let macos_directory = executable.parent()?;
+    let contents_directory = macos_directory.parent()?;
+    let bundle = contents_directory.parent()?;
+    let is_bundle_layout = macos_directory.file_name() == Some(OsStr::new("MacOS"))
+        && contents_directory.file_name() == Some(OsStr::new("Contents"))
+        && bundle.extension() == Some(OsStr::new("app"));
+    is_bundle_layout.then_some(bundle)
+}
+
+/// `open`'s arguments for a new instance of `bundle` (`-n`, even though this
+/// one is still running) that receives `launch_arguments` (after `--args`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn launch_services_relaunch_arguments(
+    bundle: &Path,
+    launch_arguments: impl IntoIterator<Item = OsString>,
+) -> Vec<OsString> {
+    let mut arguments = vec![
+        OsString::from("-n"),
+        bundle.as_os_str().to_owned(),
+        OsString::from("--args"),
+    ];
+    arguments.extend(launch_arguments);
+    arguments
 }
 
 /// Checks at launch and then on a timer, for the lifetime of the app.
@@ -1336,6 +1407,48 @@ mod tests {
         assert!(second_launch_surfaces_window(&[
             "--some-other-flag".to_string()
         ]));
+    }
+
+    #[test]
+    fn the_app_bundle_is_found_only_around_a_bundled_executable() {
+        for (executable, expected_bundle) in [
+            (
+                "/Applications/SIQshift.app/Contents/MacOS/siqshift-desktop",
+                Some("/Applications/SIQshift.app"),
+            ),
+            // `cargo run` and `tauri dev` launch the bare binary.
+            (
+                "/Users/someone/siqshift/target/debug/siqshift-desktop",
+                None,
+            ),
+            // `open` would show a plain folder in Finder, not launch it.
+            ("/Users/someone/Contents/MacOS/siqshift-desktop", None),
+            ("siqshift-desktop", None),
+        ] {
+            assert_eq!(
+                enclosing_app_bundle(Path::new(executable)),
+                expected_bundle.map(Path::new),
+                "{executable}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relaunch_opens_a_new_instance_that_keeps_this_launchs_arguments() {
+        // Arrange
+        let bundle = Path::new("/Applications/SIQshift.app");
+        let login_launch_arguments = [OsString::from("--hidden")];
+
+        // Act
+        let arguments = launch_services_relaunch_arguments(bundle, login_launch_arguments);
+
+        // Assert
+        assert_eq!(
+            arguments,
+            ["-n", "/Applications/SIQshift.app", "--args", "--hidden"].map(OsString::from),
+            "open(1): -n opens a new instance though one is running, and everything \
+             after --args reaches the app, so a login launch stays hidden"
+        );
     }
 
     // --- Upgrading from Clock-In ------------------------------------------

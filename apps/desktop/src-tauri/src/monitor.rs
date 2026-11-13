@@ -4242,10 +4242,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A monitor whose files sit under `name` in the temp folder. The
-    /// between-sessions tests only drive its tracker, so none is ever written.
-    fn unstarted_monitor(name: &str) -> Monitor {
-        let dir = std::env::temp_dir().join(format!("siqshift-{name}-{}", std::process::id()));
+    /// A monitor whose files sit in `dir`. Building it writes `settings.json`
+    /// there, because a fresh device id is persisted at once, so each test
+    /// clears `dir` before and after.
+    fn unstarted_monitor(dir: &Path) -> Monitor {
         Monitor::new(MonitorConfig {
             client: ApiClient::new(
                 "http://127.0.0.1:9/auth".to_string(),
@@ -4269,7 +4269,10 @@ mod tests {
     #[tokio::test]
     async fn waiting_for_a_moment_between_sessions_returns_at_once_when_none_is_open() {
         // Arrange
-        let monitor = unstarted_monitor("between-none-open");
+        let dir =
+            std::env::temp_dir().join(format!("siqshift-between-none-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let monitor = unstarted_monitor(&dir);
 
         // Act
         let waited = tokio::time::timeout(
@@ -4283,12 +4286,17 @@ mod tests {
             waited.is_ok(),
             "nothing is being recorded, so nothing is split"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn waiting_for_a_moment_between_sessions_holds_while_work_is_recorded() {
         // Arrange
-        let monitor = unstarted_monitor("between-open");
+        let dir =
+            std::env::temp_dir().join(format!("siqshift-between-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let monitor = unstarted_monitor(&dir);
         let project = project("p1", Attribution::Default);
         tick(
             &mut lock(&monitor.shared).tracker,
@@ -4307,12 +4315,17 @@ mod tests {
 
         // Assert
         assert!(waited.is_err(), "an open session is never cut in two");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn waiting_for_a_moment_between_sessions_ends_once_the_screen_locks() {
         // Arrange
-        let monitor = unstarted_monitor("between-locks");
+        let dir =
+            std::env::temp_dir().join(format!("siqshift-between-locks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let monitor = unstarted_monitor(&dir);
         let project = project("p1", Attribution::Default);
         tick(
             &mut lock(&monitor.shared).tracker,
@@ -4345,6 +4358,8 @@ mod tests {
             waited.is_ok(),
             "a locked screen closes the session, so the wait ends"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
