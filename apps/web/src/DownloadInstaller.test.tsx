@@ -149,7 +149,7 @@ const publishAfterWindowsOnlyRun = (workflowFile: string, assetsBefore: readonly
         encoding: "utf8",
         env: {
           ...process.env,
-          // The test workflow's manifest step exports it to the steps after it.
+          // The test workflow hands it to later steps from its release notes step, through GITHUB_ENV.
           VERSION: "0.0.0-test.1",
           ...Object.fromEntries(stepEnv),
           PATH: `${join(runDir, "bin")}${delimiter}${process.env.PATH ?? ""}`,
