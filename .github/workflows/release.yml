@@ -514,7 +514,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -e release-assets/SIQshift-macos-universal.dmg ]; then
-            mac_note="The macOS installer and the app in it are **code signed by SIQstack LLC and notarized by Apple**, for Apple silicon and Intel Macs. The Mac app updates itself from here too, and applies an update at its next launch."
+            mac_note="The macOS installer and the app in it are **code signed by SIQstack LLC and notarized by Apple**, for Apple silicon and Intel Macs. The Mac app updates itself from here too, and restarts into an update once no work session is open."
           else
             mac_note="This release has **no macOS installer**: the Mac one is published only signed and notarized, and the Apple signing secrets are not set yet."
           fi
