@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "SIQshift",
-        "width": 520,
-        "height": 920,
+        "width": 1200,
+        "height": 700,
+        "center": true,
+        "preventOverflow": true,
         "minWidth": 400,
         "minHeight": 600,
         "resizable": true,

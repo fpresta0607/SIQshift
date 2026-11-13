@@ -48,7 +48,7 @@ const repoRowBoxes = (page: import("@playwright/test").Page) =>
 // three claims are made about each of them.
 for (const app of ["desktop", "web"] as const) {
   test.describe(`Today's session rows in ${app}`, () => {
-    test("stay one column in the window the app opens at", async ({ page }) => {
+    test("stay one column in a narrow window", async ({ page }) => {
       await page.setViewportSize({ width: 520, height: 920 });
       await openTodayCard(page, app);
 
