@@ -916,7 +916,8 @@ const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3_600);
 ///
 /// On Windows the NSIS installer replaces the app in place and Tauri restarts
 /// it, so the download happens quietly in the background and only the final
-/// swap is visible.
+/// swap is visible. On a Mac the new bundle replaces the old one on disk and
+/// `restart_into_staged_update` relaunches into it.
 async fn install_available_update(handle: &tauri::AppHandle) -> bool {
     use tauri_plugin_updater::UpdaterExt;
 
@@ -953,14 +954,46 @@ async fn install_available_update(handle: &tauri::AppHandle) -> bool {
     }
 }
 
+/// How often a Mac holding a staged update looks again for a moment between
+/// work sessions to restart into it.
+#[cfg(target_os = "macos")]
+const RESTART_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// macOS swaps the `.app` bundle on disk but leaves this process running the
+/// old build, and nothing else relaunches it, so the app restarts itself. It
+/// waits until no work session is open, because the restart's flush closes the
+/// open session and doing it mid-session would cut one stretch of work in two.
+///
+/// The flush happens here, before the restart is requested, because Tauri
+/// ignores `prevent_exit` for a restart: the `ExitRequested` handler could not
+/// hold it back while it flushed. Marking the flush as started first lets both
+/// exit paths through without flushing again. Tauri then re-runs the bundle's
+/// new binary with this launch's arguments, so a login launch stays hidden,
+/// and the new process checks for updates at its own launch. Only verifiable
+/// on a Mac: a test would need a live event loop.
+#[cfg(target_os = "macos")]
+async fn restart_into_staged_update(handle: &tauri::AppHandle) {
+    let state = handle.state::<AppState>();
+    state
+        .monitor
+        .wait_until_between_sessions(RESTART_RETRY_INTERVAL)
+        .await;
+    EXIT_FLUSH_STARTED.store(true, Ordering::SeqCst);
+    flush_monitor(handle).await;
+    handle.request_restart();
+}
+
 /// Checks at launch and then on a timer, for the lifetime of the app.
 fn spawn_update_checks(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             // A staged update ends this loop: the app is about to be replaced,
             // and checking again from a process that is on its way out would
-            // only race the installer.
+            // only race the installer. On Windows the installer restarts the
+            // app; a Mac restarts itself into the new build.
             if install_available_update(&handle).await {
+                #[cfg(target_os = "macos")]
+                restart_into_staged_update(&handle).await;
                 return;
             }
             tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
@@ -1024,7 +1057,6 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            spawn_update_checks(app.handle().clone());
             spawn_verification_checks();
             let recovery_path = app
                 .path()
@@ -1061,6 +1093,9 @@ pub fn run() {
                 monitor,
                 quota: quota::QuotaMonitor::new(),
             });
+            // After the state exists: a Mac restarting into a staged update
+            // reads the monitor from it.
+            spawn_update_checks(app.handle().clone());
 
             // The browser host registers itself silently on every launch; a
             // broken registration surfaces on the browser card, never blocks
