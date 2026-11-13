@@ -179,4 +179,44 @@ integration("deleting a project that hosts roster agents", () => {
     await expect(agents.upsertForKey({ ...key, repoRoot: "C:/dev/pocket-piggies", repoRemote: null, projectId: replacement }))
       .resolves.toEqual({ id: moved.id });
   });
+
+  it("stores a picked icon and color and lists them back, leaving an untouched project's pair null", async () => {
+    const painted = await project("Painted");
+    const untouched = await project("Untouched");
+
+    const updated = await projects.updateForMember(subject, painted, { icon: "rocket", color: "#85c6ff" });
+    const listed = await projects.listForMember(subject);
+
+    expect(updated).toMatchObject({ id: painted, name: "Painted", icon: "rocket", color: "#85c6ff" });
+    expect(listed.find((record) => record.id === painted)).toMatchObject({ icon: "rocket", color: "#85c6ff" });
+    expect(listed.find((record) => record.id === untouched)).toMatchObject({ icon: null, color: null });
+  });
+
+  // provision inserts the first project without the flag, so a real workspace
+  // may flag none: the default is then the oldest project still active.
+  it("names the flagged project as the default, else the oldest active one", async () => {
+    const otherOrganizationId = randomUUID();
+    const otherSubject: AuthenticatedSubject = { organizationId: otherOrganizationId, userId: ownerUserId, role: "admin" };
+    const archivedOldest = randomUUID();
+    const oldestActive = randomUUID();
+    const youngest = randomUUID();
+    await database.client`
+      insert into organizations (id, name, invite_code)
+      values (${otherOrganizationId}, 'Default Rule Test', ${randomUUID().slice(0, 11)})
+    `;
+    await database.client`
+      insert into projects (id, organization_id, name, archived, created_at)
+      values
+        (${archivedOldest}, ${otherOrganizationId}, 'Archived', true, '2026-08-01T00:00:00.000Z'),
+        (${oldestActive}, ${otherOrganizationId}, 'General', false, '2026-08-02T00:00:00.000Z'),
+        (${youngest}, ${otherOrganizationId}, 'Side work', false, '2026-08-03T00:00:00.000Z')
+    `;
+
+    const unflagged = await projects.defaultIdForOrganization(otherSubject);
+    await database.client`update projects set is_default = true where id = ${youngest}`;
+    const flagged = await projects.defaultIdForOrganization(otherSubject);
+
+    expect(unflagged).toBe(oldestActive);
+    expect(flagged).toBe(youngest);
+  });
 });

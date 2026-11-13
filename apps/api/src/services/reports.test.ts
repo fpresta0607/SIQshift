@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summedSeconds, unionSeconds } from "@siqshift/shared";
+import { DEFAULT_PROJECT_APPEARANCE, projectAppearance, summedSeconds, unionSeconds } from "@siqshift/shared";
 import type { AgentShiftsFilters, Interval, ReportFilters } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
@@ -956,8 +956,8 @@ describe("workspace report", () => {
     expect(result.hourly[10]).toEqual({ hourStart: hour(10).toISOString(), activeSeconds: 3_600, agentSeconds: 3_600 });
     expect(result.hourly[11]).toEqual({ hourStart: hour(11).toISOString(), activeSeconds: 0, agentSeconds: 3_600 });
     expect(result.projects).toEqual([
-      { project: timer, durationSeconds: 6_000 },
-      { project: side, durationSeconds: 5_400 },
+      { project: { ...timer, ...DEFAULT_PROJECT_APPEARANCE }, durationSeconds: 6_000 },
+      { project: { ...side, ...projectAppearance({ id: side.id, isDefault: false, icon: null, color: null }) }, durationSeconds: 5_400 },
     ]);
     expect(result.agents).toEqual([
       { source: "codex", durationSeconds: 10_800 },
@@ -1044,6 +1044,29 @@ describe("workspace report", () => {
     expect(result.hourly).toEqual([]);
     expect(result.activeSeconds).toBe(10_800);
     expect(result.members).toHaveLength(3);
+  });
+
+  it("draws each project row with its picked pair, else its assigned one, and the default project's own by the report rule", async () => {
+    const reports = team();
+    const ledger = { id: "c2c7e513-b094-4d4c-ae55-21790ae019a4", name: "Ledger" };
+    // The rule's answer, not a flag: Timer is the oldest active project here.
+    reports.defaultProject = timer;
+    reports.memberProjectTotals = [
+      { userId: alex.id, project: { ...timer, icon: null, color: null }, durationSeconds: 5_400 },
+      { userId: sam.id, project: { ...side, icon: "rocket", color: "#85c6ff" }, durationSeconds: 3_600 },
+      { userId: riley.id, project: { ...ledger, icon: null, color: null }, durationSeconds: 1_800 },
+    ];
+    const service = createReportService({ reports, agents });
+
+    const result = await service.workspace(subject, oneDay);
+
+    expect(result.projects).toEqual([
+      { project: { ...timer, ...DEFAULT_PROJECT_APPEARANCE }, durationSeconds: 5_400 },
+      { project: { ...side, icon: "rocket", color: "#85c6ff" }, durationSeconds: 3_600 },
+      { project: { ...ledger, ...projectAppearance({ id: ledger.id, isDefault: false, icon: null, color: null }) }, durationSeconds: 1_800 },
+    ]);
+    // A board row names its project alone; the pair belongs to the project rows.
+    expect(result.members.map((member) => member.project)).toEqual([timer, side, ledger]);
   });
 });
 

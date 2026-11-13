@@ -169,6 +169,13 @@
       "when": 1788032529999,
       "tag": "0023_activity_segment_retention_index",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788032530000,
+      "tag": "0024_project_appearance",
+      "breakpoints": true
     }
   ]
 }

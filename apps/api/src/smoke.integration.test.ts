@@ -7,6 +7,7 @@ import {
   type DatabaseConnection,
   type DisposableTestDatabase,
 } from "@siqshift/database";
+import { DEFAULT_PROJECT_APPEARANCE } from "@siqshift/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createApp } from "./app.js";
@@ -535,7 +536,11 @@ integration(integrationDescription, () => {
     expect(own.members.map((row: WorkspaceRow) => ({ rank: row.rank, name: row.user.name })))
       .toEqual(board.entries.map((row: WorkspaceRow) => ({ rank: row.rank, name: row.user.name })));
     expect(own.members[0].project).toEqual({ id: sharedProject.id, name: "General" });
-    expect(own.projects).toContainEqual({ project: { id: sharedProject.id, name: "General" }, durationSeconds: expect.any(Number) });
+    // Provisioning flags no project, so General wears the default pair as the oldest active one.
+    expect(own.projects).toContainEqual({
+      project: { id: sharedProject.id, name: "General", ...DEFAULT_PROJECT_APPEARANCE },
+      durationSeconds: expect.any(Number),
+    });
   }, 90_000);
 
   it("refuses an invite code that matches no organization", async () => {

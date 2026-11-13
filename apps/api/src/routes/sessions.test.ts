@@ -39,6 +39,9 @@ class Projects implements ProjectRepository {
   public async createForMember(): Promise<never> {
     throw new Error("not implemented");
   }
+  public async defaultIdForOrganization() {
+    return ids.project;
+  }
 }
 
 class Sessions implements SessionRepository {

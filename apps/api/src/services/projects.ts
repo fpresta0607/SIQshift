@@ -1,14 +1,42 @@
-import type { ProjectUpdateRequest } from "@siqshift/shared";
+import { projectAppearance, type ProjectColor, type ProjectIcon, type ProjectUpdateRequest } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
 import { AppError } from "../errors.js";
-import type { ProjectRepository as Repository, ProjectUsageRecord } from "../repositories.js";
+import type { ProjectRecord, ProjectRepository as Repository, ProjectUsageRecord } from "../repositories.js";
 
 export type ProjectRepository = Repository;
+
+interface ProjectItem {
+  id: string;
+  name: string;
+  icon: ProjectIcon;
+  color: ProjectColor;
+  createdAt: string;
+  isArchived: boolean;
+  isDefault: boolean;
+}
 
 function compareOrdinal(left: string, right: string): number {
   if (left === right) return 0;
   return left < right ? -1 : 1;
+}
+
+/**
+ * The shape every project route answers with. The icon and color are
+ * resolved here, so a client draws what it is given: what a member picked,
+ * else the pair the id assigns, and the default project's own pair. The
+ * default is the report path's, not the flag alone, so a workspace whose
+ * oldest project carries no flag still draws that project as the default.
+ */
+function projectItem(project: ProjectRecord, defaultProjectId: string | null): ProjectItem {
+  return {
+    id: project.id,
+    name: project.name,
+    ...projectAppearance({ id: project.id, isDefault: project.id === defaultProjectId, icon: project.icon, color: project.color }),
+    createdAt: project.createdAt.toISOString(),
+    isArchived: project.archived,
+    isDefault: project.isDefault,
+  };
 }
 
 /**
@@ -21,21 +49,16 @@ export async function listProjects(
   repository: ProjectRepository,
   subject: AuthenticatedSubject,
   includeArchived = false,
-): Promise<{
-  projects: Array<{ id: string; name: string; createdAt: string; isArchived: boolean; isDefault: boolean }>;
-}> {
-  const projects = await repository.listForMember(subject);
+): Promise<{ projects: ProjectItem[] }> {
+  const [projects, defaultProjectId] = await Promise.all([
+    repository.listForMember(subject),
+    repository.defaultIdForOrganization(subject),
+  ]);
   return {
     projects: projects
       .filter((project) => includeArchived || !project.archived)
       .sort((left, right) => compareOrdinal(left.name, right.name) || compareOrdinal(left.id, right.id))
-      .map((project) => ({
-        id: project.id,
-        name: project.name,
-        createdAt: project.createdAt.toISOString(),
-        isArchived: project.archived,
-        isDefault: project.isDefault,
-      })),
+      .map((project) => projectItem(project, defaultProjectId)),
   };
 }
 
@@ -50,22 +73,10 @@ async function rejectDuplicateName(repository: ProjectRepository, subject: Authe
   }
 }
 
-export async function createProject(repository: ProjectRepository, subject: AuthenticatedSubject, name: string): Promise<{
-  id: string;
-  name: string;
-  createdAt: string;
-  isArchived: boolean;
-  isDefault: boolean;
-}> {
+export async function createProject(repository: ProjectRepository, subject: AuthenticatedSubject, name: string): Promise<ProjectItem> {
   await rejectDuplicateName(repository, subject, name);
   const project = await repository.createForMember(subject, name);
-  return {
-    id: project.id,
-    name: project.name,
-    createdAt: project.createdAt.toISOString(),
-    isArchived: project.archived,
-    isDefault: project.isDefault,
-  };
+  return projectItem(project, await repository.defaultIdForOrganization(subject));
 }
 
 export async function updateProject(
@@ -73,7 +84,7 @@ export async function updateProject(
   subject: AuthenticatedSubject,
   projectId: string,
   patch: ProjectUpdateRequest,
-): Promise<{ id: string; name: string; createdAt: string; isArchived: boolean; isDefault: boolean }> {
+): Promise<ProjectItem> {
   if (repository.updateForMember === undefined) throw new AppError("not_found", "Project not found.");
   if (patch.name !== undefined) await rejectDuplicateName(repository, subject, patch.name, projectId);
   if (patch.isArchived === true) {
@@ -86,15 +97,11 @@ export async function updateProject(
   const updated = await repository.updateForMember(subject, projectId, {
     ...(patch.name === undefined ? {} : { name: patch.name }),
     ...(patch.isArchived === undefined ? {} : { archived: patch.isArchived }),
+    ...(patch.icon === undefined ? {} : { icon: patch.icon }),
+    ...(patch.color === undefined ? {} : { color: patch.color }),
   });
   if (updated === null) throw new AppError("not_found", "Project not found.");
-  return {
-    id: updated.id,
-    name: updated.name,
-    createdAt: updated.createdAt.toISOString(),
-    isArchived: updated.archived,
-    isDefault: updated.isDefault,
-  };
+  return projectItem(updated, await repository.defaultIdForOrganization(subject));
 }
 
 export async function projectUsage(

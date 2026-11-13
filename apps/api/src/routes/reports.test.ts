@@ -1,3 +1,4 @@
+import { DEFAULT_PROJECT_APPEARANCE } from "@siqshift/shared";
 import { Hono } from "hono";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -87,7 +88,7 @@ class Reports implements ReportRepository {
     return [];
   }
   public async readProjectTotalsByMemberForOrganization() {
-    return [{ userId: ids.user, project: { id: ids.project, name: "Timer" }, durationSeconds: "3600" }];
+    return [{ userId: ids.user, project: { id: ids.project, name: "Timer", icon: null, color: null }, durationSeconds: "3600" }];
   }
   public async readProjectTotalsForMember(): Promise<never> {
     throw new Error("not used by these routes");
@@ -169,6 +170,8 @@ describe("report routes", () => {
     });
     expect(body.hourly).toHaveLength(24);
     expect(body.hourly[13]).toEqual({ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_600, agentSeconds: 0 });
+    expect(body.projects[0].project).toEqual({ id: ids.project, name: "Timer", ...DEFAULT_PROJECT_APPEARANCE });
+    expect(body.members[0].project).toEqual({ id: ids.project, name: "Timer" });
   });
 
   it("refuses a workspace read without a token, outside the workspace, or naming one member", async () => {

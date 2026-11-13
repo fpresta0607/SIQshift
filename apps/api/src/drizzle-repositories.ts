@@ -137,12 +137,27 @@ function mapCreateError(error: unknown): SessionRepositoryError | null {
   return null;
 }
 
+/**
+ * The project automatic time lands in: the flagged one, else the oldest active
+ * one, because a workspace provisioned without the flag has none flagged. The
+ * report path and the project list both resolve it here, so they agree.
+ */
+async function defaultProjectOf(db: DatabaseConnection["db"], organizationId: string): Promise<ReportLookupRecord | null> {
+  const rows = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(and(eq(projects.organizationId, organizationId), eq(projects.archived, false)))
+    .orderBy(desc(projects.isDefault), asc(projects.createdAt), asc(projects.id))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export class DrizzleProjectRepository implements ProjectRepository {
   public constructor(private readonly db: DatabaseConnection["db"]) {}
 
   public async listForMember(subject: AuthenticatedSubject): Promise<ProjectRecord[]> {
     return this.db
-      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt })
+      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt })
       .from(projects)
       .innerJoin(projectMemberships, and(
         eq(projectMemberships.organizationId, projects.organizationId),
@@ -158,7 +173,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
 
   public async findForMember(subject: AuthenticatedSubject, projectId: string): Promise<ProjectRecord | null> {
     const rows = await this.db
-      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt })
+      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt })
       .from(projects)
       .innerJoin(projectMemberships, and(
         eq(projectMemberships.organizationId, projects.organizationId),
@@ -179,7 +194,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       const [project] = await tx
         .insert(projects)
         .values({ organizationId: subject.organizationId, name })
-        .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt });
+        .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt });
       if (project === undefined) throw new Error("Failed to create the project.");
       await tx
         .insert(projectMemberships)
@@ -188,10 +203,14 @@ export class DrizzleProjectRepository implements ProjectRepository {
     });
   }
 
+  public async defaultIdForOrganization(subject: AuthenticatedSubject): Promise<string | null> {
+    return (await defaultProjectOf(this.db, subject.organizationId))?.id ?? null;
+  }
+
   public async updateForMember(
     subject: AuthenticatedSubject,
     projectId: string,
-    patch: { name?: string; archived?: boolean },
+    patch: { name?: string; archived?: boolean; icon?: string; color?: string },
   ): Promise<ProjectRecord | null> {
     const existing = await this.findForMember(subject, projectId);
     if (existing === null) return null;
@@ -200,9 +219,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .set({
         ...(patch.name === undefined ? {} : { name: patch.name }),
         ...(patch.archived === undefined ? {} : { archived: patch.archived }),
+        ...(patch.icon === undefined ? {} : { icon: patch.icon }),
+        ...(patch.color === undefined ? {} : { color: patch.color }),
       })
       .where(and(eq(projects.id, projectId), eq(projects.organizationId, subject.organizationId)))
-      .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt });
+      .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt });
     return rows[0] ?? null;
   }
 
@@ -756,13 +777,7 @@ export class DrizzleReportRepository implements ReportRepository {
   }
 
   public async readDefaultProject(subject: AuthenticatedSubject): Promise<ReportLookupRecord | null> {
-    const rows = await this.db
-      .select({ id: projects.id, name: projects.name })
-      .from(projects)
-      .where(and(eq(projects.organizationId, subject.organizationId), eq(projects.archived, false)))
-      .orderBy(desc(projects.isDefault), asc(projects.createdAt), asc(projects.id))
-      .limit(1);
-    return rows[0] ?? null;
+    return defaultProjectOf(this.db, subject.organizationId);
   }
 
   public async findUserForOrganization(subject: AuthenticatedSubject, userId: string): Promise<ReportLookupRecord | null> {
@@ -1197,6 +1212,8 @@ export class DrizzleReportRepository implements ReportRepository {
         userId: timeSessions.userId,
         projectId: projects.id,
         projectName: projects.name,
+        projectIcon: projects.icon,
+        projectColor: projects.color,
         durationSeconds: sum(timeSessions.durationSeconds),
       })
       .from(timeSessions)
@@ -1205,11 +1222,11 @@ export class DrizzleReportRepository implements ReportRepository {
         eq(projects.id, timeSessions.projectId),
       ))
       .where(and(...this.predicates(subject, query), eq(projects.organizationId, subject.organizationId)))
-      .groupBy(timeSessions.userId, projects.id, projects.name);
+      .groupBy(timeSessions.userId, projects.id, projects.name, projects.icon, projects.color);
 
     return rows.map((row) => ({
       userId: row.userId,
-      project: { id: row.projectId, name: row.projectName },
+      project: { id: row.projectId, name: row.projectName, icon: row.projectIcon, color: row.projectColor },
       durationSeconds: row.durationSeconds,
     }));
   }

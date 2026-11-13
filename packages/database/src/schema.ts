@@ -90,6 +90,8 @@ export const projects = pgTable(
     name: text("name").notNull(),
     archived: boolean("archived").default(false).notNull(),
     isDefault: boolean("is_default").default(false).notNull(),
+    icon: text("icon"),
+    color: text("color"),
     ...auditColumns,
   },
   (table) => [

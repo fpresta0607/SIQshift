@@ -655,7 +655,7 @@ organization are derived from verified claims, never from the request body.
 | `POST` | `/organization/claim-admin` | first signed-in member claims the administrator role in a workspace that has none; refused (`409`) once one exists |
 | `GET` | `/projects` | projects the caller belongs to; `?includeArchived=true` lists archived ones so an archive can be undone |
 | `POST` | `/projects` | create a project (case-insensitive duplicate names rejected, archived names included) |
-| `PATCH` | `/projects/:id` | inline rename or archive |
+| `PATCH` | `/projects/:id` | inline rename or archive; any member may pick the project's icon and color from the built-in lists |
 | `GET` | `/projects/:id/usage` | what deleting the project would take with it |
 | `DELETE` | `/projects/:id` | delete (reassign its sessions or delete them with it); admin-only |
 | `POST` | `/sessions/observed` | batch upload of finished sessions, idempotent on the client-generated `clientId` |

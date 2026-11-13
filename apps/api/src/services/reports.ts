@@ -6,6 +6,7 @@ import {
   isAttributed,
   measureTimeMs,
   mergeIntervals,
+  projectAppearance,
   roundTimeMeasurement,
   type AgentShiftRow,
   type AgentShiftRowsFilters,
@@ -51,6 +52,7 @@ import type {
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
+  MemberProjectTotalRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
   ReportLookupRecord,
@@ -953,13 +955,14 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       // Read once over the whole range, the way a member's card reads: the
       // graph and the agent rows need the intervals themselves, and the live
       // part of the totals is measured by clipping these same rows.
-      const [rows, roster, presence, sessions, agentIntervals, projectTotals, plan] = await Promise.all([
+      const [rows, roster, presence, sessions, agentIntervals, projectTotals, defaultProject, plan] = await Promise.all([
         dependencies.reports.readLeaderboardForOrganization(subject, query),
         dependencies.reports.readMembersForOrganization(subject),
         dependencies.reports.readPresenceIntervals(subject, query),
         scoped ? dependencies.reports.readSessionIntervals(subject, query) : Promise.resolve([]),
         dependencies.reports.readAgentIntervals(subject, query),
         dependencies.reports.readProjectTotalsByMemberForOrganization(subject, query),
+        dependencies.reports.readDefaultProject(subject),
         planStoredDays(dependencies, subject, query, now()),
       ]);
       const members = collectMembers(presence, sessions, agentIntervals);
@@ -979,7 +982,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         });
       }
 
-      const teamProjects = new Map<string, { project: ReportLookupRecord; durationSeconds: number }>();
+      const teamProjects = new Map<string, { project: MemberProjectTotalRecord["project"]; durationSeconds: number }>();
       const topProjects = new Map<string, { project: ReportLookupRecord; durationSeconds: number }>();
       for (const record of projectTotals) {
         const durationSeconds = safeInteger(record.durationSeconds, "project duration");
@@ -990,7 +993,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         const top = topProjects.get(record.userId);
         if (top === undefined || durationSeconds > top.durationSeconds
           || (durationSeconds === top.durationSeconds && record.project.id < top.project.id)) {
-          topProjects.set(record.userId, { project: record.project, durationSeconds });
+          topProjects.set(record.userId, { project: { id: record.project.id, name: record.project.name }, durationSeconds });
         }
       }
 
@@ -1007,8 +1010,18 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         activeSeconds: entries.reduce((total, entry) => total + entry.activeSeconds, 0),
         agentSeconds: entries.reduce((total, entry) => total + entry.agentSeconds, 0),
         hourly,
+        // Drawn with the pair the project list resolves, the default project's
+        // by the same rule, so a project looks the same on every surface.
         projects: [...teamProjects.values()]
-          .sort((a, b) => b.durationSeconds - a.durationSeconds || a.project.id.localeCompare(b.project.id)),
+          .sort((a, b) => b.durationSeconds - a.durationSeconds || a.project.id.localeCompare(b.project.id))
+          .map(({ project, durationSeconds }) => ({
+            project: {
+              id: project.id,
+              name: project.name,
+              ...projectAppearance({ id: project.id, isDefault: project.id === defaultProject?.id, icon: project.icon, color: project.color }),
+            },
+            durationSeconds,
+          })),
         agents: [...agentMs]
           .map(([source, ms]) => ({ source, durationSeconds: Math.round(ms / 1_000) }))
           .filter((row) => row.durationSeconds > 0)

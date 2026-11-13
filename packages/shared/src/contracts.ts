@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { inviteCodePattern } from "./invite-code.js";
+import { PROJECT_COLORS, PROJECT_ICONS } from "./project-appearance.js";
 
 const idSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -271,7 +272,13 @@ export const workspaceReportResponseSchema = z
     hourly: z.array(workspaceHourlyBucketSchema),
     /** Recorded time per project across the team, heaviest first. */
     projects: z.array(z.object({
-      project: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+      project: z.object({
+        id: idSchema,
+        name: z.string().min(1),
+        /** The icon and color the project list shows for it; absent from a server that predates them. */
+        icon: z.enum(PROJECT_ICONS).nullable().optional(),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+      }).strict(),
       durationSeconds: z.number().int().nonnegative().safe(),
     }).strict()),
     /** Agent runtime per agent runtime, heaviest first. */
@@ -303,6 +310,8 @@ export const projectListItemSchema = z
   .object({
     id: idSchema,
     name: z.string().min(1),
+    /** The icon a member picked, else the one assigned from the id; absent from a server that predates it. */
+    icon: z.enum(PROJECT_ICONS).nullable().optional(),
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
     createdAt: z.string().datetime(),
     isArchived: z.boolean(),
@@ -327,9 +336,17 @@ export const projectUpdateRequestSchema = z
     name: z.string().trim().min(1).max(80).optional(),
     isArchived: z.boolean().optional(),
     replacementProjectId: idSchema.optional(),
+    /** Any member may pick the icon and color, from the built-in lists only. */
+    icon: z.enum(PROJECT_ICONS).optional(),
+    color: z.enum(PROJECT_COLORS).optional(),
   })
   .strict()
-  .refine((value) => value.name !== undefined || value.isArchived !== undefined || value.replacementProjectId !== undefined);
+  .refine((value) =>
+    value.name !== undefined
+    || value.isArchived !== undefined
+    || value.replacementProjectId !== undefined
+    || value.icon !== undefined
+    || value.color !== undefined);
 
 /** What deleting a project would take with it; shown in the confirm dialog. */
 export const projectUsageResponseSchema = z

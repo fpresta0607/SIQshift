@@ -9,6 +9,9 @@ export interface ProjectRecord {
   archived: boolean;
   /** Where automatic time lands when nothing names a project; refuses deletion. */
   isDefault: boolean;
+  /** The built-in icon and color a member picked; null until one does. */
+  icon: string | null;
+  color: string | null;
   createdAt: Date;
 }
 
@@ -40,8 +43,17 @@ export interface ProjectRepository {
   findForMember(subject: AuthenticatedSubject, projectId: string): Promise<ProjectRecord | null>;
   /** Creates the project and the creator's membership in one transaction. */
   createForMember(subject: AuthenticatedSubject, name: string): Promise<ProjectRecord>;
-  /** Renames or archives; null when the project is not the caller's to change. */
-  updateForMember?(subject: AuthenticatedSubject, projectId: string, patch: { name?: string; archived?: boolean }): Promise<ProjectRecord | null>;
+  /**
+   * The project automatic time lands in, by the report path's rule: the
+   * flagged one, else the oldest active one. Null with no active project.
+   */
+  defaultIdForOrganization(subject: AuthenticatedSubject): Promise<string | null>;
+  /** Renames, archives or repaints; null when the project is not the caller's to change. */
+  updateForMember?(
+    subject: AuthenticatedSubject,
+    projectId: string,
+    patch: { name?: string; archived?: boolean; icon?: string; color?: string },
+  ): Promise<ProjectRecord | null>;
   /** What deleting the project would take with it, for the confirm dialog. */
   usageForOrganization?(subject: AuthenticatedSubject, projectId: string): Promise<ProjectUsageRecord>;
   /**
@@ -186,7 +198,8 @@ export interface ProjectTotalRecord {
 
 export interface MemberProjectTotalRecord {
   userId: string;
-  project: ReportLookupRecord;
+  /** With the icon and color stored for it, null where no member picked one. */
+  project: ReportLookupRecord & { icon: string | null; color: string | null };
   /** sql sums surface as string/bigint. */
   durationSeconds: number | string | bigint | null;
 }
