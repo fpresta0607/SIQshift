@@ -875,10 +875,9 @@ has been fixed.
 checks the `unsigned-latest` manifest at launch and every six hours, installs
 a newer build quietly, and restarts. A build installed *before* the updater
 shipped cannot update itself (its binary has no updater in it), so install
-this build once by hand and every build after it is automatic. A signed
-release cannot upgrade an unsigned install in place (different signing keys),
-so uninstall the test build before installing a real release. macOS updates
-are still by hand.
+this build once by hand and every build after it is automatic. Installing a
+release over a test build moves it onto releases, with no uninstall needed.
+macOS updates are still by hand.
 
 **Installing on macOS.** The signed, notarized `.dmg` installs like any Mac app: mount it, drag SIQshift to Applications and open it.
 macOS asks once whether to open an app downloaded from the internet, and needs nothing else.
