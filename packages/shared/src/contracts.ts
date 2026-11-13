@@ -1036,6 +1036,12 @@ export const agentShiftsResponseSchema = z
         shiftCount: z.number().int().nonnegative().safe(),
         /** merged / decided; null while nothing has been decided. */
         heldRate: heldRateSchema,
+        /**
+         * Tokens in plus out that this group's shifts reported inside the
+         * range; zero when they reported none. Absent when the API reads no
+         * token usage, and from an API older than the field.
+         */
+        tokens: z.number().int().nonnegative().safe().optional(),
       })
       // A cause explains a missing name and nothing else: a named group
       // carrying one is a contradiction, and the wire refuses it.
@@ -1047,6 +1053,33 @@ export const agentShiftsResponseSchema = z
      * its API draws no chart rather than failing the tab.
      */
     tokenChart: tokenChartSchema.optional(),
+    /**
+     * One row per agent runtime among the shifts the groups hold, heaviest
+     * agent time first and `source` breaking a tie. Its seconds and counts
+     * add up to the groups', and its `tokens` to theirs. Optional, because an
+     * API older than the field sends none.
+     */
+    runtimes: z.array(z
+      .object({
+        source: agentSourceSchema,
+        agentSeconds: z.number().int().nonnegative().safe(),
+        shiftCount: z.number().int().nonnegative().safe(),
+        tokens: z.number().int().nonnegative().safe().optional(),
+      })
+      .strict()).optional(),
+    /**
+     * The tokens the groups' shifts reported, summed the way the chart sums a
+     * bar, so `tokens` is the sum of the groups' own. Stated for an unbounded
+     * range too, unlike the chart. Absent when the API reads no token usage.
+     */
+    tokenTotals: z
+      .object({
+        tokensIn: z.number().int().nonnegative().safe(),
+        tokensOut: z.number().int().nonnegative().safe(),
+        tokens: z.number().int().nonnegative().safe(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

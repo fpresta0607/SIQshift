@@ -1304,4 +1304,35 @@ describe("agent shifts contracts", () => {
     expect(withPeople([{ owner: { id: ids.user, name: "Alex" }, agentSeconds: 3_600, shiftCount: 2, rank: 1 }])).toThrow();
     expect(withPeople([{ owner: { id: ids.user, name: "Alex", email: "a@b.c" }, agentSeconds: 3_600, shiftCount: 2 }])).toThrow();
   });
+
+  it("carries each group's tokens, the runtimes and the token totals, and still reads a response without them", () => {
+    const withTokens = {
+      ...shiftsResponse,
+      groups: [{ ...shiftsResponse.groups[0], tokens: 3_523 }],
+      runtimes: [
+        { source: "claude_code", agentSeconds: 3_600, shiftCount: 2, tokens: 3_520 },
+        { source: "codex", agentSeconds: 1_800, shiftCount: 1, tokens: 3 },
+      ],
+      tokenTotals: { tokensIn: 3_121, tokensOut: 402, tokens: 3_523 },
+    };
+
+    expect(agentShiftsResponseSchema.parse(withTokens)).toEqual(withTokens);
+    expect(() => agentShiftsResponseSchema.parse(shiftsResponse)).not.toThrow();
+    expect(() => agentShiftsResponseSchema.parse({
+      ...shiftsResponse,
+      runtimes: [{ source: "codex", agentSeconds: 1_800, shiftCount: 1 }],
+    })).not.toThrow();
+  });
+
+  it.each([
+    { field: "a group's tokens", patch: { groups: [{ ...shiftsResponse.groups[0], tokens: -1 }] } },
+    { field: "a runtime's seconds", patch: { runtimes: [{ source: "codex", agentSeconds: -1, shiftCount: 1 }] } },
+    { field: "a runtime's shift count", patch: { runtimes: [{ source: "codex", agentSeconds: 60, shiftCount: -1 }] } },
+    { field: "a runtime's tokens", patch: { runtimes: [{ source: "codex", agentSeconds: 60, shiftCount: 1, tokens: -1 }] } },
+    { field: "the tokens in", patch: { tokenTotals: { tokensIn: -1, tokensOut: 0, tokens: 0 } } },
+    { field: "the tokens out", patch: { tokenTotals: { tokensIn: 0, tokensOut: -1, tokens: 0 } } },
+    { field: "the token total", patch: { tokenTotals: { tokensIn: 0, tokensOut: 0, tokens: -1 } } },
+  ])("refuses a negative count in $field", ({ patch }) => {
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, ...patch })).toThrow();
+  });
 });

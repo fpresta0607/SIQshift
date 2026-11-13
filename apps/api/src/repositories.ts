@@ -728,6 +728,13 @@ export interface AgentUsageRepository {
    * none.
    */
   sumByBucketAndProject(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageProjectBucketTotalRecord[]>;
+  /**
+   * Counters summed per agent session under the chart's scope - the range on
+   * the bucket start, the member, and the project through the shift - so the
+   * Agents tab can total each repo and runtime by the shifts it holds. One row
+   * per session that reported usage.
+   */
+  sumBySession(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]>;
   /** The same per-hour sums narrowed to one agent, for the paystub's own series. */
   sumByBucketForAgent(subject: AuthenticatedSubject, agentId: string, query: ReportQuery): Promise<AgentUsageBucketTotalRecord[]>;
   /** Counters summed per agent over the query's scope, for the pay-run report and /me/stats rows. */
@@ -748,6 +755,15 @@ export interface AgentUsageBucketTotalRecord {
 /** One hour bucket's summed counters for one project; null when the shifts named no project. */
 export interface AgentUsageProjectBucketTotalRecord extends AgentUsageBucketTotalRecord {
   project: ReportLookupRecord | null;
+}
+
+/** One agent session's summed token counters over a range; sql sums surface as string/bigint. */
+export interface AgentUsageSessionTotalsRecord {
+  agentSessionId: string;
+  inputTokens: number | string | bigint | null;
+  outputTokens: number | string | bigint | null;
+  cacheCreationInputTokens: number | string | bigint | null;
+  cacheReadInputTokens: number | string | bigint | null;
 }
 
 /**

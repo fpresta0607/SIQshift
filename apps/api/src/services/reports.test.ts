@@ -12,6 +12,7 @@ import type {
   AgentUsageModelTotalsRecord,
   AgentUsageProjectBucketTotalRecord,
   AgentUsageRepository,
+  AgentUsageSessionTotalsRecord,
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
@@ -318,6 +319,7 @@ class ShiftCommits implements ShiftCommitRepository {
 type UsageSeed = {
   userId: string;
   agentId: string;
+  agentSessionId: string;
   projectId: string | null;
   model: string | null;
   bucketStartAt: Date;
@@ -331,6 +333,7 @@ function usageSeed(overrides: Partial<UsageSeed> = {}): UsageSeed {
   return {
     userId: ids.user,
     agentId: ids.session,
+    agentSessionId: "s1",
     projectId: ids.project,
     model: null,
     bucketStartAt: new Date("2026-08-06T14:00:00.000Z"),
@@ -403,6 +406,26 @@ class Usage implements AgentUsageRepository {
       byKey.set(key, record);
     }
     return [...byKey.values()];
+  }
+  public async sumBySession(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]> {
+    const bySession = new Map<string, { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number }>();
+    for (const row of this.scoped(query)) {
+      const totals = bySession.get(row.agentSessionId)
+        ?? { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+      totals.inputTokens += row.inputTokens;
+      totals.outputTokens += row.outputTokens;
+      totals.cacheCreationInputTokens += row.cacheCreationInputTokens;
+      totals.cacheReadInputTokens += row.cacheReadInputTokens;
+      bySession.set(row.agentSessionId, totals);
+    }
+    // Strings, the way postgres hands a sum back.
+    return [...bySession].map(([agentSessionId, totals]) => ({
+      agentSessionId,
+      inputTokens: String(totals.inputTokens),
+      outputTokens: String(totals.outputTokens),
+      cacheCreationInputTokens: String(totals.cacheCreationInputTokens),
+      cacheReadInputTokens: String(totals.cacheReadInputTokens),
+    }));
   }
   public async sumByAgent(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageTotalsRecord[]> {
     this.lastAgentQuery = query;
@@ -1902,7 +1925,7 @@ describe("agent shifts", () => {
       expect(result.tokenChart?.buckets.map((bucket) => bucket.tokens)).toEqual([10, null, null, null, null, null, 2]);
     });
 
-    it("reads no usage and draws no chart over an unbounded range, nor without a usage source", async () => {
+    it("reads no bucketed usage and draws no chart over an unbounded range, nor without a usage source", async () => {
       const reports = new Reports();
       reports.agentIntervals = [shift("s1", ids.project, "Timer", at(10), at(11))];
       const usage = new Usage([usageSeed({ bucketStartAt: at(10), inputTokens: 7, outputTokens: 3 })]);
@@ -1914,6 +1937,103 @@ describe("agent shifts", () => {
       expect(usage.projectBucketReads).toBe(0);
       expect(unbounded.totalAgentSeconds).toBe(3_600);
       expect(unread.tokenChart).toBeUndefined();
+    });
+  });
+
+  describe("tokens by repo and runtime", () => {
+    const shift = (sessionId: string, source: string, cwd: string, userId: string, start: Date, end: Date): AgentIntervalRecord => ({
+      sessionId,
+      user: { id: userId, name: userId === ids.user ? "Alex" : "Riley" },
+      source,
+      model: null,
+      cwd,
+      projectId: ids.project,
+      projectName: "Timer",
+      agentId: ids.session,
+      agentRepoRoot: null,
+      agentRepoKey: null,
+      startedAt: start,
+      endedAt: end,
+    });
+    const board = (): Reports => {
+      const reports = new Reports();
+      reports.agentIntervals = [
+        shift("s1", "claude_code", "C:/dev/siqshift", ids.user, at(10), at(11)),
+        shift("s2", "codex", "C:/dev/siqshift", ids.otherUser, at(12), at(12, 30)),
+        shift("s3", "claude_code", "/home/a/src/quartermaster", ids.user, at(13), at(13, 10)),
+        shift("s4", "pi", "/home/a/src/quartermaster", ids.otherUser, at(14), at(14, 30)),
+      ];
+      return reports;
+    };
+    const usage = (): Usage => new Usage([
+      usageSeed({ agentSessionId: "s1", bucketStartAt: at(10), inputTokens: 100, cacheCreationInputTokens: 20, cacheReadInputTokens: 3_000, outputTokens: 400 }),
+      usageSeed({ agentSessionId: "s2", userId: ids.otherUser, bucketStartAt: at(12), inputTokens: 1, outputTokens: 2 }),
+      usageSeed({ agentSessionId: "s4", userId: ids.otherUser, bucketStartAt: at(14), inputTokens: 10, outputTokens: 10 }),
+      // A session the board does not hold: its tokens belong to no group.
+      usageSeed({ agentSessionId: "s9", bucketStartAt: at(15), inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    ]);
+
+    it("totals each group's tokens and rolls its shifts up by runtime, both reconciling with the groups", async () => {
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      const result = await service.agentShifts(subject, {});
+
+      expect(result.groups.map((group) => [group.repo, group.agentSeconds, group.shiftCount, group.tokens])).toEqual([
+        ["siqshift", 5_400, 2, 3_523],
+        ["quartermaster", 2_400, 2, 20],
+      ]);
+      // Heaviest first, the equal pair ordered by source.
+      expect(result.runtimes).toEqual([
+        { source: "claude_code", agentSeconds: 4_200, shiftCount: 2, tokens: 3_520 },
+        { source: "codex", agentSeconds: 1_800, shiftCount: 1, tokens: 3 },
+        { source: "pi", agentSeconds: 1_800, shiftCount: 1, tokens: 20 },
+      ]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 3_131, tokensOut: 412, tokens: 3_543 });
+      const runtimes = result.runtimes ?? [];
+      expect(runtimes.reduce((sum, runtime) => sum + runtime.agentSeconds, 0)).toBe(result.totalAgentSeconds);
+      expect(runtimes.reduce((sum, runtime) => sum + runtime.shiftCount, 0))
+        .toBe(result.groups.reduce((sum, group) => sum + group.shiftCount, 0));
+      expect(result.groups.reduce((sum, group) => sum + (group.tokens ?? 0), 0)).toBe(result.tokenTotals?.tokens);
+    });
+
+    it("narrows the groups' tokens, the runtimes and the totals to the selected person, and keeps everyone on the board", async () => {
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      const result = await service.agentShifts(subject, { userId: ids.user });
+
+      expect(result.groups.map((group) => [group.repo, group.shiftCount, group.tokens])).toEqual([
+        ["siqshift", 1, 3_520],
+        ["quartermaster", 1, 0],
+      ]);
+      expect(result.runtimes).toEqual([{ source: "claude_code", agentSeconds: 4_200, shiftCount: 2, tokens: 3_520 }]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 3_120, tokensOut: 400, tokens: 3_520 });
+      expect(result.people.map((person) => person.owner.id).sort()).toEqual([ids.user, ids.otherUser].sort());
+    });
+
+    it.each([
+      { label: "an unbounded range", filters: {} },
+      { label: "a bounded range", filters: { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() } },
+    ])("states the tokens over $label", async ({ filters }) => {
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      const result = await service.agentShifts(subject, filters);
+
+      expect(result.tokenTotals).toEqual({ tokensIn: 3_131, tokensOut: 412, tokens: 3_543 });
+      expect(result.groups.map((group) => group.tokens)).toEqual([3_523, 20]);
+    });
+
+    it("leaves the tokens out without a usage source, and still rolls up the runtimes", async () => {
+      const service = createReportService({ reports: board() });
+
+      const result = await service.agentShifts(subject, {});
+
+      expect(result.tokenTotals).toBeUndefined();
+      expect(result.groups.every((group) => !("tokens" in group))).toBe(true);
+      expect(result.runtimes).toEqual([
+        { source: "claude_code", agentSeconds: 4_200, shiftCount: 2 },
+        { source: "codex", agentSeconds: 1_800, shiftCount: 1 },
+        { source: "pi", agentSeconds: 1_800, shiftCount: 1 },
+      ]);
     });
   });
 

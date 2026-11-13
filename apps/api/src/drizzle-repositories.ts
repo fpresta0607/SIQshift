@@ -52,6 +52,7 @@ import {
   type AgentUsageModelTotalsRecord,
   type AgentUsageProjectBucketTotalRecord,
   type AgentUsageRepository,
+  type AgentUsageSessionTotalsRecord,
   type AgentUsageTotalsRecord,
   type UpsertAgentUsageBucket,
   type InsertShiftCommit,
@@ -2208,6 +2209,37 @@ export class DrizzleAgentUsageRepository implements AgentUsageRepository {
       ...sums,
       project: projectId === null || projectName === null ? null : { id: projectId, name: projectName },
     }));
+  }
+
+  public async sumBySession(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]> {
+    const projectScoped = query.projectId !== undefined || query.unassignedOnly === true;
+    const conditions = this.usageScopeConditions(subject, query);
+    // The session id and the four sums alone: this read also runs over an
+    // unbounded range, so it carries nothing the per-shift totals do not use.
+    const base = this.db
+      .select({
+        agentSessionId: agentUsage.agentSessionId,
+        inputTokens: sum(agentUsage.inputTokens),
+        outputTokens: sum(agentUsage.outputTokens),
+        cacheCreationInputTokens: sum(agentUsage.cacheCreationInputTokens),
+        cacheReadInputTokens: sum(agentUsage.cacheReadInputTokens),
+      })
+      .from(agentUsage);
+    const rows = await (projectScoped
+      ? base
+        .innerJoin(agentSessions, and(
+          eq(agentSessions.organizationId, agentUsage.organizationId),
+          eq(agentSessions.id, agentUsage.agentSessionId),
+        ))
+        .where(and(
+          ...conditions,
+          query.projectId === undefined ? isNull(agentSessions.projectId) : eq(agentSessions.projectId, query.projectId),
+        ))
+        .groupBy(agentUsage.agentSessionId)
+      : base
+        .where(and(...conditions))
+        .groupBy(agentUsage.agentSessionId));
+    return rows;
   }
 
   public async sumByBucketForAgent(

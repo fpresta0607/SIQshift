@@ -1163,20 +1163,46 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
     async agentShifts(subject: AuthenticatedSubject, filters: AgentShiftsFilters): Promise<AgentShiftsResponse> {
       const board = await readShiftBoard(dependencies, subject, filters);
       const { start, end } = board.range;
+      const agentUsage = dependencies.agentUsage;
       // The same range, scope and person the board shows, already authorized
-      // by the board's read. An unbounded range has no bars to draw, so its
-      // usage is never read.
-      const chart = dependencies.agentUsage === undefined || start === undefined || end === undefined
+      // by the board's read. An unbounded range has no bars to draw, so the
+      // chart's usage is never read for one; the per-session sums still are,
+      // because a total over all time is still a number.
+      const usageQuery: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
+      const [chart, sessionUsage] = await Promise.all([
+        agentUsage === undefined || start === undefined || end === undefined
+          ? undefined
+          : Promise.all([
+            agentUsage.sumByBucketAndProject(subject, usageQuery),
+            dependencies.reports.readDefaultProject(subject),
+          ]).then(([usage, defaultProject]) => tokenChart(
+            usage,
+            board.groups.flatMap((group) => group.shifts.map((shift) => shift.project ?? null)),
+            defaultProject,
+            { start, end },
+          )),
+        agentUsage?.sumBySession(subject, usageQuery),
+      ]);
+      // A session's tokens land on the group and the runtime of its shift on
+      // the board. A session the board does not hold is left out, so the
+      // groups, the runtimes and the totals all sum the same shifts.
+      const tokensBySession = sessionUsage === undefined
         ? undefined
-        : await Promise.all([
-          dependencies.agentUsage.sumByBucketAndProject(subject, { ...normalizedQuery(filters), ...scopeQuery(filters.scope) }),
-          dependencies.reports.readDefaultProject(subject),
-        ]).then(([usage, defaultProject]) => tokenChart(
-          usage,
-          board.groups.flatMap((group) => group.shifts.map((shift) => shift.project ?? null)),
-          defaultProject,
-          { start, end },
-        ));
+        : new Map(sessionUsage.map((row) => [row.agentSessionId, tokenFigures({
+          inputTokens: safeInteger(row.inputTokens, "session input tokens"),
+          outputTokens: safeInteger(row.outputTokens, "session output tokens"),
+          cacheCreationInputTokens: safeInteger(row.cacheCreationInputTokens, "session cache creation tokens"),
+          cacheReadInputTokens: safeInteger(row.cacheReadInputTokens, "session cache read tokens"),
+        })]));
+      const tokenSum = (shifts: readonly AgentShiftRow[], figure: "tokensIn" | "tokensOut" | "tokens"): number =>
+        shifts.reduce((total, shift) => total + (tokensBySession?.get(shift.id)?.[figure] ?? 0), 0);
+      const shifts = board.groups.flatMap((group) => group.shifts);
+      const shiftsBySource = new Map<string, AgentShiftRow[]>();
+      for (const shift of shifts) {
+        const list = shiftsBySource.get(shift.source);
+        if (list === undefined) shiftsBySource.set(shift.source, [shift]);
+        else list.push(shift);
+      }
       return {
         filters,
         totalAgentSeconds: board.groups.reduce((sum, group) => sum + group.agentSeconds, 0),
@@ -1196,8 +1222,24 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           agentSeconds: group.agentSeconds,
           shiftCount: group.shifts.length,
           heldRate: heldRateOf(group.commits),
+          ...(tokensBySession === undefined ? {} : { tokens: tokenSum(group.shifts, "tokens") }),
         })),
         ...(chart === undefined ? {} : { tokenChart: chart }),
+        runtimes: [...shiftsBySource]
+          .map(([source, list]) => ({
+            source,
+            agentSeconds: list.reduce((total, shift) => total + shift.agentSeconds, 0),
+            shiftCount: list.length,
+            ...(tokensBySession === undefined ? {} : { tokens: tokenSum(list, "tokens") }),
+          }))
+          .sort((a, b) => b.agentSeconds - a.agentSeconds || a.source.localeCompare(b.source)),
+        ...(tokensBySession === undefined ? {} : {
+          tokenTotals: {
+            tokensIn: tokenSum(shifts, "tokensIn"),
+            tokensOut: tokenSum(shifts, "tokensOut"),
+            tokens: tokenSum(shifts, "tokens"),
+          },
+        }),
       };
     },
 
