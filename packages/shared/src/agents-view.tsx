@@ -1,8 +1,9 @@
-import { useId, type CSSProperties } from "react";
+import { useId, useState, type CSSProperties } from "react";
 
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount, formatTokens } from "./format.js";
+import { SegmentedControl } from "./segmented-control.js";
 import { TeamTotals } from "./team-totals.js";
 import { formatHumanDuration } from "./time.js";
 import {
@@ -44,13 +45,21 @@ export type AgentsViewProps = {
 
 const DAY_SECONDS = 86_400;
 
+const MEASURE_OPTIONS = [
+  { value: "tokens", label: "Tokens" },
+  { value: "time", label: "Agent time" },
+] as const;
+
+type AgentMeasure = (typeof MEASURE_OPTIONS)[number]["value"];
+
 const byTokens = <Row extends { tokens?: number | undefined; agentSeconds: number }>(a: Row, b: Row): number =>
   (b.tokens ?? 0) - (a.tokens ?? 0) || b.agentSeconds - a.agentSeconds;
 
 /**
  * The team view's Agents page, on the Humans page's layout: the totals, the
  * chart, then the repos ranked on the left and the agents used on the right,
- * with who is running one now under them.
+ * with who is running one now under them. The chart's one toggle picks tokens
+ * or agent time, and shows only when the range has both to draw.
  *
  * The server sends aggregates only. The repos rank by tokens when the server
  * sent them, the label-less group staying last as it is on the server, and in
@@ -73,6 +82,7 @@ export const AgentsView = ({
   const reposTitleId = useId();
   const runtimesTitleId = useId();
   const liveTitleId = useId();
+  const [measure, setMeasure] = useState<AgentMeasure>("tokens");
   const hasTokens = tokenTotals !== undefined;
   const rankedGroups = hasTokens
     ? [...groups].sort((a, b) => Number(a.repo === null) - Number(b.repo === null) || byTokens(a, b))
@@ -84,6 +94,8 @@ export const AgentsView = ({
   );
   const runningCount = livePeople?.reduce((sum, person) => sum + person.sessions.length, 0) ?? 0;
   const hasTokenBars = tokenChart !== undefined && tokenChart.buckets.length > 0;
+  const hasHourly = hourly.length > 0;
+  const isTokenChartShown = hasTokenBars && (measure === "tokens" || !hasHourly);
   return (
     <>
       <TeamTotals
@@ -103,19 +115,22 @@ export const AgentsView = ({
           { label: "Repos", value: formatCount(groups.filter((group) => group.repo !== null).length), note: "with agent work" },
         ]}
       />
-      {(hasTokenBars || hourly.length > 0) && (
+      {(hasTokenBars || hasHourly) && (
         <section className="tv-card tv-chart" aria-labelledby={chartTitleId}>
           <div className="tv-card-head">
             <h4 id={chartTitleId}>Over time</h4>
+            {hasTokenBars && hasHourly && (
+              <SegmentedControl label="What the chart shows" options={MEASURE_OPTIONS} value={measure} onChange={setMeasure} />
+            )}
           </div>
-          {hasTokenBars ? (
+          {isTokenChartShown ? (
             <>
               <TokenBarChart chart={tokenChart} />
               <p className="tv-card-foot">Tokens in and out. Each bar is one {tokenChart.bucketSeconds >= DAY_SECONDS ? "day" : "hour"}.</p>
             </>
           ) : (
             <>
-              <HourlyGraph buckets={hourly} />
+              <HourlyGraph buckets={hourly} measure="agent" />
               <p className="tv-card-foot">Each point is one hour.</p>
             </>
           )}

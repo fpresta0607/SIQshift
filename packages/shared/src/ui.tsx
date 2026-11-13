@@ -125,31 +125,41 @@ type ChartSeries = {
   values: readonly number[];
 };
 
+/// Which lines a time chart draws: both, or either one alone.
+export type TimeMeasure = "both" | "active" | "agent";
+
+const CHART_NAMES: Readonly<Record<TimeMeasure, string>> = {
+  both: "Hourly active and agent time",
+  active: "Hourly active time",
+  agent: "Hourly agent time",
+};
+
 /// SVG line chart of time and nothing else: agents in the brand green, the
 /// person in gray. Tokens have their own bar chart on the Agents tab. No chart
 /// library: a fixed viewBox, one path per series, and a gradient area under
-/// each. The server buckets to the caller's local hours, so the x-axis reads
+/// each. The scale fits the lines drawn, so a line drawn alone fills the
+/// chart. The server buckets to the caller's local hours, so the x-axis reads
 /// midnight-to-midnight on the viewer's clock.
 export const HourlyGraph = ({
   buckets,
-  personLabel,
+  measure = "both",
+  personLabel = "Active time",
 }: {
   buckets: readonly ChartHourlyBucket[];
-  /// Names the presence line. Absent, no person series draws at all - the
-  /// Agents tab plots runtime alone, where a flat "You" at zero would only
-  /// claim somebody was measured and absent.
+  /// "agent" draws no person line at all - the Agents tab plots runtime
+  /// alone, where a flat line at zero would only claim somebody was measured
+  /// and absent.
+  measure?: TimeMeasure;
+  /// Names the presence line.
   personLabel?: string;
 }) => {
   const [readout, setReadout] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   if (buckets.length === 0) return null;
 
-  const series: readonly ChartSeries[] = [
-    { id: "agent", label: "Agent time", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) },
-    ...(personLabel === undefined
-      ? []
-      : [{ id: "human", label: personLabel, color: "var(--chart-human)", values: buckets.map((bucket) => bucket.activeSeconds) }]),
-  ];
+  const agentLine: ChartSeries = { id: "agent", label: "Agent time", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) };
+  const personLine: ChartSeries = { id: "human", label: personLabel, color: "var(--chart-human)", values: buckets.map((bucket) => bucket.activeSeconds) };
+  const series: readonly ChartSeries[] = measure === "both" ? [agentLine, personLine] : [measure === "agent" ? agentLine : personLine];
 
   const width = 640;
   const height = 190;
@@ -226,7 +236,7 @@ export const HourlyGraph = ({
         ref={svgRef}
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="Hourly active and agent time"
+        aria-label={CHART_NAMES[measure]}
         tabIndex={0}
         onMouseMove={(event) => {
           const index = indexFromPointer(event.clientX);

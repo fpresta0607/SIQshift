@@ -362,6 +362,26 @@ describe("dashboard", () => {
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
   });
 
+  it.each([
+    ["Both", "Hourly active and agent time", ["agent", "human"]],
+    ["Active time", "Hourly active time", ["human"]],
+    ["Agent time", "Hourly agent time", ["agent"]],
+  ])("draws only what the team chart's one toggle picks: %s", async (choice, chartName, lines) => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    const chart = within(await stats.findByRole("region", { name: "Over time" }));
+    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
+
+    // Act
+    await person.click(toggle.getByRole("button", { name: choice }));
+
+    // Assert
+    expect(toggle.getByRole("button", { name: choice })).toHaveAttribute("aria-pressed", "true");
+    const graph = chart.getByRole("img", { name: chartName });
+    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(lines);
+  });
+
   it("orders the board only by what its rows show, active or agent time", async () => {
     // Arrange
     const person = await signIn(clientFor());
@@ -1806,20 +1826,24 @@ describe("the agents tab", () => {
 
     // Assert: one bar per hour that burned anything, at the server's total.
     expect(drawnTokens(chart)).toEqual([999, 3_000]);
-    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(0);
   });
 
-  it("narrows the bars to a picked project and lists one with no tokens unpickable", async () => {
+  it("switches the chart from tokens to agent time with its one toggle", async () => {
     // Arrange
-    const { person, chart } = await openTokenChart();
+    const { person } = await openTokenChart();
+    const chart = within(within(screen.getByTestId("agent-shifts")).getByRole("region", { name: "Over time" }));
+    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
+    expect(toggle.getByRole("button", { name: "Tokens" })).toHaveAttribute("aria-pressed", "true");
+    expect(chart.queryByRole("combobox")).not.toBeInTheDocument();
 
     // Act
-    await person.selectOptions(within(chart).getByRole("combobox", { name: "Project" }), "p1");
+    await person.click(toggle.getByRole("button", { name: "Agent time" }));
 
-    // Assert
-    expect(drawnTokens(chart)).toEqual([700, 77]);
-    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(2);
-    expect(within(chart).getByRole("option", { name: "Ledger · no tokens" })).toBeDisabled();
+    // Assert: agent time alone, in place of the bars.
+    expect(chart.queryByTestId("token-chart")).not.toBeInTheDocument();
+    const graph = chart.getByRole("img", { name: "Hourly agent time" });
+    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
+    expect(chart.getByText("Each point is one hour.")).toBeInTheDocument();
   });
 
   it("maps every shift under its codebase, with the total recorded on top", async () => {

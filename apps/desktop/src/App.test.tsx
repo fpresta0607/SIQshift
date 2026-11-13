@@ -1350,6 +1350,20 @@ describe("the team board", () => {
     expect(bridge.workspaceReport).toHaveBeenCalled();
   });
 
+  it("draws only agent time once the team chart's one toggle picks it", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+    const chart = within(await within(await openAllStats(person)).findByRole("region", { name: "Over time" }));
+
+    // Act
+    await person.click(within(chart.getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Agent time" }));
+
+    // Assert
+    const graph = chart.getByRole("img", { name: "Hourly agent time" });
+    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
+  });
+
   it("draws the team totals the server added up, never a sum of the rows", async () => {
     // Arrange
     const person = userEvent.setup();
@@ -1972,72 +1986,24 @@ describe("the agents tab", () => {
     expect(drawnTokens(chart)).toEqual([999, 3_000]);
     const heights = [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("height")));
     expect(heights[1]!).toBeGreaterThan(heights[0]!);
-    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(0);
   });
 
-  it("narrows the bars to a picked project, drawn solid over the period's as ghosts", async () => {
+  it("switches the chart from tokens to agent time with its one toggle", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
-    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+    const chart = within(within(await openAgentsTab(person)).getByRole("region", { name: "Over time" }));
+    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
+    expect(chart.queryByRole("combobox")).not.toBeInTheDocument();
 
     // Act
-    await person.selectOptions(within(chart).getByRole("combobox", { name: "Project" }), project.id);
+    await person.click(toggle.getByRole("button", { name: "Agent time" }));
 
-    // Assert
-    expect(drawnTokens(chart)).toEqual([700, 77]);
-    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(2);
-  });
-
-  it("lists a project that burned no tokens in the period without letting it be picked", async () => {
-    // Arrange
-    const person = userEvent.setup();
-    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
-
-    // Act
-    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
-
-    // Assert
-    expect(within(chart).getByRole("option", { name: `${project.name} · 777` })).toBeEnabled();
-    expect(within(chart).getByRole("option", { name: `${otherProject.name} · no tokens` })).toBeDisabled();
-  });
-
-  it("drops a picked project that the next range lists without tokens, and does not bring it back", async () => {
-    // Arrange: this week the picked project ran a shift that reported nothing.
-    const weekChart = {
-      bucketSeconds: 3_600,
-      buckets: bars([[100, 50, 999], [20, 20, 444], [10, 10, 3_000]]),
-      projects: [
-        { project: { id: otherProject.id, name: otherProject.name }, tokens: 444, buckets: bars([null, [20, 20, 444], null]) },
-        { project: { id: project.id, name: project.name }, tokens: 0, buckets: bars([null, null, null]) },
-      ],
-    };
-    const isWeek = (fromAt?: string, toExclusiveAt?: string): boolean =>
-      fromAt !== undefined && toExclusiveAt !== undefined && Date.parse(toExclusiveAt) - Date.parse(fromAt) > 2 * 86_400_000;
-    const person = userEvent.setup();
-    render(<App bridge={bridgeFor({
-      agentShifts: vi.fn().mockImplementation(async (fromAt?: string, toExclusiveAt?: string) => (
-        { ...agentShifts, tokenChart: isWeek(fromAt, toExclusiveAt) ? weekChart : tokenChart }
-      )),
-    })} />);
-    const panel = await openAgentsTab(person);
-    await person.selectOptions(within(panel).getByRole("combobox", { name: "Project" }), project.id);
-    expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([700, 77]);
-
-    // Act
-    await person.click(within(panel).getByRole("button", { name: "This week" }));
-
-    // Assert: the period's bars, all solid, under All projects.
-    await waitFor(() => expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([999, 444, 3_000]));
-    expect(within(panel).getByTestId("token-chart").querySelectorAll("rect.is-ghost")).toHaveLength(0);
-    expect(within(panel).getByRole("combobox", { name: "Project" })).toHaveDisplayValue("All projects");
-
-    // Act: back to a range where the project burned tokens.
-    await person.click(within(panel).getByRole("button", { name: "Today" }));
-
-    // Assert: the pick was dropped, not held for later.
-    await waitFor(() => expect(drawnTokens(within(panel).getByTestId("token-chart"))).toEqual([999, 3_000]));
-    expect(within(panel).getByRole("combobox", { name: "Project" })).toHaveDisplayValue("All projects");
+    // Assert: agent time alone, in place of the bars.
+    expect(toggle.getByRole("button", { name: "Agent time" })).toHaveAttribute("aria-pressed", "true");
+    expect(chart.queryByTestId("token-chart")).not.toBeInTheDocument();
+    const graph = chart.getByRole("img", { name: "Hourly agent time" });
+    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
   });
 
   it("names a daily bar that starts at 23:00 after a daylight-saving change by the day it covers", async () => {
@@ -2077,9 +2043,10 @@ describe("the agents tab", () => {
     // Act
     const panel = await openAgentsTab(person);
 
-    // Assert
+    // Assert: agent time alone, with no toggle to a measure it cannot draw.
     expect(within(panel).getByTestId("hourly-graph")).toBeInTheDocument();
     expect(within(panel).queryByTestId("token-chart")).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("group", { name: "What the chart shows" })).not.toBeInTheDocument();
   });
 
   it("maps every shift under its codebase, with the total recorded on top", async () => {
