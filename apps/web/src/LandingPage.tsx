@@ -94,7 +94,7 @@ export function LandingPage({ onAuth }: { onAuth: (mode: AuthMode) => void }) {
       <a className="landing-skip" href="#landing-main">Skip to content</a>
       <header className="landing-header">
         <div className="landing-brand-lockup"><a className="landing-product-brand" href="#landing-main" aria-label="SIQshift home"><img src="/favicon.png" alt="" width="56" height="56" /><span>SIQ<strong>shift</strong></span></a><a className="landing-maker" href="https://www.siqstack.com" aria-label="SIQstack home"><span>by</span><img className="landing-siq-logo" src="/siqstack-logo.svg" alt="SIQstack" width="88" height="19" /></a></div>
-        <nav aria-label="SIQshift navigation"><a href="#how-it-works">How it works</a><a href="#install">Download</a><button type="button" className="landing-header-sign-in" onClick={() => onAuth("sign-in")}>Sign in</button><button type="button" className="landing-primary landing-header-cta" onClick={() => onAuth("sign-up")}>Sign up</button></nav>
+        <nav aria-label="SIQshift navigation"><button type="button" className="landing-header-sign-in" onClick={() => onAuth("sign-in")}>Sign in</button><button type="button" className="landing-primary landing-header-cta" onClick={() => onAuth("sign-up")}>Sign up</button></nav>
       </header>
       <main id="landing-main">
         <section className="landing-hero" aria-labelledby="landing-title">

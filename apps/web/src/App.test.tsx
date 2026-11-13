@@ -1537,7 +1537,7 @@ describe("the home screen", () => {
 });
 
 describe("getting the desktop app", () => {
-  it("leaves the hero to the download and puts Sign in and Sign up in the header", async () => {
+  it("leaves the hero to the download and the header to Sign in and Sign up alone", async () => {
     // Arrange
     render(<App client={clientFor()} />);
 
@@ -1549,6 +1549,8 @@ describe("getting the desktop app", () => {
     expect(hero.queryByRole("button", { name: /Create account|Log in|Sign in|Sign up/ })).not.toBeInTheDocument();
     expect(header.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
     expect(header.getByRole("button", { name: "Sign up" })).toBeInTheDocument();
+    expect(header.getAllByRole("button")).toHaveLength(2);
+    expect(header.queryAllByRole("link")).toHaveLength(0);
   });
 
   it.each([
@@ -1577,7 +1579,6 @@ describe("getting the desktop app", () => {
     // Assert
     expect(hero.getByRole("tablist", { name: "Choose your computer" })).toBeInTheDocument();
     expect(hero.getByRole("link", { name: "Download for Windows" })).toHaveAttribute("href", windowsInstallerUrl);
-    expect(screen.getByRole("link", { name: /^Download$/ })).toHaveAttribute("href", "#install");
     expect(container.querySelector(`.landing-install a[href="${macInstallerUrl}"]`)).not.toBeNull();
     expect(container.querySelector('a[href*="unsigned-latest"]')).toBeNull();
     // The dashboard's masthead menu stays on the dashboard.

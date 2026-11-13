@@ -11,9 +11,8 @@
 .landing-header { position: sticky; top: max(24px, env(safe-area-inset-top)); z-index: 20; max-width: 1320px; margin: auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .landing-siq-logo { display: block; width: 150px; height: auto; }
 .landing-header nav { display: flex; align-items: center; gap: 28px; font-size: .875rem; color: var(--text-secondary); }
-.landing-header nav a { display: inline-flex; align-items: center; min-height: 44px; }
 .landing-header nav button { min-height: 44px; padding: 10px 23px; border: 1px solid var(--glass-border-hover); background: var(--glass-bg); color: white; font-weight: 500; white-space: nowrap; }
-.landing-header nav a:hover, .landing-footer a:hover { color: var(--mint); }
+.landing-footer a:hover { color: var(--mint); }
 .landing-header nav .landing-header-sign-in { padding: 10px 6px; border: 0; background: none; color: var(--text-secondary); font-size: inherit; }
 .landing-header nav .landing-header-sign-in:hover { color: white; }
 .landing-hero { padding: 82px 24px 68px; text-align: center; }
@@ -71,7 +70,6 @@
   .landing-header { top: max(14px, env(safe-area-inset-top)); padding: 16px 20px; }
   .landing-siq-logo { width: 126px; }
   .landing-header nav { gap: 14px; }
-  .landing-header nav a { display: none; }
   .landing-hero { padding: 64px 20px 34px; }
   .landing-wordmark { margin-bottom: 26px; font-size: 1.6rem; }
   .landing-wordmark img { width: 44px; height: 44px; }
