@@ -6,28 +6,50 @@ const repositoryUrl = "https://github.com/fpresta0607/SIQshift";
  * The permanent links to the newest desktop installers.
  *
  * They are constants, not a GitHub API lookup, because both are published
- * under file names that never change. Windows is the signed release:
- * `.github/workflows/release.yml` publishes every release under the same names
- * and makes it the repository's latest, so `releases/latest/download/<name>`
- * always serves the newest signed release build. Until a release carries a
- * signed Mac build, the Mac file is the one `.github/workflows/unsigned-test-installers.yml`
- * keeps on the `unsigned-latest` test release. Either way the newest build is
- * always behind the same URL. That buys us a link with no request, no loading
- * state, no empty-href flash, and nothing to break when GitHub's 60-per-hour
- * anonymous rate limit is spent by whoever shares the visitor's IP.
+ * under file names that never change. `.github/workflows/release.yml`
+ * publishes every release under the same names and makes it the repository's
+ * latest, so `releases/latest/download/<name>` always serves the newest signed
+ * release build. That buys us a link with no request, no loading state, no
+ * empty-href flash, and nothing to break when GitHub's 60-per-hour anonymous
+ * rate limit is spent by whoever shares the visitor's IP. The `unsigned-latest`
+ * test release is never linked.
  *
  * Workflow-run artifacts cannot be used here at all: GitHub requires
  * authentication to download one, and the people who need this button are
  * signed out.
  */
 export const windowsInstallerUrl = `${repositoryUrl}/releases/latest/download/SIQshift-windows-x64-setup.exe`;
-export const macInstallerUrl = `${repositoryUrl}/releases/download/unsigned-latest/SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`;
+export const macInstallerUrl = `${repositoryUrl}/releases/latest/download/SIQshift-macos-universal.dmg`;
 
 /// Said once, in one place, so the site cannot end up warning about the
 /// SmartScreen prompt in one corner and staying quiet about it in another.
 /// A new signing certificate has no download reputation yet, so SmartScreen
 /// can still ask on a signed build.
 export const installerNote = "Signed by SIQstack LLC. Windows may still ask you to confirm.";
+
+/// The Mac build's Developer ID is not SIQstack LLC's, so this names no
+/// company, and it stays true if signing moves to one.
+export const macInstallerNote = "Signed with an Apple Developer ID and notarized by Apple, for Apple silicon and Intel Macs.";
+
+export type System = "windows" | "mac";
+
+/** The visitor's own system, read from the browser. Anything that is not a Mac counts as Windows. */
+export const visitorSystem = (): System => (/Macintosh|Mac OS X/.test(navigator.userAgent) ? "mac" : "windows");
+
+/**
+ * Each installer as a download control offers it: the visitor's own system as
+ * the one link that reads like the download, the other beside it.
+ */
+const INSTALLERS = {
+  windows: { url: windowsInstallerUrl, note: installerNote, download: "Download for Windows", alternative: "Windows installer (64-bit)" },
+  mac: { url: macInstallerUrl, note: macInstallerNote, download: "Download for Mac", alternative: "Mac installer (Apple silicon and Intel)" },
+} as const satisfies Record<System, { url: string; note: string; download: string; alternative: string }>;
+
+/** The visitor's installer first, then the other one. */
+const installersForVisitor = () => {
+  const system = visitorSystem();
+  return { primary: INSTALLERS[system], secondary: INSTALLERS[system === "mac" ? "windows" : "mac"] };
+};
 
 /**
  * Where the button is sitting, which decides how loud it is allowed to be:
@@ -61,12 +83,13 @@ export const DownloadIcon = () => (
 /**
  * The masthead pill. One control the height of the Sign out button beside it,
  * opening everything that used to be stacked underneath it in the header: the
- * signing note and the Mac build.
+ * signing note and both installers.
  */
 const HeaderMenu = () => {
   const panelId = useId();
   const noteId = useId();
   const [open, setOpen] = useState(false);
+  const { primary, secondary } = installersForVisitor();
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -96,10 +119,10 @@ const HeaderMenu = () => {
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
-        // The SmartScreen warning is still on the control itself, not only
-        // inside the panel: a visitor who never opens the panel can still meet
-        // it on hover, and it is what the button is described by either way.
-        title={installerNote}
+        // The signing note is still on the control itself, not only inside
+        // the panel: a visitor who never opens the panel can still meet it on
+        // hover, and it is what the button is described by either way.
+        title={primary.note}
         onClick={() => setOpen((wasOpen) => !wasOpen)}
       >
         <DownloadIcon />
@@ -108,15 +131,15 @@ const HeaderMenu = () => {
       </button>
       {open && (
         <div className="card glass download-panel" id={panelId}>
-          <p className="download-note" id={noteId}>{installerNote}</p>
-          <a className="download-choice is-primary" href={windowsInstallerUrl} rel="noreferrer" aria-describedby={noteId}>
-            Download for Windows
+          <p className="download-note" id={noteId}>{primary.note}</p>
+          <a className="download-choice is-primary" href={primary.url} rel="noreferrer" aria-describedby={noteId}>
+            {primary.download}
           </a>
           {/* Secondary on purpose, and deliberately not called "download":
-              Windows is the platform that matters, and only one link in here
-              should read like the download. */}
-          <a className="download-choice" href={macInstallerUrl} rel="noreferrer" aria-describedby={noteId}>
-            Mac installer (Apple silicon)
+              the visitor's own system is the one that matters, and only one
+              link in here should read like the download. */}
+          <a className="download-choice" href={secondary.url} rel="noreferrer" title={secondary.note}>
+            {secondary.alternative}
           </a>
         </div>
       )}
@@ -133,25 +156,29 @@ const HeaderMenu = () => {
 export const DownloadInstaller = ({ placement = "header" }: DownloadInstallerProps) => {
   const noteId = useId();
   if (placement === "header") return <HeaderMenu />;
+  const { primary, secondary } = installersForVisitor();
   return (
     <div className="download-corner is-hero">
-      <a className="download-button" href={windowsInstallerUrl} rel="noreferrer" aria-describedby={noteId}>
-        Download for Windows
+      <a className="download-button" href={primary.url} rel="noreferrer" aria-describedby={noteId}>
+        {primary.download}
       </a>
-      <p className="download-note" id={noteId}>{installerNote}</p>
-      <a className="download-secondary" href={macInstallerUrl} rel="noreferrer">
-        Mac installer (Apple silicon)
+      <p className="download-note" id={noteId}>{primary.note}</p>
+      <a className="download-secondary" href={secondary.url} rel="noreferrer" title={secondary.note}>
+        {secondary.alternative}
       </a>
     </div>
   );
 };
 
 /**
- * The same installer as a plain link, for running prose. Kept beside the
- * button so both read from `windowsInstallerUrl`.
+ * The visitor's own installer as a plain link, for running prose. Kept beside
+ * the button so both read from `installersForVisitor`.
  */
-export const InstallerLink = () => (
-  <a className="link" href={windowsInstallerUrl} rel="noreferrer">
-    Download for Windows
-  </a>
-);
+export const InstallerLink = () => {
+  const { primary } = installersForVisitor();
+  return (
+    <a className="link" href={primary.url} rel="noreferrer">
+      {primary.download}
+    </a>
+  );
+};

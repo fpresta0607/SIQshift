@@ -869,14 +869,13 @@ still designed and not started. What's deliberately not built yet:
   that project's row, while the API and the CSV export report it as unattributed.
 - **One project at a time.** Concurrent agent sessions in different projects do not split a
   session; the last one to report wins, and the boundary between them is a session close.
-- **No Mac release yet.** The site's **Download for Windows** links, the home page's
-  install selector included, serve the newest signed release, code signed by SIQstack LLC
-  through Azure Artifact Signing. A macOS build is published only signed by SIQstack LLC
-  and notarized by Apple, so until the Apple signing secrets are set none is built (see
-  DEPLOY.md): the home page's Mac tab links nothing, and the dashboard's Mac link stays
-  on the `unsigned-latest` test release, which the **Unsigned test installers** workflow
-  republishes under fixed asset names. Windows builds carry the auto-updater; macOS
-  updates are still by hand.
+- **No real Mac has updated itself yet.** The site's download links, the home page's
+  install selector included, serve the newest signed release: Windows code signed by
+  SIQstack LLC through Azure Artifact Signing, and one macOS build for Apple silicon and
+  Intel, signed with an Apple Developer ID and notarized by Apple (see DEPLOY.md). Both
+  carry the auto-updater, and the Mac app restarts into an update once no work session is
+  open, but that has run only in tests until a Mac installed from one release takes the
+  next.
 - Evidence can be forged by a determined user. Automatic recording raises the cost and the
   visibility of padding; it does not attempt cryptographic proof.
 

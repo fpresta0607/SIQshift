@@ -2,12 +2,10 @@ name: Unsigned test installers
 
 # Builds the desktop test installers, uploads them as workflow-run artifacts,
 # and (on a deliberate `workflow_dispatch` only) republishes the
-# `unsigned-latest` release. The website links only its Mac file, from the
-# dashboard menu and the post-sign-up screen, until a release carries a signed
-# Mac build; anonymous visitors get the signed Windows release instead. Both
-# builds are code signed by SIQstack LLC: the
-# Windows one through Azure Artifact Signing, the macOS one with its Developer
-# ID certificate and notarized by Apple. The macOS one is built only once the
+# `unsigned-latest` release, which the website never links: its downloads are
+# the signed release's. Both builds are code signed: the Windows one by
+# SIQstack LLC through Azure Artifact Signing, the macOS one with an Apple
+# Developer ID and notarized by Apple. The macOS one is built only once the
 # release environment holds the Apple signing secrets; until then a run
 # builds and publishes nothing for the Mac. The tag keeps its old name because
 # every installed copy's updater polls it.
@@ -16,10 +14,7 @@ name: Unsigned test installers
 # download a workflow artifact, so a raw artifact URL is useless to a signed-out
 # visitor. Release assets are public on a public repo. The tag is fixed and the
 # asset names are fixed, so `releases/download/unsigned-latest/<asset>` is a
-# permanent URL that always serves the newest run's output. The web dashboard
-# hard-codes that URL for its Mac link until a release carries a signed Mac
-# build, and links Windows to the signed release; see
-# `apps/web/src/DownloadInstaller.tsx`.
+# permanent URL that always serves the newest run's output.
 #
 # This is deliberately NOT a relaxation of `release.yml`. That workflow still
 # refuses to publish anything unsigned, and nothing here touches it. The two
@@ -97,7 +92,7 @@ jobs:
             if [ "${!name}" = true ]; then present+=("$name"); else missing+=("$name"); fi
           done
           if [ "${#present[@]}" -eq 0 ]; then
-            echo "::notice title=No Mac installer in this run::The release environment holds no Apple signing secrets yet, so this run builds and publishes nothing for the Mac. The Mac installer is published only signed by SIQstack LLC and notarized by Apple."
+            echo "::notice title=No Mac installer in this run::The release environment holds no Apple signing secrets yet, so this run builds and publishes nothing for the Mac. The Mac installer is published only signed with an Apple Developer ID and notarized by Apple."
             echo "matrix={\"include\":[$windows]}" >> "$GITHUB_OUTPUT"
           elif [ "${#missing[@]}" -gt 0 ]; then
             echo "::error title=Apple signing is partly configured::The release environment is missing ${missing[*]}. Nothing is built until every Apple signing secret is set, or none is."
@@ -115,7 +110,7 @@ jobs:
     # Two architectures and Apple's notary service make the macOS leg the
     # long one.
     timeout-minutes: 90
-    # The `release` environment holds the SIQstack LLC signing identities and
+    # The `release` environment holds the signing identities and
     # admits only `main` and `unsigned-test/*`, so no other branch can sign.
     # Azure sign-in goes through GitHub's OpenID Connect: no password is
     # stored. The macOS certificate and notary key are environment secrets.
@@ -360,7 +355,7 @@ jobs:
           xcrun stapler staple "$image"
 
       # Nothing is published for the Mac unless what ships is a universal app
-      # whose every binary carries SIQstack LLC's Developer ID signature with
+      # whose every binary carries the release's Developer ID signature with
       # the hardened runtime, and both the app and the disk image are notarized
       # with the ticket stapled. The app is checked as the disk image delivers it.
       - name: Verify the macOS signatures
@@ -490,8 +485,8 @@ jobs:
           fi
           if [ "${{ contains(needs.legs.outputs.matrix, '"target":"macos"') }}" = true ]; then
             mac_bullet="  * This build carries a macOS installer for Apple silicon and
-              Intel Macs. It and the app in it are code signed by SIQstack LLC
-              and notarized by Apple."
+              Intel Macs. It and the app in it are signed with an Apple
+              Developer ID and notarized by Apple."
           else
             mac_bullet="  * This build carries no macOS installer, because the Apple
               signing secrets are not set yet. A Mac installer still on the
@@ -552,10 +547,10 @@ jobs:
         with:
           path: downloaded
 
-      # Fixed names are the whole point: the website links its Mac file at
-      # releases/download/unsigned-latest/<these names> as a constant, with no
-      # GitHub API lookup and nothing to update when the version changes. The
-      # version travels in the release title, the notes, and the app itself.
+      # Fixed names are the whole point: releases/download/unsigned-latest/<these
+      # names> is a constant URL, with no GitHub API lookup and nothing to
+      # update when the version changes. The version travels in the release
+      # title, the notes, and the app itself.
       - name: Stage the release assets under their permanent names
         shell: bash
         run: |
@@ -610,7 +605,7 @@ jobs:
           version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")-test.${{ github.run_number }}"
           echo "VERSION=$version" >> "$GITHUB_ENV"
           if [ -e release-assets/SIQshift-macos-universal.dmg ]; then
-            mac_note="The macOS installer and the app in it are **code signed by SIQstack LLC and notarized by Apple**, for Apple silicon and Intel Macs."
+            mac_note="The macOS installer and the app in it are **signed with an Apple Developer ID and notarized by Apple**, for Apple silicon and Intel Macs."
           else
             mac_note="This build has **no macOS installer**: the Mac one is published only signed and notarized, and the Apple signing secrets are not set yet. A Mac file still on this release is an earlier, unsigned test build."
           fi
@@ -641,9 +636,8 @@ jobs:
 
           This tag and these file names never change. Every run of the *Unsigned
           test installers* workflow replaces the assets in place, so the links
-          below always point at the newest build. The **Download for Windows**
-          button on siqshift.siqstack.com is the signed release, not this test
-          build.
+          below always point at the newest build. The download buttons on
+          siqshift.siqstack.com serve the signed release, not this test build.
           EOF
 
       # Force the tag onto this commit so the release stops claiming to be

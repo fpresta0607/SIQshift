@@ -12,7 +12,7 @@ name: Release desktop
 #
 # Nothing unsigned is published. Windows signs through Azure Artifact Signing
 # and is always built; the Mac is built only once every Apple signing secret
-# is set, signed by SIQstack LLC and notarized by Apple, and otherwise left
+# is set, signed with an Apple Developer ID and notarized by Apple, and otherwise left
 # out of the release and said so. `build.rs` refuses a release compile that
 # lacks the updater key or this platform's signing, so the gate holds for
 # anyone building outside this workflow too.
@@ -320,7 +320,7 @@ jobs:
           xcrun stapler staple "$image"
 
       # Nothing is published for the Mac unless what ships is a universal app
-      # whose every binary carries SIQstack LLC's Developer ID signature with
+      # whose every binary carries the release's Developer ID signature with
       # the hardened runtime, and both the app and the disk image are notarized
       # with the ticket stapled. The app is checked as the disk image delivers it.
       - name: Verify the macOS signatures
@@ -500,7 +500,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -e release-assets/SIQshift-macos-universal.dmg ]; then
-            mac_note="The macOS installer and the app in it are **code signed by SIQstack LLC and notarized by Apple**, for Apple silicon and Intel Macs. The Mac app updates itself from here too, and restarts into an update once no work session is open."
+            mac_note="The macOS installer and the app in it are **signed with an Apple Developer ID and notarized by Apple**, for Apple silicon and Intel Macs. The Mac app updates itself from here too, and restarts into an update once no work session is open."
           else
             mac_note="This release has **no macOS installer**: the Mac one is published only signed and notarized, and the Apple signing secrets are not set yet."
           fi

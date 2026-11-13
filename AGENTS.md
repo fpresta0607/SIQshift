@@ -383,14 +383,10 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   published and the vars are set. `MonitorSettings.browser_auto_install` (default on)
   is the opt-out: removing the policy entry is what uninstalls the extension. Firefox
   has no force-install path until an AMO listing exists and keeps the manual flow.
-- The site's **Download for Windows** links are a hard-coded
-  `releases/latest/download/<fixed asset name>` URL, kept true by `release.yml`'s `publish`
-  job, which stages that name and makes each release the repository's latest. Its Mac
-  links (dashboard and post-sign-up only; the home page's selector offers no unsigned
-  build) are a hard-coded `releases/download/unsigned-latest/<fixed asset name>` URL, kept
-  true by the `publish` job in `unsigned-test-installers.yml`, until a release carries a
-  signed Mac build. That job runs on `workflow_dispatch` only, so a
-  `unsigned-test/**` push builds without touching what the public downloads. Rename an
+- The site's Windows and Mac download links are hard-coded
+  `releases/latest/download/<fixed asset name>` URLs, kept true by `release.yml`'s `publish`
+  job, which stages those names and makes each release the repository's latest. The site
+  never links the `unsigned-latest` test release. Rename an
   asset on one side alone and the button 404s silently; `DownloadInstaller.test.tsx` pins
   both names. Never link a workflow-run artifact publicly: downloading one needs auth.
   The app version lives only in `apps/desktop/src-tauri/tauri.conf.json` and nothing bumps

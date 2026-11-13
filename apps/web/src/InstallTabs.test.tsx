@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { installerNote, macInstallerUrl, windowsInstallerUrl } from "./DownloadInstaller.js";
+import { installerNote, macInstallerNote, macInstallerUrl, windowsInstallerUrl } from "./DownloadInstaller.js";
 import { InstallTabs } from "./InstallTabs.js";
 
 const WINDOWS_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -48,7 +48,7 @@ describe("InstallTabs", () => {
     expect(panel).toHaveTextContent("For 64-bit Windows. Updates install themselves.");
   });
 
-  it("says the coming Mac build is signed and notarized for both kinds of Mac", () => {
+  it("offers the signed Mac release and says how it is signed", () => {
     // Arrange
     browseFrom(MAC_USER_AGENT);
 
@@ -56,21 +56,25 @@ describe("InstallTabs", () => {
     render(<InstallTabs />);
 
     // Assert
-    expect(screen.getByRole("tabpanel", { name: "Mac" })).toHaveTextContent(
-      "Signed by SIQstack LLC and notarized by Apple, for Apple silicon and Intel Macs.",
-    );
+    const panel = screen.getByRole("tabpanel", { name: "Mac" });
+    const download = within(panel).getByRole("link", { name: "Download for Mac" });
+    expect(download).toHaveAttribute("href", macInstallerUrl);
+    expect(download).toHaveAccessibleDescription(macInstallerNote);
+    expect(panel).toHaveTextContent("Signed with an Apple Developer ID and notarized by Apple, for Apple silicon and Intel Macs.");
   });
 
-  it("links no Mac file until a signed Mac release exists", () => {
+  // The Mac build is signed with a Developer ID that is not SIQstack LLC's.
+  it("names no company as the Mac build's signer and no longer says it is coming", () => {
     // Arrange
     browseFrom(MAC_USER_AGENT);
 
     // Act
-    const { container } = render(<InstallTabs />);
+    render(<InstallTabs />);
 
     // Assert
-    expect(within(screen.getByRole("tabpanel", { name: "Mac" })).queryByRole("link")).not.toBeInTheDocument();
-    expect(container.querySelector(`a[href="${macInstallerUrl}"]`)).toBeNull();
+    const panel = screen.getByRole("tabpanel", { name: "Mac" });
+    expect(panel).not.toHaveTextContent("SIQstack LLC");
+    expect(panel).not.toHaveTextContent("Coming soon");
   });
 
   it("says plainly what differs on a Mac", () => {

@@ -41,7 +41,6 @@
 .landing-install-download { gap: 12px; border-radius: 999px; }
 .landing-install-download .download-icon { width: 16px; height: 16px; }
 .landing-install-note { margin: 12px 0 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
-.landing-install-status { display: inline-flex; align-items: center; min-height: 54px; margin: 0; padding: 0 26px; border: 1px dashed var(--glass-border-hover); border-radius: 999px; color: var(--mint); font-size: .98rem; font-weight: 600; }
 .landing-install-differences { margin: 16px 0 0; padding: 14px 18px 14px 36px; border: 1px solid var(--glass-border); border-radius: 16px; background: color-mix(in srgb, var(--body-bg) 78%, transparent); backdrop-filter: blur(18px); color: var(--text-secondary); font-size: .85rem; line-height: 1.6; text-align: left; }
 .landing-install-differences li + li { margin-top: 6px; }
 .landing-install-shared { margin: 14px auto 0; max-width: 460px; color: var(--text-secondary); font-size: .8rem; line-height: 1.6; }
