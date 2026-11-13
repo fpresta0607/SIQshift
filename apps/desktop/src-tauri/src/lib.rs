@@ -16,7 +16,11 @@ mod codex_sessions;
 // when a `Started` line is written.
 pub mod git_evidence;
 mod monitor;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use monitor::lock_probe as macos_lock_probe;
 pub mod native_messaging;
+mod permissions;
 mod quota;
 mod recovery;
 mod shift_commits;
@@ -467,6 +471,79 @@ async fn browser_open_store(browser_id: String) -> ApiResult<()> {
         .ok_or_else(|| BridgeError::new(ErrorKind::Validation, "Unknown browser."))?;
     open_url(browser.store_url())
         .map_err(|_| BridgeError::unknown("The extension store page could not be opened."))
+}
+
+/// Where the macOS grants are visible on disk: the login plist the autostart
+/// plugin names after the app, and the folders answer beside the monitor's
+/// own state.
+async fn permission_paths(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> permissions::PermissionPaths {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let data_dir = state
+        .recovery_path
+        .lock()
+        .await
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    permissions::PermissionPaths {
+        login_item_plist: home
+            .join("Library/LaunchAgents")
+            .join(format!("{}.plist", app.package_info().name)),
+        folders_answer: data_dir.join("protected-folders-answer"),
+        home,
+    }
+}
+
+/// The macOS grants recording depends on, for the main screen. Empty on every
+/// other platform. Never raises a prompt.
+#[tauri::command]
+async fn permissions_status(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> ApiResult<Vec<permissions::PermissionStatus>> {
+    let paths = permission_paths(&app, &state).await;
+    tauri::async_runtime::spawn_blocking(move || permissions::statuses(&paths))
+        .await
+        .map_err(|_| BridgeError::unknown("The permissions could not be read."))
+}
+
+/// The [Ask] button: raises macOS's own prompts, which block until answered,
+/// so it runs on the blocking pool.
+#[tauri::command]
+async fn permission_request(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    permission_id: String,
+) -> ApiResult<Vec<permissions::PermissionStatus>> {
+    let id = permissions::PermissionId::from_id(&permission_id)?;
+    let paths = permission_paths(&app, &state).await;
+    tauri::async_runtime::spawn_blocking(move || permissions::request(&paths, id))
+        .await
+        .map_err(|_| BridgeError::unknown("The permission could not be requested."))?
+}
+
+/// The [Not needed] button: the folders stay unread and stop being offered.
+#[tauri::command]
+async fn permission_decline(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    permission_id: String,
+) -> ApiResult<Vec<permissions::PermissionStatus>> {
+    let id = permissions::PermissionId::from_id(&permission_id)?;
+    permissions::decline(&permission_paths(&app, &state).await, id)
+}
+
+/// The [Open System Settings] button: the exact pane that holds the grant.
+#[tauri::command]
+async fn permission_open_settings(permission_id: String) -> ApiResult<()> {
+    let id = permissions::PermissionId::from_id(&permission_id)?;
+    open_url(id.settings_url())
+        .map_err(|_| BridgeError::unknown("System Settings could not be opened."))
 }
 
 /// Opens a URL in the OS default browser. Hand-rolled rather than a new
@@ -1028,6 +1105,10 @@ pub fn run() {
             browser_status,
             browser_repair,
             browser_open_store,
+            permissions_status,
+            permission_request,
+            permission_decline,
+            permission_open_settings,
             quota_status,
             hook_register,
             monitor_set_enabled,

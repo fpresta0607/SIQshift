@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
 import { sourceLabel } from "./agent-sources.js";
-import type { LiveAgentSessions, OrganizationOverview, TimerBridge, WorkspaceReport } from "./bridge.js";
+import type { LiveAgentSessions, OrganizationOverview, PermissionStatus, TimerBridge, WorkspaceReport } from "./bridge.js";
 
 vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
@@ -260,6 +260,11 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   browserStatus: vi.fn().mockResolvedValue([]),
   browserRepair: vi.fn().mockRejectedValue({ kind: "unknown", message: "Repair unavailable" }),
   browserOpenStore: vi.fn().mockResolvedValue(undefined),
+  // Every platform but macOS reports no permissions.
+  permissionsStatus: vi.fn().mockResolvedValue([]),
+  permissionRequest: vi.fn().mockResolvedValue([]),
+  permissionDecline: vi.fn().mockResolvedValue([]),
+  permissionOpenSettings: vi.fn().mockResolvedValue(undefined),
   sessionSelectProject: vi.fn().mockResolvedValue(status),
   hookRegister: vi.fn().mockResolvedValue({ status: "registered", configPath: "C:/Users/dev/.claude/settings.json" }),
   monitorSetEnabled: vi.fn().mockResolvedValue(settings),
@@ -617,6 +622,90 @@ describe("recording", () => {
     // and never earns a banner on the record surface.
     expect(screen.queryByTestId("sync-line")).not.toBeInTheDocument();
     expect(screen.queryByText(/still on this computer/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("macOS permissions", () => {
+  it("names an unasked grant on the main screen and adopts macOS's answer", async () => {
+    // Arrange
+    const bridge = bridgeFor({
+      monitorStatus: vi.fn().mockResolvedValue(recording),
+      permissionsStatus: vi.fn().mockResolvedValue([
+        { id: "login-item", state: "granted" },
+        { id: "protected-folders", state: "not-asked" },
+      ]),
+      permissionRequest: vi.fn().mockResolvedValue([
+        { id: "login-item", state: "granted" },
+        { id: "protected-folders", state: "granted" },
+      ]),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const card = await screen.findByTestId("permissions-card");
+
+    // Act
+    await person.click(within(card).getByRole("button", { name: "Ask now" }));
+
+    // Assert: recording goes on regardless, and the card leaves once settled.
+    expect(bridge.permissionRequest).toHaveBeenCalledWith("protected-folders");
+    await waitFor(() => expect(screen.queryByTestId("permissions-card")).not.toBeInTheDocument());
+    expect(screen.getByTestId("elapsed-time")).toBeInTheDocument();
+  });
+
+  it("re-reads the grants when the window comes back into focus", async () => {
+    // Arrange: switched off, then switched on in System Settings.
+    const permissionsStatus = vi.fn()
+      .mockResolvedValueOnce([{ id: "login-item", state: "missing" }])
+      .mockResolvedValue([{ id: "login-item", state: "granted" }]);
+    render(<App bridge={bridgeFor({ permissionsStatus })} />);
+    expect(await screen.findByTestId("permissions-card")).toHaveTextContent("Not allowed");
+
+    // Act
+    act(() => showWindow());
+
+    // Assert
+    await waitFor(() => expect(screen.queryByTestId("permissions-card")).not.toBeInTheDocument());
+  });
+
+  it("waits for a grant read macOS is holding behind its prompt before reading again", async () => {
+    // Arrange: the first read stays unanswered, as it does while macOS's
+    // folders prompt is up.
+    vi.useFakeTimers();
+    let answerHeldRead: (statuses: PermissionStatus[]) => void = () => undefined;
+    const permissionsStatus = vi.fn()
+      .mockReturnValueOnce(new Promise<PermissionStatus[]>((resolve) => { answerHeldRead = resolve; }))
+      .mockResolvedValue([]);
+    render(<App bridge={bridgeFor({ permissionsStatus })} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(permissionsStatus).toHaveBeenCalledTimes(1);
+
+    // Act: a poll tick and a focus change while it is still held.
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await act(async () => { showWindow(); await vi.advanceTimersByTimeAsync(0); });
+
+    // Assert
+    expect(permissionsStatus).toHaveBeenCalledTimes(1);
+
+    // Once answered, the next tick reads again.
+    await act(async () => { answerHeldRead([]); await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(permissionsStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides the browser auto-install switch on macOS, where it would do nothing", async () => {
+    // Arrange
+    const userAgent = vi.spyOn(navigator, "userAgent", "get")
+      .mockReturnValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(status) })} />);
+
+    // Act
+    const dialog = await openSettings(person);
+
+    // Assert
+    expect(await within(dialog).findByLabelText("Keep recording while an AI tool is working")).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Add the SIQshift extension to my browsers automatically")).not.toBeInTheDocument();
+    userAgent.mockRestore();
   });
 });
 

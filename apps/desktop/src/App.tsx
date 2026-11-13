@@ -13,6 +13,8 @@ import {
   type MonitorSettings,
   type MonitorStatus,
   type OrganizationOverview,
+  type PermissionId,
+  type PermissionStatus,
   type ProjectUsage,
   type AgentQuota,
   type QuotaSnapshot,
@@ -44,6 +46,7 @@ import {
   type ShiftCursor,
   type ShiftPage,
 } from "@siqshift/shared/ui";
+import { PermissionsCard } from "./PermissionsCard.js";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
@@ -246,6 +249,11 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [hookModelsSeen, setHookModelsSeen] = useState<Readonly<Record<string, readonly string[]>>>({});
   /// One card per installed browser, refreshed while the recording panel is open.
   const [browsers, setBrowsers] = useState<readonly BrowserHealth[]>([]);
+  /// The macOS grants recording depends on; empty on every other platform.
+  const [permissions, setPermissions] = useState<readonly PermissionStatus[]>([]);
+  /// The grant whose macOS prompt or answer is in flight.
+  const [permissionBusy, setPermissionBusy] = useState<PermissionId | undefined>(undefined);
+  const [permissionError, setPermissionError] = useState<string | undefined>(undefined);
   const latestBridge = useRef(bridge);
   const mounted = useRef(true);
   const bridgeGeneration = useRef(0);
@@ -740,6 +748,38 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     return () => { active = false; window.clearInterval(timer); };
   }, [bridge, recordingOpen]);
 
+  // The macOS grants change in System Settings, outside the app, so they are
+  // polled with the monitor and re-read the moment the window regains focus,
+  // which is when someone comes back from flipping one. A failed read keeps
+  // the last list.
+  useEffect(() => {
+    if (signedIn === undefined) return undefined;
+    let active = true;
+    let isReading = false;
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    const poll = (): void => {
+      if (isReading) return;
+      isReading = true;
+      void service.permissionsStatus().then(
+        (next) => {
+          if (active && isCurrent(service, generation)) setPermissions(next);
+        },
+        () => undefined,
+      ).finally(() => { isReading = false; });
+    };
+    poll();
+    const timer = window.setInterval(poll, MONITOR_POLL_MS);
+    const unlisten = getCurrentWindow().onFocusChanged((event: { payload: boolean }) => {
+      if (event.payload) poll();
+    });
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      void unlisten.then((stop) => stop(), () => {});
+    };
+  }, [bridge, signedIn?.user.id]);
+
   // Settings only load while the settings overlay is open.
   useEffect(() => {
     if (!settingsOpen) return undefined;
@@ -970,6 +1010,45 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     void service.browserOpenStore(browserId).catch((error: unknown) => {
       if (isCurrent(service, generation)) setSettingsError(bridgeError(error).message);
     });
+  };
+
+  /// Runs one permission action and adopts the list it answers with. Asking
+  /// waits on macOS's own prompt, so the row stays busy until it is answered.
+  const answerPermission = async (
+    id: PermissionId,
+    action: (service: TimerBridge) => Promise<PermissionStatus[]>,
+  ): Promise<void> => {
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    setPermissionBusy(id);
+    setPermissionError(undefined);
+    try {
+      const next = await action(service);
+      if (isCurrent(service, generation)) setPermissions(next);
+    } catch (error: unknown) {
+      if (isCurrent(service, generation)) setPermissionError(bridgeError(error).message);
+    } finally {
+      if (isCurrent(service, generation)) setPermissionBusy(undefined);
+    }
+  };
+
+  const openPermissionSettings = (id: PermissionId): void => {
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    setPermissionError(undefined);
+    void service.permissionOpenSettings(id).catch((error: unknown) => {
+      if (isCurrent(service, generation)) setPermissionError(bridgeError(error).message);
+    });
+  };
+
+  const isMacos = navigator.userAgent.includes("Macintosh");
+
+  const permissionProps = {
+    permissions,
+    busy: permissionBusy,
+    onAsk: (id: PermissionId) => void answerPermission(id, (service) => service.permissionRequest(id)),
+    onDecline: (id: PermissionId) => void answerPermission(id, (service) => service.permissionDecline(id)),
+    onOpenSettings: openPermissionSettings,
   };
 
   /// Re-registers the host for one browser, then re-reads the cards from the
@@ -1363,6 +1442,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           )}
         </section>
 
+        <PermissionsCard {...permissionProps} error={permissionError} />
+
         {/* The main surface below the clock: where today's time went, grouped
             by the projects the monitor filed it under, then by app. Everything
             historical lives behind "All stats" at the bottom. */}
@@ -1697,10 +1778,14 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                       <span>Keep recording while an AI tool is working</span>
                       <input type="checkbox" checked={settings.agentOverrideEnabled} onChange={(event) => void applySettings({ agentOverrideEnabled: event.target.checked })} />
                     </label>
-                    <label className="toggle-row">
-                      <span>Add the SIQshift extension to my browsers automatically</span>
-                      <input type="checkbox" checked={settings.browserAutoInstall} onChange={(event) => void applySettings({ browserAutoInstall: event.target.checked })} />
-                    </label>
+                    {/* macOS browsers take the force-install policy only from
+                        device management, so there the switch would do nothing. */}
+                    {!isMacos && (
+                      <label className="toggle-row">
+                        <span>Add the SIQshift extension to my browsers automatically</span>
+                        <input type="checkbox" checked={settings.browserAutoInstall} onChange={(event) => void applySettings({ browserAutoInstall: event.target.checked })} />
+                      </label>
+                    )}
                     <label className="toggle-row">
                       <span>Count tokens and models in my AI tools&apos; session logs</span>
                       <input type="checkbox" checked={settings.agentUsageCapture} onChange={(event) => void applySettings({ agentUsageCapture: event.target.checked })} />
@@ -1912,6 +1997,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
         onConnectAgent={(source) => void registerHook(source)}
         onConnectBrowser={openBrowserStore}
         onRepairBrowser={(browserId) => void repairBrowser(browserId)}
+        permissionProps={permissionProps}
       />
     </main>
   );

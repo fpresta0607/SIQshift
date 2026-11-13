@@ -394,7 +394,76 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod platform {
+    //! Icons are not extracted on macOS: every name answers `None` and the UI
+    //! keeps its fallback glyph. The process lookup is real, because Codex
+    //! capture finds the running `codex` binary through it.
+
+    pub fn icon_data_uri(_name: &str) -> Option<String> {
+        None
+    }
+
+    /// The full path of a running process whose executable name matches
+    /// `name`. Names arrive in the shared Windows spelling ("codex.exe"), so
+    /// the comparison drops that suffix and ignores case.
+    pub(super) fn running_process_path(name: &str) -> Option<String> {
+        let wanted = name.strip_suffix(".exe").unwrap_or(name);
+        // A null buffer asks for the count; the margin covers processes that
+        // start between the two calls.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let mut pids = vec![0 as libc::pid_t; usize::try_from(count).ok()? + 64];
+        let buffer_bytes = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
+        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), buffer_bytes) };
+        pids.truncate(usize::try_from(listed).ok()?);
+        pids.into_iter().find_map(|pid| {
+            let path = process_path(pid)?;
+            let file_name = path.rsplit('/').next()?;
+            file_name.eq_ignore_ascii_case(wanted).then_some(path)
+        })
+    }
+
+    fn process_path(pid: libc::pid_t) -> Option<String> {
+        let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let length =
+            unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+        buffer.truncate(usize::try_from(length).ok().filter(|&length| length > 0)?);
+        String::from_utf8(buffer).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn running_process_path_finds_this_test_binary() {
+            // Arrange
+            let own_path = std::env::current_exe().expect("test binary path");
+            let own_name = own_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("test binary name");
+
+            // Act
+            let found = running_process_path(&format!("{own_name}.exe"));
+
+            // Assert
+            let found = found.expect("this process is running");
+            assert!(found.ends_with(own_name), "{found}");
+        }
+
+        #[test]
+        fn running_process_path_misses_a_name_nothing_runs_under() {
+            // Act
+            let found = running_process_path("siqshift-no-such-process.exe");
+
+            // Assert
+            assert_eq!(found, None);
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
     //! Icon extraction is a Win32 shell affair. Other platforms answer `None`
     //! for every name and the UI keeps its fallback glyph.

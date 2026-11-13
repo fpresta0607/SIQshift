@@ -24,6 +24,11 @@ path = "src/bin/siqshift-hook.rs"
 name = "siqshift-browser-host"
 path = "src/bin/siqshift-browser-host.rs"
 
+# Runs on the main thread, whose run loop delivers the lock broadcast.
+[[test]]
+name = "macos_lock_broadcast"
+harness = false
+
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -87,6 +92,20 @@ windows = { version = "0.61", features = [
 # sit in the dependency tree (tauri's tray-icon links `png`, reqwest `base64`).
 png = "0.18"
 base64 = "0.22"
+
+# The macOS activity source and permission reads: the frontmost app's name
+# (NSWorkspace), seconds since the last input (CGEventSource), the screen-lock
+# broadcast (CFNotificationCenter), the login item's approval
+# (ServiceManagement, through objc2), and process paths (libc). All already sit
+# in the tree through Tauri; the IOKit power and CoreAudio calls are declared
+# by hand in `monitor/macos.rs`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDate", "CFDictionary", "CFNotificationCenter", "CFNumber", "CFRunLoop", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEventSource", "CGEventTypes", "CGSession"] }
+libc = "0.2"
 
 [profile.release]
 strip = true

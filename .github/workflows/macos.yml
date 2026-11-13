@@ -1,0 +1,45 @@
+name: macOS
+
+# The recorder's macOS module compiles and runs only on a Mac, so no check from
+# another OS can prove it. This job runs the desktop crate's tests on the real
+# platform and launches the app. A macOS runner costs several Linux ones, so it
+# runs only for pull requests that touch the desktop app.
+on:
+  pull_request:
+    paths:
+      - apps/desktop/**
+      - .github/workflows/macos.yml
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      # Starts the app the way login does (hidden, in the tray) and requires it
+      # to still be running half a minute later, past its first activity poll.
+      - name: Launch the app
+        run: |
+          cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --bin siqshift-desktop
+          log="$RUNNER_TEMP/siqshift-desktop.log"
+          apps/desktop/src-tauri/target/debug/siqshift-desktop --hidden > "$log" 2>&1 &
+          pid=$!
+          sleep 40
+          if ! kill -0 "$pid"; then
+            cat "$log"
+            echo "SIQshift exited during its first 40 seconds."
+            exit 1
+          fi
+          kill "$pid"
+          cat "$log"

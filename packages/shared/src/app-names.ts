@@ -1,11 +1,18 @@
-/** Display names for well-known executables, shared by every stats surface. */
+/**
+ * Display names for well-known executables, shared by every stats surface.
+ * The macOS recorder reports an app's bundle name instead ("Google Chrome",
+ * "zoom.us"); most already read right title-cased, and the few that do not
+ * map here so one app shows one name on either OS.
+ */
 const FRIENDLY_APP_NAMES: Record<string, string> = {
   chrome: "Google Chrome",
   msedge: "Microsoft Edge",
   firefox: "Firefox",
   brave: "Brave",
+  "brave browser": "Brave",
   arc: "Arc",
   code: "VS Code",
+  "visual studio code": "VS Code",
   cursor: "Cursor",
   windowsterminal: "Windows Terminal",
   pwsh: "PowerShell",
@@ -16,6 +23,7 @@ const FRIENDLY_APP_NAMES: Record<string, string> = {
   discord: "Discord",
   teams: "Microsoft Teams",
   zoom: "Zoom",
+  "zoom.us": "Zoom",
   notion: "Notion",
   obsidian: "Obsidian",
   figma: "Figma",
