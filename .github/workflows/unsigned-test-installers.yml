@@ -72,13 +72,13 @@ jobs:
     steps:
       - id: legs
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
           # NSIS only: WiX's light.exe fails to bundle the unoptimized debug
@@ -90,7 +90,7 @@ jobs:
           present=()
           missing=()
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
-            if [ -n "${!name}" ]; then present+=("$name"); else missing+=("$name"); fi
+            if [ "${!name}" = true ]; then present+=("$name"); else missing+=("$name"); fi
           done
           if [ "${#present[@]}" -eq 0 ]; then
             echo "::notice title=No Mac installer in this run::The release environment holds no Apple signing secrets yet, so this run builds and publishes nothing for the Mac. The Mac installer is published only signed by SIQstack LLC and notarized by Apple."
@@ -503,6 +503,15 @@ jobs:
             find "$bundle" -maxdepth 2 >&2 || true
             exit 1
           fi
+          if [ "${{ contains(needs.legs.outputs.matrix, '"target":"macos"') }}" = true ]; then
+            mac_bullet="  * This build carries a macOS installer for Apple silicon and
+              Intel Macs. It and the app in it are code signed by SIQstack LLC
+              and notarized by Apple."
+          else
+            mac_bullet="  * This build carries no macOS installer, because the Apple
+              signing secrets are not set yet. A Mac installer still on the
+              release is an earlier, unsigned test build."
+          fi
           cat > "$out/TEST-BUILD.txt" <<EOF
           SIQshift test build
           ===================
@@ -515,10 +524,7 @@ jobs:
             * The Windows installer and everything it installs are code signed
               by SIQstack LLC. SmartScreen may still warn on the first
               downloads, until the certificate has built a reputation.
-            * A macOS installer is built only once the release environment
-              holds the Apple signing secrets. It and the app in it are then
-              code signed by SIQstack LLC and notarized by Apple, for Apple
-              silicon and Intel Macs.
+          $mac_bullet
             * On Windows this build updates itself: it checks for a newer
               build at launch and every six hours, installs it quietly, and
               restarts. A copy installed before the updater shipped cannot,
