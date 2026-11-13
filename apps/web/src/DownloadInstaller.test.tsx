@@ -17,20 +17,22 @@ import {
 } from "./DownloadInstaller.js";
 
 /**
- * The contract under test is the release the workflow publishes, which is a
- * machine-consumed declarative artifact: `unsigned-test-installers.yml` is read
- * by GitHub Actions, and its `publish` job decides the one tag and the file
- * names that make up the URLs this app hard-codes, and which files a run
- * leaves on the release. Nothing else checks that the two sides agree. The
- * rendered-href tests below compare the constant to itself, so a rename on
- * either side alone would leave every test green and 404 the Download button
- * in production.
+ * The contract under test is the releases the workflows publish, which are
+ * machine-consumed declarative artifacts read by GitHub Actions. The Windows
+ * link is the signed release: `release.yml`'s `publish` job decides the file
+ * name behind `releases/latest/download/<name>` and that the release becomes
+ * the repository's latest. The Mac link, until a signed Mac release exists, is
+ * on `unsigned-latest`: `unsigned-test-installers.yml`'s `publish` job decides
+ * its tag, its file names, and which files a run leaves on the release.
+ * Nothing else checks that the two sides agree. The rendered-href tests below
+ * compare the constant to itself, so a rename on either side alone would leave
+ * every test green and 404 the Download button in production.
  *
- * So the workflow is parsed into a model and asked what it actually publishes,
- * rather than searched for strings, and its publish scripts are run to see
- * what the release keeps.
+ * So each workflow is parsed into a model and asked what it actually
+ * publishes, rather than searched for strings, and the test workflow's publish
+ * scripts are run to see what the release keeps.
  */
-const workflowPath = ((relative: string): string => {
+const repositoryPath = (relative: string): string => {
   // Walked up from the vitest root rather than `import.meta.url`, which Vite
   // rewrites to a non-file URL, and rather than a fixed number of `..` hops.
   for (let dir = process.cwd(); dir !== dirname(dir); dir = dirname(dir)) {
@@ -38,7 +40,9 @@ const workflowPath = ((relative: string): string => {
     if (existsSync(candidate)) return candidate;
   }
   throw new Error(`Could not find ${relative} above ${process.cwd()}`);
-})(".github/workflows/unsigned-test-installers.yml");
+};
+const workflowPath = repositoryPath(".github/workflows/unsigned-test-installers.yml");
+const releaseWorkflowPath = repositoryPath(".github/workflows/release.yml");
 
 type Job = { env?: Record<string, string>; steps?: { name?: string; run?: string }[] };
 type PublishedRelease = {
@@ -156,6 +160,23 @@ const releaseNotesOfRun = (): { notes: string; stderr: string } => {
   }
 };
 
+/** What `release.yml`'s `publish` job stages, and whether it publishes that as the repository's latest release. */
+const signedRelease = (): { assetNames: readonly string[]; isPublishedAsLatest: boolean } => {
+  const workflow = parseYaml(readFileSync(releaseWorkflowPath, "utf8")) as { jobs?: Record<string, Job> };
+  const scriptOf = (name: string): string =>
+    workflow.jobs?.publish?.steps?.find((step) => step.name === name)?.run ?? "";
+
+  const staging = scriptOf("Stage the release assets under their permanent names");
+  const assetNames = [...staging.matchAll(/^\s*take\s+'[^']*'\s+(\S+)\s*$/gm)]
+    .flatMap(([, name]) => (name === undefined ? [] : [name]));
+  const [, stagingDir = ""] = /cp "\$found" "([^/"]+)\//.exec(staging) ?? [];
+  const publish = scriptOf("Publish the release");
+  const isPublishedAsLatest = stagingDir !== ""
+    && publish.includes(`gh release create "$TAG" ${stagingDir}/*`)
+    && /gh release edit "\$TAG" .*--latest(\s|$)/m.test(publish);
+  return { assetNames, isPublishedAsLatest };
+};
+
 /** `https://…/releases/download/<tag>/<asset>` split back into its two halves. */
 const releaseRefOf = (url: string): { tag: string; assetName: string } => {
   const segments = new URL(url).pathname.split("/");
@@ -170,7 +191,15 @@ const releaseRefOf = (url: string): { tag: string; assetName: string } => {
 const earlierUnsignedMacAssetName = "SIQshift-UNSIGNED-TEST-macos-aarch64.dmg";
 
 describe("installer URLs", () => {
-  it("name the tag and the assets the release holds after the workflow's publish job", () => {
+  it("send Windows to the installer the signed release stages, on the release published as latest", () => {
+    const release = signedRelease();
+
+    expect(new URL(windowsInstallerUrl).pathname).toMatch(/^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+$/);
+    expect(release.assetNames).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+    expect(release.isPublishedAsLatest).toBe(true);
+  });
+
+  it("name the tag and the Mac asset the test release holds after the workflow's publish job", () => {
     const release = publishedRelease();
 
     // Fail loudly rather than vacuously if the workflow is restructured so that
@@ -180,10 +209,7 @@ describe("installer URLs", () => {
     // What is staged is what is uploaded, so a staged name is a published name.
     expect(release.uploadGlob).toBe(`${release.stagingDir}/*`);
 
-    for (const url of [windowsInstallerUrl, macInstallerUrl]) {
-      expect(releaseRefOf(url).tag).toBe(release.tag);
-    }
-    expect(release.assetNames).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+    expect(releaseRefOf(macInstallerUrl).tag).toBe(release.tag);
     expect([...release.assetNames, earlierUnsignedMacAssetName]).toContain(releaseRefOf(macInstallerUrl).assetName);
   });
 

@@ -1,24 +1,27 @@
 import { useEffect, useId, useRef, useState } from "react";
 
-const downloadBase = "https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest";
+const repositoryUrl = "https://github.com/fpresta0607/SIQshift";
 
 /**
- * The permanent links to the newest desktop installer.
+ * The permanent links to the newest desktop installers.
  *
- * They are constants, not a GitHub API lookup, because
- * `.github/workflows/unsigned-test-installers.yml` republishes the
- * `unsigned-latest` release under these exact file names on every run. The
- * tag never moves and the names never change, so the newest build is always
- * behind the same URL. That buys us a link with no request, no loading state,
- * no empty-href flash, and nothing to break when GitHub's 60-per-hour
+ * They are constants, not a GitHub API lookup, because both are published
+ * under file names that never change. Windows is the signed release:
+ * `.github/workflows/release.yml` publishes every release under the same names
+ * and makes it the repository's latest, so `releases/latest/download/<name>`
+ * always serves the newest signed release build. Until a release carries a
+ * signed Mac build, the Mac file is the one `.github/workflows/unsigned-test-installers.yml`
+ * keeps on the `unsigned-latest` test release. Either way the newest build is
+ * always behind the same URL. That buys us a link with no request, no loading
+ * state, no empty-href flash, and nothing to break when GitHub's 60-per-hour
  * anonymous rate limit is spent by whoever shares the visitor's IP.
  *
  * Workflow-run artifacts cannot be used here at all: GitHub requires
  * authentication to download one, and the people who need this button are
  * signed out.
  */
-export const windowsInstallerUrl = `${downloadBase}/SIQshift-windows-x64-setup.exe`;
-export const macInstallerUrl = `${downloadBase}/SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`;
+export const windowsInstallerUrl = `${repositoryUrl}/releases/latest/download/SIQshift-windows-x64-setup.exe`;
+export const macInstallerUrl = `${repositoryUrl}/releases/download/unsigned-latest/SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`;
 
 /// Said once, in one place, so the site cannot end up warning about the
 /// SmartScreen prompt in one corner and staying quiet about it in another.
@@ -42,7 +45,7 @@ type Placement = "header" | "hero";
 
 type DownloadInstallerProps = { placement?: Placement };
 
-const DownloadIcon = () => (
+export const DownloadIcon = () => (
   <svg className="download-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
     <path
       d="M8 1.75v8.5m0 0L4.75 7M8 10.25L11.25 7M2.5 12.75h11"

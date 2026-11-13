@@ -15,7 +15,9 @@ name: Unsigned test installers
 # visitor. Release assets are public on a public repo. The tag is fixed and the
 # asset names are fixed, so `releases/download/unsigned-latest/<asset>` is a
 # permanent URL that always serves the newest run's output. The web dashboard
-# hard-codes exactly that URL; see `apps/web/src/DownloadInstaller.tsx`.
+# hard-codes that URL for its Mac link until a release carries a signed Mac
+# build, and links Windows to the signed release; see
+# `apps/web/src/DownloadInstaller.tsx`.
 #
 # This is deliberately NOT a relaxation of `release.yml`. That workflow still
 # refuses to publish anything unsigned, and nothing here touches it. The two
@@ -533,7 +535,8 @@ jobs:
             * It is a debug build, so it is larger and slower than a release
               build.
 
-          This is what siqshift.siqstack.com hands out.
+          siqshift.siqstack.com hands out the signed release for Windows,
+          not this build.
           EOF
           ls -l "$out"
 
@@ -566,7 +569,7 @@ jobs:
         with:
           path: downloaded
 
-      # Fixed names are the whole point: the website links
+      # Fixed names are the whole point: the website links its Mac file at
       # releases/download/unsigned-latest/<these names> as a constant, with no
       # GitHub API lookup and nothing to update when the version changes. The
       # version travels in the release title, the notes, and the app itself.
@@ -655,8 +658,9 @@ jobs:
 
           This tag and these file names never change. Every run of the *Unsigned
           test installers* workflow replaces the assets in place, so the links
-          below always point at the newest build, and so does the **Download for
-          Windows** button on siqshift.siqstack.com.
+          below always point at the newest build. The **Download for Windows**
+          button on siqshift.siqstack.com is the signed release, not this test
+          build.
           EOF
 
       # Force the tag onto this commit so the release stops claiming to be
