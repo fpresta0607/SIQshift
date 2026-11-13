@@ -1430,10 +1430,7 @@ mod tests {
                 Some("/Applications/SIQshift.app"),
             ),
             // `cargo run` and `tauri dev` launch the bare binary.
-            (
-                "/Users/riley/siqshift/target/debug/siqshift-desktop",
-                None,
-            ),
+            ("/Users/riley/siqshift/target/debug/siqshift-desktop", None),
             // `open` would show a plain folder in Finder, not launch it.
             ("/Users/riley/Contents/MacOS/siqshift-desktop", None),
             ("siqshift-desktop", None),
