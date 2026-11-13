@@ -669,7 +669,10 @@ jobs:
       # this run did not stage is removed only after the upload, so the
       # release ends up carrying exactly this build and nothing stale. The one
       # exception: a run without a signed Mac build publishes nothing for the
-      # Mac, so it leaves the release's Mac file as it is.
+      # Mac, so it leaves the release's Mac file as it is. It is never the
+      # repository's latest release: the website and release installs read
+      # releases/latest, which must always be the newest signed release
+      # from `release.yml`, never a test build.
       - name: Publish the release
         shell: bash
         run: |
@@ -677,10 +680,10 @@ jobs:
           title="Test build $VERSION"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "$title" --notes-file release-notes.md \
-              --prerelease=false --target "${{ github.sha }}"
+              --prerelease=false --latest=false --target "${{ github.sha }}"
           else
             gh release create "$TAG" --title "$title" --notes-file release-notes.md \
-              --target "${{ github.sha }}"
+              --latest=false --target "${{ github.sha }}"
           fi
           gh release upload "$TAG" release-assets/* --clobber
           gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r asset; do

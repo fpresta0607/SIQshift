@@ -31,7 +31,29 @@ fn production_config() -> SigningConfiguration {
     SigningConfiguration {
         updater_artifacts_requested: false,
         updater_public_key: Some(updater_public_key()),
-        windows_certificate_thumbprint: None,
+        windows_sign_command: None,
+    }
+}
+
+/// A file that exists for as long as the test holds it, standing in for the
+/// signing tool or key file a release build has to find on disk.
+struct ExistingFile(std::path::PathBuf);
+
+impl ExistingFile {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("siqshift-{name}-{}", std::process::id()));
+        std::fs::write(&path, b"stand-in").expect("stand-in file writes");
+        Self(path)
+    }
+
+    fn path(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+impl Drop for ExistingFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -43,14 +65,12 @@ fn signer_environment(name: &str) -> Option<String> {
     }
 }
 
-fn macos_signing_environment(identity: &str, name: &str) -> Option<String> {
+fn macos_signing_environment(identity: &str, api_key_path: &str, name: &str) -> Option<String> {
     match name {
-        "APPLE_CERTIFICATE" => Some("certificate".to_string()),
-        "APPLE_CERTIFICATE_PASSWORD" => Some("password".to_string()),
         "APPLE_SIGNING_IDENTITY" => Some(identity.to_string()),
-        "APPLE_ID" => Some("notarization@example.test".to_string()),
-        "APPLE_PASSWORD" => Some("app-specific-password".to_string()),
-        "APPLE_TEAM_ID" => Some("ABCDEFG123".to_string()),
+        "APPLE_API_KEY" => Some("ABCDE12345".to_string()),
+        "APPLE_API_ISSUER" => Some("0f6c1d2e-3a4b-4c5d-8e9f-a0b1c2d3e4f5".to_string()),
+        "APPLE_API_KEY_PATH" => Some(api_key_path.to_string()),
         _ => None,
     }
 }
@@ -107,7 +127,7 @@ fn signed_release_builds_require_effective_windows_signing_configuration() {
         signer_environment,
     )
     .expect_err("a Windows release without Tauri signing configuration must fail");
-    assert!(error.contains("bundle.windows.certificateThumbprint"));
+    assert!(error.contains("bundle.windows.signCommand"));
 
     release_signing::validate_build_signing(
         true,
@@ -116,6 +136,45 @@ fn signed_release_builds_require_effective_windows_signing_configuration() {
         signer_environment,
     )
     .expect("a release with matching updater credentials is allowed");
+}
+
+#[test]
+fn windows_release_builds_read_the_sign_command_from_the_effective_configuration() {
+    let base = serde_json::json!({ "plugins": { "updater": { "pubkey": "configured-key" } } });
+    let release_override = serde_json::json!({
+        "bundle": { "windows": { "signCommand": { "cmd": "C:/signing/signtool.exe", "args": ["sign", "%1"] } } }
+    });
+
+    let config = release_signing::signing_configuration(&release_signing::effective_tauri_config(
+        base,
+        Some(&release_override),
+    ));
+
+    assert_eq!(
+        config.windows_sign_command.as_deref(),
+        Some("C:/signing/signtool.exe")
+    );
+}
+
+#[test]
+fn windows_release_builds_require_a_signing_tool_that_exists() {
+    let signtool = ExistingFile::new("signtool");
+    let signed = SigningConfiguration {
+        windows_sign_command: Some(signtool.path()),
+        ..production_config()
+    };
+    let missing_tool = SigningConfiguration {
+        windows_sign_command: Some(format!("{}-missing", signtool.path())),
+        ..production_config()
+    };
+
+    release_signing::validate_build_signing(true, "windows", &signed, signer_environment)
+        .expect("a Windows release whose signing tool exists is allowed");
+    let error =
+        release_signing::validate_build_signing(true, "windows", &missing_tool, signer_environment)
+            .expect_err("a sign command naming no file cannot sign the release");
+
+    assert!(error.contains("bundle.windows.signCommand"));
 }
 
 #[test]
@@ -202,8 +261,9 @@ fn local_unsigned_builds_cannot_request_updater_artifacts() {
 
 #[test]
 fn macos_release_rejects_adhoc_signing_identity() {
+    let api_key = ExistingFile::new("adhoc-notary-key");
     let error = release_signing::validate_macos_signing_with_verifier(
-        |name| macos_signing_environment("-", name),
+        |name| macos_signing_environment("-", &api_key.path(), name),
         |_| panic!("ad-hoc signing must not reach identity verification"),
     )
     .expect_err("an ad-hoc signing identity cannot authorize a macOS release");
@@ -214,12 +274,54 @@ fn macos_release_rejects_adhoc_signing_identity() {
 #[test]
 fn macos_release_requires_a_verified_developer_id_identity() {
     let identity = "Developer ID Application: SIQshift, Inc. (ABCDEFG123)";
+    let api_key = ExistingFile::new("verified-notary-key");
     release_signing::validate_macos_signing_with_verifier(
-        |name| macos_signing_environment(identity, name),
+        |name| macos_signing_environment(identity, &api_key.path(), name),
         |verified_identity| {
             assert_eq!(verified_identity, identity);
             Ok(())
         },
     )
     .expect("a verified Developer ID identity with notarization credentials is accepted");
+}
+
+#[test]
+fn macos_release_requires_every_notary_api_key_value() {
+    let identity = "Developer ID Application: SIQshift, Inc. (ABCDEFG123)";
+    let api_key = ExistingFile::new("partial-notary-key");
+    for absent in [
+        "APPLE_SIGNING_IDENTITY",
+        "APPLE_API_KEY",
+        "APPLE_API_ISSUER",
+        "APPLE_API_KEY_PATH",
+    ] {
+        let error = release_signing::validate_macos_signing_with_verifier(
+            |name| {
+                (name != absent)
+                    .then(|| macos_signing_environment(identity, &api_key.path(), name))
+                    .flatten()
+            },
+            |_| panic!("missing notarization credentials must not reach identity verification"),
+        )
+        .expect_err("a macOS release without every notarization value must fail");
+
+        assert!(error.contains(absent), "{absent} is not named in: {error}");
+    }
+}
+
+#[test]
+fn macos_release_requires_the_notary_api_key_file() {
+    let identity = "Developer ID Application: SIQshift, Inc. (ABCDEFG123)";
+    let missing_key = std::env::temp_dir().join(format!(
+        "siqshift-missing-notary-key-{}",
+        std::process::id()
+    ));
+
+    let error = release_signing::validate_macos_signing_with_verifier(
+        |name| macos_signing_environment(identity, &missing_key.display().to_string(), name),
+        |_| panic!("a missing key file must not reach identity verification"),
+    )
+    .expect_err("a notary API key path naming no file cannot notarize the release");
+
+    assert!(error.contains("APPLE_API_KEY_PATH"));
 }
