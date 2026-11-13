@@ -1431,11 +1431,11 @@ mod tests {
             ),
             // `cargo run` and `tauri dev` launch the bare binary.
             (
-                "/Users/someone/siqshift/target/debug/siqshift-desktop",
+                "/Users/riley/siqshift/target/debug/siqshift-desktop",
                 None,
             ),
             // `open` would show a plain folder in Finder, not launch it.
-            ("/Users/someone/Contents/MacOS/siqshift-desktop", None),
+            ("/Users/riley/Contents/MacOS/siqshift-desktop", None),
             ("siqshift-desktop", None),
         ] {
             assert_eq!(
