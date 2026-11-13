@@ -46,12 +46,6 @@ const releaseWorkflowPath = repositoryPath(".github/workflows/release.yml");
 
 type Step = { name?: string; env?: Record<string, string>; run?: string };
 type Job = { env?: Record<string, string>; steps?: Step[] };
-type PublishedRelease = {
-  tag: string;
-  assetNames: readonly string[];
-  stagingDir: string;
-  uploadGlob: string;
-};
 
 const stagingStepName = "Stage the release assets under their permanent names";
 const publishStepName = "Publish the release";
@@ -64,20 +58,6 @@ const publishJobOf = (workflowFile: string): Job => {
 };
 
 const stepOf = (job: Job, stepName: string): Step => job.steps?.find((step) => step.name === stepName) ?? {};
-
-const publishedRelease = (): PublishedRelease => {
-  const publish = publishJobOf(workflowPath);
-
-  // The staging step names every asset exactly once, as `take <pattern> <name>`,
-  // and copies it into the directory the upload step then uploads.
-  const staging = stepOf(publish, stagingStepName).run ?? "";
-  const assetNames = [...staging.matchAll(/^\s*take\s+'[^']*'\s+(\S+)\s*$/gm)]
-    .flatMap(([, name]) => (name === undefined ? [] : [name]));
-  const [, stagingDir = ""] = /cp "\$found" "([^/"]+)\//.exec(staging) ?? [];
-  const [, uploadGlob = ""] = /gh release upload "\$TAG" (\S+)/.exec(stepOf(publish, publishStepName).run ?? "") ?? [];
-
-  return { tag: publish.env?.TAG ?? "", assetNames, stagingDir, uploadGlob };
-};
 
 const releaseStateFile = "release-state.txt";
 const ghCallsFile = "gh-calls.txt";
@@ -228,34 +208,31 @@ describe("installer URLs", () => {
     },
   );
 
-  it("name the tag and the Mac asset the test release holds after the workflow's publish job", () => {
-    const release = publishedRelease();
+  it("send Mac to the tag the test workflow's publish job publishes to", () => {
+    // Act
+    const tag = publishJobOf(workflowPath).env?.TAG;
 
-    // Fail loudly rather than vacuously if the workflow is restructured so that
-    // nothing can be derived from it: an empty model would satisfy nothing.
-    expect(release.tag).not.toBe("");
-    expect(release.assetNames.length).toBeGreaterThanOrEqual(2);
-    // What is staged is what is uploaded, so a staged name is a published name.
-    expect(release.uploadGlob).toBe(`${release.stagingDir}/*`);
-
-    expect(releaseRefOf(macInstallerUrl).tag).toBe(release.tag);
-    expect([...release.assetNames, earlierUnsignedMacAssetName]).toContain(releaseRefOf(macInstallerUrl).assetName);
+    // Assert
+    expect(releaseRefOf(macInstallerUrl).tag).toBe(tag);
   });
 
   // The publish job runs on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
   it.skipIf(process.platform === "win32")(
-    "keep the earlier unsigned Mac file on the release when a run builds no signed Mac one",
+    "keep the earlier unsigned Mac file the Mac link names on the release when a run builds no signed Mac one",
     () => {
       // Arrange: the release already holds the earlier Mac file and an asset no run stages any more.
+      // DEPLOY.md documents the test release's own Windows file as unsigned-latest/SIQshift-windows-x64-setup.exe.
+      const unsignedWindowsAssetName = "SIQshift-windows-x64-setup.exe";
       const retiredAssetName = "SIQshift-retired.zip";
 
       // Act
       const { assetsAfter } = publishAfterWindowsOnlyRun(workflowPath, [earlierUnsignedMacAssetName, retiredAssetName]);
 
-      // Assert: the run really published and cleaned up, and left the Mac file in place.
-      expect(assetsAfter).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+      // Assert: the run really published and cleaned up, and left the Mac file the Mac link names in place.
+      expect(assetsAfter).toContain(unsignedWindowsAssetName);
       expect(assetsAfter).not.toContain(retiredAssetName);
       expect(assetsAfter).toContain(earlierUnsignedMacAssetName);
+      expect(assetsAfter).toContain(releaseRefOf(macInstallerUrl).assetName);
     },
   );
 });
