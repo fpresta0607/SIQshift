@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
 import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
 export type AuthMode = "sign-in" | "sign-up";
@@ -93,7 +94,7 @@ export function LandingPage({ onAuth }: { onAuth: (mode: AuthMode) => void }) {
       <a className="landing-skip" href="#landing-main">Skip to content</a>
       <header className="landing-header">
         <div className="landing-brand-lockup"><a className="landing-product-brand" href="#landing-main" aria-label="SIQshift home"><img src="/favicon.png" alt="" width="56" height="56" /><span>SIQ<strong>shift</strong></span></a><a className="landing-maker" href="https://www.siqstack.com" aria-label="SIQstack home"><span>by</span><img className="landing-siq-logo" src="/siqstack-logo.svg" alt="SIQstack" width="88" height="19" /></a></div>
-        <nav aria-label="SIQshift navigation"><a href="#how-it-works">How it works</a><button type="button" onClick={() => onAuth("sign-in")}>Log in</button><button type="button" className="landing-primary landing-header-cta" onClick={() => onAuth("sign-up")}>Create account ↗</button></nav>
+        <nav aria-label="SIQshift navigation"><a href="#how-it-works">How it works</a><a href="#install">Download</a><button type="button" onClick={() => onAuth("sign-in")}>Log in</button><button type="button" className="landing-primary landing-header-cta" onClick={() => onAuth("sign-up")}>Create account ↗</button></nav>
       </header>
       <main id="landing-main">
         <section className="landing-hero" aria-labelledby="landing-title">
@@ -104,6 +105,7 @@ export function LandingPage({ onAuth }: { onAuth: (mode: AuthMode) => void }) {
             <button type="button" className="landing-primary" onClick={() => onAuth("sign-up")}>Create account <span aria-hidden="true">↗</span></button>
             <button type="button" className="landing-secondary" onClick={() => onAuth("sign-in")}>Log in</button>
           </div>
+          <InstallTabs />
           <a className="landing-scroll" href="#how-it-works">See how it works <span aria-hidden="true">↓</span></a>
         </section>
         <section id="how-it-works" className="landing-content" aria-labelledby="landing-workflow-title">
