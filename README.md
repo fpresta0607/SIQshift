@@ -482,6 +482,9 @@ privacy permission: seconds since the last input
 (`NSWorkspace.frontmostApplication`), recorded as its bundle's name, never a window
 title. Screen lock arrives as the `com.apple.screenIsLocked` distributed
 notification and sleep as an IOKit power message (`kIOMessageSystemWillSleep`).
+Every poll also reads a locked screen from the session dictionary (the undocumented
+`CGSSessionScreenIsLocked` entry), because a copy started during a lock, such as one
+restarting into an update, never receives the broadcast sent before it ran.
 A session switched away from with fast user switching reads as locked
 (`kCGSessionOnConsoleKey`).
 Two rescue checks stand in for the Windows three: an app holding the display awake

@@ -88,7 +88,8 @@ const EXIT_UPLOAD_FLUSH_SECONDS: u64 = 5;
 const MAX_OPEN_ACTIVE_SECONDS: u64 = 300;
 
 /// What the OS reports. `Locked` and `Suspended` are pushed by the event
-/// thread; `Active` and `Idle` come from the 30-second poll.
+/// thread; `Active` and `Idle` come from the 30-second poll, which on macOS
+/// also reads a locked screen or a session switched away from as `Locked`.
 // Constructors are Windows and macOS only (event thread + poll source); other
 // builds only consume signals in tests.
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
@@ -1770,6 +1771,24 @@ impl Monitor {
 
     pub async fn is_running(&self) -> bool {
         self.tasks.lock().await.is_some()
+    }
+
+    /// Returns once no work session is open, looking again every `interval`.
+    /// None is open while the monitor is stopped, and the tracker closes the
+    /// open one when the screen locks, the machine sleeps, or it is left alone
+    /// past the away threshold: the moments when stopping the monitor splits
+    /// no stretch of work in two. A Mac build started during a lock reads the
+    /// lock from its first poll, so restarting at one records no locked time
+    /// either. Only the Mac's update restart waits on it.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub async fn wait_until_between_sessions(&self, interval: Duration) {
+        loop {
+            let is_session_open = lock(&self.shared).tracker.open_session().is_some();
+            if !is_session_open {
+                return;
+            }
+            tokio::time::sleep(interval).await;
+        }
     }
 
     /// Starts the poll and upload tasks. Idempotent; a no-op when running.
@@ -4222,6 +4241,126 @@ mod tests {
         assert!(status.current_session.is_none());
         assert!(status.agent_active.is_none());
         assert!(status.selected_project_id.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A monitor whose files sit in `dir`. Building it writes `settings.json`
+    /// there, because a fresh device id is persisted at once, so each test
+    /// clears `dir` before and after.
+    fn unstarted_monitor(dir: &Path) -> Monitor {
+        Monitor::new(MonitorConfig {
+            client: ApiClient::new(
+                "http://127.0.0.1:9/auth".to_string(),
+                "http://127.0.0.1:9".to_string(),
+            )
+            .expect("client builds"),
+            settings_path: dir.join("settings.json"),
+            segments_path: dir.join("segments-spool.jsonl"),
+            agent_path: dir.join("agent-spool.jsonl"),
+            sessions_path: dir.join("sessions-spool.jsonl"),
+            recovery_path: dir.join("recovery.json"),
+            shift_windows_path: dir.join("shift-windows.json"),
+            shift_commits_path: dir.join("shift-commits.json"),
+            agent_usage_path: dir.join("agent-usage.json"),
+            recovery: Arc::new(tokio::sync::Mutex::new(RecoveryState::default())),
+        })
+    }
+
+    const BETWEEN_SESSIONS_RETRY: Duration = Duration::from_millis(5);
+
+    #[tokio::test]
+    async fn waiting_for_a_moment_between_sessions_returns_at_once_when_none_is_open() {
+        // Arrange
+        let dir =
+            std::env::temp_dir().join(format!("siqshift-between-none-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let monitor = unstarted_monitor(&dir);
+
+        // Act
+        let waited = tokio::time::timeout(
+            Duration::from_secs(5),
+            monitor.wait_until_between_sessions(BETWEEN_SESSIONS_RETRY),
+        )
+        .await;
+
+        // Assert
+        assert!(
+            waited.is_ok(),
+            "nothing is being recorded, so nothing is split"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_moment_between_sessions_holds_while_work_is_recorded() {
+        // Arrange
+        let dir =
+            std::env::temp_dir().join(format!("siqshift-between-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let monitor = unstarted_monitor(&dir);
+        let project = project("p1", Attribution::Default);
+        tick(
+            &mut lock(&monitor.shared).tracker,
+            1_030,
+            Some((SegmentKind::Active, 1_000)),
+            Some(&project),
+            false,
+        );
+
+        // Act
+        let waited = tokio::time::timeout(
+            Duration::from_millis(200),
+            monitor.wait_until_between_sessions(BETWEEN_SESSIONS_RETRY),
+        )
+        .await;
+
+        // Assert
+        assert!(waited.is_err(), "an open session is never cut in two");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_moment_between_sessions_ends_once_the_screen_locks() {
+        // Arrange
+        let dir =
+            std::env::temp_dir().join(format!("siqshift-between-locks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let monitor = unstarted_monitor(&dir);
+        let project = project("p1", Attribution::Default);
+        tick(
+            &mut lock(&monitor.shared).tracker,
+            1_030,
+            Some((SegmentKind::Active, 1_000)),
+            Some(&project),
+            false,
+        );
+
+        // Act
+        let (waited, ()) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                monitor.wait_until_between_sessions(BETWEEN_SESSIONS_RETRY),
+            ),
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                tick(
+                    &mut lock(&monitor.shared).tracker,
+                    1_100,
+                    Some((SegmentKind::Locked, 1_090)),
+                    Some(&project),
+                    false,
+                );
+            },
+        );
+
+        // Assert
+        assert!(
+            waited.is_ok(),
+            "a locked screen closes the session, so the wait ends"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
