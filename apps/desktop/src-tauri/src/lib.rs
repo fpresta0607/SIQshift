@@ -975,12 +975,15 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 ///
 /// The single-instance socket is released first, so the new build claims it
 /// instead of handing its launch to this one. This process then ends through
-/// `cleanup_before_exit` and `exit` rather than `AppHandle::exit`: Tauri's exit
-/// runs the single-instance plugin's `RunEvent::Exit` hook, which would delete
-/// the socket the new build may already have bound. With no bundle to open, or
+/// `cleanup_before_exit` and `exit` on the main thread, where AppKit removes
+/// the tray icon, rather than through `AppHandle::exit`: Tauri's exit runs the
+/// single-instance plugin's `RunEvent::Exit` hook, which would delete the
+/// socket the new build may already have bound. With no bundle to open, or
 /// when `open` fails, it falls back to Tauri's restart, which ignores
-/// `prevent_exit`; that is why the flush runs here first, and marking it as
-/// started lets both exit paths through without flushing again.
+/// `prevent_exit`; that is why the flush runs here first. Claiming the flush
+/// first lets both exit paths through without flushing again, and a quit or
+/// logout that claimed it already wins: the restart gives way rather than
+/// relaunch an app the person chose to quit.
 ///
 /// Proven only by a login-started instance on a real signed Mac release: a
 /// test would need a live event loop and launchd.
@@ -991,7 +994,9 @@ async fn restart_into_staged_update(handle: &tauri::AppHandle) {
         .monitor
         .wait_until_between_sessions(RESTART_RETRY_INTERVAL)
         .await;
-    EXIT_FLUSH_STARTED.store(true, Ordering::SeqCst);
+    if EXIT_FLUSH_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     flush_monitor(handle).await;
     tauri_plugin_single_instance::destroy(handle);
     if let Err(error) = open_this_bundle_as_a_new_instance() {
@@ -999,8 +1004,14 @@ async fn restart_into_staged_update(handle: &tauri::AppHandle) {
         handle.request_restart();
         return;
     }
-    handle.cleanup_before_exit();
-    std::process::exit(0);
+    let main_thread_handle = handle.clone();
+    if let Err(error) = handle.run_on_main_thread(move || {
+        main_thread_handle.cleanup_before_exit();
+        std::process::exit(0);
+    }) {
+        eprintln!("siqshift: could not reach the main thread to exit: {error}");
+        std::process::exit(0);
+    }
 }
 
 /// Launches the `.app` bundle this process runs from as a new instance with
