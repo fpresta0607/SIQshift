@@ -15,7 +15,13 @@ const toneOf = (id: string): string => {
   return AVATAR_TONES[total % AVATAR_TONES.length] ?? AVATAR_TONES[0];
 };
 
-/** A member's mark on the team view: their initials on a soft tone. */
-export const MemberAvatar = ({ id, name }: { id: string; name: string }) => (
-  <span className={`member-avatar ${toneOf(id)}`} aria-hidden="true">{initialsOf(name)}</span>
+/**
+ * A member's mark on the team view: their picture, or their initials on a soft
+ * tone until they add one or while it loads. The name always sits beside it,
+ * so the picture is decoration to a screen reader.
+ */
+export const MemberAvatar = ({ id, name, picture }: { id: string; name: string; picture?: string | undefined }) => (
+  picture === undefined
+    ? <span className={`member-avatar ${toneOf(id)}`} aria-hidden="true">{initialsOf(name)}</span>
+    : <img className="member-avatar" src={picture} alt="" />
 );

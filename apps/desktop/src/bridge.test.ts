@@ -20,7 +20,7 @@ describe("defaultBridge", () => {
 
     invoke.mockResolvedValueOnce({
       kind: "ready",
-      user: { id: ids.user, email: "timer@example.com", name: "Timer" },
+      user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" },
       projects: [{ id: ids.project, name: "Field work", color: 42, icon: null }],
       defaultProjectId: ids.project,
       selectedProjectId: null,
@@ -32,7 +32,7 @@ describe("defaultBridge", () => {
   it("decodes the signed-in account with where its time lands", async () => {
     invoke.mockResolvedValueOnce({
       kind: "ready",
-      user: { id: ids.user, email: "timer@example.com", name: "Timer" },
+      user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" },
       projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass" }],
       defaultProjectId: ids.project,
       selectedProjectId: ids.other,
@@ -40,7 +40,7 @@ describe("defaultBridge", () => {
 
     await expect(defaultBridge.bootstrap()).resolves.toEqual({
       kind: "ready",
-      user: { id: ids.user, email: "timer@example.com", name: "Timer" },
+      user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" },
       projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass" }],
       defaultProjectId: ids.project,
       selectedProjectId: ids.other,
@@ -509,6 +509,44 @@ describe("defaultBridge", () => {
     expect(invoke).toHaveBeenLastCalledWith("project_update", { id: ids.project, input: { icon: "bolt", color: "#c6a1f4" } });
   });
 
+  it("sends picture bytes as the list of numbers the host reads, and reads them back the same way", async () => {
+    // Arrange
+    const account = { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" };
+    invoke.mockResolvedValueOnce(account);
+    invoke.mockResolvedValueOnce({ ...account, pictureVersion: null });
+    invoke.mockResolvedValueOnce([0xff, 0xd8, 0xff]);
+
+    // Act
+    const uploaded = await defaultBridge.pictureUpload(new Uint8Array([0xff, 0xd8, 0xff]));
+    const removed = await defaultBridge.pictureRemove();
+    const bytes = await defaultBridge.memberPicture(ids.other, "0123456789abcdef");
+
+    // Assert
+    expect(uploaded).toEqual(account);
+    expect(removed).toEqual({ ...account, pictureVersion: null });
+    expect(bytes).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
+    expect(invoke.mock.calls.slice(-3)).toEqual([
+      ["picture_upload", { bytes: [0xff, 0xd8, 0xff] }],
+      ["picture_remove", undefined],
+      ["member_picture", { userId: ids.other, version: "0123456789abcdef" }],
+    ]);
+  });
+
+  it.each([
+    ["a number past a byte", [0xff, 256]],
+    ["a fraction", [0.5]],
+    ["text in place of the list", "ffd8ff"],
+  ])("rejects picture bytes with %s", async (_case, broken) => {
+    // Arrange
+    invoke.mockResolvedValueOnce(broken);
+
+    // Act
+    const read = defaultBridge.memberPicture(ids.other, "0123456789abcdef");
+
+    // Assert
+    await expect(read).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("renames the workspace under the command name and input the host reads", async () => {
     // Arrange
     const organization = { id: ids.project, name: "Atlas Studio", inviteCode: "ACDEF-GHJKM" };
@@ -532,8 +570,8 @@ describe("defaultBridge", () => {
       // A runtime this build has never heard of still reads.
       agents: [{ source: "a_runtime_from_the_future", durationSeconds: 1_800 }],
       members: [
-        { rank: 1, user: { id: ids.user, name: "Timer" }, activeSeconds: 3_600, agentSeconds: 1_800, project: { id: ids.project, name: "Field work" } },
-        { rank: 2, user: { id: ids.other, name: "Alex" }, activeSeconds: 0, agentSeconds: 0, project: null },
+        { rank: 1, user: { id: ids.user, name: "Timer", pictureVersion: "0123456789abcdef" }, activeSeconds: 3_600, agentSeconds: 1_800, project: { id: ids.project, name: "Field work" } },
+        { rank: 2, user: { id: ids.other, name: "Alex", pictureVersion: null }, activeSeconds: 0, agentSeconds: 0, project: null },
       ],
     };
     invoke.mockResolvedValueOnce({ filters: {}, ...report });
@@ -554,6 +592,7 @@ describe("defaultBridge", () => {
     ["a negative total", { activeSeconds: -1 }],
     ["a member without a name", { members: [{ rank: 1, user: { id: ids.user }, activeSeconds: 0, agentSeconds: 0, project: null }] }],
     ["a project icon that is not a name", { projects: [{ project: { id: ids.project, name: "Field work", icon: 7, color: null }, durationSeconds: 0 }] }],
+    ["a picture version that is not text", { members: [{ rank: 1, user: { id: ids.user, name: "Timer", pictureVersion: 7 }, activeSeconds: 0, agentSeconds: 0, project: null }] }],
   ])("rejects a workspace report with %s", async (_case, broken) => {
     // Arrange
     invoke.mockResolvedValueOnce({ activeSeconds: 0, agentSeconds: 0, hourly: [], projects: [], agents: [], members: [], ...broken });

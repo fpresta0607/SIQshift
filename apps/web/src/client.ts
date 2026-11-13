@@ -305,6 +305,28 @@ export function createClient(config: ClientConfig) {
     workspace: (query = "") => json<WorkspaceReportResponse>(`/reports/workspace${query}`),
     report: (query = "") => json<ReportResponse>(`/reports${query}`),
     me: () => json<MeResponse>("/me"),
+
+    /** Puts up the member's own picture; the server judges its type by the bytes and answers with the new version. */
+    async uploadPicture(bytes: Uint8Array<ArrayBuffer>): Promise<MeResponse> {
+      const response = await apiRequest("/me/picture", {
+        method: "PUT",
+        headers: { "content-type": "image/jpeg" },
+        body: bytes,
+      });
+      return response.json() as Promise<MeResponse>;
+    },
+
+    async removePicture(): Promise<MeResponse> {
+      const response = await apiRequest("/me/picture", { method: "DELETE" });
+      return response.json() as Promise<MeResponse>;
+    },
+
+    /** A member's picture bytes. The version in the URL is what lets the browser keep them for good. */
+    async memberPicture(userId: string, version: string): Promise<Uint8Array> {
+      const response = await apiRequest(`/users/${userId}/picture?v=${encodeURIComponent(version)}`);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+
     /** One member's breakdown; `userId` in the query names a teammate. */
     meStats: (query = "") => json<MeStatsResponse>(`/me/stats${query}`),
 

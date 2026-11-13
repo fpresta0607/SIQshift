@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
 import { sourceLabel } from "./agent-sources.js";
@@ -43,6 +43,7 @@ const user = {
   id: "00000000-0000-4000-8000-000000000001",
   email: "timer@example.com",
   name: "Timer User",
+  pictureVersion: null,
 };
 
 const project = { id: "00000000-0000-4000-8000-000000000010", name: "Field work", color: "#d89a34" };
@@ -216,7 +217,7 @@ const agentShiftRowsFor = (groupKey: string, after: { id: string } | null, pageS
   };
 };
 
-const sam = { id: "b1c7e513-b094-4d4c-ae55-21790ae019a4", name: "Sam" };
+const sam = { id: "b1c7e513-b094-4d4c-ae55-21790ae019a4", name: "Sam", pictureVersion: null };
 
 /// The team view's one read: Sam leads, the signed-in member follows, and
 /// every total is the server's, added up there.
@@ -234,7 +235,7 @@ const workspaceReport = {
   agents: [{ source: "claude_code", durationSeconds: 5_400 }],
   members: [
     { rank: 1, user: sam, activeSeconds: 7_000, agentSeconds: 3_600, project: { id: project.id, name: project.name } },
-    { rank: 2, user: { id: user.id, name: user.name }, activeSeconds: 3_600, agentSeconds: 1_800, project: { id: otherProject.id, name: otherProject.name } },
+    { rank: 2, user: { id: user.id, name: user.name, pictureVersion: null }, activeSeconds: 3_600, agentSeconds: 1_800, project: { id: otherProject.id, name: otherProject.name } },
   ],
 } satisfies WorkspaceReport;
 
@@ -272,6 +273,10 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   settingsUpdate: vi.fn().mockResolvedValue(settings),
   meStats: vi.fn().mockResolvedValue(meStats),
   workspaceReport: vi.fn().mockResolvedValue(workspaceReport),
+  pictureUpload: vi.fn().mockResolvedValue({ ...user, pictureVersion: "0123456789abcdef" }),
+  pictureRemove: vi.fn().mockResolvedValue(user),
+  // No fixture names a picture, so nothing asks for one unless a test does.
+  memberPicture: vi.fn().mockRejectedValue({ kind: "unknown", message: "Picture not found." }),
   // An unbounded range gets no hourly series, which is what the server
   // answers: per-hour resolution over all of history means nothing.
   agentShifts: vi.fn().mockImplementation(async (fromAt?: string) => (
@@ -1409,7 +1414,7 @@ describe("the team board", () => {
         hourly: [],
         projects: [{ project: { ...ownProject, icon: null, color: null }, durationSeconds: 3_600 }],
         agents: [],
-        members: [{ rank: 1, user: { id: user.id, name: user.name }, activeSeconds: 3_600, agentSeconds: 0, project: ownProject }],
+        members: [{ rank: 1, user: { id: user.id, name: user.name, pictureVersion: null }, activeSeconds: 3_600, agentSeconds: 0, project: ownProject }],
       } satisfies WorkspaceReport),
     })} />);
 
@@ -2461,5 +2466,203 @@ describe("the projects list", () => {
     // Assert
     expect(await within(dialog).findByText("Pick an icon and a color from the lists.")).toHaveAttribute("role", "alert");
     expect(within(dialog).getByRole("form", { name: "Icon for Client work" })).toBeInTheDocument();
+  });
+});
+
+/// The leading bytes of a JPEG, which is all the picture checks read.
+const JPEG_BYTES = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01];
+const JPEG_DATA_URL = `data:image/jpeg;base64,${btoa(String.fromCharCode(...JPEG_BYTES))}`;
+const PICTURE_VERSION = "0123456789abcdef";
+
+const jpegFile = (): File => new File([new Uint8Array(JPEG_BYTES)], "me.jpg", { type: "image/jpeg" });
+
+/// The team view with Sam wearing a picture.
+const reportWithSamsPicture = {
+  ...workspaceReport,
+  members: workspaceReport.members.map((member) => (
+    member.user.id === sam.id ? { ...member, user: { ...sam, pictureVersion: PICTURE_VERSION } } : member
+  )),
+} satisfies WorkspaceReport;
+
+/// Opens settings and unfolds its Profile picture group, returning the group.
+const openPictureGroup = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
+  const summary = within(await openSettings(person)).getByText("Profile picture");
+  await person.click(summary);
+  const group = summary.closest("details");
+  if (group === null) throw new Error("The Profile picture summary is outside its group.");
+  return group;
+};
+
+/// Fills and sends the sign-up form with a picture picked first.
+const signUpWithPicture = async (person: ReturnType<typeof userEvent.setup>): Promise<void> => {
+  await screen.findByRole("heading", { name: "Sign in" });
+  await person.click(screen.getByRole("button", { name: "New here? Create an account" }));
+  await person.upload(screen.getByLabelText("Add a picture"), jpegFile());
+  await screen.findByLabelText("Change picture");
+  await person.type(screen.getByLabelText("Name"), "Sam Example");
+  await person.type(screen.getByLabelText("Email"), "new.person@example.test");
+  await person.type(screen.getByLabelText("Password"), "not-stored-here");
+  await person.click(screen.getByRole("button", { name: "Create account" }));
+};
+
+describe("profile pictures", () => {
+  // jsdom draws nothing, so the crop runs on stand-ins: any picture opens as
+  // 400 by 300, and the canvas hands back the small JPEG above. Only these
+  // are put back after: restoring every mock would empty the bridge of an
+  // app the previous test left mounted.
+  let restoreDrawing = (): void => undefined;
+  beforeEach(() => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 400, height: 300, close: vi.fn() })));
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, "toBlob")
+      .mockImplementation((callback) => callback(new Blob([new Uint8Array(JPEG_BYTES)], { type: "image/jpeg" })));
+    restoreDrawing = () => {
+      getContext.mockRestore();
+      toBlob.mockRestore();
+      vi.unstubAllGlobals();
+    };
+  });
+  afterEach(() => restoreDrawing());
+
+  it("shows a teammate's picture on the board and their card, read once, with initials for anyone without one", async () => {
+    // Arrange
+    const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ memberPicture, workspaceReport: vi.fn().mockResolvedValue(reportWithSamsPicture) })} />);
+
+    // Act
+    const panel = await openAllStats(person);
+    const [, samRow, ownRow] = within(await within(panel).findByRole("table", { name: "People" })).getAllByRole("row");
+    await person.click(within(panel).getByRole("button", { name: /Sam/ }));
+
+    // Assert
+    await waitFor(() => expect(samRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    expect(ownRow?.querySelector(".member-avatar")).toHaveTextContent("TU");
+    const card = within(panel).getByTestId("member-stats");
+    await waitFor(() => expect(card.querySelector("h4 img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    expect(memberPicture).toHaveBeenCalledTimes(1);
+    expect(memberPicture).toHaveBeenCalledWith(sam.id, PICTURE_VERSION);
+  });
+
+  it("keeps a teammate's initials when their picture cannot be read", async () => {
+    // Arrange
+    const memberPicture = vi.fn().mockRejectedValue({ kind: "transient", message: "Could not reach the server." });
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ memberPicture, workspaceReport: vi.fn().mockResolvedValue(reportWithSamsPicture) })} />);
+
+    // Act
+    const panel = await openAllStats(person);
+    const [, samRow] = within(await within(panel).findByRole("table", { name: "People" })).getAllByRole("row");
+    await waitFor(() => expect(memberPicture).toHaveBeenCalled());
+
+    // Assert
+    expect(samRow?.querySelector(".member-avatar")).toHaveTextContent(/^S$/);
+    expect(samRow?.querySelector("img")).toBeNull();
+  });
+
+  it("puts up the picture a member picks in settings as a small square and shows it as theirs", async () => {
+    // Arrange
+    const pictureUpload = vi.fn().mockResolvedValue({ ...user, pictureVersion: PICTURE_VERSION });
+    const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ pictureUpload, memberPicture })} />);
+    const group = within(await openPictureGroup(person));
+
+    // Act
+    await person.upload(group.getByLabelText("Add a picture"), jpegFile());
+
+    // Assert
+    await waitFor(() => expect(pictureUpload).toHaveBeenCalledWith(new Uint8Array(JPEG_BYTES)));
+    expect(await group.findByLabelText("Change picture")).toBeInTheDocument();
+    expect(group.getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    await waitFor(() => expect(memberPicture).toHaveBeenCalledWith(user.id, PICTURE_VERSION));
+  });
+
+  it.each([
+    ["a text file", new File(["not a picture"], "notes.txt", { type: "text/plain" })],
+    ["a file named as a JPEG whose bytes are not one", new File(["not a picture"], "me.jpg", { type: "image/jpeg" })],
+  ])("refuses %s before sending anything", async (_case, file) => {
+    // Arrange: a person can pick any file once the dialog shows all files.
+    const pictureUpload = vi.fn();
+    const person = userEvent.setup({ applyAccept: false });
+    render(<App bridge={bridgeFor({ pictureUpload })} />);
+    const group = within(await openPictureGroup(person));
+
+    // Act
+    await person.upload(group.getByLabelText("Add a picture"), file);
+
+    // Assert
+    expect(await screen.findByText("Pick a JPG, PNG or WebP picture.")).toHaveAttribute("role", "alert");
+    expect(pictureUpload).not.toHaveBeenCalled();
+  });
+
+  it("says why the server refused a picture and keeps the field as it was", async () => {
+    // Arrange
+    const pictureUpload = vi.fn().mockRejectedValue({ kind: "validation", message: "A picture must be a JPEG, PNG or WebP image." });
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ pictureUpload })} />);
+    const group = within(await openPictureGroup(person));
+
+    // Act
+    await person.upload(group.getByLabelText("Add a picture"), jpegFile());
+
+    // Assert
+    expect(await screen.findByText("A picture must be a JPEG, PNG or WebP image.")).toHaveAttribute("role", "alert");
+    await waitFor(() => expect(group.getByLabelText("Add a picture")).toBeEnabled());
+    expect(group.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  it("takes the member's picture down and shows their initials again", async () => {
+    // Arrange
+    const pictureRemove = vi.fn().mockResolvedValue(user);
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      bootstrap: vi.fn().mockResolvedValue({ ...account, user: { ...user, pictureVersion: PICTURE_VERSION } }),
+      memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
+      pictureRemove,
+    })} />);
+    const group = await openPictureGroup(person);
+    await waitFor(() => expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+
+    // Act
+    await person.click(within(group).getByRole("button", { name: "Remove" }));
+
+    // Assert
+    expect(await within(group).findByLabelText("Add a picture")).toBeInTheDocument();
+    expect(pictureRemove).toHaveBeenCalledTimes(1);
+    expect(group.querySelector(".member-avatar")).toHaveTextContent("TU");
+  });
+
+  it("puts up the picture picked at sign-up once the account exists", async () => {
+    // Arrange
+    const signup = vi.fn().mockResolvedValue(account);
+    const pictureUpload = vi.fn().mockResolvedValue({ ...user, pictureVersion: PICTURE_VERSION });
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ bootstrap: vi.fn().mockResolvedValue({ kind: "signed-out" }), signup, pictureUpload })} />);
+
+    // Act
+    await signUpWithPicture(person);
+
+    // Assert
+    expect(await screen.findByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(pictureUpload).toHaveBeenCalledWith(new Uint8Array(JPEG_BYTES));
+    expect(signup.mock.invocationCallOrder[0]).toBeLessThan(pictureUpload.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it("keeps the new account and says so when the sign-up picture does not go up", async () => {
+    // Arrange
+    const pictureUpload = vi.fn().mockRejectedValue({ kind: "transient", message: "Could not reach the server." });
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ bootstrap: vi.fn().mockResolvedValue({ kind: "signed-out" }), pictureUpload })} />);
+
+    // Act
+    await signUpWithPicture(person);
+
+    // Assert
+    expect(await screen.findByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Your picture did not upload: Could not reach the server. Add it again in settings.",
+    );
   });
 });

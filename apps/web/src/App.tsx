@@ -6,6 +6,7 @@ import {
   projectAppearance,
   type AgentShiftsResponse,
   type LiveAgentSessionsResponse,
+  type MeResponse,
   type MeStatsResponse,
   type Organization,
   type ProjectListItem,
@@ -22,6 +23,7 @@ import {
   MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
+  PictureField,
   ProjectIconPicker,
   ProjectIconTile,
   QuietMark,
@@ -31,7 +33,9 @@ import {
   buildProjectRows,
   formatCount,
   formatRangeDays,
+  pictureDataUrl,
   recordedBasis,
+  usePictures,
   type ShiftCursor,
   type ShiftPage,
 } from "@siqshift/shared/ui";
@@ -146,6 +150,10 @@ export const App = ({ client }: AppProps) => {
   const [authBusy, setAuthBusy] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [authError, setAuthError] = useState<string | undefined>();
+  /// The picture picked on the sign-up form, sent once the account exists.
+  const [signupPicture, setSignupPicture] = useState<{ bytes: Uint8Array<ArrayBuffer>; preview: string } | undefined>();
+  /// Why that picture did not go up. The account stands either way.
+  const [signupPictureError, setSignupPictureError] = useState<string | undefined>();
 
   const [scope, setScope] = useState<ProjectScope>("all");
   const [range, setRange] = useState<Range>("30d");
@@ -153,6 +161,9 @@ export const App = ({ client }: AppProps) => {
   const [organization, setOrganization] = useState<Organization | undefined>();
   const [selfId, setSelfId] = useState<string | undefined>();
   const [selfName, setSelfName] = useState<string | undefined>();
+  /// Names the viewer's own picture: null without one, undefined until /me answers.
+  const [selfPictureVersion, setSelfPictureVersion] = useState<string | null | undefined>();
+  const [pictureBusy, setPictureBusy] = useState(false);
   const [projects, setProjects] = useState<readonly ProjectListItem[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceReportResponse | undefined>();
   const [boardSort, setBoardSort] = useState<BoardSort>("active");
@@ -284,6 +295,7 @@ export const App = ({ client }: AppProps) => {
         if (meResult.status === "fulfilled") {
           setSelfId(meResult.value.user.id);
           setSelfName(meResult.value.user.name);
+          setSelfPictureVersion(meResult.value.user.pictureVersion ?? null);
         }
         if (projectsResult.status === "fulfilled") setProjects(projectsResult.value.projects);
         if (preferencesResult.status === "fulfilled") {
@@ -524,6 +536,7 @@ export const App = ({ client }: AppProps) => {
     event.preventDefault();
     setAuthBusy(true);
     setAuthError(undefined);
+    setSignupPictureError(undefined);
     try {
       if (mode === "sign-up") {
         const code = inviteCode.trim();
@@ -535,6 +548,13 @@ export const App = ({ client }: AppProps) => {
           ...(code === "" ? {} : { inviteCode: code }),
           ...(code === "" && workspace !== "" ? { workspaceName: workspace } : {}),
         });
+        if (signupPicture !== undefined) {
+          // The account already stands, so a picture that fails to go up is
+          // said on the welcome page and undoes nothing.
+          await client.uploadPicture(signupPicture.bytes).catch((error: unknown) => {
+            setSignupPictureError(`Your picture did not upload: ${messageFor(error)} Add it again in settings.`);
+          });
+        }
       } else {
         await client.signIn({ email, password });
       }
@@ -542,6 +562,7 @@ export const App = ({ client }: AppProps) => {
       setName("");
       setInviteCode("");
       setWorkspaceName("");
+      setSignupPicture(undefined);
       setJustSignedUp(mode === "sign-up");
       setAuthOpen(false);
       setSignedIn(true);
@@ -580,6 +601,7 @@ export const App = ({ client }: AppProps) => {
     setOrganization(undefined);
     setSelfId(undefined);
     setSelfName(undefined);
+    setSelfPictureVersion(undefined);
     setProjects([]);
     setTodayStats(undefined);
     setTodayFailed(false);
@@ -700,6 +722,32 @@ export const App = ({ client }: AppProps) => {
     }
   };
 
+  /// Puts up or takes down the viewer's own picture, then rereads the board so
+  /// every row shows the change.
+  const changePicture = async (change: () => Promise<MeResponse>): Promise<void> => {
+    setPictureBusy(true);
+    setSettingsError(undefined);
+    try {
+      const { user } = await change();
+      setSelfPictureVersion(user.pictureVersion ?? null);
+      setSettingsError(await reloadBoard());
+    } catch (error: unknown) {
+      setSettingsError(messageFor(error));
+    } finally {
+      setPictureBusy(false);
+    }
+  };
+
+  // Each member's picture, read once per version. The viewer's own rides
+  // along so settings can show it before the board has loaded.
+  const pictureOf = usePictures(
+    [
+      ...workspace?.members.map((entry) => entry.user) ?? [],
+      ...selfId === undefined ? [] : [{ id: selfId, pictureVersion: selfPictureVersion }],
+    ],
+    client.memberPicture,
+  );
+
   if (booting) {
     return (
       <main className="shell auth-shell">
@@ -728,6 +776,20 @@ export const App = ({ client }: AppProps) => {
           </p>
           {authError && <p className="error" role="alert">{authError}</p>}
           <form onSubmit={submitAuth} aria-busy={authBusy}>
+            {isSignUp && (
+              <PictureField
+                picture={signupPicture?.preview}
+                hasPicture={signupPicture !== undefined}
+                hint="Optional. JPG, PNG or WebP. You can change it later."
+                isBusy={authBusy}
+                onPick={(bytes) => {
+                  setSignupPicture({ bytes, preview: pictureDataUrl(bytes, "image/jpeg") });
+                  setAuthError(undefined);
+                }}
+                onRemove={() => setSignupPicture(undefined)}
+                onError={setAuthError}
+              />
+            )}
             {isSignUp && (
               <label>Name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" autoFocus required /></label>
             )}
@@ -775,6 +837,7 @@ export const App = ({ client }: AppProps) => {
             SIQshift tracks time from your desktop. Download the app, sign in with this account,
             and your hours show up on the dashboard.
           </p>
+          {signupPictureError !== undefined && <p className="error" role="alert">{signupPictureError}</p>}
           <DownloadInstaller placement="hero" />
           <button className="link" type="button" onClick={() => setJustSignedUp(false)}>
             Skip to your dashboard
@@ -794,6 +857,7 @@ export const App = ({ client }: AppProps) => {
       id: entry.user.id,
       rank: boardSort === "active" ? entry.rank : index + 1,
       name: entry.user.name,
+      picture: pictureOf(entry.user),
       project: entry.project === null
         ? null
         : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], entry.project.id) },
@@ -1088,7 +1152,11 @@ export const App = ({ client }: AppProps) => {
                     <section className="tv-card tv-person" aria-labelledby="member-stats-title" data-testid="member-stats">
                       <div className="tv-card-head tv-person-head">
                         <h4 id="member-stats-title">
-                          <MemberAvatar id={viewedId} name={viewedName} />
+                          <MemberAvatar
+                            id={viewedId}
+                            name={viewedName}
+                            picture={pictureOf(workspace?.members.find((entry) => entry.user.id === viewedId)?.user ?? { id: viewedId })}
+                          />
                           {viewedName}
                           {viewingSelf && <span className="tv-you">You</span>}
                         </h4>
@@ -1246,6 +1314,22 @@ export const App = ({ client }: AppProps) => {
                 See exactly what&apos;s recorded — and what never is
               </button>
             </details>
+
+            {selfId !== undefined && (
+              <details className="settings-group">
+                <summary>Profile picture</summary>
+                <PictureField
+                  picture={pictureOf({ id: selfId, pictureVersion: selfPictureVersion })}
+                  hasPicture={selfPictureVersion != null}
+                  fallback={<MemberAvatar id={selfId} name={selfName ?? "You"} />}
+                  hint="JPG, PNG or WebP. Your team sees it beside your name."
+                  isBusy={pictureBusy}
+                  onPick={(bytes) => void changePicture(() => client.uploadPicture(bytes))}
+                  onRemove={() => void changePicture(() => client.removePicture())}
+                  onError={setSettingsError}
+                />
+              </details>
+            )}
 
             <ProjectsGroup client={client} projects={projects} onChanged={() => {
               // The day names its projects from its own response, so it has to

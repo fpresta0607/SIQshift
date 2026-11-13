@@ -6,6 +6,8 @@ export type TimerUser = {
   id: string;
   email: string;
   name: string;
+  /// Names the member's stored picture, null without one.
+  pictureVersion: string | null;
 };
 
 export type TimerProject = {

@@ -39,6 +39,8 @@ export type WorkspaceViewMember = {
   id: string;
   rank: number;
   name: string;
+  /** The member's picture as a data URL; their initials stand in without one. */
+  picture?: string | undefined;
   /** The project this member spent most time on, or null when none had any. */
   project: { name: string; appearance: ProjectAppearance } | null;
   activeSeconds: number;
@@ -159,7 +161,7 @@ export const WorkspaceView = ({
                       onClick={() => onSelectMember(member)}
                     >
                       <span className="tv-rank">{member.rank}</span>
-                      <MemberAvatar id={member.id} name={member.name} />
+                      <MemberAvatar id={member.id} name={member.name} picture={member.picture} />
                       <span className="tv-name">
                         <span>{member.name}{member.isSelf && <span className="tv-you">You</span>}</span>
                         {member.project !== null && (

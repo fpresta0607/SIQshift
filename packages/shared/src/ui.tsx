@@ -12,11 +12,14 @@ import { ChartTooltip } from "./chart-tooltip.js";
 export { AgentRuntimeIcon } from "./agent-marks.js";
 export { formatCount, formatRangeDays, formatTokens } from "./format.js";
 export { MemberAvatar } from "./member-avatar.js";
+export { PictureField } from "./picture-field.js";
+export { pictureDataUrl } from "./picture-file.js";
 export { ProjectIconPicker } from "./project-icon-picker.js";
 export { ProjectIconTile } from "./project-icon-tile.js";
 export { QuietMark } from "./quiet-mark.js";
 export { SegmentedControl, type SegmentedOption } from "./segmented-control.js";
 export { TokenBarChart, type ChartTokenBucket, type ChartTokens } from "./token-bar-chart.js";
+export { usePictures } from "./use-pictures.js";
 
 /**
  * The surfaces both frontends draw a measurement in.

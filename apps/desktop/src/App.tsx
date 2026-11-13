@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import type { AccountSnapshot, SignedInAccount, TimerProject } from "./account.js";
+import type { AccountSnapshot, SignedInAccount, TimerProject, TimerUser } from "./account.js";
 import { sourceLabel } from "./agent-sources.js";
 import {
   bridgeError,
@@ -37,6 +37,7 @@ import {
   MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
+  PictureField,
   ProjectIconPicker,
   ProjectIconTile,
   QuietMark,
@@ -45,7 +46,9 @@ import {
   buildMeterRows,
   buildProjectRows,
   formatRangeDays,
+  pictureDataUrl,
   recordedBasis,
+  usePictures,
   type ShiftCursor,
   type ShiftPage,
 } from "@siqshift/shared/ui";
@@ -203,6 +206,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [inviteCode, setInviteCode] = useState("");
   const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [authBusy, setAuthBusy] = useState(false);
+  /// The picture picked on the sign-up form, put up once the account exists.
+  const [signupPicture, setSignupPicture] = useState<{ bytes: Uint8Array<ArrayBuffer>; preview: string } | undefined>();
+  const [pictureBusy, setPictureBusy] = useState(false);
   const [overview, setOverview] = useState<OrganizationOverview | undefined>();
   const [overviewError, setOverviewError] = useState<string | undefined>();
   const [joinCode, setJoinCode] = useState("");
@@ -862,7 +868,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     const service = bridge;
     const generation = bridgeGeneration.current;
     try {
-      const snapshot = authMode === "sign-up"
+      let snapshot = authMode === "sign-up"
         ? await service.signup({
             email,
             password,
@@ -870,9 +876,21 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
             ...(inviteCode.trim() === "" ? {} : { inviteCode: inviteCode.trim() }),
           })
         : await service.login({ email, password });
+      // The account exists by now, so a picture that does not go up is said
+      // on the main screen rather than undoing the sign-up.
+      let pictureFailure: string | undefined;
+      if (authMode === "sign-up" && signupPicture !== undefined && snapshot.kind === "ready") {
+        try {
+          snapshot = { ...snapshot, user: await service.pictureUpload(signupPicture.bytes) };
+        } catch (error: unknown) {
+          pictureFailure = `Your picture did not upload: ${bridgeError(error).message} Add it again in settings.`;
+        }
+      }
       if (!isCurrent(service, generation)) return;
       clearAccountFields();
+      setSignupPicture(undefined);
       setAccount(snapshot);
+      if (pictureFailure !== undefined) setAccountError(pictureFailure);
     } catch (error: unknown) {
       if (!isCurrent(service, generation)) return;
       const failure = bridgeError(error);
@@ -959,6 +977,23 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       if (isCurrent(service, generation)) setSettingsError(bridgeError(error).message);
     } finally {
       if (isCurrent(service, generation)) setProjectBusy(false);
+    }
+  };
+
+  /// Puts up or takes down the member's own picture. The account carries the
+  /// new version, so every surface drawing it reads the new picture.
+  const changePicture = async (change: (service: TimerBridge) => Promise<TimerUser>): Promise<void> => {
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    setPictureBusy(true);
+    setSettingsError(undefined);
+    try {
+      const user = await change(service);
+      if (isCurrent(service, generation)) setAccount((known) => (known?.kind === "ready" ? { ...known, user } : known));
+    } catch (error: unknown) {
+      if (isCurrent(service, generation)) setSettingsError(bridgeError(error).message);
+    } finally {
+      if (isCurrent(service, generation)) setPictureBusy(false);
     }
   };
 
@@ -1147,6 +1182,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     }
   };
 
+  // Each member's picture, read once per version. The signed-in member's own
+  // rides along so settings can show it before the team view has loaded.
+  const pictureOf = usePictures(
+    [...workspace?.members.map((member) => member.user) ?? [], ...signedIn === undefined ? [] : [signedIn.user]],
+    bridge.memberPicture,
+  );
+
   if (account === undefined) {
     return (
       <main className="app-shell">
@@ -1177,6 +1219,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
             </p>
             {authError && <p className="form-error" role="alert">{authError}</p>}
             <form onSubmit={submitAuth}>
+              {isSignUp && (
+                <PictureField
+                  picture={signupPicture?.preview}
+                  hasPicture={signupPicture !== undefined}
+                  hint="Optional. JPG, PNG or WebP. You can change it later."
+                  isBusy={authBusy}
+                  onPick={(bytes) => {
+                    setSignupPicture({ bytes, preview: pictureDataUrl(bytes, "image/jpeg") });
+                    setAuthError(undefined);
+                  }}
+                  onRemove={() => setSignupPicture(undefined)}
+                  onError={setAuthError}
+                />
+              )}
               {isSignUp && <label>Name<input value={name} onChange={(event) => setName(event.target.value)} type="text" autoComplete="name" required /></label>}
               <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required /></label>
               <label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={isSignUp ? "new-password" : "current-password"} minLength={isSignUp ? 8 : undefined} required /></label>
@@ -1616,6 +1672,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                       id: member.user.id,
                       rank: member.rank,
                       name: member.user.name,
+                      // Your own row reads your account, which knows a new
+                      // picture before the next report does.
+                      picture: pictureOf(member.user.id === ready.user.id ? ready.user : member.user),
                       project: member.project === null
                         ? null
                         : { name: member.project.name, appearance: reportedAppearance(workspace.projects, member.project.id) },
@@ -1639,7 +1698,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 <section className="tv-card tv-person" aria-labelledby="member-stats-title" data-testid="member-stats">
                   <div className="tv-card-head tv-person-head">
                     <h4 id="member-stats-title">
-                      <MemberAvatar id={viewedMember.id} name={viewedMember.name} />
+                      <MemberAvatar
+                        id={viewedMember.id}
+                        name={viewedMember.name}
+                        picture={pictureOf(viewingSelf
+                          ? ready.user
+                          : workspace?.members.find((member) => member.user.id === viewedMember.id)?.user ?? { id: viewedMember.id })}
+                      />
                       {viewedMember.name}
                       {viewingSelf && <span className="tv-you">You</span>}
                     </h4>
@@ -1784,6 +1849,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   <button className="link-button privacy-open" type="button" onClick={() => setRecordingOpen(true)}>
                     See exactly what&apos;s recorded — and what never is
                   </button>
+                </details>
+
+                <details className="settings-group">
+                  <summary>Profile picture</summary>
+                  <PictureField
+                    picture={pictureOf(ready.user)}
+                    hasPicture={ready.user.pictureVersion !== null}
+                    fallback={<MemberAvatar id={ready.user.id} name={ready.user.name} />}
+                    hint="JPG, PNG or WebP. Your team sees it beside your name."
+                    isBusy={pictureBusy}
+                    onPick={(bytes) => void changePicture((service) => service.pictureUpload(bytes))}
+                    onRemove={() => void changePicture((service) => service.pictureRemove())}
+                    onError={setSettingsError}
+                  />
                 </details>
 
                 {monitorStatus !== undefined && monitorStatus.hooks.length > 0 && (

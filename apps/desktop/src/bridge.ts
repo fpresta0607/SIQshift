@@ -26,7 +26,8 @@ export type OrganizationOverview = {
 /// member spent most time on, null when none had any.
 export type WorkspaceMember = {
   rank: number;
-  user: { id: string; name: string };
+  /// `pictureVersion` names the member's picture, null without one.
+  user: { id: string; name: string; pictureVersion: string | null };
   activeSeconds: number;
   agentSeconds: number;
   project: { id: string; name: string } | null;
@@ -473,6 +474,12 @@ export interface TimerBridge {
   /// The team view All stats opens on, over instant bounds. Both absent asks
   /// for all time.
   workspaceReport(fromAt?: string, toExclusiveAt?: string): Promise<WorkspaceReport>;
+  /// Puts up the signed-in member's own picture, already drawn small, and
+  /// resolves to their account under its new version.
+  pictureUpload(bytes: Uint8Array): Promise<TimerUser>;
+  pictureRemove(): Promise<TimerUser>;
+  /// A member's picture bytes under the version their board row named.
+  memberPicture(userId: string, version: string): Promise<Uint8Array>;
   /// Every shift in the range grouped by the codebase it worked, for the
   /// Agents tab - the group heads alone. Both bounds absent asks for all time.
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
@@ -555,7 +562,20 @@ const unitRateOrNull = (value: unknown): number | null => {
 
 const decodeUser = (value: unknown): TimerUser => {
   const candidate = record(value);
-  return { id: uuid(candidate.id), email: string(candidate.email), name: string(candidate.name) };
+  return {
+    id: uuid(candidate.id),
+    email: string(candidate.email),
+    name: string(candidate.name),
+    pictureVersion: stringOrNull(candidate.pictureVersion),
+  };
+};
+
+/// Picture bytes, which the host sends as a list of numbers.
+const decodeBytes = (value: unknown): Uint8Array => {
+  if (!Array.isArray(value)) return invalidResponse();
+  const bytes = value as unknown[];
+  if (!bytes.every((byte) => typeof byte === "number" && Number.isInteger(byte) && byte >= 0 && byte <= 255)) invalidResponse();
+  return Uint8Array.from(bytes as number[]);
 };
 
 const decodeProject = (value: unknown): TimerProject => {
@@ -880,9 +900,10 @@ const decodeNamed = (value: unknown): { id: string; name: string } => {
 
 const decodeWorkspaceMember = (value: unknown): WorkspaceMember => {
   const candidate = record(value);
+  const user = record(candidate.user);
   return {
     rank: nonnegativeInteger(candidate.rank),
-    user: decodeNamed(candidate.user),
+    user: { ...decodeNamed(user), pictureVersion: stringOrNull(user.pictureVersion) },
     activeSeconds: nonnegativeInteger(candidate.activeSeconds),
     agentSeconds: nonnegativeInteger(candidate.agentSeconds),
     project: candidate.project === null ? null : decodeNamed(candidate.project),
@@ -1171,6 +1192,9 @@ export const defaultBridge: TimerBridge = {
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
   workspaceReport: (fromAt, toExclusiveAt) => invokeDecoded("workspace_report", decodeWorkspaceReport, { fromAt, toExclusiveAt }),
+  pictureUpload: (bytes) => invokeDecoded("picture_upload", decodeUser, { bytes: Array.from(bytes) }),
+  pictureRemove: () => invokeDecoded("picture_remove", decodeUser),
+  memberPicture: (userId, version) => invokeDecoded("member_picture", decodeBytes, { userId, version }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
   liveAgentSessions: () => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions),
   agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>

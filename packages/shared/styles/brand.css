@@ -167,6 +167,18 @@ button:disabled { opacity: .55; cursor: default; }
 .color-choice { width: 32px; height: 32px; border: 2px solid transparent; border-radius: 50%; padding: 0; background: var(--swatch); box-shadow: inset 0 0 0 2px var(--body-bg); }
 .color-choice[aria-pressed="true"] { border-color: #ffffff; }
 .icon-picker-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+/* A member's own picture and its buttons, on sign-up and in settings. The
+   picker is a label around a hidden file input, drawn as a ghost button. */
+.picture-field { display: flex; align-items: center; gap: 14px; }
+.picture-field .member-avatar, .picture-drop { width: 48px; height: 48px; font-size: .9rem; }
+.picture-drop { display: grid; flex: none; place-items: center; border: 1px dashed var(--glass-border-hover); border-radius: 50%; color: var(--mint); }
+.picture-drop svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.picture-field-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.picture-field .picture-pick { display: inline-flex; align-items: center; margin: 0; border-radius: 9999px; font-size: .84rem; letter-spacing: .06em; text-transform: none; cursor: pointer; }
+.picture-field .picture-pick:focus-within { outline: 2px solid var(--accent-green); outline-offset: 1px; }
+.picture-field .picture-pick:has(input:disabled) { opacity: .55; cursor: default; }
+.picture-field-hint { margin: 6px 0 0; color: var(--text-secondary); font-size: .74rem; }
 /* Quiet time is no app, so it gets no OS icon: a drawn moon stands in. */
 .quiet-mark { color: var(--text-secondary); }
 

@@ -634,6 +634,34 @@ async fn me_stats(
         .await
 }
 
+/// Puts up the signed-in member's own picture, already drawn small by the
+/// window, and answers with their account under the new picture version.
+#[tauri::command]
+async fn picture_upload(state: State<'_, AppState>, bytes: Vec<u8>) -> ApiResult<TimerUser> {
+    let access_token = state.access_token().await?;
+    state.client.upload_picture(&access_token, bytes).await
+}
+
+#[tauri::command]
+async fn picture_remove(state: State<'_, AppState>) -> ApiResult<TimerUser> {
+    let access_token = state.access_token().await?;
+    state.client.remove_picture(&access_token).await
+}
+
+/// A teammate's picture bytes under the version their board row named.
+#[tauri::command]
+async fn member_picture(
+    state: State<'_, AppState>,
+    user_id: String,
+    version: String,
+) -> ApiResult<Vec<u8>> {
+    let access_token = state.access_token().await?;
+    state
+        .client
+        .member_picture(&access_token, &user_id, &version)
+        .await
+}
+
 /// The team view All stats opens on, over the overlay's range. Bounds arrive
 /// together or not at all; both absent asks for all time.
 #[tauri::command]
@@ -1240,6 +1268,9 @@ pub fn run() {
             settings_get,
             settings_update,
             me_stats,
+            picture_upload,
+            picture_remove,
+            member_picture,
             workspace_report,
             agent_shifts,
             agent_shift_rows,
@@ -1290,6 +1321,7 @@ mod tests {
                 id: "u1".to_string(),
                 email: "alex@example.com".to_string(),
                 name: "Alex Morgan".to_string(),
+                picture_version: None,
             },
             projects: vec![TimerProject {
                 id: "p1".to_string(),

@@ -145,6 +145,10 @@ pub struct TimerUser {
     pub id: String,
     pub email: String,
     pub name: String,
+    /// Names the member's stored picture; absent without one, and from a
+    /// server that predates pictures.
+    #[serde(default)]
+    pub picture_version: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,14 +167,7 @@ pub struct TimerProject {
 
 #[derive(Deserialize)]
 struct MeResponse {
-    user: MeUser,
-}
-
-#[derive(Deserialize)]
-struct MeUser {
-    id: String,
-    email: String,
-    name: String,
+    user: TimerUser,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,10 +240,21 @@ pub struct WorkspaceAgentTotal {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMember {
     pub rank: u32,
-    pub user: LeaderboardMember,
+    pub user: WorkspaceMemberUser,
     pub active_seconds: u64,
     pub agent_seconds: u64,
     pub project: Option<LeaderboardMember>,
+}
+
+/// A board row's member, with the version that names their picture.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMemberUser {
+    pub id: String,
+    pub name: String,
+    /// Absent without a picture, and from a server that predates pictures.
+    #[serde(default)]
+    pub picture_version: Option<String>,
 }
 
 /// The Agents tab's whole story: what ran, where, grouped by codebase. Every
@@ -989,11 +997,7 @@ impl ApiClient {
             .json()
             .await
             .map_err(|_| BridgeError::unknown("The account response could not be read."))?;
-        Ok(TimerUser {
-            id: body.user.id,
-            email: body.user.email,
-            name: body.user.name,
-        })
+        Ok(body.user)
     }
 
     /// Moves an existing account into a teammate's workspace.
@@ -1134,11 +1138,76 @@ impl ApiClient {
 
     pub async fn me(&self, access_token: &str) -> ApiResult<TimerUser> {
         let body: MeResponse = self.get_json(access_token, "/me").await?;
-        Ok(TimerUser {
-            id: body.user.id,
-            email: body.user.email,
-            name: body.user.name,
-        })
+        Ok(body.user)
+    }
+
+    /// Puts up the member's own picture with `PUT /me/picture`. The server
+    /// judges its type by the bytes and answers with the new version.
+    pub async fn upload_picture(&self, access_token: &str, bytes: Vec<u8>) -> ApiResult<TimerUser> {
+        let response = self
+            .http
+            .put(format!("{}/me/picture", self.api_base_url))
+            .bearer_auth(access_token)
+            .header(reqwest::header::CONTENT_TYPE, "image/jpeg")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let body: MeResponse = response
+            .json()
+            .await
+            .map_err(|_| BridgeError::unknown("The account response could not be read."))?;
+        Ok(body.user)
+    }
+
+    /// Takes down the member's own picture with `DELETE /me/picture`.
+    pub async fn remove_picture(&self, access_token: &str) -> ApiResult<TimerUser> {
+        let response = self
+            .http
+            .delete(format!("{}/me/picture", self.api_base_url))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let body: MeResponse = response
+            .json()
+            .await
+            .map_err(|_| BridgeError::unknown("The account response could not be read."))?;
+        Ok(body.user)
+    }
+
+    /// A member's picture bytes, read under the version that names them so the
+    /// server can answer the read as one that never changes.
+    pub async fn member_picture(
+        &self,
+        access_token: &str,
+        user_id: &str,
+        version: &str,
+    ) -> ApiResult<Vec<u8>> {
+        let mut url = Url::parse(&format!("{}/users/{user_id}/picture", self.api_base_url))
+            .map_err(|_| BridgeError::unknown("The request address could not be built."))?;
+        url.query_pairs_mut().append_pair("v", version);
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|_| BridgeError::unknown("The picture could not be read."))?;
+        Ok(bytes.to_vec())
     }
 
     pub async fn projects(&self, access_token: &str) -> ApiResult<Vec<TimerProject>> {
@@ -1853,6 +1922,121 @@ mod tests {
         let sent = serde_json::to_value(&row).expect("the project row serializes");
         assert_eq!(sent["project"]["icon"], "grid");
         assert_eq!(sent["project"]["color"], "#a3b3c2");
+    }
+
+    /// The window already drew the picture small; the host passes its bytes
+    /// through as they are and reads the account back under the new version.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn puts_up_the_members_own_picture_and_reads_its_version_back() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "200 OK",
+            "",
+            r#"{"user":{"id":"u1","email":"sam@example.test","name":"Sam Example","pictureVersion":"0123456789abcdef"}}"#,
+        )])
+        .await;
+
+        // Act
+        let user = client
+            .upload_picture("token", b"picture bytes".to_vec())
+            .await
+            .expect("the upload reads");
+
+        // Assert
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "PUT /me/picture");
+        assert_eq!(requests[0].1, "picture bytes");
+        assert_eq!(requests[0].2.as_deref(), Some("Bearer token"));
+        assert_eq!(user.picture_version.as_deref(), Some("0123456789abcdef"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn takes_down_the_members_own_picture() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "200 OK",
+            "",
+            r#"{"user":{"id":"u1","email":"sam@example.test","name":"Sam Example","pictureVersion":null}}"#,
+        )])
+        .await;
+
+        // Act
+        let user = client
+            .remove_picture("token")
+            .await
+            .expect("the removal reads");
+
+        // Assert
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "DELETE /me/picture");
+        assert_eq!(user.picture_version, None);
+    }
+
+    /// A refusal reaches the window in the server's own words.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn says_why_the_server_refused_a_picture() {
+        for (status, body, message) in [
+            (
+                "400 Bad Request",
+                r#"{"error":{"code":"validation_error","message":"A picture must be a JPEG, PNG or WebP image."}}"#,
+                "A picture must be a JPEG, PNG or WebP image.",
+            ),
+            (
+                "413 Payload Too Large",
+                r#"{"error":{"code":"validation_error","message":"Request body is too large."}}"#,
+                "Request body is too large.",
+            ),
+        ] {
+            // Arrange
+            let (client, served) = scripted_stub(vec![(status, "", body)]).await;
+
+            // Act
+            let error = client
+                .upload_picture("token", b"not a picture".to_vec())
+                .await
+                .expect_err("the server refused it");
+
+            // Assert
+            requests_seen(served).await;
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reads_a_members_picture_under_the_version_their_row_named() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![("200 OK", "", "picture bytes")]).await;
+
+        // Act
+        let bytes = client
+            .member_picture("token", "u2", "0123456789abcdef")
+            .await
+            .expect("the picture reads");
+
+        // Assert
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "GET /users/u2/picture?v=0123456789abcdef");
+        assert_eq!(requests[0].2.as_deref(), Some("Bearer token"));
+        assert_eq!(bytes, b"picture bytes");
+    }
+
+    #[test]
+    fn carries_each_members_picture_version_through_the_team_view() {
+        for (row, expected) in [
+            (
+                r#"{"rank": 1, "user": {"id": "u1", "name": "Sam Example", "pictureVersion": "0123456789abcdef"}, "activeSeconds": 60, "agentSeconds": 0, "project": null}"#,
+                serde_json::json!("0123456789abcdef"),
+            ),
+            (
+                r#"{"rank": 1, "user": {"id": "u1", "name": "Sam Example"}, "activeSeconds": 60, "agentSeconds": 0, "project": null}"#,
+                serde_json::Value::Null,
+            ),
+        ] {
+            let member: WorkspaceMember = serde_json::from_str(row).expect("the board row parses");
+
+            let sent = serde_json::to_value(&member).expect("the board row serializes");
+            assert_eq!(sent["user"]["pictureVersion"], expected);
+        }
     }
 
     #[test]
