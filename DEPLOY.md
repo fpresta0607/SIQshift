@@ -806,15 +806,37 @@ signing gate.
 The Windows build is code signed by **SIQstack LLC** through Azure Artifact Signing, the same signing account and certificate profile that sign Code Goblins.
 The bundler signs the app, both helpers, the uninstaller and the setup, and the workflow then checks that each shipped file carries a valid, timestamped SIQstack LLC signature before anything is uploaded.
 The updater signature is made afterwards, over the signed setup.
-The macOS build is still unsigned.
 
-The Windows leg runs in the `release` environment, which admits only `main` and `unsigned-test/*`, so no other branch can sign.
+Every job that reads signing secrets runs in the `release` environment, which admits only `main` and `unsigned-test/*`, so no other branch can sign.
 It holds the secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` and the variables `SIGNING_ENDPOINT`, `SIGNING_ACCOUNT`, `SIGNING_PROFILE` and `SIGNING_PUBLISHER`, with the same values as Code Goblins' `release` environment.
 Azure sign-in goes through GitHub's OpenID Connect, so no password is stored: the Entra signing app carries a federated credential for this repository's `release` environment, and its Artifact Signing Certificate Profile Signer role already covers the account.
 If any of those values is missing, the Windows leg fails rather than publishing an unsigned installer under the signed name.
 
 Signing runs `signtool` with Microsoft's `Microsoft.ArtifactSigning.Client` dlib, pinned by version and SHA-256 in the workflow.
 Compiling and bundling are separate steps (`tauri build --no-bundle`, then `tauri bundle`) because GitHub's sign-in token for Azure lasts about five minutes, so the Azure login has to land after the long compile and right before the bundler signs.
+
+#### macOS code signing
+
+The macOS installer is published only code signed by **SIQstack LLC** with its Developer ID Application certificate and notarized by Apple, or not at all.
+It is one universal build for Apple silicon and Intel Macs: each architecture compiles on its own and `lipo` joins the app and both helpers.
+The bundler signs the app and both helpers with the hardened runtime, has Apple notarize the app and staples the ticket; the workflow then signs, notarizes and staples the `.dmg` itself.
+Before anything is uploaded, it mounts the `.dmg` and checks that Gatekeeper accepts both the image and the app as notarized Developer ID, and that every binary in the app carries the team's signature, the hardened runtime, a secure timestamp and both architectures.
+
+The Mac leg reads these secrets of the `release` environment, not of the repository, so `release.yml` does not see them:
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | Base64 of the exported Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | The `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | The certificate's full name, `Developer ID Application: <name> (<team id>)` |
+| `APPLE_TEAM_ID` | The 10-character team id |
+| `APPLE_API_KEY` | The App Store Connect API key id used for notarization |
+| `APPLE_API_ISSUER` | That key's issuer id |
+| `APPLE_API_PRIVATE_KEY` | The contents of that key's `.p8` file |
+
+A first `legs` job reads only whether each one is set, never its value.
+With none set, the run builds and publishes Windows only and says so in a notice: nothing is built or published for the Mac.
+With some but not all set, the run fails before building anything.
 
 **To trigger it:** Actions → *Unsigned test installers* → **Run workflow**.
 Because GitHub only offers *Run workflow* for workflows already on the default
@@ -836,27 +858,24 @@ need touching:
 
 ```
 https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshift-windows-x64-setup.exe
-https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshift-UNSIGNED-TEST-macos-aarch64.dmg
+https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshift-macos-universal.dmg
 ```
 
 The tag keeps its old name because every installed copy's updater polls `unsigned-latest/latest.json`.
 After uploading, the run deletes any asset it did not stage, so the release carries exactly the newest build.
+The one exception is the Mac: a run without the Apple signing secrets publishes nothing for it and leaves the release's Mac file as it is.
+Until the first signed Mac build, that file is the earlier unsigned `SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`, which the website still links; the first signed run replaces it with `SIQshift-macos-universal.dmg`, and the website's link has to move to that name right after, or its Mac button 404s.
 
-`apps/web/src/DownloadInstaller.tsx` hard-codes exactly those strings, and
-`DownloadInstaller.test.tsx` pins them, because renaming an asset on one side
-alone silently 404s the button. This is why the assets carry fixed names rather
-than the versioned ones inside the run artifact: the version travels in the
-release title, the release notes, and the installed app, not in the URL.
+`apps/web/src/DownloadInstaller.tsx` hard-codes the Windows URL above and, until that handover, the earlier unsigned Mac file's URL rather than the signed one.
+`DownloadInstaller.test.tsx` checks that the publish job stages the Windows name, that the Mac name is one it stages or that earlier unsigned file, and that a run without a signed Mac build leaves that file on the release, because renaming or deleting an asset on one side alone silently 404s the button.
+This is why the assets carry fixed names rather than the versioned ones inside the run artifact: the version travels in the release title, the release notes, and the installed app, not in the URL.
 
 **Do not** link a workflow-run artifact from anywhere public. GitHub requires
 authentication to download one, so an artifact URL is a dead link for a
 signed-out visitor. That is the whole reason for the fixed release.
 
-The run artifacts (`TEST-BUILD-windows-<run number>` and `-macos-`) still
-exist for branch pushes and for grabbing a build that was never published.
-Inside are the installers under their versioned names, prefixed `TEST-` on
-Windows and `UNSIGNED-TEST-` on macOS, plus a `TEST-BUILD.txt` recording the
-commit.
+The run artifacts (`TEST-BUILD-windows-<run number>`, and `-macos-` when the Mac leg ran) still exist for branch pushes and for grabbing a build that was never published.
+Inside are the installers under their versioned names, prefixed `TEST-`, plus a `TEST-BUILD.txt` recording the commit.
 
 **Bump the version when the build changes.** `apps/desktop/src-tauri/tauri.conf.json`
 holds the single `version`, and the installer, Add/Remove Programs, and the
@@ -882,11 +901,9 @@ release cannot upgrade an unsigned install in place (different signing keys),
 so uninstall the test build before installing a real release. macOS updates
 are still by hand.
 
-macOS installers are built by the same workflow. They are unsigned and
-un-notarized, so Gatekeeper blocks them harder than SmartScreen does: after
-mounting the `.dmg` and copying the app, clear the quarantine flag with
-`xattr -dr com.apple.quarantine "/Applications/SIQshift.app"` before it will
-launch.
+**Installing on macOS.** The signed, notarized `.dmg` installs like any Mac app: mount it, drag SIQshift to Applications and open it.
+macOS asks once whether to open an app downloaded from the internet, and needs nothing else.
+The earlier unsigned test build is not notarized, so Gatekeeper blocks it: after copying the app, clear the quarantine flag with `xattr -dr com.apple.quarantine "/Applications/SIQshift.app"` before it will launch.
 
 ---
 
