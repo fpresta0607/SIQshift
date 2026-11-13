@@ -134,8 +134,15 @@ const releaseRefOf = (url: string): { tag: string; assetName: string } => {
   return { tag: segments.at(-2) ?? "", assetName: segments.at(-1) ?? "" };
 };
 
+/**
+ * The earlier unsigned Mac file the live `unsigned-latest` release still holds,
+ * which no run stages any more. It goes once the site links the signed Mac
+ * file the publish job stages.
+ */
+const earlierUnsignedMacAssetName = "SIQshift-UNSIGNED-TEST-macos-aarch64.dmg";
+
 describe("installer URLs", () => {
-  it("name the tag the workflow's publish job publishes and the Windows asset it stages", () => {
+  it("name the tag and the assets the release holds after the workflow's publish job", () => {
     const release = publishedRelease();
 
     // Fail loudly rather than vacuously if the workflow is restructured so that
@@ -149,24 +156,24 @@ describe("installer URLs", () => {
       expect(releaseRefOf(url).tag).toBe(release.tag);
     }
     expect(release.assetNames).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+    expect([...release.assetNames, earlierUnsignedMacAssetName]).toContain(releaseRefOf(macInstallerUrl).assetName);
   });
 
   // The publish job runs on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
   it.skipIf(process.platform === "win32")(
-    "keep the Mac installer the site links on the release when a run builds no signed Mac one",
+    "keep the earlier unsigned Mac file on the release when a run builds no signed Mac one",
     () => {
-      // Arrange: the release already holds the linked Mac file and an asset no run stages any more.
+      // Arrange: the release already holds the earlier Mac file and an asset no run stages any more.
       const release = publishedRelease();
-      const macAssetName = releaseRefOf(macInstallerUrl).assetName;
       const retiredAssetName = "SIQshift-retired.zip";
 
       // Act
-      const assetsAfter = releaseAfterWindowsOnlyRun(release, [macAssetName, retiredAssetName]);
+      const assetsAfter = releaseAfterWindowsOnlyRun(release, [earlierUnsignedMacAssetName, retiredAssetName]);
 
       // Assert: the run really published and cleaned up, and left the Mac file in place.
       expect(assetsAfter).toContain(releaseRefOf(windowsInstallerUrl).assetName);
       expect(assetsAfter).not.toContain(retiredAssetName);
-      expect(assetsAfter).toContain(macAssetName);
+      expect(assetsAfter).toContain(earlierUnsignedMacAssetName);
     },
   );
 });

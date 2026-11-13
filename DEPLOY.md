@@ -867,7 +867,7 @@ The one exception is the Mac: a run without the Apple signing secrets publishes 
 Until the first signed Mac build, that file is the earlier unsigned `SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`, which the website still links; the first signed run replaces it with `SIQshift-macos-universal.dmg`, and the website's link has to move to that name right after, or its Mac button 404s.
 
 `apps/web/src/DownloadInstaller.tsx` hard-codes the Windows URL above and, until that handover, the earlier unsigned Mac file's URL rather than the signed one.
-`DownloadInstaller.test.tsx` checks that the publish job stages the Windows name and that a run without a signed Mac build leaves the linked Mac file on the release, because renaming or deleting an asset on one side alone silently 404s the button.
+`DownloadInstaller.test.tsx` checks that the publish job stages the Windows name, that the Mac name is one it stages or that earlier unsigned file, and that a run without a signed Mac build leaves that file on the release, because renaming or deleting an asset on one side alone silently 404s the button.
 This is why the assets carry fixed names rather than the versioned ones inside the run artifact: the version travels in the release title, the release notes, and the installed app, not in the URL.
 
 **Do not** link a workflow-run artifact from anywhere public. GitHub requires
