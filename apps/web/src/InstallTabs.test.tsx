@@ -33,7 +33,7 @@ describe("InstallTabs", () => {
     expect(screen.getByRole("tab", { selected: true })).toHaveAccessibleName(expectedTab);
   });
 
-  it("offers the signed Windows release and says who signed it", () => {
+  it("offers the signed Windows release and says only who signed it", () => {
     // Arrange
     browseFrom(WINDOWS_USER_AGENT);
 
@@ -45,6 +45,18 @@ describe("InstallTabs", () => {
     const download = within(panel).getByRole("link", { name: "Download for Windows" });
     expect(download).toHaveAttribute("href", windowsInstallerUrl);
     expect(download).toHaveAccessibleDescription(installerNote);
+    expect(panel.textContent).toBe(`Download for Windows${installerNote}`);
+  });
+
+  it("promises nothing about a Mac build that does not exist yet", () => {
+    // Arrange
+    browseFrom(MAC_USER_AGENT);
+
+    // Act
+    render(<InstallTabs />);
+
+    // Assert
+    expect(screen.getByRole("tabpanel", { name: "Mac" })).not.toHaveTextContent(/signed|notarized/i);
   });
 
   it("links no Mac file until a signed Mac release exists", () => {

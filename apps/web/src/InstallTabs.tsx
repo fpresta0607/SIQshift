@@ -70,11 +70,9 @@ export const InstallTabs = () => {
             Download for Windows
           </a>
           <p className="landing-install-note" id={noteId}>{installerNote}</p>
-          <p className="landing-install-note">For 64-bit Windows. Updates install themselves.</p>
         </div>
         <div role="tabpanel" id="install-panel-mac" aria-labelledby="install-tab-mac" className={panelClass("mac")}>
           <p className="landing-install-status">Coming soon</p>
-          <p className="landing-install-note">Signed by SIQstack LLC and notarized by Apple, for Apple silicon and Intel Macs.</p>
           <ul className="landing-install-differences" aria-label="What is different on a Mac">
             <li>macOS asks once for your Documents, Desktop and Downloads folders. Allow it, or commits in projects kept there are not linked to your hours.</li>
             <li>SIQshift opens at login. Turn that off in System Settings and nothing is recorded until you open it.</li>
