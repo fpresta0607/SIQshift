@@ -154,40 +154,21 @@ jobs:
       # writes empty `binaries/` stand-ins, and tauri-build copies every
       # sidecar over `target/debug/<name>.exe`. A second invocation reruns the
       # build script and overwrites the helper the first one linked with the
-      # empty stand-in, which staging below would then ship.
+      # empty stand-in, which the staging below refuses.
       - name: Build the helpers
         run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml ${{ matrix.cargo_targets }} --bin siqshift-hook --bin siqshift-browser-host
 
       # `externalBin` resolves `binaries/<name>-<target-triple>`, so the helpers
       # have to sit there under that name before the bundler runs. Same staging
-      # rule as the release workflow; the bundler signs these copies. A universal
+      # script as the release workflow; the bundler signs these copies. A universal
       # macOS build compiles each architecture against its own triple's copy and
       # bundles the `universal-apple-darwin` one, which lipo joins from the two.
+      # The bundler also copies each of the crate's binaries from
+      # `target/universal-apple-darwin`, where the build joins only the app, so
+      # the script puts each joined helper there too. It refuses an empty
+      # helper, which is the stand-in a debug build's `build.rs` writes.
       - name: Stage the helpers for bundling
-        shell: bash
-        run: |
-          set -euo pipefail
-          binaries=apps/desktop/src-tauri/binaries
-          mkdir -p "$binaries"
-          stage() {
-            cp "$1" "$2"
-            if [ ! -s "$2" ]; then
-              echo "$2 is empty: the helper build left a debug stand-in, not $(basename "$1")." >&2
-              exit 1
-            fi
-          }
-          for name in siqshift-hook siqshift-browser-host; do
-            if [ "${{ matrix.target }}" = windows ]; then
-              triple="$(rustc -vV | sed -n 's/^host: //p')"
-              stage "apps/desktop/src-tauri/target/debug/$name.exe" "$binaries/$name-$triple.exe"
-            else
-              for triple in aarch64-apple-darwin x86_64-apple-darwin; do
-                stage "apps/desktop/src-tauri/target/$triple/debug/$name" "$binaries/$name-$triple"
-              done
-              lipo -create -output "$binaries/$name-universal-apple-darwin" \
-                "$binaries/$name-aarch64-apple-darwin" "$binaries/$name-x86_64-apple-darwin"
-            fi
-          done
+        run: node scripts/stage-helpers.mjs ${{ matrix.target }} debug
 
       # The updater only offers a build whose semver is strictly higher than
       # the installed one, so every run needs its own version. `run_number`

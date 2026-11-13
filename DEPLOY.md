@@ -803,6 +803,7 @@ Compiling and bundling are separate steps (`tauri build --no-bundle`, then `taur
 
 The macOS installer is published only code signed by **SIQstack LLC** with its Developer ID Application certificate and notarized by Apple, or not at all.
 It is one universal build for Apple silicon and Intel Macs: each architecture compiles on its own and `lipo` joins the app and both helpers.
+`scripts/stage-helpers.mjs` joins the helpers and also puts each joined one in `target/universal-apple-darwin/<profile>`, because the bundler copies every binary of the desktop crate from there and the build joins only the app into it.
 The bundler signs the app and both helpers with the hardened runtime, has Apple notarize the app and staples the ticket; the workflow then signs, notarizes and staples the `.dmg` itself.
 Before anything is uploaded, it mounts the `.dmg` and checks that Gatekeeper accepts both the image and the app as notarized Developer ID, and that every binary in the app carries the team's signature, the hardened runtime, a secure timestamp and both architectures.
 
