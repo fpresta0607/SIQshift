@@ -769,9 +769,8 @@ Back the private key up somewhere durable: losing it means existing installs can
 ### Unsigned test installers
 
 `.github/workflows/unsigned-test-installers.yml` builds the test installers.
-The website's Windows links are the signed release, but **its dashboard and
-post-sign-up Mac links hand out this release's Mac file** until a release
-carries a signed Mac build. The build job
+The website never links this release: its downloads are the signed
+release's. The build job
 still runs with read-only `contents` permission and cannot publish anything; a
 separate `publish` job, which compiles nothing, uploads what that job produced.
 
