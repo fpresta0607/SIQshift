@@ -71,8 +71,11 @@ describe("InstallTabs", () => {
 
     // Assert
     const panel = screen.getByRole("tabpanel", { name: "Mac" });
+    const download = within(panel).getByRole("link", { name: "Download for Mac" });
     expect(panel).not.toHaveTextContent("SIQstack LLC");
     expect(panel).not.toHaveTextContent("Coming soon");
+    expect(download).not.toHaveAccessibleDescription(/SIQstack LLC/);
+    expect(download).not.toHaveAccessibleDescription(/Coming soon/);
   });
 
   it.each([
