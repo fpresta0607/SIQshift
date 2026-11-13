@@ -128,6 +128,34 @@ const releaseAfterWindowsOnlyRun = (release: PublishedRelease, assetsBefore: rea
   }
 };
 
+/**
+ * The notes the publish job's notes step writes, run under bash as on its
+ * ubuntu runner, with what bash printed to stderr while writing them.
+ */
+const releaseNotesOfRun = (): { notes: string; stderr: string } => {
+  const workflow = parseYaml(readFileSync(workflowPath, "utf8")) as { jobs?: Record<string, Job> };
+  const script = workflow.jobs?.publish?.steps?.find((step) => step.name === "Write the release notes")?.run ?? "";
+  expect(script, "the publish job has no `Write the release notes` step").not.toBe("");
+
+  const runDir = mkdtempSync(join(tmpdir(), "siqshift-notes-"));
+  try {
+    const configDir = join(runDir, "apps", "desktop", "src-tauri");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "tauri.conf.json"), JSON.stringify({ version: "0.0.0" }));
+
+    // The runner substitutes every `${{ }}` expression before bash sees the script.
+    const { status, stderr } = spawnSync("bash", ["-c", script.replaceAll(/\$\{\{[^}]*\}\}/g, "0")], {
+      cwd: runDir,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_ENV: join(runDir, "github-env") },
+    });
+    expect(status, stderr).toBe(0);
+    return { notes: readFileSync(join(runDir, "release-notes.md"), "utf8"), stderr };
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+};
+
 /** `https://…/releases/download/<tag>/<asset>` split back into its two halves. */
 const releaseRefOf = (url: string): { tag: string; assetName: string } => {
   const segments = new URL(url).pathname.split("/");
@@ -176,6 +204,21 @@ describe("installer URLs", () => {
       expect(assetsAfter).toContain(earlierUnsignedMacAssetName);
     },
   );
+});
+
+describe("the release notes the publish job writes", () => {
+  // The publish job runs on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
+  it.skipIf(process.platform === "win32")("show inline code as written instead of running it as a command", () => {
+    // Arrange: the notes put `.dmg` in backticks, which an unquoted heredoc would run.
+    const expectedLine = "rather than the `.dmg` this workflow builds.";
+
+    // Act
+    const { notes, stderr } = releaseNotesOfRun();
+
+    // Assert
+    expect(stderr).toBe("");
+    expect(notes).toContain(expectedLine);
+  });
 });
 
 describe("DownloadInstaller in the masthead", () => {
