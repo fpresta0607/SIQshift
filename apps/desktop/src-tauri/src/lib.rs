@@ -964,6 +964,8 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// old build, and nothing else relaunches it, so the app restarts itself. It
 /// waits until no work session is open, because the restart's flush closes the
 /// open session and doing it mid-session would cut one stretch of work in two.
+/// A build launched during a screen lock reads the lock from its first poll,
+/// so relaunching at a lock records no locked time.
 ///
 /// The new build is launched through LaunchServices (`open -n`) rather than as
 /// a plain child of this process, which is how Tauri's own restart does it.

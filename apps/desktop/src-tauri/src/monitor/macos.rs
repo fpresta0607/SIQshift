@@ -32,7 +32,7 @@ impl Poller {
 
 impl ActivitySource for Poller {
     fn poll(&self) -> ActivitySignal {
-        poll_on_console(session_on_console(), || {
+        poll_unless_locked(read_login_session(), || {
             // Hands off is not always away, exactly as on Windows: video, a
             // call or a presentation holding the display awake, or a live
             // microphone, means the person is still engaged. A probe that
@@ -46,32 +46,75 @@ impl ActivitySource for Poller {
     }
 }
 
-/// A session another user has switched in front of with fast user switching
-/// reads as locked, and nothing else is read: the input clock and the probes
-/// describe the whole machine, so they would record the other user's work. A
-/// session the window server will not describe polls as usual.
-fn poll_on_console(
-    on_console: Option<bool>,
+/// A locked screen, or a session another user has switched in front of with
+/// fast user switching, reads as locked, and nothing else is read: the input
+/// clock and the probes describe the whole machine, so they would record the
+/// other user's work or input at the lock screen. A session the window server
+/// will not describe polls as usual.
+fn poll_unless_locked(
+    session: LoginSession,
     poll: impl FnOnce() -> ActivitySignal,
 ) -> ActivitySignal {
-    match on_console {
-        Some(false) => ActivitySignal::Locked,
-        Some(true) | None => poll(),
+    if session.is_screen_locked || session.on_console == Some(false) {
+        ActivitySignal::Locked
+    } else {
+        poll()
     }
+}
+
+/// What the window server says about this login session.
+#[derive(Debug, PartialEq, Eq)]
+struct LoginSession {
+    /// Whether this session is the one on the screen. `None` when the window
+    /// server will not say.
+    on_console: Option<bool>,
+    is_screen_locked: bool,
 }
 
 /// `kCGSessionOnConsoleKey`, a `CFSTR` macro in CGSession.h rather than an
 /// exported symbol.
 const SESSION_ON_CONSOLE_KEY: &str = "kCGSSessionOnConsoleKey";
 
-/// Whether this login session is the one on the screen. `None` when the
-/// window server will not describe the session.
-fn session_on_console() -> Option<bool> {
-    let session = CGSessionCopyCurrentDictionary()?;
-    // SAFETY: CGSession.h documents the session dictionary's keys as CFStrings.
-    let session = unsafe { session.cast_unchecked::<CFString, CFType>() };
-    let on_console = session.get(&CFString::from_static_str(SESSION_ON_CONSOLE_KEY))?;
-    Some(on_console.downcast_ref::<CFBoolean>()?.as_bool())
+/// Undocumented: the window server puts this entry in the session dictionary
+/// only while the screen is locked. Read on every poll, it lets a process
+/// started during a lock, which never receives the broadcast sent before it
+/// ran, see that lock from its first poll.
+const SCREEN_IS_LOCKED_KEY: &str = "CGSSessionScreenIsLocked";
+
+/// One read of the session dictionary. A session the window server will not
+/// describe reads as on an unknown console and not locked.
+fn read_login_session() -> LoginSession {
+    match CGSessionCopyCurrentDictionary() {
+        // SAFETY: CGSession.h documents the session dictionary's keys as CFStrings.
+        Some(dictionary) => {
+            login_session(unsafe { dictionary.cast_unchecked::<CFString, CFType>() })
+        }
+        None => LoginSession {
+            on_console: None,
+            is_screen_locked: false,
+        },
+    }
+}
+
+/// The lock entry counts only as a true CFBoolean or a non-zero CFNumber;
+/// any other value, or no entry, reads as not locked.
+fn login_session(dictionary: &CFDictionary<CFString, CFType>) -> LoginSession {
+    let on_console = dictionary
+        .get(&CFString::from_static_str(SESSION_ON_CONSOLE_KEY))
+        .and_then(|value| Some(value.downcast_ref::<CFBoolean>()?.as_bool()));
+    let is_screen_locked = dictionary
+        .get(&CFString::from_static_str(SCREEN_IS_LOCKED_KEY))
+        .is_some_and(|value| match value.downcast_ref::<CFBoolean>() {
+            Some(boolean) => boolean.as_bool(),
+            None => value
+                .downcast_ref::<CFNumber>()
+                .and_then(CFNumber::as_i64)
+                .is_some_and(|number| number != 0),
+        });
+    LoginSession {
+        on_console,
+        is_screen_locked,
+    }
 }
 
 /// `kCGAnyInputEventType`: the last keyboard, mouse or trackpad event of any kind.
@@ -401,25 +444,26 @@ mod tests {
     #[test]
     fn session_probe_reads_the_window_server() {
         // Act
-        let on_console = session_on_console();
+        let session = read_login_session();
 
         // Assert
         assert!(
-            on_console.is_some(),
+            session.on_console.is_some(),
             "CGSession did not say whether this session is on the console"
         );
     }
 
     #[test]
-    fn poll_reads_locked_exactly_when_the_real_session_is_off_the_console() {
+    fn poll_reads_locked_exactly_when_the_real_session_is_locked_or_off_the_console() {
         // Arrange
-        let is_off_console = session_on_console() == Some(false);
+        let session = read_login_session();
+        let is_locked = session.is_screen_locked || session.on_console == Some(false);
 
         // Act
         let signal = Poller::new().poll();
 
         // Assert
-        if is_off_console {
+        if is_locked {
             assert_eq!(signal, ActivitySignal::Locked);
         } else {
             assert!(
@@ -433,29 +477,81 @@ mod tests {
     }
 
     #[test]
-    fn a_session_off_the_console_reads_locked_without_polling() {
+    fn a_locked_screen_or_a_session_off_the_console_reads_locked_without_polling() {
         let active = ActivitySignal::Active {
             process_name: Some("Terminal".to_string()),
             idle_seconds: Some(3),
         };
         let cases = [
-            (Some(true), active.clone(), true),
-            (Some(false), ActivitySignal::Locked, false),
-            (None, active.clone(), true),
+            (Some(true), false, active.clone(), true),
+            (Some(false), false, ActivitySignal::Locked, false),
+            (None, false, active.clone(), true),
+            (Some(true), true, ActivitySignal::Locked, false),
+            (Some(false), true, ActivitySignal::Locked, false),
+            (None, true, ActivitySignal::Locked, false),
         ];
-        for (on_console, expected, should_poll) in cases {
+        for (on_console, is_screen_locked, expected, should_poll) in cases {
             // Arrange
+            let session = LoginSession {
+                on_console,
+                is_screen_locked,
+            };
             let has_polled = Cell::new(false);
 
             // Act
-            let signal = poll_on_console(on_console, || {
+            let signal = poll_unless_locked(session, || {
                 has_polled.set(true);
                 active.clone()
             });
 
             // Assert
-            assert_eq!(signal, expected, "{on_console:?}");
-            assert_eq!(has_polled.get(), should_poll, "{on_console:?}");
+            assert_eq!(signal, expected, "{on_console:?} {is_screen_locked}");
+            assert_eq!(
+                has_polled.get(),
+                should_poll,
+                "{on_console:?} {is_screen_locked}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lock_entry_reads_locked_only_as_true_or_a_non_zero_number() {
+        let on_console_key = CFString::from_static_str(SESSION_ON_CONSOLE_KEY);
+        let screen_is_locked_key = CFString::from_static_str(SCREEN_IS_LOCKED_KEY);
+        let on_console: &CFType = CFBoolean::new(true);
+        let one = CFNumber::new_i32(1);
+        let zero = CFNumber::new_i32(0);
+        let text = CFString::from_static_str("1");
+        let cases: [(Option<&CFType>, bool); 6] = [
+            (Some(CFBoolean::new(true)), true),
+            (Some(&one), true),
+            (Some(CFBoolean::new(false)), false),
+            (Some(&zero), false),
+            (Some(&text), false),
+            (None, false),
+        ];
+        for (lock_entry, is_screen_locked) in cases {
+            // Arrange
+            let dictionary = match lock_entry {
+                Some(lock_entry) => CFDictionary::from_slices(
+                    &[&*on_console_key, &*screen_is_locked_key],
+                    &[on_console, lock_entry],
+                ),
+                None => CFDictionary::from_slices(&[&*on_console_key], &[on_console]),
+            };
+
+            // Act
+            let session = login_session(&dictionary);
+
+            // Assert
+            assert_eq!(
+                session,
+                LoginSession {
+                    on_console: Some(true),
+                    is_screen_locked,
+                },
+                "{lock_entry:?}"
+            );
         }
     }
 

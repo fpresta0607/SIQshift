@@ -88,7 +88,8 @@ const EXIT_UPLOAD_FLUSH_SECONDS: u64 = 5;
 const MAX_OPEN_ACTIVE_SECONDS: u64 = 300;
 
 /// What the OS reports. `Locked` and `Suspended` are pushed by the event
-/// thread; `Active` and `Idle` come from the 30-second poll.
+/// thread; `Active` and `Idle` come from the 30-second poll, which on macOS
+/// also reads a locked screen or a session switched away from as `Locked`.
 // Constructors are Windows and macOS only (event thread + poll source); other
 // builds only consume signals in tests.
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
@@ -1776,7 +1777,9 @@ impl Monitor {
     /// None is open while the monitor is stopped, and the tracker closes the
     /// open one when the screen locks, the machine sleeps, or it is left alone
     /// past the away threshold: the moments when stopping the monitor splits
-    /// no stretch of work in two. Only the Mac's update restart waits on it.
+    /// no stretch of work in two. A Mac build started during a lock reads the
+    /// lock from its first poll, so restarting at one records no locked time
+    /// either. Only the Mac's update restart waits on it.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub async fn wait_until_between_sessions(&self, interval: Duration) {
         loop {
