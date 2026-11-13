@@ -2767,6 +2767,9 @@ mod platform {
 #[path = "monitor/macos.rs"]
 mod platform;
 
+#[cfg(target_os = "macos")]
+pub use platform::lock_probe;
+
 #[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
     //! No activity source ships for this OS (Windows and macOS only), so

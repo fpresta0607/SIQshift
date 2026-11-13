@@ -24,6 +24,11 @@ path = "src/bin/siqshift-hook.rs"
 name = "siqshift-browser-host"
 path = "src/bin/siqshift-browser-host.rs"
 
+# Runs on the main thread, whose run loop delivers the lock broadcast.
+[[test]]
+name = "macos_lock_broadcast"
+harness = false
+
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -16,6 +16,9 @@ mod codex_sessions;
 // when a `Started` line is written.
 pub mod git_evidence;
 mod monitor;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use monitor::lock_probe as macos_lock_probe;
 pub mod native_messaging;
 mod permissions;
 mod quota;

@@ -280,6 +280,22 @@ fn spawn_event_thread_for(events: Arc<PlatformEvents>, lock_notification: &'stat
     std::thread::spawn(move || event_loop(events, lock_notification));
 }
 
+/// Starts the event thread on a private lock name and returns whether it has
+/// queued a lock yet. Only `tests/macos_lock_broadcast.rs` calls it: the
+/// broadcast arrives through the main thread's run loop, which the default
+/// test harness never runs.
+#[doc(hidden)]
+pub fn lock_probe(lock_notification: &'static str) -> impl Fn() -> bool {
+    let events = Arc::new(PlatformEvents::new());
+    spawn_event_thread_for(Arc::clone(&events), lock_notification);
+    move || {
+        events
+            .drain()
+            .iter()
+            .any(|(_, signal)| *signal == ActivitySignal::Locked)
+    }
+}
+
 fn event_loop(events: Arc<PlatformEvents>, lock_notification: &'static str) {
     let Some(run_loop) = CFRunLoop::current() else {
         return;
@@ -364,9 +380,6 @@ unsafe extern "C" fn on_power_message(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::time::{Duration, Instant};
-
-    use objc2_core_foundation::CFRunLoopRunResult;
 
     use super::*;
 
@@ -516,42 +529,5 @@ mod tests {
             // Assert
             assert_eq!(signal, expected, "{message_type:#x}");
         }
-    }
-
-    #[test]
-    fn lock_broadcast_reaches_the_event_queue() {
-        // Arrange: a private name, so the test never tells other apps the
-        // screen locked.
-        let name: &'static str = Box::leak(
-            format!("com.siqshift.test.screenIsLocked.{}", std::process::id()).into_boxed_str(),
-        );
-        let events = Arc::new(PlatformEvents::new());
-        spawn_event_thread_for(Arc::clone(&events), name);
-        let center = CFNotificationCenter::distributed_center().expect("distributed center");
-        let notification = CFString::from_str(name);
-
-        // Act: post until the observer has registered and seen one, capped.
-        // The center delivers through the run loop of the thread that first
-        // obtained it, which is this one or the event thread, so this thread
-        // runs its own loop between posts. (In the app that thread is AppKit's
-        // main thread, whose loop always runs.)
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut seen = Vec::new();
-        while seen.is_empty() && Instant::now() < deadline {
-            unsafe { center.post_notification(Some(&notification), std::ptr::null(), None, true) };
-            let pumped = CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 0.2, false);
-            // A loop with no source returns at once; wait the slice anyway.
-            if pumped == CFRunLoopRunResult::Finished {
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            seen = events.drain();
-        }
-
-        // Assert
-        assert!(
-            seen.iter()
-                .any(|(_, signal)| *signal == ActivitySignal::Locked),
-            "{seen:?}"
-        );
     }
 }
