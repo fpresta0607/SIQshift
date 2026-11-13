@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>SIQshift reads only the git history of code repositories kept on your Desktop, to link their commits to your shifts.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>SIQshift reads only the git history of code repositories kept in Documents, to link their commits to your shifts.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>SIQshift reads only the git history of code repositories kept in Downloads, to link their commits to your shifts.</string>
+</dict>
+</plist>

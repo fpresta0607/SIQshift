@@ -476,9 +476,29 @@ a check that cannot answer never rescues, so a broken signal reads idle exactly
 as before, and the checks run only past the idle threshold, never on an
 active-work tick.
 
+On macOS the same task asks the same two questions through APIs that need no
+privacy permission: seconds since the last input
+(`CGEventSourceSecondsSinceLastEventType`) and the frontmost app
+(`NSWorkspace.frontmostApplication`), recorded as its bundle's name, never a window
+title. Screen lock arrives as the `com.apple.screenIsLocked` distributed
+notification and sleep as an IOKit power message (`kIOMessageSystemWillSleep`).
+A session switched away from with fast user switching reads as locked
+(`kCGSessionOnConsoleKey`).
+Two rescue checks stand in for the Windows three: an app holding the display awake
+(`PreventUserIdleDisplaySleep`, which video, calls and presentations take; music
+alone does not) and a microphone in use (CoreAudio's per-process
+`kAudioProcessPropertyIsRunningInput`, so music through a headset does not count;
+macOS 13 and earlier have no per-process list, and there the microphone never
+rescues). The main
+screen lists the two grants that still decide what reaches the server: the login
+item, without which nothing is recorded until the app is opened, and Files and
+Folders access to Documents, Desktop and Downloads, without which commits in
+repositories kept there are not linked to shifts.
+
 There are no input hooks, no injection, and no per-keystroke cost. Everything
-above the `platform` module is pure logic over an injected clock, so the Win32
-calls never run under test.
+above the `platform` module is pure logic over an injected clock, so the OS calls
+never run under the pure tests; the macOS module's own tests run on a Mac in CI
+(`.github/workflows/macos.yml`).
 
 The **phase-3 precision work** (event-driven foreground changes, UWP process
 resolution, clock-gap sleep detection, session-disconnect handling) is designed in
@@ -516,7 +536,7 @@ Not by policy, but because the code never reads it:
   names read from an AI tool's own session log are the one exception, described in *What is
   collected* below.
 - **Injection.** SIQshift never reaches inside or controls another app. The monitor is read-only
-  Win32 queries plus broadcasts delivered to SIQshift's own hidden window.
+  OS queries plus the lock and sleep notifications the OS delivers to SIQshift itself.
 
 What *is* collected: coarse activity segments with timestamps, the foreground process name, when
 an agent session starts, is still working, and finishes, with its working directory and - when that directory is in a git repository -
@@ -765,11 +785,12 @@ them.
   rather than discarded, and earlier hours stay exactly where they are.
 - The desktop app's **What SIQshift is recording** panel states, live, what is switched on and
   what is being collected, and offers the one button that changes it.
-- The browser extension is installed by default through the Chrome/Edge force-install policy, so
-  per-site project attribution works with zero clicks; the settings toggle "Add the SIQshift
-  extension to my browsers automatically" is the opt-out, and switching it off removes the policy
-  entry, which uninstalls the extension. The extension still reports only which of the user's own
-  URL rules matched - the URL, page title, and browsing history never leave the browser.
+- On Windows, the browser extension is installed by default through the Chrome/Edge
+  force-install policy, so per-site project attribution works with zero clicks; the settings
+  toggle "Add the SIQshift extension to my browsers automatically" is the opt-out, and switching
+  it off removes the policy entry, which uninstalls the extension. The extension still reports
+  only which of the user's own URL rules matched - the URL, page title, and browsing history never
+  leave the browser.
 - Reading token counts and model names from an AI tool's own session log is **on by default** and
   has its own opt-out: the settings toggle "Count tokens and models in my AI tools' session logs".
   Switching it off stops the reader; counters already captured are kept, exactly as switching
@@ -803,8 +824,9 @@ Behavior first, plumbing second:
 - **React Testing Library** covers the recording card, the project override, the stats views,
   and every state of the "what's recorded" panel.
 - **Rust tests** are pure: the clock and the activity source are injected as traits, so the
-  Win32 calls never run under test. The session tracker is driven tick by tick, exactly as the
-  poll task drives it.
+  OS calls never run under them. The session tracker is driven tick by tick, exactly as the
+  poll task drives it. The macOS platform module's tests are the exception: they read the real
+  system, and run on a macOS runner for pull requests that touch the desktop app.
 
 `pnpm test` and the Rust suite are the gate; a manual GUI checklist lives at the end of
 [`docs/plans/2026-08-07-phase-2-implementation.md`](docs/plans/2026-08-07-phase-2-implementation.md)
@@ -833,9 +855,11 @@ rejected and why.
 Recording is automatic. Browser attribution is built; the monitor-precision half of phase 3 is
 still designed and not started. What's deliberately not built yet:
 
-- **Recording is Windows-only.** The `ActivitySource` trait admits macOS and Linux
-  implementations, and without one there are no session boundaries to record. Installers are
-  built for Windows and macOS today, but a macOS install records nothing until that lands.
+- **Recording runs on Windows and macOS.** Linux has no `ActivitySource`, and without one
+  there are no session boundaries to record.
+- **On macOS, two Windows conveniences are missing.** The usage meter shows a fallback glyph
+  instead of app icons, and the browser extension is added from its store page by hand:
+  macOS browsers take the force-install policy only from device management.
 - **A foreground process name alone names no project.** It proves the machine was working, not
   what it was working on; only an agent's working directory, a matched browser rule, or a pinned
   project names one, and time with none of those lands in the default project and counts in

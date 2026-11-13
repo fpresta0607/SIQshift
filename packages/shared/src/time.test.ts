@@ -38,4 +38,15 @@ describe("friendlyAppName", () => {
     expect(friendlyAppName("WINWORD.exe")).toBe("Microsoft Word");
     expect(friendlyAppName("app-09.exe")).toBe("App 09");
   });
+
+  it.each([
+    ["chrome.exe", "Google Chrome", "Google Chrome"],
+    ["Code.exe", "Visual Studio Code", "VS Code"],
+    ["Zoom.exe", "zoom.us", "Zoom"],
+    ["brave.exe", "Brave Browser", "Brave"],
+    ["slack.exe", "Slack", "Slack"],
+  ])("shows %s on Windows and %s on macOS as %s", (windowsName, macName, shown) => {
+    expect(friendlyAppName(windowsName)).toBe(shown);
+    expect(friendlyAppName(macName)).toBe(shown);
+  });
 });

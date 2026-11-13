@@ -6,7 +6,9 @@
 //! configured released extension id, the app writes a host manifest beside the
 //! spools (its `allowed_origins` pins the extension id) and points the
 //! browser's HKCU `NativeMessagingHosts` key at it. The keys are SIQshift's
-//! own and need no elevation.
+//! own and need no elevation. macOS has no registry: there the manifest is
+//! written into the browser's own per-user `NativeMessagingHosts` folder,
+//! which is the registration itself.
 //!
 //! The manifest's `path` is the `siqshift-browser-host` binary installed next
 //! to the app executable (both ship as `externalBin` siblings, exactly like
@@ -14,13 +16,14 @@
 //! "beside the running app" rule the hook registration uses.
 //!
 //! The other half is getting the extension onto the machine: for Chrome and
-//! Edge the app maintains an `ExtensionInstallForcelist` policy entry under
-//! HKCU, so the browser force-installs the extension from its store on next
-//! launch. The settings toggle strips the entry again, and removing it is
-//! what uninstalls the extension. Firefox has no store-free force-install
-//! policy, so it keeps the manual store flow. Every policy path gates on the
-//! build-time extension ids, exactly like registration, so an unsigned build
-//! without them touches nothing.
+//! Edge on Windows the app maintains an `ExtensionInstallForcelist` policy
+//! entry under HKCU, so the browser force-installs the extension from its
+//! store on next launch. The settings toggle strips the entry again, and
+//! removing it is what uninstalls the extension. Firefox has no store-free
+//! force-install policy, and macOS browsers honor it only from device
+//! management, so both keep the manual store flow. Every policy path gates on
+//! the build-time extension ids, exactly like registration, so an unsigned
+//! build without them touches nothing.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -74,12 +77,13 @@ impl Browser {
     }
 
     /// Maps the process that launched the host onto a browser, so the
-    /// handshake marker knows which card to flip.
-    #[cfg(any(windows, test))]
+    /// handshake marker knows which card to flip. Covers the Windows image
+    /// names and the macOS executable names.
+    #[cfg(any(windows, target_os = "macos", test))]
     fn from_process_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
-            "chrome.exe" | "chrome" => Some(Browser::Chrome),
-            "msedge.exe" | "msedge" => Some(Browser::Edge),
+            "chrome.exe" | "chrome" | "google chrome" => Some(Browser::Chrome),
+            "msedge.exe" | "msedge" | "microsoft edge" => Some(Browser::Edge),
             "firefox.exe" | "firefox" => Some(Browser::Firefox),
             _ => None,
         }
@@ -127,6 +131,7 @@ impl Browser {
     }
 
     /// Install locations that count as "this browser is on the machine".
+    #[cfg(not(target_os = "macos"))]
     fn install_candidates(self) -> Vec<PathBuf> {
         let program_files = std::env::var_os("ProgramFiles")
             .filter(|value| !value.is_empty())
@@ -162,6 +167,33 @@ impl Browser {
             ),
         }
         candidates
+    }
+
+    /// Install locations that count as "this browser is on the machine": the
+    /// app bundle in /Applications or in the user's own ~/Applications.
+    #[cfg(target_os = "macos")]
+    fn install_candidates(self) -> Vec<PathBuf> {
+        let bundle = match self {
+            Browser::Chrome => "Google Chrome.app",
+            Browser::Edge => "Microsoft Edge.app",
+            Browser::Firefox => "Firefox.app",
+        };
+        let mut candidates = vec![Path::new("/Applications").join(bundle)];
+        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+            candidates.push(PathBuf::from(home).join("Applications").join(bundle));
+        }
+        candidates
+    }
+
+    /// The per-user folder, under ~/Library/Application Support, that the
+    /// browser reads host manifests from on macOS.
+    #[cfg(target_os = "macos")]
+    fn native_messaging_folder(self) -> &'static str {
+        match self {
+            Browser::Chrome => "Google/Chrome/NativeMessagingHosts",
+            Browser::Edge => "Microsoft Edge/NativeMessagingHosts",
+            Browser::Firefox => "Mozilla/NativeMessagingHosts",
+        }
     }
 }
 
@@ -249,8 +281,34 @@ fn host_binary_path() -> ApiResult<PathBuf> {
 
 /// The manifest one browser's registry key points at. Kept beside the spools
 /// so the `SIQSHIFT_SPOOL` override relocates it for tests and support setups.
+#[cfg(not(target_os = "macos"))]
 fn manifest_path(dir: &Path, browser: Browser) -> PathBuf {
     dir.join(format!("browser-host-manifest-{}.json", browser.id()))
+}
+
+/// The manifest's place in the browser's own per-user folder. macOS browsers
+/// have no registry to point through: a manifest named for the host in that
+/// folder is the registration itself.
+#[cfg(target_os = "macos")]
+fn manifest_path(_dir: &Path, browser: Browser) -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    home.join("Library/Application Support")
+        .join(browser.native_messaging_folder())
+        .join(format!("{HOST_NAME}.json"))
+}
+
+/// The manifest the browser will read: the one the registry key names on
+/// Windows, the fixed per-user file on macOS.
+#[cfg(not(target_os = "macos"))]
+fn registered_manifest(_dir: &Path, browser: Browser) -> Option<PathBuf> {
+    registry::read_key(&browser.registry_key_path()).map(PathBuf::from)
+}
+
+#[cfg(target_os = "macos")]
+fn registered_manifest(dir: &Path, browser: Browser) -> Option<PathBuf> {
+    Some(manifest_path(dir, browser))
 }
 
 /// The manifest content: the host path plus the extension pin. Chrome and
@@ -1197,10 +1255,10 @@ fn health_of(dir: &Path, browser: Browser) -> BrowserHealth {
     if extension_id(browser).is_none() {
         return health(browser, HealthState::Disabled);
     }
-    let Some(registered_manifest) = registry::read_key(&browser.registry_key_path()) else {
+    let Some(registered_manifest) = registered_manifest(dir, browser) else {
         return health(browser, HealthState::NeverRegistered);
     };
-    if !Path::new(&registered_manifest).exists() {
+    if !registered_manifest.exists() {
         return health(browser, HealthState::NeverRegistered);
     }
     match host_binary_path() {
@@ -1279,15 +1337,15 @@ fn record_handshake_for(dir: &Path, browser: Browser) {
     let _ = write_if_changed(&marker, &bytes);
 }
 
-/// The browser that launched this process, by walking the process table for
-/// the parent's executable name. Windows-only; elsewhere the marker records
-/// `null` and cards stay at "registered" rather than guessing.
-#[cfg(windows)]
+/// The browser that launched this process, by the parent's executable name.
+/// Windows and macOS only; elsewhere the marker records `null` and cards stay
+/// at "registered" rather than guessing.
+#[cfg(any(windows, target_os = "macos"))]
 fn parent_browser() -> Option<Browser> {
     parent_process_name().and_then(|name| Browser::from_process_name(&name))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn parent_browser() -> Option<Browser> {
     None
 }
@@ -1358,6 +1416,25 @@ fn parent_process_name() -> Option<String> {
         let _ = CloseHandle(snapshot);
         result
     }
+}
+
+/// The parent process's executable name, from its image path.
+#[cfg(target_os = "macos")]
+fn parent_process_name() -> Option<String> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let length = unsafe {
+        libc::proc_pidpath(
+            libc::getppid(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    buffer.truncate(usize::try_from(length).ok()?);
+    let path = String::from_utf8(buffer).ok()?;
+    path.rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 /// Rewrites the rules file the host serves from the cached mappings: rule id
@@ -1919,6 +1996,8 @@ mod registry {
         Ok(())
     }
 
+    // macOS reads the manifest from its fixed per-user folder instead.
+    #[cfg(not(target_os = "macos"))]
     pub fn read_key(_key: &str) -> Option<String> {
         None
     }
@@ -2184,6 +2263,14 @@ mod tests {
         assert_eq!(
             Browser::from_process_name("firefox"),
             Some(Browser::Firefox)
+        );
+        assert_eq!(
+            Browser::from_process_name("Google Chrome"),
+            Some(Browser::Chrome)
+        );
+        assert_eq!(
+            Browser::from_process_name("Microsoft Edge"),
+            Some(Browser::Edge)
         );
         assert_eq!(Browser::from_process_name("code.exe"), None);
     }
