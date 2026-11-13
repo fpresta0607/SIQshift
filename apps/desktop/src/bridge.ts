@@ -331,6 +331,17 @@ export type AgentShiftsGroup = {
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
+  /// Tokens in and out the group's shifts reported; absent when the server
+  /// reads no token usage.
+  tokens?: number | undefined;
+};
+
+/// One agent runtime's share of the groups' shifts.
+export type AgentShiftsRuntime = {
+  source: string;
+  agentSeconds: number;
+  shiftCount: number;
+  tokens?: number | undefined;
 };
 
 /// One agent session running right now, as the live view reads it. The
@@ -362,6 +373,12 @@ export type AgentShifts = {
   /// The token bars, as the server computed them; absent from an API that
   /// predates them, which draws no bars.
   tokenChart?: TokenChart | undefined;
+  /// The groups' shifts by agent runtime; absent from an API that predates
+  /// it, which draws no list of agents.
+  runtimes?: readonly AgentShiftsRuntime[] | undefined;
+  /// The tokens the groups' shifts reported; absent when the server reads no
+  /// token usage.
+  tokenTotals?: { tokensIn: number; tokensOut: number; tokens: number } | undefined;
 };
 
 /// One token bar. `tokens` is the server's own total of in and out; all three
@@ -1015,9 +1032,31 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
         shiftCount: nonnegativeInteger(group.shiftCount ?? 0),
         heldRate: unitRateOrNull(group.heldRate),
+        tokens: nonnegativeIntegerOrNull(group.tokens) ?? undefined,
       };
     }),
     tokenChart: decodeTokenChart(candidate.tokenChart),
+    runtimes: candidate.runtimes === undefined || candidate.runtimes === null
+      ? undefined
+      : (Array.isArray(candidate.runtimes) ? candidate.runtimes as unknown[] : invalidResponse()).map((entry) => {
+        const runtime = record(entry);
+        return {
+          source: string(runtime.source),
+          agentSeconds: nonnegativeInteger(runtime.agentSeconds ?? 0),
+          shiftCount: nonnegativeInteger(runtime.shiftCount ?? 0),
+          tokens: nonnegativeIntegerOrNull(runtime.tokens) ?? undefined,
+        };
+      }),
+    tokenTotals: candidate.tokenTotals === undefined || candidate.tokenTotals === null
+      ? undefined
+      : (() => {
+        const totals = record(candidate.tokenTotals);
+        return {
+          tokensIn: nonnegativeInteger(totals.tokensIn),
+          tokensOut: nonnegativeInteger(totals.tokensOut),
+          tokens: nonnegativeInteger(totals.tokens),
+        };
+      })(),
   };
 };
 

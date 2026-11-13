@@ -18,15 +18,16 @@ import {
 import {
   AGENT_TIME_LIMIT_NOTE,
   HourlyGraph,
-  LiveSessions,
+  MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
   QuietMark,
-  ShiftGroups,
-  TokenBarChart,
+  SegmentedControl,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
+  formatCount,
+  formatRangeDays,
   recordedBasis,
   type ShiftCursor,
   type ShiftPage,
@@ -39,7 +40,14 @@ import { AuthDialog } from "./AuthDialog.js";
 import { LandingPage } from "./LandingPage.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import {
+  AgentsView,
+  TeamViewHead,
+  TeamViewTabs,
+  TimeChartCard,
+  WorkspaceView,
+  workspaceBreakdownRows,
+} from "@siqshift/shared/workspace-view";
 
 type AppProps = { client: Client };
 
@@ -61,6 +69,8 @@ const rangeSentence: Record<Range, string> = {
   "90d": "Last 90 days",
   all: "All time",
 };
+
+const RANGE_OPTIONS = (Object.keys(rangeLabels) as Range[]).map((value) => ({ value, label: rangeLabels[value] }));
 
 const rangeDays: Record<Range, number | null> = { today: 1, "7d": 7, "30d": 30, "90d": 90, all: null };
 
@@ -787,6 +797,10 @@ export const App = ({ client }: AppProps) => {
     }));
   const memberAppRows = memberStats === undefined ? [] : buildAppRows(memberStats.apps, memberStats.totalDurationSeconds);
   const viewedName = member?.name ?? selfName ?? "You";
+  const statsBounds = rangeBounds(range);
+  const rangeSubtitle = statsBounds === undefined
+    ? rangeSentence[range]
+    : `${rangeSentence[range]} · ${formatRangeDays(statsBounds.fromAt, statsBounds.toExclusiveAt)}`;
 
   // Where the dashboard is pointed. The desktop's header names the project its
   // recording files under; a browser records nothing, so the same line names
@@ -1006,203 +1020,181 @@ export const App = ({ client }: AppProps) => {
             aria-labelledby="all-stats-title"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="panel-head">
+            <div className="tv">
               <h2 id="all-stats-title" className="visually-hidden">All stats</h2>
-              <div className="range-toggle" role="group" aria-label="Humans or agents">
-                <button
-                  type="button"
-                  className={boardTab === "humans" ? "is-active" : undefined}
-                  onClick={() => setBoardTab("humans")}
-                >
-                  Humans
-                </button>
-                <button
-                  type="button"
-                  className={boardTab === "agents" ? "is-active" : undefined}
-                  onClick={() => setBoardTab("agents")}
-                >
-                  Agents
-                </button>
-              </div>
-              <div className="range-toggle" role="group" aria-label="Date range">
-                {(Object.keys(rangeLabels) as Range[]).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={range === value ? "is-active" : undefined}
-                    onClick={() => setRange(value)}
-                  >
-                    {rangeLabels[value]}
-                  </button>
-                ))}
-              </div>
-              <button className="ghost modal-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
-            </div>
+              <TeamViewHead title={organization?.name ?? "Your workspace"} subtitle={rangeSubtitle}>
+                <TeamViewTabs value={boardTab} onChange={setBoardTab} />
+                <SegmentedControl label="Date range" options={RANGE_OPTIONS} value={range} onChange={setRange} />
+                <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
+              </TeamViewHead>
 
-            {boardTab === "agents" ? (
-              <ShiftsTab
-                shifts={agentShifts}
-                shiftsFailed={agentShiftsFailed}
-                rangeLabel={rangeSentence[range]}
-                livePeople={liveSessions?.people}
-                liveFailed={liveSessionsFailed}
-                people={agentShifts?.people ?? []}
-                selected={shiftsMember}
-                onSelect={setShiftsMember}
-                selfId={selfId}
-                loadShifts={loadShiftRows}
-              />
-            ) : (
-              <>
-                {/* The home page's example workspace, drawn from the server's
-                    report as given. A row is also the selector: whoever is
-                    picked is whose breakdown the panel underneath shows. */}
-                {boardFailed ? (
-                  <p className="subtle">Could not load hours for this range.</p>
-                ) : workspace === undefined ? (
-                  <p className="subtle" role="status">Loading hours…</p>
-                ) : (
-                  <WorkspaceView
-                    workspaceName={organization?.name ?? "Your workspace"}
-                    logoUrl="/favicon.png"
-                    periodLabel={rangeSentence[range]}
-                    activeSeconds={workspace.activeSeconds}
-                    agentSeconds={workspace.agentSeconds}
-                    hourly={workspace.hourly}
-                    members={boardMembers}
-                    boardTool={(
-                      <label className="board-sort">
-                        <span className="visually-hidden">Sort by</span>
-                        <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
-                          <option value="active">By active time</option>
-                          <option value="agent">By agent time</option>
-                        </select>
-                      </label>
-                    )}
-                    selectedMemberId={viewedId}
-                    onSelectMember={(picked) => setMember({ id: picked.id, name: picked.name })}
-                    boardNotes={[
-                      ...boardHasTime
-                        ? []
-                        : [scope === "all"
-                          ? "No recorded time in this range yet. Install the desktop app and it records on its own."
-                          : "Nothing recorded here in this range. Pick another range, or All projects."],
-                      ...boardMembers.length > 1 ? ["Select a teammate to explore their work."] : [],
-                      AGENT_TIME_LIMIT_NOTE,
-                    ]}
-                    {...workspaceBreakdownRows(workspace)}
-                  />
-                )}
-
-                {viewedId !== undefined && (
-                  <section className="member-stats" aria-labelledby="member-stats-title" data-testid="member-stats">
-                    <div className="member-stats-head">
-                      <h3 id="member-stats-title">{viewedName} · {rangeSentence[range]}</h3>
-                      {viewedId !== selfId && (
-                        <button type="button" className="member-self" onClick={() => setMember(undefined)}>
-                          Show my own
-                        </button>
-                      )}
-                    </div>
-                    {memberFailed ? (
-                      <p className="subtle">Could not load this member's breakdown.</p>
-                    ) : memberStats === undefined ? (
-                      <p className="subtle" role="status">Loading…</p>
-                    ) : (
-                      <>
-                        {/* Recorded is whole sessions; the split below is
-                            presence alone. `recordedBasis` names the gap
-                            between them from measured numbers - the old
-                            wording called all of it agent time on no evidence
-                            at all. */}
-                        <p className="member-total">
-                          <strong>{formatHumanDuration(memberStats.totalDurationSeconds)}</strong> recorded
-                          {(() => {
-                            const basis = recordedBasis(
-                              memberStats.totalDurationSeconds,
-                              memberStats.activeSeconds,
-                              memberStats.concurrency.awaySeconds,
-                            );
-                            return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
-                          })()}
-                        </p>
-                        <MemberBreakdown
-                          activeSeconds={memberStats.activeSeconds}
-                          concurrency={memberStats.concurrency}
-                          self={viewingSelf}
-                        />
-                        <HourlyGraph
-                          buckets={memberStats.hourly ?? []}
-                          personLabel={viewingSelf ? "You" : viewedName}
-                        />
-                        {memberStats.projects.length > 0 && (
-                          <ul className="app-list" data-testid="member-project-list">
-                            {buildProjectRows(memberStats.projects).map((row) => (
-                              <li key={row.projectId} className="app-row">
-                                <span className="app-name">{row.name}</span>
-                                <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        {memberAppRows.length === 0 ? (
-                          <p className="subtle" data-testid="today-empty">No recorded time in this range.</p>
-                        ) : (
-                          <ul className="app-list" data-testid="member-app-list">
-                            {memberAppRows.map((row) => (
-                              <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
-                                <span className="app-name">{row.label}</span>
-                                <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </>
-                    )}
-                  </section>
-                )}
-              </>
-            )}
-
-            {/* History lives out of the main scroll, one page at a time. */}
-            <details
-              className="sessions-card"
-              open={sessionsOpen}
-              onToggle={(event) => setSessionsOpen((event.target as HTMLDetailsElement).open)}
-            >
-              <summary>Recent sessions{sessionTotal > 0 ? ` (${sessionTotal})` : ""}</summary>
-              {sessionRows.length === 0 ? (
-                <p className="subtle">Nothing recorded in this range.</p>
+              {boardTab === "agents" ? (
+                <ShiftsTab
+                  shifts={agentShifts}
+                  shiftsFailed={agentShiftsFailed}
+                  livePeople={liveSessions?.people}
+                  liveFailed={liveSessionsFailed}
+                  people={agentShifts?.people ?? []}
+                  selected={shiftsMember}
+                  onSelect={setShiftsMember}
+                  selfId={selfId}
+                  loadShifts={loadShiftRows}
+                />
               ) : (
-                <>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">Member</th>
-                        <th scope="col">Project</th>
-                        <th scope="col">Started</th>
-                        <th scope="col" className="numeric">Duration</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sessionRows.map((row) => (
-                        <tr key={row.id}>
-                          <td>{row.user.name}</td>
-                          <td>{row.project.name}</td>
-                          <td>{new Date(row.startedAt).toLocaleString()}</td>
-                          <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {sessionRows.length < sessionTotal && (
-                    <button className="ghost" type="button" onClick={() => setSessionPage((page) => page + 1)}>
-                      Show more
-                    </button>
+                <div className="tv-page">
+                  {/* The server's workspace report as given. A board row is
+                      also the selector: whoever is picked is whose card opens
+                      under the board. */}
+                  {boardFailed ? (
+                    <p className="subtle">Could not load hours for this range.</p>
+                  ) : workspace === undefined ? (
+                    <p className="subtle" role="status">Loading hours…</p>
+                  ) : (
+                    <WorkspaceView
+                      activeSeconds={workspace.activeSeconds}
+                      agentSeconds={workspace.agentSeconds}
+                      hourly={workspace.hourly}
+                      members={boardMembers}
+                      boardTool={(
+                        <label className="board-sort">
+                          <span className="visually-hidden">Sort by</span>
+                          <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
+                            <option value="active">By active time</option>
+                            <option value="agent">By agent time</option>
+                          </select>
+                        </label>
+                      )}
+                      selectedMemberId={viewedId}
+                      onSelectMember={(picked) => setMember({ id: picked.id, name: picked.name })}
+                      boardNotes={[
+                        ...boardHasTime
+                          ? []
+                          : [scope === "all"
+                            ? "No recorded time in this range yet. Install the desktop app and it records on its own."
+                            : "Nothing recorded here in this range. Pick another range, or All projects."],
+                        ...boardMembers.length > 1 ? ["Select a teammate to explore their work."] : [],
+                      ]}
+                      {...workspaceBreakdownRows(workspace)}
+                    />
                   )}
-                </>
+
+                  {viewedId !== undefined && (
+                    <section className="tv-card tv-person" aria-labelledby="member-stats-title" data-testid="member-stats">
+                      <div className="tv-card-head tv-person-head">
+                        <h4 id="member-stats-title">
+                          <MemberAvatar id={viewedId} name={viewedName} />
+                          {viewedName}
+                          {viewingSelf && <span className="tv-you">You</span>}
+                        </h4>
+                        {!viewingSelf && (
+                          <button type="button" className="member-self" onClick={() => setMember(undefined)}>
+                            Show my own
+                          </button>
+                        )}
+                      </div>
+                      {memberFailed ? (
+                        <p className="subtle">Could not load this member's breakdown.</p>
+                      ) : memberStats === undefined ? (
+                        <p className="subtle" role="status">Loading…</p>
+                      ) : (
+                        <>
+                          {/* Recorded is whole sessions; the split below is
+                              presence alone. `recordedBasis` names the gap
+                              between them from measured numbers - the old
+                              wording called all of it agent time on no
+                              evidence at all. */}
+                          <p className="tv-person-total">
+                            <strong>{formatHumanDuration(memberStats.totalDurationSeconds)}</strong> recorded
+                            {(() => {
+                              const basis = recordedBasis(
+                                memberStats.totalDurationSeconds,
+                                memberStats.activeSeconds,
+                                memberStats.concurrency.awaySeconds,
+                              );
+                              return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
+                            })()}
+                          </p>
+                          <div>
+                            <MemberBreakdown
+                              activeSeconds={memberStats.activeSeconds}
+                              concurrency={memberStats.concurrency}
+                            />
+                          </div>
+                          <div>
+                            <p className="group-label">Projects, apps and agents</p>
+                            {memberStats.projects.length > 0 && (
+                              <ul className="app-list" data-testid="member-project-list">
+                                {buildProjectRows(memberStats.projects).map((row) => (
+                                  <li key={row.projectId} className="app-row">
+                                    <span className="app-name">{row.name}</span>
+                                    <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {memberAppRows.length === 0 ? (
+                              <p className="subtle" data-testid="today-empty">No recorded time in this range.</p>
+                            ) : (
+                              <ul className="app-list" data-testid="member-app-list">
+                                {memberAppRows.map((row) => (
+                                  <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
+                                    <span className="app-name">{row.label}</span>
+                                    <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <TimeChartCard buckets={memberStats.hourly ?? []} isFramed={false} />
+                        </>
+                      )}
+                    </section>
+                  )}
+                </div>
               )}
-            </details>
+
+              <p className="tv-foot" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
+
+              {/* History lives out of the main scroll, one page at a time. */}
+              <details
+                className="sessions-card"
+                open={sessionsOpen}
+                onToggle={(event) => setSessionsOpen((event.target as HTMLDetailsElement).open)}
+              >
+                <summary>Recent sessions{sessionTotal > 0 ? ` (${sessionTotal})` : ""}</summary>
+                {sessionRows.length === 0 ? (
+                  <p className="subtle">Nothing recorded in this range.</p>
+                ) : (
+                  <>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th scope="col">Member</th>
+                          <th scope="col">Project</th>
+                          <th scope="col">Started</th>
+                          <th scope="col" className="numeric">Duration</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sessionRows.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.user.name}</td>
+                            <td>{row.project.name}</td>
+                            <td>{new Date(row.startedAt).toLocaleString()}</td>
+                            <td className="numeric hours">{formatHumanDuration(row.durationSeconds)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {sessionRows.length < sessionTotal && (
+                      <button className="ghost" type="button" onClick={() => setSessionPage((page) => page + 1)}>
+                        Show more
+                      </button>
+                    )}
+                  </>
+                )}
+              </details>
+            </div>
           </section>
         </div>
       )}
@@ -1301,7 +1293,6 @@ export const App = ({ client }: AppProps) => {
 type ShiftsTabProps = {
   shifts: AgentShiftsResponse | undefined;
   shiftsFailed: boolean;
-  rangeLabel: string;
   /** Who is running an agent right now; undefined until the first read lands. */
   livePeople: LiveAgentSessionsResponse["people"] | undefined;
   liveFailed: boolean;
@@ -1312,20 +1303,20 @@ type ShiftsTabProps = {
   loadShifts: (groupKey: string, after: ShiftCursor | null) => Promise<ShiftPage>;
 };
 
-/// The Agents tab: who ran agents, and what those agents ran. A board of the
-/// people the range recorded opens it, ranked by agent time, and picking one
-/// narrows everything below to their shifts. Then the recorded total, and one
-/// collapsible group per codebase with its shifts inside.
+/// The Agents page: who ran agents, and what those agents ran. On the web a
+/// board of the people the range recorded opens it, ranked by agent time, and
+/// picking one narrows everything below to their shifts. The shared page
+/// follows: the totals, the chart, the repos and the agents.
 ///
 /// A person row is a sum over shifts rather than an agent, so it carries a
 /// shift count beside its hours: one row can be several agents running at
 /// once rather than one worker's long day. It carries no bar, because the
 /// board is deliberately computed before the filter and a pre-filter
 /// numerator over the post-filter total would read past 100%.
-const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, livePeople, liveFailed, people, selected, onSelect, selfId, loadShifts }: ShiftsTabProps) => {
-  // The heading names whoever the numbers below it are actually about, which
+const ShiftsTab = ({ shifts, shiftsFailed, livePeople, liveFailed, people, selected, onSelect, selfId, loadShifts }: ShiftsTabProps) => {
+  // The board names whoever the numbers below it are actually about, which
   // is the request that came back rather than the row last clicked: naming the
-  // new person over the old person's total is the one way this tab can lie.
+  // new person over the old person's total is the one way this page can lie.
   // The board's own highlight is what acknowledges the click immediately.
   const shownId = shifts?.filters.userId;
   const shown = shownId === undefined ? undefined : people.find((person) => person.owner.id === shownId);
@@ -1336,83 +1327,72 @@ const ShiftsTab = ({ shifts, shiftsFailed, rangeLabel, livePeople, liveFailed, p
     ? undefined
     : selected === undefined ? livePeople : livePeople.filter((person) => person.owner.id === selected.id);
   return (
-    <section className="member-stats" aria-labelledby="agent-shifts-title" data-testid="agent-shifts">
-      {/* The head renders before anything can fail, because "All people" is
+    <div className="tv-page" data-testid="agent-shifts">
+      {/* The board renders before anything can fail, because "All people" is
           the only way out of a filter and a filtered request that keeps
-          failing would otherwise strand the tab with no control to clear it. */}
-      <div className="member-stats-head">
-        <h3 id="agent-shifts-title">{shown?.owner.name ?? "Agents"} · {rangeLabel}</h3>
-        {selected !== undefined && (
-          <button type="button" className="member-self" onClick={() => onSelect(undefined)}>
-            All people
-          </button>
-        )}
-      </div>
-      {liveFailed
-        ? <p className="subtle">Could not tell who is running an agent right now.</p>
-        : liveShown === undefined
-          ? <p className="subtle" role="status">Checking what is running…</p>
-          : <LiveSessions people={liveShown} />}
-      {shiftsFailed && <p className="subtle">Could not load the shifts for this range.</p>}
-      {!shiftsFailed && shifts === undefined && <p className="subtle" role="status">Loading…</p>}
-      {!shiftsFailed && shifts !== undefined && (
-        <ShiftsTabBody
-          shifts={shifts}
-          people={people}
-          selected={selected}
-          onSelect={onSelect}
-          selfId={selfId}
+          failing would otherwise strand the page with no control to clear it. */}
+      {(people.length > 1 || selected !== undefined) && (
+        <section className="tv-card" aria-labelledby="agent-people-title">
+          <div className="tv-card-head">
+            <h4 id="agent-people-title">{shown === undefined ? "People" : `People · ${shown.owner.name}`}</h4>
+            {selected === undefined ? (
+              <span className="tv-card-note">Ranked by agent time</span>
+            ) : (
+              <button type="button" className="member-self" onClick={() => onSelect(undefined)}>
+                All people
+              </button>
+            )}
+          </div>
+          {people.length > 1 && (
+            <ol className="board-list" data-testid="agent-people">
+              {people.map((person, index) => (
+                <li key={person.owner.id} className={person.owner.id === selected?.id ? "is-selected" : undefined}>
+                  <button
+                    type="button"
+                    className="board-choice"
+                    aria-pressed={person.owner.id === selected?.id}
+                    onClick={() => onSelect(
+                      person.owner.id === selected?.id ? undefined : { id: person.owner.id, name: person.owner.name },
+                    )}
+                  >
+                    <span className="board-rank">{index + 1}</span>
+                    <span className="board-name">
+                      {person.owner.name}
+                      {person.owner.id === selfId && <span className="tv-you">You</span>}
+                    </span>
+                    <span className="board-times">
+                      <span className="board-hours">{formatHumanDuration(person.agentSeconds)}</span>
+                      <span className="board-agent">
+                        {formatCount(person.shiftCount)} shift{person.shiftCount === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      )}
+      {shiftsFailed ? (
+        <p className="subtle">Could not load the shifts for this range.</p>
+      ) : shifts === undefined ? (
+        <p className="subtle" role="status">Loading…</p>
+      ) : (
+        <AgentsView
+          totalAgentSeconds={shifts.totalAgentSeconds}
+          tokenTotals={shifts.tokenTotals}
+          hourly={shifts.hourly}
+          tokenChart={shifts.tokenChart}
+          groups={shifts.groups}
+          runtimes={shifts.runtimes}
           loadShifts={loadShifts}
+          livePeople={liveShown}
+          isLiveFailed={liveFailed}
         />
       )}
-    </section>
+    </div>
   );
 };
-
-type ShiftsTabBodyProps = Omit<ShiftsTabProps, "shifts" | "shiftsFailed" | "rangeLabel" | "livePeople" | "liveFailed"> & { shifts: AgentShiftsResponse };
-
-/// Everything under the head: the board, the total, the graph, the drawers.
-const ShiftsTabBody = ({ shifts, people, selected, onSelect, selfId, loadShifts }: ShiftsTabBodyProps) => (
-  <>
-    {people.length > 1 && (
-      <ol className="board-list" data-testid="agent-people">
-        {people.map((person, index) => (
-          <li key={person.owner.id} className={person.owner.id === selected?.id ? "is-selected" : undefined}>
-            <button
-              type="button"
-              className="board-choice"
-              aria-pressed={person.owner.id === selected?.id}
-              onClick={() => onSelect(
-                person.owner.id === selected?.id ? undefined : { id: person.owner.id, name: person.owner.name },
-              )}
-            >
-              <span className="board-rank">{index + 1}</span>
-              <span className="board-name">
-                {person.owner.name}
-                {person.owner.id === selfId && <span className="you-tag"> you</span>}
-              </span>
-              <span className="board-times">
-                <span className="board-hours">{formatHumanDuration(person.agentSeconds)}</span>
-                <span className="board-agent">
-                  {person.shiftCount} shift{person.shiftCount === 1 ? "" : "s"}
-                </span>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ol>
-    )}
-    <p className="member-total"><strong>{formatHumanDuration(shifts.totalAgentSeconds)}</strong> recorded</p>
-    <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
-    <HourlyGraph buckets={shifts.hourly} />
-    {shifts.tokenChart !== undefined && <TokenBarChart chart={shifts.tokenChart} />}
-    {shifts.groups.length === 0 ? (
-      <p className="subtle">No agent worked in this range.</p>
-    ) : (
-      <ShiftGroups groups={shifts.groups} totalAgentSeconds={shifts.totalAgentSeconds} loadShifts={loadShifts} />
-    )}
-  </>
-);
 
 type ProjectsGroupProps = {
   client: Client;

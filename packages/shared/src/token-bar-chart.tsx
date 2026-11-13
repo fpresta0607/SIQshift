@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
 import { ChartTooltip } from "./chart-tooltip.js";
+import { formatTokens } from "./format.js";
 
 /// One bar as the server sends it. `tokens` is the server's own total of input
 /// and output: the chart draws it as given and never adds the two halves up.
@@ -26,15 +27,6 @@ export type ChartTokens = {
 };
 
 const DAY_SECONDS = 86_400;
-
-/// A compact count for token axes and readouts: 950, 12k, 3.4M. Token counts
-/// dwarf durations, so the chart formats them on their own scale.
-const formatTokenCount = (value: number): string => {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  return String(value);
-};
 
 /// The smallest 1/2/2.5/5 multiple of a power of ten at or above `raw`.
 const niceStep = (raw: number): number => {
@@ -115,7 +107,7 @@ export const TokenBarChart = ({ chart }: { chart: ChartTokens }) => {
 
   const active = readout !== null && readout < count ? readout : null;
   const figure = (value: number | null | undefined): string =>
-    value === null || value === undefined ? "-" : formatTokenCount(value);
+    value === null || value === undefined ? "-" : formatTokens(value);
   const summary = (index: number): string => {
     const bucket = shown[index];
     return bucket === undefined || bucket.tokens === null
@@ -146,7 +138,6 @@ export const TokenBarChart = ({ chart }: { chart: ChartTokens }) => {
   return (
     <div className="graph token-chart" data-testid="token-chart">
       <div className="token-chart-head">
-        <p className="token-chart-title">Tokens burned, in and out</p>
         <select
           className="token-chart-picker"
           aria-label="Project"
@@ -156,7 +147,7 @@ export const TokenBarChart = ({ chart }: { chart: ChartTokens }) => {
           <option value="">All projects</option>
           {chart.projects.map((entry) => (
             <option key={entry.project.id} value={entry.project.id} disabled={entry.tokens === 0}>
-              {entry.project.name} · {entry.tokens === 0 ? "no tokens" : formatTokenCount(entry.tokens)}
+              {entry.project.name} · {entry.tokens === 0 ? "no tokens" : formatTokens(entry.tokens)}
             </option>
           ))}
         </select>
@@ -188,7 +179,7 @@ export const TokenBarChart = ({ chart }: { chart: ChartTokens }) => {
                 stroke={third === 0 ? "var(--chart-grid)" : "var(--chart-grid-soft)"}
               />
               <text x={margin.left - 6} y={y(value) + 3} fill="var(--chart-axis)" fontSize="9" textAnchor="end">
-                {formatTokenCount(value)}
+                {formatTokens(value)}
               </text>
             </g>
           );

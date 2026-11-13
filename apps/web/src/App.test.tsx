@@ -258,6 +258,10 @@ async function openAllStats(person: Person) {
 const agentsTab = (dialog: ReturnType<typeof within>) =>
   within(dialog.getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
 
+/// One figure on the totals row that opens each team view page.
+const teamTotal = (view: ReturnType<typeof within>, label: string) =>
+  within(view.getByLabelText("Totals")).getByText(label).nextElementSibling?.querySelector("b");
+
 /// Projects, the team's invite code and signing out live in the settings
 /// panel, the way the desktop app files them.
 async function openSettings(person: Person) {
@@ -332,26 +336,27 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("SIQstack")).toBeInTheDocument();
-    expect(view.getByText("Last 30 days")).toBeInTheDocument();
-    expect(view.getByText("2 people across 2 projects")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 14m");
-    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("3h 00m");
-    const graph = view.getByTestId("hourly-graph");
+    expect(stats.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(stats.getByText(/^Last 30 days · /)).toBeInTheDocument();
+    expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 14m");
+    expect(teamTotal(stats, "Agent time")).toHaveTextContent("3h 00m");
+    expect(teamTotal(stats, "People")).toHaveTextContent(/^2$/);
+    expect(teamTotal(stats, "Projects")).toHaveTextContent(/^2$/);
+    const graph = within(stats.getByRole("region", { name: "Over time" })).getByTestId("hourly-graph");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
-    const [, first, second] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    const [, first, second] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamGeneral2h 14m3h 00m$/);
-    expect(second).toHaveTextContent(/^2AAlex youClient1h 00m0s$/);
-    const breakdown = within(view.getByRole("region", { name: "Workspace breakdown" }));
+    expect(second).toHaveTextContent(/^2AAlexYouClient1h 00m0s$/);
+    const breakdown = within(stats.getByRole("region", { name: "Projects or agents" }));
     expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
     await person.click(within(breakdown.getByRole("group", { name: "Projects or agents" })).getByRole("button", { name: "Agents" }));
-    expect(breakdown.getByText("Runtime by agent")).toBeInTheDocument();
+    expect(breakdown.getByText("Agent time")).toBeInTheDocument();
     expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
-    expect(view.getByText("Local agents, shared visibility").parentElement).toHaveTextContent("Claude Code");
+    expect(stats.queryByText("Local agents, shared visibility")).toBeNull();
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
   });
 
@@ -375,11 +380,11 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 20m");
-    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("5h 33m");
+    expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 20m");
+    expect(teamTotal(stats, "Agent time")).toHaveTextContent("5h 33m");
   });
 
   it("shows a workspace of one as a single row, the viewer's own", async () => {
@@ -388,18 +393,18 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("1 person across 1 project")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("1h 00m");
-    const [, only, ...rest] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    expect(teamTotal(stats, "People")).toHaveTextContent(/^1$/);
+    expect(teamTotal(stats, "Projects")).toHaveTextContent(/^1$/);
+    expect(teamTotal(stats, "Active time")).toHaveTextContent("1h 00m");
+    const [, only, ...rest] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(rest).toEqual([]);
-    expect(only).toHaveTextContent(/^1AAlex youClient1h 00m0s$/);
+    expect(only).toHaveTextContent(/^1AAlexYouClient1h 00m0s$/);
     expect(within(only!).getByRole("button", { name: "Show Alex's work" })).toHaveAttribute("aria-pressed", "true");
     // Nobody else to pick, so the board does not offer to.
-    expect(view.queryByText("Select a teammate to explore their work.")).toBeNull();
-    expect(view.queryByText("Local agents, shared visibility")).toBeNull();
+    expect(stats.queryByText("Select a teammate to explore their work.")).toBeNull();
   });
 
   it("shows the invite code and copies it on request", async () => {
@@ -578,7 +583,7 @@ describe("dashboard", () => {
 
     const board = await openAllStats(person);
     await person.click(await board.findByRole("button", { name: /Sam/ }));
-    await screen.findByRole("region", { name: /Sam · Last 30 days/ });
+    await screen.findByRole("region", { name: /^Sam/ });
     await person.click(screen.getByRole("button", { name: "Close all stats" }));
 
     const settings = await openSettings(person);
@@ -589,7 +594,7 @@ describe("dashboard", () => {
     // Sam belongs to the workspace just left, so the id must not go on being
     // sent as a filter the new workspace's API refuses.
     const reopened = await openAllStats(person);
-    expect(await reopened.findByRole("region", { name: /Alex · Last 30 days/ })).toBeInTheDocument();
+    expect(await reopened.findByRole("region", { name: /^Alex/ })).toBeInTheDocument();
     const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
     expect(query.get("userId")).toBe("u2");
   });
@@ -945,22 +950,22 @@ describe("dashboard", () => {
     });
     const person = await signIn(clientFor({ workspace }));
     const stats = await openAllStats(person);
-    await stats.findByRole("region", { name: "Your team’s work, together." });
+    await stats.findByLabelText("Totals");
 
     // Act
     await person.click(stats.getByRole("button", { name: "All time" }));
 
     // Assert: the 30 days already drawn do not stand in for all time.
-    expect(stats.queryByRole("region", { name: "Your team’s work, together." })).not.toBeInTheDocument();
+    expect(stats.queryByLabelText("Totals")).not.toBeInTheDocument();
 
     // Act
     await person.click(stats.getByRole("button", { name: "7d" }));
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
     await act(async () => answerAllTime?.(allTime));
 
     // Assert
-    expect(view.getByText("Last 7 days")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent(/^30m$/);
+    expect(stats.getByText(/^Last 7 days · /)).toBeInTheDocument();
+    expect(teamTotal(stats, "Active time")).toHaveTextContent(/^30m$/);
   });
 
   it("uses local calendar midnights across a daylight-saving boundary", () => {
@@ -1157,7 +1162,7 @@ describe("dashboard", () => {
     const board = await openAllStats(person);
     // You are the highlighted row from the start.
     expect(await board.findByRole("button", { name: /Alex/ })).toHaveAttribute("aria-pressed", "true");
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     // The breakdown leads with active time and splits it into human work and
     // the agent-assisted buckets that actually have time in them.
     const breakdown = stats.getByTestId("breakdown");
@@ -1182,18 +1187,21 @@ describe("dashboard", () => {
     expect(stats.queryByTestId("unattributed-foot")).not.toBeInTheDocument();
   });
 
-  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+  it("states the agent time limit word for word under both the Humans and the Agents page", async () => {
+    // Arrange
     const person = await signIn(clientFor());
-
     const stats = await openAllStats(person);
-    const board = await stats.findByRole("region", { name: "Team leaderboard" });
-    const breakdown = await stats.findByTestId("breakdown");
-    expect(within(board).getByText("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.")).toBeInTheDocument();
-    expect(within(breakdown).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    await stats.findByLabelText("Totals");
 
+    // Act
+    const onHumans = stats.getByTestId("agent-time-limit").textContent;
     await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    expect(await panel.findByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    await screen.findByTestId("agent-shifts");
+
+    // Assert
+    const note = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
+    expect(onHumans).toBe(note);
+    expect(stats.getByTestId("agent-time-limit")).toHaveTextContent(note);
   });
 
   it("names the project a session was filed under in the history, also when nothing named one", async () => {
@@ -1233,7 +1241,7 @@ describe("dashboard", () => {
 
     expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     expect(stats.getByTestId("breakdown")).toHaveTextContent("Active time");
     expect(stats.queryByTestId("hourly-graph")).not.toBeInTheDocument();
   });
@@ -1251,7 +1259,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     // Pin the series by their hooks, never by a path count: gradient areas
     // are paths too. The chart must emit <path d="M… L…"> elements, not
     // polylines fed a path string: `points` cannot parse path commands, so a
@@ -1293,7 +1301,7 @@ describe("dashboard", () => {
 
     // Act
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     const graph = stats.getByTestId("hourly-graph");
 
     // Assert
@@ -1312,7 +1320,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     const breakdown = stats.getByTestId("breakdown");
     expect(breakdown).toHaveTextContent("With 3+ agents");
     expect(breakdown).toHaveTextContent("1h 30m");
@@ -1348,7 +1356,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
 
     // No agent claim on a window whose measured agent time is zero.
     const total = stats.getByText(/recorded/).closest("p");
@@ -1379,7 +1387,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     const breakdown = stats.getByTestId("breakdown");
     expect(breakdown).toHaveTextContent("Human work");
     expect(breakdown).not.toHaveTextContent("Total agent time");
@@ -1393,7 +1401,7 @@ describe("dashboard", () => {
     const board = await openAllStats(person);
     await person.click(await board.findByRole("button", { name: /Sam/ }));
 
-    expect(await screen.findByRole("region", { name: /Sam · Last 30 days/ })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: /^Sam/ })).toBeInTheDocument();
     const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
     expect(query.get("userId")).toBe("u1");
     expect(query.get("fromAt")).not.toBeNull();
@@ -1404,10 +1412,10 @@ describe("dashboard", () => {
 
     const board = await openAllStats(person);
     await person.click(await board.findByRole("button", { name: /Sam/ }));
-    await screen.findByRole("region", { name: /Sam · Last 30 days/ });
+    await screen.findByRole("region", { name: /^Sam/ });
 
     await person.click(screen.getByRole("button", { name: "Show my own" }));
-    expect(await screen.findByRole("region", { name: /Alex · Last 30 days/ })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: /^Alex/ })).toBeInTheDocument();
   });
 
   it("lets a stranded account join a teammate's workspace and reloads", async () => {
@@ -1820,10 +1828,10 @@ describe("the agents tab", () => {
     await person.click(agentsTab(stats));
 
     const panel = within(await screen.findByTestId("agent-shifts"));
-    // The header mirrors a member's breakdown: the range and the recorded
-    // total, then the codebases, heaviest first - no leaderboard to filter.
-    expect(panel.getByRole("heading", { level: 3, name: /Agents ·/ })).toBeInTheDocument();
-    expect(panel.getByText("2h 00m")).toBeInTheDocument();
+    // The totals row leads with the recorded agent time, then the codebases,
+    // heaviest first.
+    await panel.findByLabelText("Totals");
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent(/^2h 00m$/);
     const groups = panel.getAllByTestId("shift-group");
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("siqshift");
@@ -1865,7 +1873,7 @@ describe("the agents tab", () => {
     consoleError.mockRestore();
   });
 
-  it("emits the meter row the layout suite styles, four cells to a row", async () => {
+  it("emits the repo row the layout suite styles, six cells to a row", async () => {
     // tests/browser/harness.ts hand-writes this markup to measure it in a real
     // browser, because jsdom has no layout engine. That only holds while the
     // app really does emit these classes, so this is the pin between the two.
@@ -1874,18 +1882,18 @@ describe("the agents tab", () => {
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
-    const heads = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group")
+    const heads = (await within(await screen.findByTestId("agent-shifts")).findAllByTestId("shift-group"))
       .map((group) => group.querySelector(".shift-group-head"));
 
     for (const head of heads) {
       expect(head).not.toBeNull();
-      expect(head!).toHaveClass("meter-row");
-      expect(head!.children).toHaveLength(4);
+      expect(head!).toHaveClass("tv-row");
+      expect(head!.children).toHaveLength(6);
       // The drawer's own contract, and the reason the count above must stay
-      // four: the head is the `summary` and it is the `details`' first child.
+      // six: the head is the `summary` and it is the `details`' first child.
       // jsdom only treats the first `summary` as the toggle, so a wrapper
       // would silently disable opening in tests while still working in
-      // Chromium, and a fifth cell would wrap the four-track grid.
+      // Chromium, and a seventh cell would wrap the six-track grid.
       expect(head!.tagName).toBe("SUMMARY");
       expect(head!.parentElement!.tagName).toBe("DETAILS");
       expect(head!.parentElement!.firstElementChild).toBe(head);
@@ -2024,9 +2032,10 @@ describe("the agents tab", () => {
     await waitFor(() => expect(agentShifts.mock.calls.length).toBeGreaterThan(before));
     const query = new URLSearchParams((agentShifts.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
     expect(query.get("userId")).toBe("u3");
-    // The heading names who the tab is narrowed to, and the board that picked
-    // them is still there to unpick them with.
-    expect(await screen.findByRole("heading", { level: 3, name: /^Sam ·/ })).toBeInTheDocument();
+    // The heading names who the tab is narrowed to, over that person's own
+    // total, and the board that picked them is still there to unpick them with.
+    expect(await screen.findByRole("heading", { level: 4, name: "People · Sam" })).toBeInTheDocument();
+    expect(teamTotal(stats, "Agent time")).toHaveTextContent(/^30m$/);
     expect(within(screen.getByTestId("agent-people")).getAllByRole("button")).toHaveLength(2);
 
     await person.click(screen.getByRole("button", { name: "All people" }));
@@ -2035,7 +2044,7 @@ describe("the agents tab", () => {
       const latest = new URLSearchParams((agentShifts.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
       expect(latest.has("userId")).toBe(false);
     });
-    expect(await screen.findByRole("heading", { level: 3, name: /^Agents ·/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 4, name: "People" })).toBeInTheDocument();
   });
 
   it("shows no board when one person's agents did all the work", async () => {
@@ -2072,28 +2081,59 @@ describe("the agents tab", () => {
     expect(group).toHaveAttribute("open");
   });
 
-  it("gives each codebase a Today row: a mark, the name, its share, its duration", async () => {
+  it("gives each codebase a board row: its rank, a mark, the name, its tokens and its agent time", async () => {
+    // Arrange
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });
-
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const groups = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group");
 
-    // The head reads in the shared meter row, so a column of codebases scans
-    // the way Today's breakdown does. The bar is this codebase's share of the
-    // recorded agent time: 5,400s and 1,800s of 7,200s.
-    const shares = groups.map((group) => {
-      // `head?.querySelector(...)` would be `undefined` - and pass - when the
-      // head itself is missing, so the head is asserted before it is read.
-      const head = group.querySelector(".meter-row.shift-group-head");
-      expect(head).not.toBeNull();
-      expect(head!.querySelector(".project-dot")).not.toBeNull();
-      expect(head!.querySelector(".meter-name")).not.toBeNull();
-      expect(head!.querySelector(".meter-duration")).not.toBeNull();
-      return head!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share");
-    });
-    expect(shares).toEqual(["75%", "25%"]);
+    // Act
+    await person.click(agentsTab(stats));
+    const groups = await within(await screen.findByTestId("agent-shifts")).findAllByTestId("shift-group");
+
+    // Assert: the head reads on the People board's columns, so the two pages
+    // scan alike. An API that sends no tokens gets a dash, never a zero.
+    const cells = groups.map((group) => [...group.querySelector("summary.shift-group-head")?.children ?? []].map((cell) => cell.textContent));
+    expect(cells).toEqual([
+      ["1", "S", "siqshift50% held · 2 shifts", "-", "1h 30m", ""],
+      ["2", "?", "Run worktree, codebase not identified1 shift", "-", "30m", ""],
+    ]);
+  });
+
+  it("ranks the codebases and the agents by tokens when the server sends them, in short form", async () => {
+    // Arrange: the label-less group burned the most, and still comes last.
+    const ledger = { groupKey: "ledger", repo: "ledger", agentSeconds: 600, shiftCount: 1, heldRate: null, tokens: 900_000 };
+    const person = await signIn(clientFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShiftsResponse,
+        tokenTotals: { tokensIn: 900_000, tokensOut: 300_000, tokens: 1_200_000 },
+        groups: [
+          { ...agentShiftsResponse.groups[0]!, tokens: 50_000 },
+          { ...agentShiftsResponse.groups[1]!, tokens: 2_000_000 },
+          ledger,
+        ],
+        runtimes: [
+          { source: "claude_code", agentSeconds: 5_400, shiftCount: 2, tokens: 300_000 },
+          { source: "pi", agentSeconds: 1_800, shiftCount: 1, tokens: 950 },
+        ],
+      }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const stats = await openAllStats(person);
+
+    // Act
+    await person.click(agentsTab(stats));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    await panel.findByLabelText("Totals");
+
+    // Assert
+    expect(teamTotal(panel, "Tokens")).toHaveTextContent(/^1.2M$/);
+    expect(within(panel.getByLabelText("Totals")).getByText("900k in · 300k out")).toBeInTheDocument();
+    const repos = panel.getAllByTestId("shift-group").map((group) => group.querySelector(".tv-name > span")?.textContent);
+    expect(repos).toEqual(["ledger", "siqshift", "Run worktree, codebase not identified"]);
+    expect(panel.getAllByTestId("shift-group")[0]!.querySelector(".tv-num")).toHaveAttribute("title", "900,000 tokens");
+    const agents = within(panel.getByRole("region", { name: "Agents" })).getAllByRole("listitem");
+    expect(agents.map((row) => row.textContent)).toEqual(["Claude Code2 shifts300k1h 30m", "Pi1 shift95030m"]);
   });
 
   it("shows no hourly graph on all time, keeping the groups and total", async () => {

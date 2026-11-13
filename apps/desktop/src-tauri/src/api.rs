@@ -252,6 +252,36 @@ pub struct AgentShifts {
     /// that predates them, which leaves the tab without bars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_chart: Option<TokenChart>,
+    /// The groups' shifts rolled up by agent runtime. Absent from an API that
+    /// predates it, which leaves the tab without its list of agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtimes: Option<Vec<AgentShiftsRuntime>>,
+    /// The tokens the groups' shifts reported, as the server summed them.
+    /// Absent when the server reads no token usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_totals: Option<AgentShiftsTokenTotals>,
+}
+
+/// One agent runtime's share of the groups' shifts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsRuntime {
+    pub source: AgentSource,
+    #[serde(default)]
+    pub agent_seconds: u64,
+    #[serde(default)]
+    pub shift_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
+/// The tokens the range's shifts reported, in and out, as the server summed them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsTokenTotals {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub tokens: u64,
 }
 
 /// The Agents tab's token bars: the period's buckets, and each project's bars
@@ -312,6 +342,10 @@ pub struct AgentShiftsGroup {
     /// merged / decided; `None` while nothing has been decided yet.
     #[serde(default)]
     pub held_rate: Option<f64>,
+    /// Tokens in and out the group's shifts reported; absent when the server
+    /// reads no token usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
 }
 
 /// One shift: a terminal session, with the facts it attested itself.
@@ -1572,6 +1606,36 @@ mod tests {
             echoed["tokenChart"]["projects"][0]["buckets"][0]["tokens"],
             serde_json::Value::Null
         );
+    }
+
+    /// The tokens per repo, per runtime and in total reach the webview as the
+    /// server sent them, and an API that sends none leaves all three absent
+    /// rather than zero.
+    #[test]
+    fn carries_the_servers_shift_tokens_through_and_leaves_absence_absent() {
+        let shifts: AgentShifts = serde_json::from_str(
+            r#"{
+                "groups": [{"groupKey": "siqshift", "repo": "siqshift", "agentSeconds": 60, "shiftCount": 1, "tokens": 1200}],
+                "runtimes": [{"source": "claude_code", "agentSeconds": 60, "shiftCount": 1, "tokens": 1200}],
+                "tokenTotals": {"tokensIn": 1000, "tokensOut": 200, "tokens": 1200}
+            }"#,
+        )
+        .expect("shift tokens decode");
+        let echoed = serde_json::to_value(&shifts).expect("serializes");
+        assert_eq!(echoed["groups"][0]["tokens"], 1_200);
+        assert_eq!(echoed["runtimes"][0]["source"], "claude_code");
+        assert_eq!(echoed["runtimes"][0]["tokens"], 1_200);
+        assert_eq!(echoed["tokenTotals"]["tokensIn"], 1_000);
+        assert_eq!(echoed["tokenTotals"]["tokens"], 1_200);
+
+        let older: AgentShifts = serde_json::from_str(
+            r#"{"groups": [{"groupKey": "siqshift", "repo": "siqshift"}]}"#,
+        )
+        .expect("an older shape decodes");
+        let wire = serde_json::to_value(&older).expect("serializes");
+        assert!(wire["groups"][0].get("tokens").is_none());
+        assert!(wire.get("runtimes").is_none());
+        assert!(wire.get("tokenTotals").is_none());
     }
 
     /// One group's page decodes the same tolerant way, and an endpoint that is

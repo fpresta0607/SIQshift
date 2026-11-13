@@ -316,6 +316,37 @@ describe("defaultBridge", () => {
     expect(caused.groups[0]!.nullCause).toBe("unidentified-run-directory");
   });
 
+  it("decodes the tokens per repo, per runtime and in total, and their absence as none", async () => {
+    // Arrange
+    const runtimes = [{ source: "claude_code", agentSeconds: 60, shiftCount: 1, tokens: 1_200 }];
+    const tokenTotals = { tokensIn: 1_000, tokensOut: 200, tokens: 1_200 };
+    invoke
+      .mockResolvedValueOnce({ groups: [{ groupKey: "siqshift", repo: "siqshift", tokens: 1_200 }], runtimes, tokenTotals })
+      .mockResolvedValueOnce({ groups: [{ groupKey: "siqshift", repo: "siqshift" }] });
+
+    // Act
+    const sent = await defaultBridge.agentShifts();
+    const older = await defaultBridge.agentShifts();
+
+    // Assert
+    expect(sent.groups[0]!.tokens).toBe(1_200);
+    expect(sent.runtimes).toEqual(runtimes);
+    expect(sent.tokenTotals).toEqual(tokenTotals);
+    expect(older.groups[0]!.tokens).toBeUndefined();
+    expect(older.runtimes).toBeUndefined();
+    expect(older.tokenTotals).toBeUndefined();
+  });
+
+  it.each([
+    ["a negative repo total", { groups: [{ repo: "x", tokens: -1 }] }],
+    ["a runtime list that is not a list", { groups: [], runtimes: {} }],
+    ["a fractional runtime total", { groups: [], runtimes: [{ source: "claude_code", tokens: 1.5 }] }],
+    ["totals missing a half", { groups: [], tokenTotals: { tokensIn: 1, tokens: 1 } }],
+  ])("rejects %s rather than rendering it", async (_label, response) => {
+    invoke.mockResolvedValueOnce(response);
+    await expect(defaultBridge.agentShifts()).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("rejects a held rate outside [0, 1] rather than rendering a nonsense percent", async () => {
     invoke.mockResolvedValueOnce({ groups: [{ repo: "x", heldRate: 1.5 }] });
     await expect(defaultBridge.agentShifts()).rejects.toMatchObject({ kind: "unknown" });

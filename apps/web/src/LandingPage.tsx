@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import { TeamViewHead, WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
 import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
@@ -64,24 +64,29 @@ function ProductPreview() {
   });
   return (
     <figure className="landing-preview" aria-labelledby="preview-caption">
-      <WorkspaceView
-        workspaceName="Atlas Studio"
-        logoUrl="/favicon.png"
-        badge="Example data"
-        periodLabel="Today"
-        focus={selectedMember && { name: selectedMember.name, project: selectedMember.project, onClear: () => setMemberId(null) }}
-        activeSeconds={activeSeconds}
-        agentSeconds={agentSeconds}
-        hourly={exampleDay}
-        members={boardMembers}
-        boardTool={<span>By active hours</span>}
-        selectedMemberId={memberId ?? undefined}
-        onSelectMember={member => setMemberId(member.id === memberId ? null : member.id)}
-        boardNotes={["Select a teammate to explore their work."]}
-        projectRows={projectRows}
-        agentRows={agentRows}
-        projectIcons={projectIcons}
-      />
+      <div className="tv tv-frame">
+        <TeamViewHead
+          title={selectedMember?.name ?? "Atlas Studio"}
+          subtitle={selectedMember === undefined ? "Today" : `${selectedMember.project} · Today`}
+        >
+          {selectedMember === undefined
+            ? <span className="tv-badge">Example data</span>
+            : <button type="button" className="ghost" onClick={() => setMemberId(null)}>All members</button>}
+        </TeamViewHead>
+        <WorkspaceView
+          activeSeconds={activeSeconds}
+          agentSeconds={agentSeconds}
+          hourly={exampleDay}
+          members={boardMembers}
+          boardTool={<span className="tv-card-note">Ranked by active time</span>}
+          selectedMemberId={memberId ?? undefined}
+          onSelectMember={member => setMemberId(member.id === memberId ? null : member.id)}
+          boardNotes={["Select a teammate to explore their work."]}
+          projectRows={projectRows}
+          agentRows={agentRows}
+          projectIcons={projectIcons}
+        />
+      </div>
       <figcaption id="preview-caption">An example team workspace. Active hours and agent runtime are measured separately, including agents running in parallel.</figcaption>
     </figure>
   );

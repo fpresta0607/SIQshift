@@ -91,7 +91,7 @@
   .landing *, .auth-dialog { scroll-behavior: auto; transition: none; animation: none; }
 }
 
-/* Product identity. The example workspace is the shared `.workspace` view. */
+/* Product identity. The example workspace is the shared `.tv` team view. */
 .landing-header { width: calc(100% - 64px); margin: 24px auto 0; padding: 18px 26px; border: 1px solid var(--glass-border-hover); border-radius: 22px; background: color-mix(in srgb, var(--body-bg) 78%, transparent); box-shadow: var(--glass-shadow); backdrop-filter: blur(18px); }
 .landing-brand-lockup { display: flex; align-items: center; gap: 24px; }
 .landing-product-brand { display: flex; align-items: center; gap: 12px; font-size: 2rem; font-weight: 750; letter-spacing: -.05em; }

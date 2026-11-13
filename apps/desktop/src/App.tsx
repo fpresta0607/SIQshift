@@ -33,15 +33,15 @@ import {
 import {
   AGENT_TIME_LIMIT_NOTE,
   HourlyGraph,
-  LiveSessions,
+  MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
   QuietMark,
-  ShiftGroups,
-  TokenBarChart,
+  SegmentedControl,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
+  formatRangeDays,
   recordedBasis,
   type ShiftCursor,
   type ShiftPage,
@@ -50,7 +50,14 @@ import { PermissionsCard } from "./PermissionsCard.js";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import {
+  AgentsView,
+  TeamViewHead,
+  TeamViewTabs,
+  TimeChartCard,
+  WorkspaceView,
+  workspaceBreakdownRows,
+} from "@siqshift/shared/workspace-view";
 
 type AppProps = {
   bridge?: TimerBridge;
@@ -140,6 +147,8 @@ const RANGE_LABEL: Record<StatsRange, string> = {
   week: "This week",
   all: "All time",
 };
+
+const RANGE_OPTIONS = (["today", "week", "all"] as const).map((range) => ({ value: range, label: RANGE_LABEL[range] }));
 
 /// The range as instants on this computer's clock: "today" runs from local
 /// midnight to the next one, "week" from local midnight on Monday. Calendar
@@ -1341,6 +1350,10 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const boardProjectRows = showingLiveDay
     ? projectRows.map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }))
     : buildProjectRows(boardStats?.projects ?? []).map((row) => ({ id: row.projectId, name: row.name, durationSeconds: row.durationSeconds }));
+  const boardBounds = rangeBounds(boardRange);
+  const boardSubtitle = boardBounds === undefined
+    ? RANGE_LABEL[boardRange]
+    : `${RANGE_LABEL[boardRange]} · ${formatRangeDays(boardBounds.fromAt, boardBounds.toExclusiveAt)}`;
 
   return (
     <main className="app-shell">
@@ -1551,187 +1564,154 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           aria-labelledby="today-title"
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="panel-head">
+          <div className="tv">
             <h2 id="today-title" className="visually-hidden">All stats</h2>
-            <div className="range-toggle" role="group" aria-label="Humans or agents">
-              <button
-                type="button"
-                className={overlayTab === "humans" ? "is-active" : undefined}
-                onClick={() => setOverlayTab("humans")}
-              >
-                Humans
-              </button>
-              <button
-                type="button"
-                className={overlayTab === "agents" ? "is-active" : undefined}
-                onClick={() => setOverlayTab("agents")}
-              >
-                Agents
-              </button>
-            </div>
-            <div className="range-toggle" role="group" aria-label="Date range">
-              {(["today", "week", "all"] as const).map((range) => (
-                <button
-                  key={range}
-                  type="button"
-                  className={boardRange === range ? "is-active" : undefined}
-                  onClick={() => setBoardRange(range)}
-                >
-                  {RANGE_LABEL[range]}
-                </button>
-              ))}
-            </div>
-            <button className="outline-button modal-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
-          </div>
+            <TeamViewHead title={overview?.organization.name ?? "Your workspace"} subtitle={boardSubtitle}>
+              <TeamViewTabs value={overlayTab} onChange={setOverlayTab} />
+              <SegmentedControl label="Date range" options={RANGE_OPTIONS} value={boardRange} onChange={setBoardRange} />
+              <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
+            </TeamViewHead>
 
-          {overlayTab === "agents" ? (
-            <>
-              {agentShiftsError && <p className="form-error" role="alert">{agentShiftsError}</p>}
-              {agentShifts === undefined ? (
-                !agentShiftsError && <p className="subtle">Loading…</p>
-              ) : (
-                <section className="member-stats" aria-labelledby="agent-shifts-title" data-testid="agent-shifts">
-                  <div className="member-stats-head">
-                    <h3 id="agent-shifts-title">Agents · {RANGE_LABEL[boardRange]}</h3>
-                  </div>
-                  {/* The live view reads now, above everything the range
-                      measures: a stale live board would be worse than none. */}
-                  {liveSessionsError !== undefined && liveSessions === undefined ? (
-                    <p className="subtle" role="alert">Could not tell who is running an agent right now.</p>
-                  ) : liveSessions === undefined ? null : (
-                    <LiveSessions people={liveSessions.people} />
-                  )}
-                  <p className="today-total"><strong>{formatHuman(agentShifts.totalAgentSeconds)}</strong> recorded</p>
-                  <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
-                  <HourlyGraph buckets={agentShifts.hourly} />
-                  {agentShifts.tokenChart !== undefined && <TokenBarChart chart={agentShifts.tokenChart} />}
-                  {agentShifts.groups.length === 0 ? (
-                    <p className="subtle">No agent worked in this range.</p>
-                  ) : (
-                    <ShiftGroups
-                      groups={agentShifts.groups}
-                      totalAgentSeconds={agentShifts.totalAgentSeconds}
-                      loadShifts={loadShiftRows}
-                    />
-                  )}
-                </section>
-              )}
-            </>
-          ) : (
-            <>
-              {/* The home page's example workspace, drawn from the server's
-                  report as given. A row is also the selector: whoever is
-                  picked is whose breakdown the panel underneath shows. It opens
-                  on you, and every member's is open to the whole team. */}
-              {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
-              {workspace === undefined ? (
-                !workspaceError && <p className="subtle">Loading…</p>
-              ) : (
-                <WorkspaceView
-                  workspaceName={overview?.organization.name ?? "Your workspace"}
-                  periodLabel={RANGE_LABEL[boardRange]}
-                  activeSeconds={workspace.activeSeconds}
-                  agentSeconds={workspace.agentSeconds}
-                  hourly={workspace.hourly}
-                  members={workspace.members.map((member) => ({
-                    id: member.user.id,
-                    rank: member.rank,
-                    name: member.user.name,
-                    project: member.project?.name ?? null,
-                    activeSeconds: member.activeSeconds,
-                    agentSeconds: member.agentSeconds,
-                    isSelf: member.user.id === ready.user.id,
-                  }))}
-                  boardTool={<span>By active hours</span>}
-                  selectedMemberId={viewedMember.id}
-                  onSelectMember={(picked) => setBoardMember({ id: picked.id, name: picked.name })}
-                  boardNotes={[
-                    ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0
-                      ? []
-                      : ["No recorded time in this range."],
-                    ...workspace.members.length > 1 ? ["Select a teammate to explore their work."] : [],
-                    AGENT_TIME_LIMIT_NOTE,
-                  ]}
-                  {...workspaceBreakdownRows(workspace)}
-                />
-              )}
-
-              <section className="member-stats" aria-labelledby="member-stats-title" data-testid="member-stats">
-            <div className="member-stats-head">
-              <h3 id="member-stats-title">{viewedMember.name} · {RANGE_LABEL[boardRange]}</h3>
-              {!viewingSelf && (
-                <button type="button" className="member-self" onClick={() => setBoardMember(undefined)}>
-                  Show my own
-                </button>
-              )}
-            </div>
-            {boardError && <p className="form-error" role="alert">{boardError}</p>}
-            {boardLoading ? (
-              !boardError && <p className="subtle">Loading…</p>
-            ) : (
+            {overlayTab === "agents" ? (
               <>
-                {/* Recorded is whole sessions; the split below is presence
-                    alone. `recordedBasis` names the gap between them from
-                    measured numbers - the old wording called all of it agent
-                    time on no evidence at all. */}
-                <p className="today-total">
-                  <strong>{formatHuman(boardTotalSeconds)}</strong> recorded
-                  {boardMeasurement !== undefined && (() => {
-                    const basis = recordedBasis(
-                      boardTotalSeconds,
-                      boardMeasurement.activeSeconds,
-                      boardMeasurement.concurrency.awaySeconds,
-                    );
-                    return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
-                  })()}
-                </p>
-                {boardMeasurement !== undefined && (
-                  <>
-                    <MemberBreakdown
-                      activeSeconds={boardMeasurement.activeSeconds}
-                      concurrency={boardMeasurement.concurrency}
-                      self={viewingSelf}
-                    />
-                    <HourlyGraph
-                      buckets={boardMeasurement.hourly}
-                      personLabel={viewingSelf ? "You" : viewedMember.name}
-                    />
-                  </>
-                )}
-                {boardProjectRows.length > 0 && (
-                  <ul className="app-list" data-testid="member-project-list">
-                    {boardProjectRows.map((entry) => (
-                      <li key={entry.id} className="app-row">
-                        <span className="app-name">{entry.name}</span>
-                        <span className="app-duration">{formatHuman(entry.durationSeconds)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {boardAppRows.length === 0 ? (
-                  // Only the caller's own emptiness can be explained by this
-                  // machine's recording state; a teammate's is just empty.
-                  <p className="subtle" data-testid="today-empty">
-                    {viewingSelf ? TODAY_EMPTY[state] : "No recorded time in this range."}
-                  </p>
+                {agentShiftsError && <p className="form-error" role="alert">{agentShiftsError}</p>}
+                {agentShifts === undefined ? (
+                  !agentShiftsError && <p className="subtle">Loading…</p>
                 ) : (
-                  <ul className="app-list" data-testid="member-app-list">
-                    {boardAppRows.map((row) => (
-                      <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
-                        <span className="app-name">
-                          {row.label}
-                          {row.agent && viewingSelf && monitorStatus?.agentActive && <span className="app-active"> · active now</span>}
-                        </span>
-                        <span className="app-duration">{formatHuman(row.durationSeconds)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="tv-page" data-testid="agent-shifts">
+                    <AgentsView
+                      totalAgentSeconds={agentShifts.totalAgentSeconds}
+                      tokenTotals={agentShifts.tokenTotals}
+                      hourly={agentShifts.hourly}
+                      tokenChart={agentShifts.tokenChart}
+                      groups={agentShifts.groups}
+                      runtimes={agentShifts.runtimes}
+                      loadShifts={loadShiftRows}
+                      livePeople={liveSessions?.people}
+                      isLiveFailed={liveSessionsError !== undefined && liveSessions === undefined}
+                    />
+                  </div>
                 )}
               </>
+            ) : (
+              <div className="tv-page">
+                {/* The server's workspace report as given. A board row is also
+                    the selector: whoever is picked is whose card opens under
+                    the board. It opens on you, and every member's is open to
+                    the whole team. */}
+                {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
+                {workspace === undefined ? (
+                  !workspaceError && <p className="subtle">Loading…</p>
+                ) : (
+                  <WorkspaceView
+                    activeSeconds={workspace.activeSeconds}
+                    agentSeconds={workspace.agentSeconds}
+                    hourly={workspace.hourly}
+                    members={workspace.members.map((member) => ({
+                      id: member.user.id,
+                      rank: member.rank,
+                      name: member.user.name,
+                      project: member.project?.name ?? null,
+                      activeSeconds: member.activeSeconds,
+                      agentSeconds: member.agentSeconds,
+                      isSelf: member.user.id === ready.user.id,
+                    }))}
+                    boardTool={<span className="tv-card-note">Ranked by active time</span>}
+                    selectedMemberId={viewedMember.id}
+                    onSelectMember={(picked) => setBoardMember({ id: picked.id, name: picked.name })}
+                    boardNotes={[
+                      ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0
+                        ? []
+                        : ["No recorded time in this range."],
+                      ...workspace.members.length > 1 ? ["Select a teammate to explore their work."] : [],
+                    ]}
+                    {...workspaceBreakdownRows(workspace)}
+                  />
+                )}
+
+                <section className="tv-card tv-person" aria-labelledby="member-stats-title" data-testid="member-stats">
+                  <div className="tv-card-head tv-person-head">
+                    <h4 id="member-stats-title">
+                      <MemberAvatar id={viewedMember.id} name={viewedMember.name} />
+                      {viewedMember.name}
+                      {viewingSelf && <span className="tv-you">You</span>}
+                    </h4>
+                    {!viewingSelf && (
+                      <button type="button" className="member-self" onClick={() => setBoardMember(undefined)}>
+                        Show my own
+                      </button>
+                    )}
+                  </div>
+                  {boardError && <p className="form-error" role="alert">{boardError}</p>}
+                  {boardLoading ? (
+                    !boardError && <p className="subtle">Loading…</p>
+                  ) : (
+                    <>
+                      {/* Recorded is whole sessions; the split below is
+                          presence alone. `recordedBasis` names the gap between
+                          them from measured numbers - the old wording called
+                          all of it agent time on no evidence at all. */}
+                      <p className="tv-person-total">
+                        <strong>{formatHuman(boardTotalSeconds)}</strong> recorded
+                        {boardMeasurement !== undefined && (() => {
+                          const basis = recordedBasis(
+                            boardTotalSeconds,
+                            boardMeasurement.activeSeconds,
+                            boardMeasurement.concurrency.awaySeconds,
+                          );
+                          return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
+                        })()}
+                      </p>
+                      <div>
+                        {boardMeasurement !== undefined && (
+                          <MemberBreakdown
+                            activeSeconds={boardMeasurement.activeSeconds}
+                            concurrency={boardMeasurement.concurrency}
+                          />
+                        )}
+                      </div>
+                      <div>
+                        <p className="group-label">Projects, apps and agents</p>
+                        {boardProjectRows.length > 0 && (
+                          <ul className="app-list" data-testid="member-project-list">
+                            {boardProjectRows.map((entry) => (
+                              <li key={entry.id} className="app-row">
+                                <span className="app-name">{entry.name}</span>
+                                <span className="app-duration">{formatHuman(entry.durationSeconds)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {boardAppRows.length === 0 ? (
+                          // Only the caller's own emptiness can be explained by
+                          // this machine's recording state; a teammate's is
+                          // just empty.
+                          <p className="subtle" data-testid="today-empty">
+                            {viewingSelf ? TODAY_EMPTY[state] : "No recorded time in this range."}
+                          </p>
+                        ) : (
+                          <ul className="app-list" data-testid="member-app-list">
+                            {boardAppRows.map((row) => (
+                              <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
+                                <span className="app-name">
+                                  {row.label}
+                                  {row.agent && viewingSelf && monitorStatus?.agentActive && <span className="app-active"> · active now</span>}
+                                </span>
+                                <span className="app-duration">{formatHuman(row.durationSeconds)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      {boardMeasurement !== undefined && <TimeChartCard buckets={boardMeasurement.hourly} isFramed={false} />}
+                    </>
+                  )}
+                </section>
+              </div>
             )}
-          </section>
-            </>
-          )}
+
+            <p className="tv-foot" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
+          </div>
         </section>
         </div>
       )}

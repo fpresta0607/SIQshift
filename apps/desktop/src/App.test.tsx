@@ -302,6 +302,10 @@ const openAllStats = async (person: ReturnType<typeof userEvent.setup>): Promise
 const agentsTab = (panel: HTMLElement): HTMLElement =>
   within(within(panel).getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
 
+/// One figure on the totals row that opens each team view page.
+const teamTotal = (panel: HTMLElement, label: string) =>
+  within(within(panel).getByLabelText("Totals")).getByText(label).nextElementSibling?.querySelector("b");
+
 /// Opens All stats and switches to the Agents tab, returning the dialog.
 const openAgentsTab = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
   const panel = await openAllStats(person);
@@ -737,7 +741,7 @@ describe("today", () => {
     await person.click(await within(panel).findByRole("button", { name: "This week" }));
 
     await waitFor(() => expect(bridge.meStats).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole("heading", { name: /This week/ })).toBeInTheDocument();
+    expect(await within(panel).findByText(/^This week · /)).toBeInTheDocument();
   });
 
   it("folds agent CLI processes into one friendly row", async () => {
@@ -1319,26 +1323,28 @@ describe("the team board", () => {
 
     // Act: the board is history, so it sits behind "All stats".
     const panel = await openAllStats(person);
-    const view = within(await within(panel).findByRole("region", { name: "Your team’s work, together." }));
+    const view = within(panel);
+    await view.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("SIQstack")).toBeInTheDocument();
-    expect(view.getByText("Today")).toBeInTheDocument();
-    expect(view.getByText("2 people across 2 projects")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("2h 56m");
-    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("1h 30m");
-    const graph = view.getByTestId("hourly-graph");
+    expect(view.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(view.getByText(/^Today · /)).toBeInTheDocument();
+    expect(teamTotal(panel, "Active time")).toHaveTextContent("2h 56m");
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
+    expect(teamTotal(panel, "People")).toHaveTextContent(/^2$/);
+    expect(teamTotal(panel, "Projects")).toHaveTextContent(/^2$/);
+    const graph = within(view.getByRole("region", { name: "Over time" })).getByTestId("hourly-graph");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
-    const [, first, second] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m$/);
-    expect(second).toHaveTextContent(/^2TUTimer User youClient work1h 00m30m$/);
-    const breakdown = within(view.getByRole("region", { name: "Workspace breakdown" }));
+    expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m$/);
+    const breakdown = within(view.getByRole("region", { name: "Projects or agents" }));
     expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);
     await person.click(within(breakdown.getByRole("group", { name: "Projects or agents" })).getByRole("button", { name: "Agents" }));
-    expect(breakdown.getByText("Runtime by agent")).toBeInTheDocument();
+    expect(breakdown.getByText("Agent time")).toBeInTheDocument();
     expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code1h 30m"]);
-    expect(view.getByText("Local agents, shared visibility").parentElement).toHaveTextContent("Claude Code");
+    expect(view.queryByText("Local agents, shared visibility")).toBeNull();
     expect(bridge.workspaceReport).toHaveBeenCalled();
   });
 
@@ -1351,11 +1357,11 @@ describe("the team board", () => {
 
     // Act
     const panel = await openAllStats(person);
-    const view = within(await within(panel).findByRole("region", { name: "Your team’s work, together." }));
+    await within(panel).findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 20m");
-    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("5h 33m");
+    expect(teamTotal(panel, "Active time")).toHaveTextContent("3h 20m");
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent("5h 33m");
   });
 
   it("shows a workspace of one as a single row, the viewer's own", async () => {
@@ -1375,18 +1381,18 @@ describe("the team board", () => {
 
     // Act
     const panel = await openAllStats(person);
-    const view = within(await within(panel).findByRole("region", { name: "Your team’s work, together." }));
+    await within(panel).findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("1 person across 1 project")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("1h 00m");
-    const [, only, ...rest] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    expect(teamTotal(panel, "People")).toHaveTextContent(/^1$/);
+    expect(teamTotal(panel, "Projects")).toHaveTextContent(/^1$/);
+    expect(teamTotal(panel, "Active time")).toHaveTextContent("1h 00m");
+    const [, only, ...rest] = within(within(panel).getByRole("table", { name: "People" })).getAllByRole("row");
     expect(rest).toEqual([]);
-    expect(only).toHaveTextContent(/^1TUTimer User youClient work1h 00m0s$/);
+    expect(only).toHaveTextContent(/^1TUTimer UserYouClient work1h 00m0s$/);
     expect(within(only!).getByRole("button", { name: "Show Timer User's work" })).toHaveAttribute("aria-pressed", "true");
     // Nobody else to pick, so the board does not offer to.
-    expect(view.queryByText("Select a teammate to explore their work.")).toBeNull();
-    expect(view.queryByText("Local agents, shared visibility")).toBeNull();
+    expect(within(panel).queryByText("Select a teammate to explore their work.")).toBeNull();
   });
 
   it("says so when the workspace read fails, instead of loading forever", async () => {
@@ -1439,14 +1445,14 @@ describe("the team board", () => {
       )),
     })} />);
     const panel = await openAllStats(person);
-    await within(panel).findByRole("region", { name: "Your team’s work, together." });
+    await within(panel).findByLabelText("Totals");
 
     // Act
     await person.click(within(panel).getByRole("button", { name: "This week" }));
 
     // Assert: the failure shows at once, and today's totals are gone with it.
     expect(await within(panel).findByRole("alert")).toHaveTextContent("Could not reach the server.");
-    expect(within(panel).queryByRole("region", { name: "Your team’s work, together." })).not.toBeInTheDocument();
+    expect(within(panel).queryByLabelText("Totals")).not.toBeInTheDocument();
   });
 
   it("opens on your own breakdown and follows whichever member gets picked", async () => {
@@ -1465,11 +1471,11 @@ describe("the team board", () => {
     const panel = await openAllStats(person);
     // You are highlighted and shown by default.
     const stats = within(panel).getByTestId("member-stats");
-    expect(within(stats).getByRole("heading", { name: /Timer User · Today/ })).toBeInTheDocument();
+    expect(within(stats).getByRole("heading", { name: /^Timer User/ })).toBeInTheDocument();
 
     // Picking Sam swaps the breakdown to Sam, fetched by their id.
     await person.click(within(panel).getByRole("button", { name: /Sam/ }));
-    expect(await within(stats).findByRole("heading", { name: /Sam · Today/ })).toBeInTheDocument();
+    expect(await within(stats).findByRole("heading", { name: /^Sam/ })).toBeInTheDocument();
     await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(
       expect.any(String),
       expect.any(String),
@@ -1478,19 +1484,22 @@ describe("the team board", () => {
     expect(await within(stats).findByText("Blender")).toBeInTheDocument();
   });
 
-  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+  it("states the agent time limit word for word under both the Humans and the Agents page", async () => {
+    // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
-
     const panel = await openAllStats(person);
-    const board = await within(panel).findByRole("region", { name: "Team leaderboard" });
-    const breakdown = await within(panel).findByTestId("breakdown");
-    expect(within(board).getByText("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.")).toBeInTheDocument();
-    expect(within(breakdown).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    await within(panel).findByLabelText("Totals");
 
+    // Act
+    const onHumans = within(panel).getByTestId("agent-time-limit").textContent;
     await person.click(agentsTab(panel));
-    const shifts = await within(panel).findByTestId("agent-shifts");
-    expect(within(shifts).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    await within(panel).findByTestId("agent-shifts");
+
+    // Assert
+    const note = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
+    expect(onHumans).toBe(note);
+    expect(within(panel).getByTestId("agent-time-limit")).toHaveTextContent(note);
   });
 
   it("writes the breakdown in plain words and drops empty agent buckets", async () => {
@@ -1556,7 +1565,7 @@ describe("the team board", () => {
     const panel = await openAllStats(person);
     await person.click(within(panel).getByRole("button", { name: /Sam/ }));
     const stats = within(panel).getByTestId("member-stats");
-    await within(stats).findByRole("heading", { name: /Sam · Today/ });
+    await within(stats).findByRole("heading", { name: /^Sam/ });
 
     const total = within(stats).getByText(/recorded/).closest("p");
     expect(total).not.toHaveTextContent(/agent/i);
@@ -1597,10 +1606,10 @@ describe("the team board", () => {
     const panel = await openAllStats(person);
     const stats = within(panel).getByTestId("member-stats");
     await person.click(within(panel).getByRole("button", { name: /Sam/ }));
-    expect(await within(stats).findByRole("heading", { name: /Sam · Today/ })).toBeInTheDocument();
+    expect(await within(stats).findByRole("heading", { name: /^Sam/ })).toBeInTheDocument();
 
     await person.click(within(stats).getByRole("button", { name: "Show my own" }));
-    expect(await within(stats).findByRole("heading", { name: /Timer User · Today/ })).toBeInTheDocument();
+    expect(await within(stats).findByRole("heading", { name: /^Timer User/ })).toBeInTheDocument();
   });
 
   it("surfaces a failed self/today read instead of a blank or endless state", async () => {
@@ -2077,10 +2086,9 @@ describe("the agents tab", () => {
 
     const panel = await openAgentsTab(person);
 
-    // The header mirrors the Humans tab: who the numbers are for, the range,
-    // and the recorded total - then the codebases, heaviest first.
-    expect(within(panel).getByRole("heading", { level: 3, name: /Agents · Today/ })).toBeInTheDocument();
-    expect(within(panel).getByText("2h 00m")).toBeInTheDocument();
+    // The totals row leads with the recorded agent time, as on the Humans
+    // page, then the codebases, heaviest first.
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent(/^2h 00m$/);
     const groups = within(panel).getAllByTestId("shift-group");
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("siqshift");
@@ -2093,7 +2101,7 @@ describe("the agents tab", () => {
     expect(groups[1]).toHaveTextContent("Run worktree, codebase not identified");
     expect(groups[1]).not.toHaveTextContent("No codebase recorded");
     expect(groups[1]!.textContent).not.toMatch(/held|pending/);
-    // There is no leaderboard here: nothing ranks, nothing is clickable.
+    // There is no people board here: nothing on the page picks a person.
     expect(within(panel).queryByTestId("agent-roster-list")).not.toBeInTheDocument();
   });
 
@@ -2154,27 +2162,22 @@ describe("the agents tab", () => {
     }
   });
 
-  it("gives each codebase a Today row: a mark, the name, its share, its duration", async () => {
+  it("gives each codebase a board row: its rank, a mark, the name, its tokens and its agent time", async () => {
+    // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
 
+    // Act
     const panel = await openAgentsTab(person);
     const groups = within(panel).getAllByTestId("shift-group");
 
-    // The head reads in the shared meter row, so a column of codebases scans
-    // the way the Today card's rows do. The bar is this codebase's share of
-    // the recorded agent time: 5,400s and 1,800s of 7,200s.
-    const shares = groups.map((group) => {
-      // `head?.querySelector(...)` would be `undefined` - and pass - when the
-      // head itself is missing, so the head is asserted before it is read.
-      const head = group.querySelector(".meter-row.shift-group-head");
-      expect(head).not.toBeNull();
-      expect(head!.querySelector(".project-dot")).not.toBeNull();
-      expect(head!.querySelector(".meter-name")).not.toBeNull();
-      expect(head!.querySelector(".meter-duration")).not.toBeNull();
-      return head!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share");
-    });
-    expect(shares).toEqual(["75%", "25%"]);
+    // Assert: the head reads on the same columns as the web's, so the two apps
+    // scan alike. An API that sends no tokens gets a dash, never a zero.
+    const cells = groups.map((group) => [...group.querySelector("summary.shift-group-head")?.children ?? []].map((cell) => cell.textContent));
+    expect(cells).toEqual([
+      ["1", "S", "siqshift50% held · 2 shifts", "-", "1h 30m", ""],
+      ["2", "?", "Run worktree, codebase not identified1 shift", "-", "30m", ""],
+    ]);
   });
 
   it("keeps each codebase's shifts in a drawer that starts closed, the way the web does", async () => {
@@ -2185,14 +2188,14 @@ describe("the agents tab", () => {
     const group = within(panel).getAllByTestId("shift-group")[0]!;
     const head = group.querySelector("summary");
 
-    // The two apps hand-mirror this markup, so the desktop pins the same
-    // three facts the web does: the head is the summary, it is the details'
-    // first child - jsdom only treats the first one as the toggle - and it
-    // stays four cells, because a fifth would wrap the four-track grid.
+    // The two apps draw this markup from one component, so the desktop pins
+    // the same three facts the web does: the head is the summary, it is the
+    // details' first child - jsdom only treats the first one as the toggle -
+    // and it stays six cells, because a seventh would wrap the six-track grid.
     expect(group.tagName).toBe("DETAILS");
     expect(head).not.toBeNull();
     expect(group.firstElementChild).toBe(head);
-    expect(head!.children).toHaveLength(4);
+    expect(head!.children).toHaveLength(6);
     // The count rides in the name cell, so a closed drawer still says how
     // much is inside it.
     expect(group).toHaveTextContent("2 shifts");

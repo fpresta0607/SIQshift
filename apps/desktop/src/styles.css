@@ -231,15 +231,6 @@ select:disabled { opacity: .55; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
 .panel-head h2 { font-size: .92rem; }
 
-/* Range choice: two minimal text buttons, active one green-underlined. */
-.range-toggle { display: flex; gap: 12px; }
-.range-toggle button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 2px 1px; background: transparent; color: var(--text-secondary); font-size: .74rem; letter-spacing: .04em; transition: color .15s ease, border-color .15s ease; }
-.range-toggle button:hover { color: #ffffff; }
-.range-toggle button.is-active { border-bottom-color: var(--accent-green); color: var(--accent-green); }
-
-.today-total { margin: 2px 0 10px; font-size: .95rem; }
-.today-total strong { font-variant-numeric: tabular-nums; }
-
 /* The Today surface below the clock: one row per project, then one row per
    app, in the shared .meter-row shape.
 
@@ -317,14 +308,10 @@ select:disabled { opacity: .55; }
 
 .verified-foot { margin: 10px 0 0; border-top: 1px solid rgba(163, 179, 194, 0.12); padding-top: 8px; color: var(--text-secondary); font-size: .72rem; font-variant-numeric: tabular-nums; }
 
-/* One member's breakdown, under the board that chose them. */
-.member-stats { margin-top: 14px; border-top: 1px solid rgba(163, 179, 194, 0.12); padding-top: 12px; }
-.member-stats h3 { margin: 0 0 9px; font-size: .84rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.member-stats-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
-.member-stats-head h3 { flex: 1 1 auto; min-width: 0; margin: 0; }
+/* The way back out of a picked person, at the head of their card. */
 .member-self { flex: none; border: 0; padding: 0; background: transparent; color: var(--mint); font-size: .74rem; letter-spacing: .04em; cursor: pointer; }
 .member-self:hover, .member-self:focus-visible { color: #ffffff; }
-.member-stats .app-list + .app-list { margin-top: 10px; border-top: 1px solid rgba(163, 179, 194, 0.08); padding-top: 8px; }
+.tv-person .app-list + .app-list { margin-top: 10px; border-top: 1px solid rgba(163, 179, 194, 0.08); padding-top: 8px; }
 
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .board-head h2 { margin: 0; font-size: .92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -545,19 +532,10 @@ select:disabled { opacity: .55; }
 .swatch-agent3 { background: #00a868; }
 .swatch-away { background: var(--accent-blue); }
 
-/* The Agents tab's map: one head row per codebase, in the shared meter row -
-   the same scan line the Today card reads - with its shifts indented beneath.
-   A shift row is when · facts · duration; the facts shrink and ellipsize
-   before the duration ever wraps. */
-.shift-group { margin-top: 10px; }
-/* The head is a <summary>, so both engines' default markers are suppressed:
-   no glyph is added back, because .meter-row is a four-track grid and a
-   generated fifth box would auto-place onto an implicit second row and
-   double the head's height. The open state reads on the mark instead. */
-.shift-group-head { font-weight: 650; cursor: pointer; list-style: none; }
-.shift-group-head::-webkit-details-marker { display: none; }
-.shift-group-head:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
-.shift-group[open] > .shift-group-head .project-dot { background: var(--mint); }
+/* The Agents page's repo drawers: the head row is the shared team view's
+   (brand.css), and a drawer's shifts list beneath it. A shift row is
+   when · facts · duration; the facts shrink and ellipsize before the duration
+   ever wraps. */
 .held-tag { color: var(--mint); font-size: .78rem; font-weight: 400; }
 /* A single shrinkable track, for the same reason `.breakdown` needs one: an
    `auto` grid track floors at its widest item's min-content, and a shift row's
@@ -595,11 +573,10 @@ select:disabled { opacity: .55; }
 .legend li { display: flex; align-items: center; gap: 6px; }
 .legend-line { width: 14px; height: 2px; border-radius: 1px; }
 
-/* The live view at the top of the Agents tab: who is running an agent now.
+/* The Agents page's Live now card: who is running an agent now.
    A breathing dot marks each running session; the description is the server's
    own sentence and is never re-derived here. */
 .live-sessions { margin: 0 0 14px; }
-.live-sessions-title { margin: 0 0 6px; font-size: .72rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
 .live-person { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
 .live-person-name { flex: none; width: 8.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: .84rem; }
 .live-session-list { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0; padding: 0; list-style: none; }

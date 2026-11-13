@@ -2,12 +2,16 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 
 import { agentRuntimeForBinary, agentRuntimeLabel } from "./agent-runtimes.js";
 import { friendlyAppName } from "./app-names.js";
+import { formatCount, formatTokens } from "./format.js";
 import { formatHumanDuration } from "./time.js";
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { ChartTooltip } from "./chart-tooltip.js";
 
 export { AgentRuntimeIcon } from "./agent-marks.js";
+export { formatCount, formatRangeDays, formatTokens } from "./format.js";
+export { MemberAvatar } from "./member-avatar.js";
 export { QuietMark } from "./quiet-mark.js";
+export { SegmentedControl, type SegmentedOption } from "./segmented-control.js";
 export { TokenBarChart, type ChartTokenBucket, type ChartTokens } from "./token-bar-chart.js";
 
 /**
@@ -41,14 +45,12 @@ export type ConcurrencySplit = {
 export const MemberBreakdown = ({
   activeSeconds,
   concurrency,
-  self,
 }: {
   activeSeconds: number;
   concurrency: ConcurrencySplit;
-  self: boolean;
 }) => (
   <div className="breakdown" data-testid="breakdown">
-    <p className="group-label">{self ? "Your active time — the hours you were at this computer" : "Active time — the hours they were at this computer"}</p>
+    <p className="group-label">Active time, split by agents running</p>
     <div className="metric-row is-headline">
       <span className="metric-name">Active time</span>
       <span className="metric-value">{formatHumanDuration(activeSeconds)}</span>
@@ -79,7 +81,6 @@ export const MemberBreakdown = ({
         <span className="metric-value">{formatHumanDuration(concurrency.t3PlusSeconds)}</span>
       </div>
     )}
-    <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
   </div>
 );
 
@@ -144,7 +145,7 @@ export const HourlyGraph = ({
   if (buckets.length === 0) return null;
 
   const series: readonly ChartSeries[] = [
-    { id: "agent", label: "Agents", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) },
+    { id: "agent", label: "Agent time", color: "var(--chart-agent)", values: buckets.map((bucket) => bucket.agentSeconds) },
     ...(personLabel === undefined
       ? []
       : [{ id: "human", label: personLabel, color: "var(--chart-human)", values: buckets.map((bucket) => bucket.activeSeconds) }]),
@@ -533,6 +534,8 @@ export type ShiftGroup = {
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
+  /** Tokens in and out its shifts reported over the range; absent from an API that sends none. */
+  tokens?: number | undefined;
 };
 
 /**
@@ -591,15 +594,15 @@ type ShiftDrawer = {
 };
 
 /**
- * The Agents tab's map: one collapsible group per codebase, its shifts inside.
+ * The Agents page's repo board: one collapsible group per codebase, ranked in
+ * the order given, its shifts inside.
  *
- * The head reads in the shared meter row - mark, name, a bar of this
- * codebase's share of the recorded agent time, duration - so a column of
- * codebases scans the way a column of apps does. The held share appears only
- * once a commit is decided: a rate with no decided commits is not a fact, so
- * the head says nothing instead. The head stays exactly four cells, since a
- * disclosure glyph added as a fifth child of the four-track grid would wrap
- * onto an implicit second row and double its height.
+ * The head is a board row - rank, the codebase's letter, its name over its
+ * held share and shift count, its tokens, its agent time - laid on the same
+ * columns as the board's column heads. The held share appears only once a
+ * commit is decided: a rate with no decided commits is not a fact, so the
+ * head says nothing instead. Tokens read in short form with the exact count
+ * on hover, and as a dash from an API that sends none.
  *
  * A drawer, because a busy week runs to hundreds of shifts - and now because
  * the rows are not in the response that drew the head. `loadShifts` fetches
@@ -615,11 +618,9 @@ type ShiftDrawer = {
  */
 export const ShiftGroups = ({
   groups,
-  totalAgentSeconds,
   loadShifts,
 }: {
   groups: readonly ShiftGroup[];
-  totalAgentSeconds: number;
   loadShifts: (groupKey: string, after: ShiftCursor | null) => Promise<ShiftPage>;
 }) => {
   const [openKeys, setOpenKeys] = useState<ReadonlySet<string>>(new Set());
@@ -708,7 +709,7 @@ export const ShiftGroups = ({
 
   return (
     <>
-      {groups.map((group) => {
+      {groups.map((group, index) => {
         const drawer = drawers.get(group.groupKey);
         const shown = drawer?.rows ?? [];
         const more = drawer?.status === "ready" ? drawer.nextCursor : null;
@@ -720,19 +721,21 @@ export const ShiftGroups = ({
             open={openKeys.has(group.groupKey)}
             onToggle={(event) => setOpen(group.groupKey, event.currentTarget.open)}
           >
-            <summary className="meter-row shift-group-head">
-              <span className="project-dot" aria-hidden="true" />
-              <span className="meter-name">
-                {shiftGroupLabel(group)}
-                {group.heldRate !== null && <span className="meter-detail held-tag"> · {Math.round(group.heldRate * 100)}% held</span>}
-                <span className="meter-detail"> · {group.shiftCount} shift{group.shiftCount === 1 ? "" : "s"}</span>
+            <summary className="tv-row shift-group-head">
+              <span className="tv-rank">{index + 1}</span>
+              <span className="repo-mark" aria-hidden="true">{group.repo?.charAt(0).toUpperCase() ?? "?"}</span>
+              <span className="tv-name">
+                <span>{shiftGroupLabel(group)}</span>
+                <span className="tv-sub">
+                  {group.heldRate !== null && <span className="held-tag">{Math.round(group.heldRate * 100)}% held · </span>}
+                  {formatCount(group.shiftCount)} shift{group.shiftCount === 1 ? "" : "s"}
+                </span>
               </span>
-              <span
-                className="meter-bar"
-                aria-hidden="true"
-                style={{ "--share": `${totalAgentSeconds === 0 ? 0 : Math.round((group.agentSeconds / totalAgentSeconds) * 100)}%` } as CSSProperties}
-              />
-              <span className="meter-duration">{formatHumanDuration(group.agentSeconds)}</span>
+              <span className="tv-num" title={group.tokens === undefined ? undefined : `${formatCount(group.tokens)} tokens`}>
+                {group.tokens === undefined ? "-" : formatTokens(group.tokens)}
+              </span>
+              <span className="tv-num is-agent">{formatHumanDuration(group.agentSeconds)}</span>
+              <span className="tv-chev" aria-hidden="true" />
             </summary>
             <ul className="shift-list">
               {shown.map((shift) => (
@@ -786,15 +789,15 @@ export type LivePersonGroup = {
 };
 
 /**
- * The live view at the top of the Agents tab: who is running an agent right
- * now, and what each one is doing. The server sends only people with at least
+ * The live view on the Agents page: who is running an agent right now, and
+ * what each one is doing. The server sends only people with at least
  * one running session, so nobody stale can appear here, and an empty roster
  * is the honest "nothing is running" - not an absence to be papered over.
  *
  * The description comes from the server composed from captured facts, so both
  * surfaces render the same sentence and neither can invent one the data does
- * not support. The codebase label rides beside it because that is the tie the
- * tab's map below files the session under once it ends.
+ * not support. The codebase label rides beside it because that is the repo the
+ * page's Repos card files the session under once it ends.
  */
 export const LiveSessions = ({ people }: { people: readonly LivePersonGroup[] }) => {
   if (people.length === 0) {
@@ -806,7 +809,6 @@ export const LiveSessions = ({ people }: { people: readonly LivePersonGroup[] })
   }
   return (
     <section className="live-sessions" data-testid="live-sessions" aria-label="Agents running now">
-      <h4 className="live-sessions-title">Live now</h4>
       {people.map((person) => (
         <div key={person.owner.id} className="live-person">
           <span className="live-person-name">
