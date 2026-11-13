@@ -171,11 +171,14 @@ export const DownloadInstaller = ({ placement = "header" }: DownloadInstallerPro
 };
 
 /**
- * The same installer as a plain link, for running prose. Kept beside the
- * button so both read from `windowsInstallerUrl`.
+ * The visitor's own installer as a plain link, for running prose. Kept beside
+ * the button so both read from `installersForVisitor`.
  */
-export const InstallerLink = () => (
-  <a className="link" href={windowsInstallerUrl} rel="noreferrer">
-    Download for Windows
-  </a>
-);
+export const InstallerLink = () => {
+  const { primary } = installersForVisitor();
+  return (
+    <a className="link" href={primary.url} rel="noreferrer">
+      {primary.download}
+    </a>
+  );
+};

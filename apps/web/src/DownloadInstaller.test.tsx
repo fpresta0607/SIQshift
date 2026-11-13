@@ -414,4 +414,16 @@ describe("InstallerLink", () => {
     expect(screen.getByRole("link", { name: "Download for Windows" }))
       .toHaveAttribute("href", windowsInstallerUrl);
   });
+
+  it("hands a Mac visitor the Mac installer", () => {
+    // Arrange
+    browseFromAMac();
+
+    // Act
+    render(<InstallerLink />);
+
+    // Assert
+    expect(screen.getByRole("link", { name: "Download for Mac" })).toHaveAttribute("href", macInstallerUrl);
+    expect(screen.queryByRole("link", { name: "Download for Windows" })).not.toBeInTheDocument();
+  });
 });
