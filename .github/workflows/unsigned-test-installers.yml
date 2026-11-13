@@ -2,8 +2,10 @@ name: Unsigned test installers
 
 # Builds the desktop test installers, uploads them as workflow-run artifacts,
 # and (on a deliberate `workflow_dispatch` only) republishes the
-# `unsigned-latest` release so the website has something anonymous visitors
-# can actually download. Both builds are code signed by SIQstack LLC: the
+# `unsigned-latest` release. The website links only its Mac file, from the
+# dashboard menu and the post-sign-up screen, until a release carries a signed
+# Mac build; anonymous visitors get the signed Windows release instead. Both
+# builds are code signed by SIQstack LLC: the
 # Windows one through Azure Artifact Signing, the macOS one with its Developer
 # ID certificate and notarized by Apple. The macOS one is built only once the
 # release environment holds the Apple signing secrets; until then a run

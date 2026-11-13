@@ -29,8 +29,8 @@ import {
  * every test green and 404 the Download button in production.
  *
  * So each workflow is parsed into a model and asked what it actually
- * publishes, rather than searched for strings, and the test workflow's publish
- * scripts are run to see what the release keeps.
+ * publishes, rather than searched for strings, and each workflow's publish
+ * scripts are run to see what the release holds and how it is published.
  */
 const repositoryPath = (relative: string): string => {
   // Walked up from the vitest root rather than `import.meta.url`, which Vite
@@ -44,63 +44,87 @@ const repositoryPath = (relative: string): string => {
 const workflowPath = repositoryPath(".github/workflows/unsigned-test-installers.yml");
 const releaseWorkflowPath = repositoryPath(".github/workflows/release.yml");
 
-type Job = { env?: Record<string, string>; steps?: { name?: string; run?: string }[] };
+type Step = { name?: string; env?: Record<string, string>; run?: string };
+type Job = { env?: Record<string, string>; steps?: Step[] };
 type PublishedRelease = {
   tag: string;
   assetNames: readonly string[];
   stagingDir: string;
   uploadGlob: string;
-  stagingScript: string;
-  publishScript: string;
 };
 
-const publishedRelease = (): PublishedRelease => {
-  const workflow = parseYaml(readFileSync(workflowPath, "utf8")) as { jobs?: Record<string, Job> };
+const stagingStepName = "Stage the release assets under their permanent names";
+const publishStepName = "Publish the release";
+
+const publishJobOf = (workflowFile: string): Job => {
+  const workflow = parseYaml(readFileSync(workflowFile, "utf8")) as { jobs?: Record<string, Job> };
   const publish = workflow.jobs?.publish;
-  expect(publish, "the workflow has no `publish` job").toBeDefined();
-  const scriptOf = (name: string): string =>
-    publish?.steps?.find((step) => step.name === name)?.run ?? "";
+  expect(publish, `${workflowFile} has no \`publish\` job`).toBeDefined();
+  return publish ?? {};
+};
+
+const stepOf = (job: Job, stepName: string): Step => job.steps?.find((step) => step.name === stepName) ?? {};
+
+const publishedRelease = (): PublishedRelease => {
+  const publish = publishJobOf(workflowPath);
 
   // The staging step names every asset exactly once, as `take <pattern> <name>`,
   // and copies it into the directory the upload step then uploads.
-  const staging = scriptOf("Stage the release assets under their permanent names");
+  const staging = stepOf(publish, stagingStepName).run ?? "";
   const assetNames = [...staging.matchAll(/^\s*take\s+'[^']*'\s+(\S+)\s*$/gm)]
     .flatMap(([, name]) => (name === undefined ? [] : [name]));
   const [, stagingDir = ""] = /cp "\$found" "([^/"]+)\//.exec(staging) ?? [];
-  const publishScript = scriptOf("Publish the release");
-  const [, uploadGlob = ""] = /gh release upload "\$TAG" (\S+)/.exec(publishScript) ?? [];
+  const [, uploadGlob = ""] = /gh release upload "\$TAG" (\S+)/.exec(stepOf(publish, publishStepName).run ?? "") ?? [];
 
-  return { tag: publish?.env?.TAG ?? "", assetNames, stagingDir, uploadGlob, stagingScript: staging, publishScript };
+  return { tag: publish.env?.TAG ?? "", assetNames, stagingDir, uploadGlob };
 };
 
 const releaseStateFile = "release-state.txt";
+const ghCallsFile = "gh-calls.txt";
 
-/** `gh` for the publish scripts, against a release whose asset names live in `release-state.txt`. */
+/**
+ * `gh` for the publish scripts, against one release whose asset names live in
+ * `release-state.txt`. Every call's arguments are logged, tab-separated, to
+ * `gh-calls.txt`. Like the real CLI, `release create` and `release upload`
+ * upload each file they name under its base name and fail on a missing one.
+ */
 const fakeGh = `#!/usr/bin/env bash
 set -euo pipefail
 state=${releaseStateFile}
+(IFS=$'\\t'; printf '%s\\n' "$*") >> ${ghCallsFile}
 case "$1 $2" in
   "release view") if [ "$#" -gt 3 ]; then assets="$(cat "$state")"; printf '%s\\n' "$assets"; fi ;;
   "release edit") ;;
-  "release upload")
+  "release create" | "release upload")
     shift 3
-    for file in "$@"; do
-      name="$(basename -- "$file")"
-      if [ "$file" != --clobber ] && ! grep -qxF -- "$name" "$state"; then echo "$name" >> "$state"; fi
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --target | --title | --notes-file) shift 2 ;;
+        --*) shift ;;
+        *)
+          if [ ! -f "$1" ]; then echo "no such file: $1" >&2; exit 1; fi
+          name="$(basename -- "$1")"
+          if ! grep -qxF -- "$name" "$state"; then echo "$name" >> "$state"; fi
+          shift ;;
+      esac
     done ;;
   "release delete-asset") assets="$(grep -vxF -- "$4" "$state" || true)"; printf '%s\\n' "$assets" > "$state" ;;
   *) echo "unexpected: gh $*" >&2; exit 1 ;;
 esac
 `;
 
+type PublishRun = { assetsAfter: string[]; ghCalls: string[][] };
+
 /**
- * What the release holds after a run that built Windows alone, as every run
- * does while the Apple signing secrets are unset. The publish job's own
- * staging and publishing scripts run under bash, as on its ubuntu runner,
- * over the Windows leg's artifact. `gh` is the one external boundary, so a
- * stand-in keeps the release's asset names in a file.
+ * What a workflow's `publish` job does after a run that built Windows alone,
+ * as every run does while the Apple signing secrets are unset: the asset names
+ * the release holds afterwards, and every `gh` call that put them there. The
+ * job's own staging and publishing steps run under bash, as on its ubuntu
+ * runner, over the Windows leg's artifact, with the job's and the step's env.
+ * `gh` is the one external boundary, so a stand-in plays the release.
  */
-const releaseAfterWindowsOnlyRun = (release: PublishedRelease, assetsBefore: readonly string[]): string[] => {
+const publishAfterWindowsOnlyRun = (workflowFile: string, assetsBefore: readonly string[] = []): PublishRun => {
+  const publish = publishJobOf(workflowFile);
   const runDir = mkdtempSync(join(tmpdir(), "siqshift-publish-"));
   try {
     const artifactDir = join(runDir, "downloaded", "TEST-BUILD-windows-1");
@@ -111,22 +135,31 @@ const releaseAfterWindowsOnlyRun = (release: PublishedRelease, assetsBefore: rea
     mkdirSync(join(runDir, "bin"));
     writeFileSync(join(runDir, "bin", "gh"), fakeGh, { mode: 0o755 });
     writeFileSync(join(runDir, releaseStateFile), assetsBefore.map((name) => `${name}\n`).join(""));
+    writeFileSync(join(runDir, ghCallsFile), "");
 
-    for (const script of [release.stagingScript, release.publishScript]) {
-      // The runner substitutes every `${{ }}` expression before bash sees the script.
-      const { status, stderr } = spawnSync("bash", ["-c", script.replaceAll(/\$\{\{[^}]*\}\}/g, "0")], {
+    // The runner substitutes every `${{ }}` expression before bash sees the script or its env.
+    const substituted = (text: string): string => text.replaceAll(/\$\{\{[^}]*\}\}/g, "0");
+    for (const stepName of [stagingStepName, publishStepName]) {
+      const step = stepOf(publish, stepName);
+      expect(step.run, `the publish job has no \`${stepName}\` step`).toBeDefined();
+      const stepEnv = Object.entries({ ...publish.env, ...step.env })
+        .map(([name, value]): [string, string] => [name, substituted(value)]);
+      const { status, stderr } = spawnSync("bash", ["-c", substituted(step.run ?? "")], {
         cwd: runDir,
         encoding: "utf8",
         env: {
           ...process.env,
-          PATH: `${join(runDir, "bin")}${delimiter}${process.env.PATH ?? ""}`,
-          TAG: release.tag,
+          // The test workflow's manifest step exports it to the steps after it.
           VERSION: "0.0.0-test.1",
+          ...Object.fromEntries(stepEnv),
+          PATH: `${join(runDir, "bin")}${delimiter}${process.env.PATH ?? ""}`,
         },
       });
       expect(status, stderr).toBe(0);
     }
-    return readFileSync(join(runDir, releaseStateFile), "utf8").split("\n").filter((name) => name !== "");
+    const linesOf = (file: string): string[] =>
+      readFileSync(join(runDir, file), "utf8").split("\n").filter((line) => line !== "");
+    return { assetsAfter: linesOf(releaseStateFile), ghCalls: linesOf(ghCallsFile).map((line) => line.split("\t")) };
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
@@ -160,23 +193,6 @@ const releaseNotesOfRun = (): { notes: string; stderr: string } => {
   }
 };
 
-/** What `release.yml`'s `publish` job stages, and whether it publishes that as the repository's latest release. */
-const signedRelease = (): { assetNames: readonly string[]; isPublishedAsLatest: boolean } => {
-  const workflow = parseYaml(readFileSync(releaseWorkflowPath, "utf8")) as { jobs?: Record<string, Job> };
-  const scriptOf = (name: string): string =>
-    workflow.jobs?.publish?.steps?.find((step) => step.name === name)?.run ?? "";
-
-  const staging = scriptOf("Stage the release assets under their permanent names");
-  const assetNames = [...staging.matchAll(/^\s*take\s+'[^']*'\s+(\S+)\s*$/gm)]
-    .flatMap(([, name]) => (name === undefined ? [] : [name]));
-  const [, stagingDir = ""] = /cp "\$found" "([^/"]+)\//.exec(staging) ?? [];
-  const publish = scriptOf("Publish the release");
-  const isPublishedAsLatest = stagingDir !== ""
-    && publish.includes(`gh release create "$TAG" ${stagingDir}/*`)
-    && /gh release edit "\$TAG" .*--latest(\s|$)/m.test(publish);
-  return { assetNames, isPublishedAsLatest };
-};
-
 /** `https://…/releases/download/<tag>/<asset>` split back into its two halves. */
 const releaseRefOf = (url: string): { tag: string; assetName: string } => {
   const segments = new URL(url).pathname.split("/");
@@ -191,13 +207,26 @@ const releaseRefOf = (url: string): { tag: string; assetName: string } => {
 const earlierUnsignedMacAssetName = "SIQshift-UNSIGNED-TEST-macos-aarch64.dmg";
 
 describe("installer URLs", () => {
-  it("send Windows to the installer the signed release stages, on the release published as latest", () => {
-    const release = signedRelease();
+  // The publish jobs run on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
+  it.skipIf(process.platform === "win32")(
+    "send Windows to the installer the signed release uploads, once that release is published as latest",
+    () => {
+      // Act
+      const { assetsAfter, ghCalls } = publishAfterWindowsOnlyRun(releaseWorkflowPath);
 
-    expect(new URL(windowsInstallerUrl).pathname).toMatch(/^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+$/);
-    expect(release.assetNames).toContain(releaseRefOf(windowsInstallerUrl).assetName);
-    expect(release.isPublishedAsLatest).toBe(true);
-  });
+      // Assert: GitHub serves releases/latest/download/<name> from the latest release's asset of that name,
+      // so the signed release must hold that asset and then be published, out of draft, as the latest.
+      expect(new URL(windowsInstallerUrl).pathname).toMatch(/^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+$/);
+      expect(assetsAfter).toContain(releaseRefOf(windowsInstallerUrl).assetName);
+      const created = ghCalls.findIndex(([group, command]) => group === "release" && command === "create");
+      expect(created, "the publish job never creates the release").not.toBe(-1);
+      const createdTag = ghCalls[created]?.[2];
+      const isPublishedAsLatest = ghCalls.slice(created + 1).some(([group, command, tag, ...flags]) =>
+        group === "release" && command === "edit" && tag === createdTag
+        && flags.includes("--draft=false") && flags.includes("--latest"));
+      expect(isPublishedAsLatest).toBe(true);
+    },
+  );
 
   it("name the tag and the Mac asset the test release holds after the workflow's publish job", () => {
     const release = publishedRelease();
@@ -218,11 +247,10 @@ describe("installer URLs", () => {
     "keep the earlier unsigned Mac file on the release when a run builds no signed Mac one",
     () => {
       // Arrange: the release already holds the earlier Mac file and an asset no run stages any more.
-      const release = publishedRelease();
       const retiredAssetName = "SIQshift-retired.zip";
 
       // Act
-      const assetsAfter = releaseAfterWindowsOnlyRun(release, [earlierUnsignedMacAssetName, retiredAssetName]);
+      const { assetsAfter } = publishAfterWindowsOnlyRun(workflowPath, [earlierUnsignedMacAssetName, retiredAssetName]);
 
       // Assert: the run really published and cleaned up, and left the Mac file in place.
       expect(assetsAfter).toContain(releaseRefOf(windowsInstallerUrl).assetName);

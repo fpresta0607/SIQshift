@@ -125,9 +125,10 @@ const HeaderMenu = () => {
 };
 
 /**
- * The one component that hands out the desktop app. Every surface that offers
- * the installer renders this, so there is no second button quietly serving a
- * different build.
+ * The download control of the dashboard masthead and the post-sign-up screen.
+ * Every surface that offers an installer, the landing hero's `InstallTabs`
+ * included, takes its link from `windowsInstallerUrl` or `macInstallerUrl`, so
+ * there is no second link quietly serving a different build.
  */
 export const DownloadInstaller = ({ placement = "header" }: DownloadInstallerProps) => {
   const noteId = useId();
