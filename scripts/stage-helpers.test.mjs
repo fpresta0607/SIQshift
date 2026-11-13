@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { HELPERS, stageHelpers } from "./stage-helpers.mjs";
 
@@ -30,17 +29,39 @@ const compileMacHelpers = (tauriDir, profile, contentOf = (name, triple) => `${n
   }
 };
 
-// Tauri bundles every `[[bin]]` of the crate, so a helper the crate builds
-// and this script does not stage would break the universal Mac bundle.
+/** The tables of a Cargo manifest in order, each with its string keys; the keys above the first table sit under "". */
+const manifestTables = (manifest) => {
+  const tables = [{ name: "", keys: {} }];
+  for (const line of manifest.split(/\r?\n/)) {
+    const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      tables.push({ name: header[1], keys: {} });
+      continue;
+    }
+    const key = /^\s*([\w-]+)\s*=\s*(["'])(.*?)\2/.exec(line);
+    if (key) tables.at(-1).keys[key[1]] = key[3];
+  }
+  return tables;
+};
+
+// Tauri bundles every binary of the crate, each `[[bin]]` table and each
+// target in `src/bin`, so a helper the crate builds and this script does not
+// stage would break the universal Mac bundle.
 test("the staged helpers are every binary the desktop crate builds beside the app", () => {
   // Arrange
-  const manifest = readFileSync(fileURLToPath(new URL("../apps/desktop/src-tauri/Cargo.toml", import.meta.url)), "utf8");
+  const tauriDir = new URL("../apps/desktop/src-tauri/", import.meta.url);
+  const tables = manifestTables(readFileSync(new URL("Cargo.toml", tauriDir), "utf8"));
+  const binEntries = readdirSync(new URL("src/bin/", tauriDir), { withFileTypes: true });
 
   // Act
-  const crateHelpers = [...manifest.matchAll(/^\[\[bin\]\]\s*\nname = "([^"]+)"/gm)].map(([, name]) => name);
+  const app = tables.find((table) => table.name === "package").keys["default-run"];
+  const declared = tables.filter((table) => table.name === "bin").map((table) => table.keys.name);
+  const discovered = binEntries
+    .filter((entry) => entry.isDirectory() || entry.name.endsWith(".rs"))
+    .map((entry) => path.parse(entry.name).name);
+  const crateHelpers = [...new Set([...declared, ...discovered])].filter((name) => name !== app);
 
   // Assert
-  assert.ok(crateHelpers.length > 0, "found no [[bin]] target in the crate manifest");
   assert.deepEqual([...HELPERS].sort(), crateHelpers.sort());
 });
 
