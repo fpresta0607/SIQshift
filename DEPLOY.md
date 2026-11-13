@@ -924,7 +924,7 @@ a production host.
 **Review latency is part of the release cadence.** Every submission queues
 for human review, from hours to days for Chrome and up to a week for Edge,
 and a rejected listing restarts the clock. Submit the extension before or
-alongside tagging a desktop release that depends on it, and never announce a
+alongside running a desktop release that depends on it, and never announce a
 feature that is still in review.
 
 **Firefox** needs its own signed build and its own native-messaging manifest
