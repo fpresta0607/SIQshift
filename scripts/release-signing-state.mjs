@@ -72,7 +72,7 @@ export function resolveReleasePlan(isSet) {
   if (missingApple.length === APPLE_CREDENTIALS.length) {
     return {
       legs: [LEGS.windows],
-      notice: "The release environment holds no Apple signing secrets yet, so this release carries no Mac installer. The Mac installer is published only signed by SIQstack LLC and notarized by Apple.",
+      notice: "The release environment holds no Apple signing secrets yet, so this release carries no Mac installer. The Mac installer is published only signed with an Apple Developer ID and notarized by Apple.",
     };
   }
   if (missingApple.length > 0) {

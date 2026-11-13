@@ -6,25 +6,35 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { load as parseYaml } from "js-yaml";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DownloadInstaller,
   InstallerLink,
   installerNote,
+  macInstallerNote,
   macInstallerUrl,
   windowsInstallerUrl,
 } from "./DownloadInstaller.js";
 
+const MAC_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
+
+const browseFromAMac = (): void => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(MAC_USER_AGENT);
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 /**
  * The contract under test is the releases the workflows publish, which are
- * machine-consumed declarative artifacts read by GitHub Actions. The Windows
- * link is the signed release: `release.yml`'s `publish` job decides the file
- * name behind `releases/latest/download/<name>` and that the release becomes
- * the repository's latest. The Mac link, until a signed Mac release exists, is
- * on `unsigned-latest`: `unsigned-test-installers.yml`'s `publish` job decides
- * its tag, its file names, and which files a run leaves on the release.
- * Nothing else checks that the two sides agree. The rendered-href tests below
+ * machine-consumed declarative artifacts read by GitHub Actions. Both links
+ * are the signed release: `release.yml`'s `publish` job decides each file name
+ * behind `releases/latest/download/<name>` and that the release becomes the
+ * repository's latest. `unsigned-test-installers.yml`'s `publish` job decides
+ * which files a run leaves on the `unsigned-latest` test release, which the
+ * site never links. Nothing else checks that the two sides agree. The rendered-href tests below
  * compare the constant to itself, so a rename on either side alone would leave
  * every test green and 404 the Download button in production.
  *
@@ -95,22 +105,30 @@ esac
 
 type PublishRun = { assetsAfter: string[]; ghCalls: string[][] };
 
+/** What each installer leg uploads as its run artifact. */
+const LEG_ARTIFACTS = {
+  windows: ["TEST-SIQshift_0.0.0_x64-setup.exe", "TEST-SIQshift_0.0.0_x64-setup.exe.sig", "TEST-BUILD.txt"],
+  macos: ["TEST-SIQshift_0.0.0_universal.dmg", "TEST-SIQshift.app.tar.gz", "TEST-SIQshift.app.tar.gz.sig", "TEST-BUILD.txt"],
+} as const;
+
 /**
- * What a workflow's `publish` job does after a run that built Windows alone,
- * as every run does while the Apple signing secrets are unset: the asset names
- * the release holds afterwards, and every `gh` call that put them there. The
- * job's own staging and publishing steps run under bash, as on its ubuntu
- * runner, over the Windows leg's artifact, with the job's and the step's env.
- * `gh` is the one external boundary, so a stand-in plays the release.
+ * What a workflow's `publish` job does after a run that built the given legs:
+ * the asset names the release holds afterwards, and every `gh` call that put
+ * them there. The job's own staging and publishing steps run under bash, as on
+ * its ubuntu runner, over each leg's artifact, with the job's and the step's
+ * env. `gh` is the one external boundary, so a stand-in plays the release.
  */
-const publishAfterWindowsOnlyRun = (workflowFile: string, assetsBefore: readonly string[] = []): PublishRun => {
+const publishAfterRun = (
+  workflowFile: string,
+  { legs, assetsBefore = [] }: { legs: readonly (keyof typeof LEG_ARTIFACTS)[]; assetsBefore?: readonly string[] },
+): PublishRun => {
   const publish = publishJobOf(workflowFile);
   const runDir = mkdtempSync(join(tmpdir(), "siqshift-publish-"));
   try {
-    const artifactDir = join(runDir, "downloaded", "TEST-BUILD-windows-1");
-    mkdirSync(artifactDir, { recursive: true });
-    for (const name of ["TEST-SIQshift_0.0.0_x64-setup.exe", "TEST-SIQshift_0.0.0_x64-setup.exe.sig", "TEST-BUILD.txt"]) {
-      writeFileSync(join(artifactDir, name), "");
+    for (const leg of legs) {
+      const artifactDir = join(runDir, "downloaded", `TEST-BUILD-${leg}-1`);
+      mkdirSync(artifactDir, { recursive: true });
+      for (const name of LEG_ARTIFACTS[leg]) writeFileSync(join(artifactDir, name), "");
     }
     mkdirSync(join(runDir, "bin"));
     writeFileSync(join(runDir, "bin", "gh"), fakeGh, { mode: 0o755 });
@@ -179,20 +197,13 @@ const releaseRefOf = (url: string): { tag: string; assetName: string } => {
   return { tag: segments.at(-2) ?? "", assetName: segments.at(-1) ?? "" };
 };
 
-/**
- * The earlier unsigned Mac file the live `unsigned-latest` release still holds,
- * which no run stages any more. It goes once the site links the signed Mac
- * file the publish job stages.
- */
-const earlierUnsignedMacAssetName = "SIQshift-UNSIGNED-TEST-macos-aarch64.dmg";
-
 describe("installer URLs", () => {
   // The publish jobs run on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
   it.skipIf(process.platform === "win32")(
     "send Windows to the installer the signed release uploads, once that release is published as latest",
     () => {
       // Act
-      const { assetsAfter, ghCalls } = publishAfterWindowsOnlyRun(releaseWorkflowPath);
+      const { assetsAfter, ghCalls } = publishAfterRun(releaseWorkflowPath, { legs: ["windows"] });
 
       // Assert: GitHub serves releases/latest/download/<name> from the latest release's asset of that name,
       // so the signed release must hold that asset and then be published, out of draft, as the latest.
@@ -208,31 +219,54 @@ describe("installer URLs", () => {
     },
   );
 
-  it("send Mac to the tag the test workflow's publish job publishes to", () => {
+  it("send Mac to the newest signed release, never the unsigned test release", () => {
     // Act
-    const tag = publishJobOf(workflowPath).env?.TAG;
+    const { pathname } = new URL(macInstallerUrl);
 
     // Assert
-    expect(releaseRefOf(macInstallerUrl).tag).toBe(tag);
+    expect(pathname).toMatch(/^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+\.dmg$/);
   });
+
+  // The publish jobs run on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
+  it.skipIf(process.platform === "win32")(
+    "send Mac to the installer the signed release uploads, once that release is published as latest",
+    () => {
+      // Act
+      const { assetsAfter, ghCalls } = publishAfterRun(releaseWorkflowPath, { legs: ["windows", "macos"] });
+
+      // Assert
+      expect(assetsAfter).toContain(releaseRefOf(macInstallerUrl).assetName);
+      const created = ghCalls.findIndex(([group, command]) => group === "release" && command === "create");
+      expect(created, "the publish job never creates the release").not.toBe(-1);
+      const createdTag = ghCalls[created]?.[2];
+      const isPublishedAsLatest = ghCalls.slice(created + 1).some(([group, command, tag, ...flags]) =>
+        group === "release" && command === "edit" && tag === createdTag
+        && flags.includes("--draft=false") && flags.includes("--latest"));
+      expect(isPublishedAsLatest).toBe(true);
+    },
+  );
 
   // The publish job runs on ubuntu-latest; on Windows `bash` is WSL's launcher, not that shell.
   it.skipIf(process.platform === "win32")(
-    "keep the earlier unsigned Mac file the Mac link names on the release when a run builds no signed Mac one",
+    "keep the test release's Mac file when a run there builds no signed Mac one",
     () => {
-      // Arrange: the release already holds the earlier Mac file and an asset no run stages any more.
-      // DEPLOY.md documents the test release's own Windows file as unsigned-latest/SIQshift-windows-x64-setup.exe.
+      // Arrange: the release already holds a Mac file from an earlier run and an asset no run stages any more.
+      // DEPLOY.md documents the test release's files as unsigned-latest/SIQshift-windows-x64-setup.exe and
+      // unsigned-latest/SIQshift-macos-universal.dmg.
       const unsignedWindowsAssetName = "SIQshift-windows-x64-setup.exe";
+      const unsignedMacAssetName = "SIQshift-macos-universal.dmg";
       const retiredAssetName = "SIQshift-retired.zip";
 
       // Act
-      const { assetsAfter } = publishAfterWindowsOnlyRun(workflowPath, [earlierUnsignedMacAssetName, retiredAssetName]);
+      const { assetsAfter } = publishAfterRun(workflowPath, {
+        legs: ["windows"],
+        assetsBefore: [unsignedMacAssetName, retiredAssetName],
+      });
 
-      // Assert: the run really published and cleaned up, and left the Mac file the Mac link names in place.
+      // Assert: the run really published and cleaned up, and left the Mac file in place.
       expect(assetsAfter).toContain(unsignedWindowsAssetName);
       expect(assetsAfter).not.toContain(retiredAssetName);
-      expect(assetsAfter).toContain(earlierUnsignedMacAssetName);
-      expect(assetsAfter).toContain(releaseRefOf(macInstallerUrl).assetName);
+      expect(assetsAfter).toContain(unsignedMacAssetName);
     },
   );
 });
@@ -277,12 +311,12 @@ describe("DownloadInstaller in the masthead", () => {
     render(<DownloadInstaller />);
     expect(screen.getByRole("button", { name: /download/i })).toHaveAttribute("title", installerNote);
 
-    // …and stated in the panel, tied to both installers.
+    // …and stated in the panel, each installer tied to how it is signed.
     const person = userEvent.setup();
     await person.click(screen.getByRole("button", { name: /download/i }));
-    for (const name of ["Download for Windows", "Mac installer (Apple silicon)"]) {
-      expect(screen.getByRole("link", { name })).toHaveAccessibleDescription(installerNote);
-    }
+    expect(screen.getByRole("link", { name: "Download for Windows" })).toHaveAccessibleDescription(installerNote);
+    expect(screen.getByRole("link", { name: "Mac installer (Apple silicon and Intel)" }))
+      .toHaveAccessibleDescription(macInstallerNote);
   });
 
   it("offers Windows as the primary download with the newest build's URL", async () => {
@@ -296,9 +330,29 @@ describe("DownloadInstaller in the masthead", () => {
   it("carries the Mac build in the same panel, secondary to Windows", async () => {
     await openMenu();
 
-    const mac = screen.getByRole("link", { name: "Mac installer (Apple silicon)" });
+    const mac = screen.getByRole("link", { name: "Mac installer (Apple silicon and Intel)" });
     expect(mac).toHaveAttribute("href", macInstallerUrl);
     expect(mac).not.toHaveClass("is-primary");
+    expect(screen.getAllByRole("link", { name: /download/i })).toHaveLength(1);
+  });
+
+  it("offers a Mac visitor the Mac build first, and Windows beside it", async () => {
+    // Arrange
+    browseFromAMac();
+
+    // Act
+    await openMenu();
+
+    // Assert
+    expect(screen.getByRole("button", { name: /download/i })).toHaveAttribute("title", macInstallerNote);
+    const mac = screen.getByRole("link", { name: "Download for Mac" });
+    expect(mac).toHaveAttribute("href", macInstallerUrl);
+    expect(mac).toHaveClass("is-primary");
+    expect(mac).toHaveAccessibleDescription(macInstallerNote);
+    const windows = screen.getByRole("link", { name: "Windows installer (64-bit)" });
+    expect(windows).toHaveAttribute("href", windowsInstallerUrl);
+    expect(windows).not.toHaveClass("is-primary");
+    expect(windows).toHaveAccessibleDescription(installerNote);
     expect(screen.getAllByRole("link", { name: /download/i })).toHaveLength(1);
   });
 
@@ -332,8 +386,24 @@ describe("DownloadInstaller in the welcome hero", () => {
     expect(windows).toHaveAttribute("href", windowsInstallerUrl);
     expect(windows).toHaveClass("download-button");
     expect(windows).toHaveAccessibleDescription(installerNote);
-    expect(screen.getByRole("link", { name: "Mac installer (Apple silicon)" }))
-      .toHaveAttribute("href", macInstallerUrl);
+    const mac = screen.getByRole("link", { name: "Mac installer (Apple silicon and Intel)" });
+    expect(mac).toHaveAttribute("href", macInstallerUrl);
+    expect(mac).toHaveAccessibleDescription(macInstallerNote);
+  });
+
+  it("hands a Mac visitor the Mac build as the download", () => {
+    // Arrange
+    browseFromAMac();
+
+    // Act
+    render(<DownloadInstaller placement="hero" />);
+
+    // Assert
+    const mac = screen.getByRole("link", { name: "Download for Mac" });
+    expect(mac).toHaveAttribute("href", macInstallerUrl);
+    expect(mac).toHaveClass("download-button");
+    expect(mac).toHaveAccessibleDescription(macInstallerNote);
+    expect(screen.getByRole("link", { name: "Windows installer (64-bit)" })).toHaveAttribute("href", windowsInstallerUrl);
   });
 });
 
@@ -343,5 +413,17 @@ describe("InstallerLink", () => {
 
     expect(screen.getByRole("link", { name: "Download for Windows" }))
       .toHaveAttribute("href", windowsInstallerUrl);
+  });
+
+  it("hands a Mac visitor the Mac installer", () => {
+    // Arrange
+    browseFromAMac();
+
+    // Act
+    render(<InstallerLink />);
+
+    // Assert
+    expect(screen.getByRole("link", { name: "Download for Mac" })).toHaveAttribute("href", macInstallerUrl);
+    expect(screen.queryByRole("link", { name: "Download for Windows" })).not.toBeInTheDocument();
   });
 });

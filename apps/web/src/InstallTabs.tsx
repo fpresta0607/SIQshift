@@ -1,27 +1,29 @@
 import { useId, useState, type KeyboardEvent } from "react";
 
-import { DownloadIcon, installerNote, windowsInstallerUrl } from "./DownloadInstaller.js";
-
-type System = "windows" | "mac";
+import {
+  DownloadIcon,
+  installerNote,
+  macInstallerNote,
+  macInstallerUrl,
+  visitorSystem,
+  windowsInstallerUrl,
+  type System,
+} from "./DownloadInstaller.js";
 
 const SYSTEMS = [
   { id: "windows", label: "Windows" },
   { id: "mac", label: "Mac" },
 ] as const satisfies readonly { id: System; label: string }[];
 
-/** The visitor's own system, read from the browser. Anything that is not a Mac starts on Windows. */
-const visitorSystem = (): System => (/Macintosh|Mac OS X/.test(navigator.userAgent) ? "mac" : "windows");
-
 /**
  * The landing hero's install control: one Windows or Mac selector that opens
  * on the visitor's own system, before anyone has an account.
  *
- * It only ever offers a signed release build. No release carries a signed Mac
- * build yet, so the Mac panel links nothing and says so, rather than offering
- * the unsigned test file the dashboard still carries.
+ * It only ever offers a signed release build.
  */
 export const InstallTabs = () => {
   const noteId = useId();
+  const macNoteId = useId();
   const [selected, setSelected] = useState<System>(visitorSystem);
 
   const selectWithKeyboard = (event: KeyboardEvent<HTMLDivElement>): void => {
@@ -73,8 +75,11 @@ export const InstallTabs = () => {
           <p className="landing-install-note">For 64-bit Windows. Updates install themselves.</p>
         </div>
         <div role="tabpanel" id="install-panel-mac" aria-labelledby="install-tab-mac" className={panelClass("mac")}>
-          <p className="landing-install-status">Coming soon</p>
-          <p className="landing-install-note">Signed by SIQstack LLC and notarized by Apple, for Apple silicon and Intel Macs.</p>
+          <a className="landing-secondary landing-install-download" href={macInstallerUrl} rel="noreferrer" aria-describedby={macNoteId}>
+            <DownloadIcon />
+            Download for Mac
+          </a>
+          <p className="landing-install-note" id={macNoteId}>{macInstallerNote}</p>
           <ul className="landing-install-differences" aria-label="What is different on a Mac">
             <li>macOS asks once for your Documents, Desktop and Downloads folders. Allow it, or commits in projects kept there are not linked to your hours.</li>
             <li>SIQshift opens at login. Turn that off in System Settings and nothing is recorded until you open it.</li>
