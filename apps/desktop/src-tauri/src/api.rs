@@ -1628,10 +1628,9 @@ mod tests {
         assert_eq!(echoed["tokenTotals"]["tokensIn"], 1_000);
         assert_eq!(echoed["tokenTotals"]["tokens"], 1_200);
 
-        let older: AgentShifts = serde_json::from_str(
-            r#"{"groups": [{"groupKey": "siqshift", "repo": "siqshift"}]}"#,
-        )
-        .expect("an older shape decodes");
+        let older: AgentShifts =
+            serde_json::from_str(r#"{"groups": [{"groupKey": "siqshift", "repo": "siqshift"}]}"#)
+                .expect("an older shape decodes");
         let wire = serde_json::to_value(&older).expect("serializes");
         assert!(wire["groups"][0].get("tokens").is_none());
         assert!(wire.get("runtimes").is_none());
