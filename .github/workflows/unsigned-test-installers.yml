@@ -651,7 +651,7 @@ jobs:
           update itself, because its binary has no updater in it: install this
           build once by hand and every build after it is automatic. macOS still
           updates by hand, because the updater installs from an app archive
-          rather than the `.dmg` this workflow builds.
+          rather than the \`.dmg\` this workflow builds.
 
           This tag and these file names never change. Every run of the *Unsigned
           test installers* workflow replaces the assets in place, so the links
