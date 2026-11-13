@@ -1373,8 +1373,8 @@ describe("the board with and without the fold", () => {
 
     const [workspace, board] = await Promise.all([service.workspace(subject, filters), service.leaderboard(subject, filters)]);
 
-    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })))
-      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })));
+    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, userId: user.id, activeSeconds, agentSeconds })))
+      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, userId: user.id, activeSeconds, agentSeconds })));
     expect(board.entries.every((entry) => entry.activeSeconds > 0)).toBe(true);
     expect(workspace.activeSeconds).toBe(board.entries.reduce((total, entry) => total + entry.activeSeconds, 0));
     expect(workspace.agentSeconds).toBe(board.entries.reduce((total, entry) => total + entry.agentSeconds, 0));

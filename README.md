@@ -668,6 +668,8 @@ organization are derived from verified claims, never from the request body.
 | `GET` | `/reports/agent-shifts/rows` | one codebase group's shifts, a page at a time; `groupKey` names the group the aggregate returned |
 | `GET` | `/me/stats` | the caller's totals per project, per app, and per agent; an optional `?userId=` opens a teammate's |
 | `GET` `PUT` | `/me/preferences` | the web dashboard's scope+range view state |
+| `PUT` `DELETE` | `/me/picture` | upload or remove the caller's own picture: raw JPEG, PNG or WebP bytes up to 128 KiB, the type read from the bytes rather than the header; answers the signed-in user with the picture's new `pictureVersion` |
+| `GET` | `/users/:userId/picture` | a workspace member's picture; cached for good under `?v=<pictureVersion>` and revalidated without it; `404` for a member without one and for anyone outside the workspace |
 | `GET` | `/agents` | the org's roster of agent identities |
 | `PATCH` | `/agents/:id` | rename (which registers an anonymous agent), retire, or re-own an agent |
 | `POST` | `/agents/:id/merge` | merge one agent into another; admin-only |

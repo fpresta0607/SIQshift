@@ -17,6 +17,7 @@ import type {
   AppTotalRecord,
   LeaderboardRowRecord,
   MemberProjectTotalRecord,
+  MemberRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
   ReportLookupRecord,
@@ -102,7 +103,7 @@ class Reports implements ReportRepository {
     const middle = Math.floor(lengths.length / 2);
     return lengths.length % 2 === 1 ? lengths[middle]! : Math.round((lengths[middle - 1]! + lengths[middle]!) / 2);
   }
-  public roster: { id: string; name: string }[] = [];
+  public roster: MemberRecord[] = [];
   public async readMembersForOrganization() {
     return this.roster;
   }
@@ -797,8 +798,8 @@ describe("leaderboard", () => {
   it("lists a roster member with no recorded time at all as a zero row", async () => {
     const reports = new Reports();
     reports.roster = [
-      { id: ids.user, name: "Alex" },
-      { id: ids.otherUser, name: "Sam" },
+      { id: ids.user, name: "Alex", pictureVersion: null },
+      { id: ids.otherUser, name: "Sam", pictureVersion: null },
     ];
     const service = createReportService({ reports, agents });
 
@@ -808,6 +809,17 @@ describe("leaderboard", () => {
       ["Alex", 0, 0],
       ["Sam", 0, 0],
     ]);
+  });
+
+  it("names a roster-only member by id and name alone, whatever else the roster read carries", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex", pictureVersion: "1111111111111111" }];
+    const service = createReportService({ reports, agents });
+
+    const result = await service.leaderboard(subject, {});
+
+    // The board's schema is strict: a picture version riding along would fail its route.
+    expect(result.entries.map((entry) => entry.user)).toEqual([{ id: ids.user, name: "Alex" }]);
   });
 
   it("maps the unassigned scope onto default-attributed sessions", async () => {
@@ -918,7 +930,11 @@ describe("workspace report", () => {
   /** Alex works 9-11 with two agents through 9-10; Sam works 9-10 with one agent through 10-12; Riley records nothing. */
   const team = (): Reports => {
     const reports = new Reports();
-    reports.roster = [alex, sam, riley];
+    reports.roster = [
+      { ...alex, pictureVersion: "1111111111111111" },
+      { ...sam, pictureVersion: null },
+      { ...riley, pictureVersion: "3333333333333333" },
+    ];
     reports.leaderboardRows = [
       { user: alex, durationSeconds: 7_200, sessionCount: 2, attributedSeconds: 7_200 },
       { user: sam, durationSeconds: 4_200, sessionCount: 2, attributedSeconds: 4_200 },
@@ -964,9 +980,9 @@ describe("workspace report", () => {
       { source: "claude_code", durationSeconds: 3_600 },
     ]);
     expect(result.members).toEqual([
-      { rank: 1, user: alex, activeSeconds: 7_200, agentSeconds: 7_200, project: timer },
-      { rank: 2, user: sam, activeSeconds: 3_600, agentSeconds: 7_200, project: side },
-      { rank: 3, user: riley, activeSeconds: 0, agentSeconds: 0, project: null },
+      { rank: 1, user: { ...alex, pictureVersion: "1111111111111111" }, activeSeconds: 7_200, agentSeconds: 7_200, project: timer },
+      { rank: 2, user: { ...sam, pictureVersion: null }, activeSeconds: 3_600, agentSeconds: 7_200, project: side },
+      { rank: 3, user: { ...riley, pictureVersion: "3333333333333333" }, activeSeconds: 0, agentSeconds: 0, project: null },
     ]);
   });
 
@@ -985,14 +1001,14 @@ describe("workspace report", () => {
 
     const [workspace, board] = await Promise.all([service.workspace(subject, oneDay), service.leaderboard(subject, oneDay)]);
 
-    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })))
-      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })));
+    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, userId: user.id, activeSeconds, agentSeconds })))
+      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, userId: user.id, activeSeconds, agentSeconds })));
     expect(workspace.members.map((member) => member.rank)).toEqual([1, 1, 3]);
   });
 
   it("shows a workspace of one as one row, theirs, with totals and graph equal to their own card", async () => {
     const reports = team();
-    reports.roster = [alex];
+    reports.roster = reports.roster.filter((member) => member.id === alex.id);
     reports.leaderboardRows = reports.leaderboardRows.filter((row) => row.user.id === alex.id);
     reports.presenceIntervals = reports.presenceIntervals.filter((row) => row.user.id === alex.id);
     reports.agentIntervals = reports.agentIntervals.filter((row) => row.user.id === alex.id);
@@ -1001,7 +1017,7 @@ describe("workspace report", () => {
 
     const [workspace, card] = await Promise.all([service.workspace(subject, oneDay), service.meStats(subject, oneDay)]);
 
-    expect(workspace.members).toEqual([{ rank: 1, user: alex, activeSeconds: 7_200, agentSeconds: 7_200, project: timer }]);
+    expect(workspace.members).toEqual([{ rank: 1, user: { ...alex, pictureVersion: "1111111111111111" }, activeSeconds: 7_200, agentSeconds: 7_200, project: timer }]);
     expect(workspace.activeSeconds).toBe(card.activeSeconds);
     expect(workspace.agentSeconds).toBe(card.agentSeconds);
     expect(workspace.hourly).toEqual(card.hourly.map(({ hourStart, activeSeconds, agentSeconds }) => ({ hourStart, activeSeconds, agentSeconds })));

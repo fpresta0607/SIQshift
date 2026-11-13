@@ -1,4 +1,4 @@
-import type { ActivitySegmentKind, AgentSource, SessionAttribution } from "@siqshift/shared";
+import type { ActivitySegmentKind, AgentSource, PictureType, SessionAttribution } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "./auth.js";
 
@@ -73,6 +73,27 @@ export interface ViewPreferencesRecord {
   range: string;
 }
 
+/** A stored picture: the type its bytes declare, the bytes, and the version that names them. */
+export interface PictureRecord {
+  contentType: PictureType;
+  bytes: Uint8Array;
+  version: string;
+}
+
+/**
+ * Pictures by upload only. The write path names no user id: a member saves
+ * and removes their own picture alone, and a read stays inside the subject's
+ * organization.
+ */
+export interface PictureRepository {
+  /** Stores the caller's picture and its version in one transaction, replacing any before it. */
+  save(subject: AuthenticatedSubject, picture: PictureRecord): Promise<void>;
+  /** Deletes the caller's picture and clears its version; having none is not an error. */
+  remove(subject: AuthenticatedSubject): Promise<void>;
+  /** A member's picture; null for no picture, or for anyone outside the subject's organization. */
+  find(subject: AuthenticatedSubject, userId: string): Promise<PictureRecord | null>;
+}
+
 /** The one dashboard view state both surfaces share; one row per member, last write wins. */
 export interface ViewPreferencesRepository {
   readForMember(subject: AuthenticatedSubject): Promise<ViewPreferencesRecord | null>;
@@ -136,6 +157,11 @@ export interface SessionRepository {
 export interface ReportLookupRecord {
   id: string;
   name: string;
+}
+
+/** A workspace member as the board lists them; the picture version is null without a picture. */
+export interface MemberRecord extends ReportLookupRecord {
+  pictureVersion: string | null;
 }
 
 export interface ReportRowRecord {
@@ -330,7 +356,7 @@ export interface ReportRepository {
    */
   readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null>;
   /** Every member of the workspace, so the board can list them all - zeros included. */
-  readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]>;
+  readMembersForOrganization(subject: AuthenticatedSubject): Promise<MemberRecord[]>;
   /** Per-project totals for one member — the reporting math scoped to the caller for /me/stats. */
   readProjectTotalsForMember(subject: AuthenticatedSubject, query: ReportQuery): Promise<ProjectTotalRecord[]>;
   /** Recorded time per member and project across the caller's workspace, for the workspace view's projects and each member's top project. */

@@ -56,6 +56,7 @@ import {
   sessionStatusValues,
   sessionStopRequestSchema,
   sessionStopResponseSchema,
+  workspaceMemberSchema,
   workspaceReportResponseSchema,
 } from "./contracts.js";
 
@@ -100,6 +101,18 @@ describe("authentication contracts", () => {
       user: { id: ids.user, email: "alex@example.com", name: "Alex Morgan", organizationId: ids.organization },
       accessToken: "leaked",
     })).toThrow();
+  });
+
+  it.each([
+    { label: "accepts an account with a picture version", pictureVersion: "0123456789abcdef", isAccepted: true },
+    { label: "accepts an account without a picture", pictureVersion: null, isAccepted: true },
+    { label: "refuses an empty picture version", pictureVersion: "", isAccepted: false },
+  ])("$label", ({ pictureVersion, isAccepted }) => {
+    const parsed = meResponseSchema.safeParse({
+      user: { id: ids.user, email: "alex@example.com", name: "Alex Morgan", organizationId: ids.organization, pictureVersion },
+    });
+
+    expect(parsed.success).toBe(isAccepted);
   });
 });
 
@@ -366,6 +379,23 @@ describe("session contracts", () => {
 });
 
 describe("report and error contracts", () => {
+  it.each([
+    { label: "accepts a workspace member with a picture version", picture: { pictureVersion: "0123456789abcdef" }, isAccepted: true },
+    { label: "accepts a workspace member without a picture", picture: { pictureVersion: null }, isAccepted: true },
+    { label: "accepts a workspace member from a server that predates pictures", picture: {}, isAccepted: true },
+    { label: "refuses a workspace member with an empty picture version", picture: { pictureVersion: "" }, isAccepted: false },
+  ])("$label", ({ picture, isAccepted }) => {
+    const parsed = workspaceMemberSchema.safeParse({
+      rank: 1,
+      user: { id: ids.user, name: "Alex Morgan", ...picture },
+      activeSeconds: 3_600,
+      agentSeconds: 0,
+      project: null,
+    });
+
+    expect(parsed.success).toBe(isAccepted);
+  });
+
   it("accepts inclusive report filters", () => {
     expect(
       reportFiltersSchema.parse({

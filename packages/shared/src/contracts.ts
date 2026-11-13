@@ -42,6 +42,8 @@ export const userSchema = z
     name: z.string().min(1),
     organizationId: idSchema,
     role: z.enum(["admin", "member"]).default("member"),
+    /** Names the stored picture in its URL; null without one, absent from a server that predates pictures. */
+    pictureVersion: z.string().min(1).nullable().optional(),
   })
   .strict();
 
@@ -248,7 +250,12 @@ export const workspaceHourlyBucketSchema = z
 export const workspaceMemberSchema = z
   .object({
     rank: z.number().int().positive(),
-    user: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+    user: z.object({
+      id: idSchema,
+      name: z.string().min(1),
+      /** Names the member's picture in its URL; null without one, absent from a server that predates pictures. */
+      pictureVersion: z.string().min(1).nullable().optional(),
+    }).strict(),
     activeSeconds: z.number().int().nonnegative().safe(),
     agentSeconds: z.number().int().nonnegative().safe(),
     /** The project with the most recorded time in range; null for a member who recorded none. */

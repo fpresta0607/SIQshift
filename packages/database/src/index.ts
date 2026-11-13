@@ -18,6 +18,7 @@ export {
   shiftCommits,
   timeSessions,
   userDailyRollups,
+  userPictures,
   userProjectSelections,
   users,
   userViewPreferences,

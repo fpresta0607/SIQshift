@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -50,6 +51,9 @@ export const users = pgTable(
     email: text("email").notNull(),
     name: text("name").notNull(),
     role: text("role").$type<"admin" | "member">().default("member").notNull(),
+    // A short token naming the stored picture, null without one: the only
+    // picture fact any other read may select.
+    pictureVersion: text("picture_version"),
     ...auditColumns,
   },
   (table) => [
@@ -57,6 +61,28 @@ export const users = pgTable(
     unique("users_organization_id_email_unique").on(table.organizationId, table.email),
     check("users_role_valid", sql`${table.role} in ('admin', 'member')`),
     index("users_organization_id_idx").on(table.organizationId),
+  ],
+);
+
+const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+// A member's uploaded picture, apart from `users` so no read of a member can
+// carry its bytes: they leave the database only on the picture read itself,
+// which a client caches for good under users.picture_version.
+export const userPictures = pgTable(
+  "user_pictures",
+  {
+    userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+    contentType: text("content_type").$type<"image/jpeg" | "image/png" | "image/webp">().notNull(),
+    bytes: bytea("bytes").notNull(),
+    ...auditColumns,
+  },
+  (table) => [
+    check("user_pictures_content_type_valid", sql`${table.contentType} in ('image/jpeg', 'image/png', 'image/webp')`),
   ],
 );
 

@@ -654,7 +654,8 @@ function rankMembers(
   // teammate with no recorded time today reads as "0s", never as missing.
   for (const user of roster) {
     if (legacyById.has(user.id)) continue;
-    const empty = { rank: 0, user, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
+    // The board names a member by id and name alone, whatever else the roster read carried.
+    const empty = { rank: 0, user: { id: user.id, name: user.name }, durationSeconds: 0, sessionCount: 0, attributedSeconds: 0, unattributedSeconds: 0 };
     legacy.push(empty);
     legacyById.set(user.id, empty);
   }
@@ -968,6 +969,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       const members = collectMembers(presence, sessions, agentIntervals);
       const entries = rankMembers(rows, roster, measureMembersFromPlan(members, plan, query));
       const range = queryRange(query);
+      const pictureVersions = new Map(roster.map((member) => [member.id, member.pictureVersion]));
 
       // Active time is a union per person, so the team's line is each
       // member's own series added up, never one union across people.
@@ -1028,7 +1030,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           .sort((a, b) => b.durationSeconds - a.durationSeconds || a.source.localeCompare(b.source)),
         members: entries.map((entry) => ({
           rank: entry.rank,
-          user: entry.user,
+          user: { ...entry.user, pictureVersion: pictureVersions.get(entry.user.id) ?? null },
           activeSeconds: entry.activeSeconds,
           agentSeconds: entry.agentSeconds,
           project: topProjects.get(entry.user.id)?.project ?? null,

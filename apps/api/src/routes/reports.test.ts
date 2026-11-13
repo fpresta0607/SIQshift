@@ -79,7 +79,7 @@ class Reports implements ReportRepository {
     throw new Error("not used by these routes");
   }
   public async readMembersForOrganization() {
-    return [{ id: ids.user, name: "Alex" }];
+    return [{ id: ids.user, name: "Alex", pictureVersion: "1111111111111111" }];
   }
   public async readPresenceIntervals() {
     return [{ user: { id: ids.user, name: "Alex" }, startedAt: new Date("2026-08-06T13:00:00.000Z"), endedAt: new Date("2026-08-06T14:00:00.000Z") }];
@@ -172,6 +172,7 @@ describe("report routes", () => {
     expect(body.hourly[13]).toEqual({ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_600, agentSeconds: 0 });
     expect(body.projects[0].project).toEqual({ id: ids.project, name: "Timer", ...DEFAULT_PROJECT_APPEARANCE });
     expect(body.members[0].project).toEqual({ id: ids.project, name: "Timer" });
+    expect(body.members[0].user).toEqual({ id: ids.user, name: "Alex", pictureVersion: "1111111111111111" });
   });
 
   it("refuses a workspace read without a token, outside the workspace, or naming one member", async () => {

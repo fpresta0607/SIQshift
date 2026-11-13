@@ -233,3 +233,5 @@ export {
   projectAppearance,
 } from "./project-appearance.js";
 export type { ProjectAppearance, ProjectColor, ProjectIcon } from "./project-appearance.js";
+export { PICTURE_MAX_BYTES, PICTURE_TYPES, pictureTypeOf } from "./picture.js";
+export type { PictureType } from "./picture.js";

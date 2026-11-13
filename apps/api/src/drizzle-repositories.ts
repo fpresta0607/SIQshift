@@ -16,6 +16,7 @@ import {
   shiftCommits,
   timeSessions,
   userDailyRollups,
+  userPictures,
   userProjectSelections,
   users,
   userViewPreferences,
@@ -72,12 +73,15 @@ import {
   type InsertEndedAgentSession,
   type LeaderboardRowRecord,
   type MemberProjectTotalRecord,
+  type MemberRecord,
   type ObservedSessionInsert,
   type RollupCoverage,
   type UserDailyRollupRecord,
   type UserDailyRollupRepository,
   type PathMappingRecord,
   type PathMappingRepository,
+  type PictureRecord,
+  type PictureRepository,
   type ProjectRecord,
   type ProjectRepository,
   type ProjectTotalRecord,
@@ -356,6 +360,49 @@ export class DrizzleViewPreferencesRepository implements ViewPreferencesReposito
   }
 }
 
+/** One picture per member, keyed by the member, so a second upload replaces the first. */
+export class DrizzlePictureRepository implements PictureRepository {
+  public constructor(private readonly db: DatabaseConnection["db"]) {}
+
+  public async save(subject: AuthenticatedSubject, picture: PictureRecord): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(userPictures)
+        .values({ userId: subject.userId, contentType: picture.contentType, bytes: picture.bytes })
+        .onConflictDoUpdate({
+          target: userPictures.userId,
+          set: { contentType: picture.contentType, bytes: picture.bytes, updatedAt: sql`now()` },
+        });
+      await tx
+        .update(users)
+        .set({ pictureVersion: picture.version, updatedAt: sql`now()` })
+        .where(and(eq(users.id, subject.userId), eq(users.organizationId, subject.organizationId)));
+    });
+  }
+
+  public async remove(subject: AuthenticatedSubject): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.delete(userPictures).where(eq(userPictures.userId, subject.userId));
+      await tx
+        .update(users)
+        .set({ pictureVersion: null, updatedAt: sql`now()` })
+        .where(and(eq(users.id, subject.userId), eq(users.organizationId, subject.organizationId)));
+    });
+  }
+
+  public async find(subject: AuthenticatedSubject, userId: string): Promise<PictureRecord | null> {
+    const rows = await this.db
+      .select({ contentType: userPictures.contentType, bytes: userPictures.bytes, version: users.pictureVersion })
+      .from(userPictures)
+      .innerJoin(users, eq(users.id, userPictures.userId))
+      .where(and(eq(userPictures.userId, userId), eq(users.organizationId, subject.organizationId)))
+      .limit(1);
+    const row = rows[0];
+    if (row === undefined || row.version === null) return null;
+    return { contentType: row.contentType, bytes: row.bytes, version: row.version };
+  }
+}
+
 export class DrizzleSessionRepository implements SessionRepository {
   public constructor(private readonly db: DatabaseConnection["db"]) {}
 
@@ -469,7 +516,7 @@ export class DrizzleAccountStore implements AccountStore {
       }
 
       const [current] = await tx
-        .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role })
+        .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion })
         .from(users)
         .where(eq(users.id, subject.userId))
         .limit(1);
@@ -537,7 +584,7 @@ export class DrizzleAccountStore implements AccountStore {
         .update(users)
         .set({ organizationId: target.id, role: "member", updatedAt: new Date() })
         .where(eq(users.id, subject.userId))
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (moved === undefined) throw new Error("Failed to move the account into its new organization.");
 
       const active = await tx
@@ -608,7 +655,7 @@ export class DrizzleAccountStore implements AccountStore {
           eq(users.organizationId, subject.organizationId),
           eq(users.role, "member"),
         ))
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (user === undefined) throw new Error("The first-admin claimant was no longer an active member.");
       return { kind: "claimed", user };
     });
@@ -667,7 +714,7 @@ export class DrizzleAccountStore implements AccountStore {
           email: identity.email,
           name: identity.name,
         })
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (user === undefined) throw new Error("Failed to create a user for a joining account.");
 
       const active = await tx
@@ -690,7 +737,7 @@ export class DrizzleAccountStore implements AccountStore {
 
   private async find(authUserId: string): Promise<AuthenticatedUser | null> {
     const rows = await this.db
-      .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role })
+      .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion })
       .from(users)
       .where(eq(users.id, authUserId))
       .limit(1);
@@ -702,7 +749,7 @@ export class DrizzleAccountStore implements AccountStore {
       .update(users)
       .set({ email: identity.email, name: identity.name, updatedAt: new Date() })
       .where(eq(users.id, identity.authUserId))
-      .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+      .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
     const row = rows[0];
     if (row === undefined) throw new Error("The signed-in account disappeared during profile sync.");
     return row;
@@ -728,7 +775,7 @@ export class DrizzleAccountStore implements AccountStore {
           name: identity.name,
           role: "admin",
         })
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (user === undefined) throw new Error("Failed to create a user for a new account.");
 
       await tx
@@ -1156,9 +1203,9 @@ export class DrizzleReportRepository implements ReportRepository {
     }));
   }
 
-  public async readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]> {
+  public async readMembersForOrganization(subject: AuthenticatedSubject): Promise<MemberRecord[]> {
     return this.db
-      .select({ id: users.id, name: users.name })
+      .select({ id: users.id, name: users.name, pictureVersion: users.pictureVersion })
       .from(users)
       .where(eq(users.organizationId, subject.organizationId))
       .orderBy(asc(users.id));
