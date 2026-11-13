@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import type { AccountSnapshot, SignedInAccount } from "./account.js";
+import type { AccountSnapshot, SignedInAccount, TimerProject } from "./account.js";
 import { sourceLabel } from "./agent-sources.js";
 import {
   bridgeError,
@@ -28,6 +28,7 @@ import {
   findAgentRuntime,
   formatDuration,
   formatHumanDuration as formatHuman,
+  projectAppearance,
   type AgentRuntimeReportsModel,
 } from "@siqshift/shared";
 import {
@@ -36,6 +37,8 @@ import {
   MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
+  ProjectIconPicker,
+  ProjectIconTile,
   QuietMark,
   SegmentedControl,
   buildAppRows,
@@ -56,6 +59,7 @@ import {
   TeamViewTabs,
   TimeChartCard,
   WorkspaceView,
+  reportedAppearance,
   workspaceBreakdownRows,
 } from "@siqshift/shared/workspace-view";
 
@@ -238,6 +242,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [quietDraft, setQuietDraft] = useState("");
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [renamingProjectId, setRenamingProjectId] = useState<string | undefined>();
+  const [pickingProject, setPickingProject] = useState<TimerProject | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
   const [deletingProject, setDeletingProject] = useState<{ id: string; name: string; usage: ProjectUsage } | undefined>();
   const [deleteReassignTo, setDeleteReassignTo] = useState("");
@@ -1611,7 +1616,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                       id: member.user.id,
                       rank: member.rank,
                       name: member.user.name,
-                      project: member.project?.name ?? null,
+                      project: member.project === null
+                        ? null
+                        : { name: member.project.name, appearance: reportedAppearance(workspace.projects, member.project.id) },
                       activeSeconds: member.activeSeconds,
                       agentSeconds: member.agentSeconds,
                       isSelf: member.user.id === ready.user.id,
@@ -1676,7 +1683,10 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                           <ul className="app-list" data-testid="member-project-list">
                             {boardProjectRows.map((entry) => (
                               <li key={entry.id} className="app-row">
-                                <span className="app-name">{entry.name}</span>
+                                <span className="app-name">
+                                  <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], entry.id)} />
+                                  {entry.name}
+                                </span>
                                 <span className="app-duration">{formatHuman(entry.durationSeconds)}</span>
                               </li>
                             ))}
@@ -1831,7 +1841,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
 
                 <details className="settings-group">
                   <summary>Projects</summary>
-                  {deletingProject === undefined ? (
+                  {pickingProject !== undefined ? (
+                    <ProjectIconPicker
+                      projectName={pickingProject.name}
+                      appearance={projectAppearance({ ...pickingProject, isDefault: pickingProject.id === ready.defaultProjectId })}
+                      isBusy={projectBusy}
+                      onCancel={() => setPickingProject(undefined)}
+                      onSave={(appearance) => {
+                        void manageProject(async (service) => {
+                          await service.projectUpdate(pickingProject.id, appearance);
+                          setPickingProject(undefined);
+                        });
+                      }}
+                    />
+                  ) : deletingProject === undefined ? (
                     <ul className="manage-list" data-testid="project-manage-list">
                       {ready.projects.map((item) => (
                         <li key={item.id} className="manage-row">
@@ -1858,11 +1881,12 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                           ) : (
                             <>
                               <span className="manage-name">
-                                <span className="project-dot" aria-hidden="true" style={item.color === null ? undefined : { background: item.color }} />
+                                <ProjectIconTile appearance={projectAppearance({ ...item, isDefault: item.id === ready.defaultProjectId })} />
                                 {item.name}
                                 {item.id === ready.defaultProjectId && <span className="you-tag"> default</span>}
                               </span>
                               <span className="manage-actions">
+                                <button type="button" disabled={projectBusy} onClick={() => setPickingProject(item)}>Change icon</button>
                                 <button type="button" disabled={projectBusy} onClick={() => { setRenamingProjectId(item.id); setRenameDraft(item.name); }}>Rename</button>
                                 {item.id !== ready.defaultProjectId && (
                                   <button

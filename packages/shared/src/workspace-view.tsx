@@ -3,6 +3,8 @@ import { useId, type ReactNode } from "react";
 import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount } from "./format.js";
 import { MemberAvatar } from "./member-avatar.js";
+import { projectAppearance, type ProjectAppearance } from "./project-appearance.js";
+import { ProjectIconTile } from "./project-icon-tile.js";
 import { TeamTotals } from "./team-totals.js";
 import { TimeChartCard } from "./time-chart-card.js";
 import { formatHumanDuration } from "./time.js";
@@ -38,7 +40,7 @@ export type WorkspaceViewMember = {
   rank: number;
   name: string;
   /** The project this member spent most time on, or null when none had any. */
-  project: string | null;
+  project: { name: string; appearance: ProjectAppearance } | null;
   activeSeconds: number;
   agentSeconds: number;
   isSelf: boolean;
@@ -57,8 +59,6 @@ export type WorkspaceViewProps = {
   boardNotes: readonly string[];
   projectRows: readonly MeterRow[];
   agentRows: readonly MeterRow[];
-  /** Image URLs for project rows, by row key. */
-  projectIcons?: Readonly<Record<string, string>>;
 };
 
 /** Why a project can hold more time than the Active time total above it. */
@@ -70,9 +70,24 @@ const shareRows = (rows: readonly Omit<MeterRow, "share">[]): MeterRow[] => {
   return rows.map((row) => ({ ...row, share: longest === 0 ? 0 : Math.round((row.durationSeconds / longest) * 100) }));
 };
 
+/** A project as a workspace report names it, with the icon and color a server that predates them leaves out. */
+type ReportedProject = { id: string; name: string; icon?: string | null | undefined; color?: string | null | undefined };
+
+/**
+ * The icon and color a workspace report gives a project, or the pair its id
+ * assigns when the report does not list it or predates them.
+ */
+export const reportedAppearance = (
+  projects: readonly { project: ReportedProject }[],
+  projectId: string,
+): ProjectAppearance => {
+  const reported = projects.find((entry) => entry.project.id === projectId)?.project;
+  return projectAppearance({ id: projectId, isDefault: false, icon: reported?.icon, color: reported?.color });
+};
+
 /** A workspace report's two breakdowns as meter rows, in the order the report gives them. */
 export const workspaceBreakdownRows = (report: {
-  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[];
+  projects: readonly { project: ReportedProject; durationSeconds: number }[];
   agents: readonly { source: string; durationSeconds: number }[];
 }): { projectRows: MeterRow[]; agentRows: MeterRow[] } => ({
   projectRows: shareRows(report.projects.map((entry) => ({
@@ -80,6 +95,7 @@ export const workspaceBreakdownRows = (report: {
     label: entry.project.name,
     source: undefined,
     processName: undefined,
+    appearance: projectAppearance({ id: entry.project.id, isDefault: false, icon: entry.project.icon, color: entry.project.color }),
     durationSeconds: entry.durationSeconds,
   }))),
   agentRows: shareRows(report.agents.map((entry) => ({
@@ -102,7 +118,6 @@ export const WorkspaceView = ({
   boardNotes,
   projectRows,
   agentRows,
-  projectIcons,
 }: WorkspaceViewProps) => {
   const boardTitleId = useId();
   const projectsTitleId = useId();
@@ -147,7 +162,12 @@ export const WorkspaceView = ({
                       <MemberAvatar id={member.id} name={member.name} />
                       <span className="tv-name">
                         <span>{member.name}{member.isSelf && <span className="tv-you">You</span>}</span>
-                        {member.project !== null && <span className="tv-sub">{member.project}</span>}
+                        {member.project !== null && (
+                          <span className="tv-sub">
+                            <ProjectIconTile appearance={member.project.appearance} />
+                            {member.project.name}
+                          </span>
+                        )}
                       </span>
                     </button>
                   </th>
@@ -170,7 +190,7 @@ export const WorkspaceView = ({
             ) : (
               <>
                 <ul className="tv-meter-list">
-                  {projectRows.map((row) => <MeterRowItem key={row.key} row={row} iconUrl={projectIcons?.[row.key]} />)}
+                  {projectRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
                 </ul>
                 <p className="tv-card-foot">{RECORDED_TIME_NOTE}</p>
               </>

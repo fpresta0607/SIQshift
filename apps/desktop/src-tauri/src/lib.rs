@@ -765,6 +765,10 @@ pub struct ProjectUpdateInput {
     name: Option<String>,
     #[serde(default)]
     is_archived: Option<bool>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
 }
 
 #[tauri::command]
@@ -781,6 +785,8 @@ async fn project_update(
             &id,
             input.name.as_deref().map(str::trim),
             input.is_archived,
+            input.icon.as_deref(),
+            input.color.as_deref(),
         )
         .await
 }
@@ -1289,6 +1295,7 @@ mod tests {
                 id: "p1".to_string(),
                 name: "General".to_string(),
                 color: None,
+                icon: None,
                 created_at: "2026-08-10T12:00:00Z".to_string(),
             }],
         }
@@ -1334,12 +1341,14 @@ mod tests {
                 id: "p-zebra".to_string(),
                 name: "Zebra".to_string(),
                 color: None,
+                icon: None,
                 created_at: "2026-08-10T12:00:00Z".to_string(),
             },
             TimerProject {
                 id: "p-alpha".to_string(),
                 name: "Alpha".to_string(),
                 color: None,
+                icon: None,
                 created_at: "2026-08-09T12:00:00Z".to_string(),
             },
         ];

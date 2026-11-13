@@ -38,8 +38,8 @@ const workspaceReport = {
     { hourStart: "2026-08-06T14:00:00.000Z", activeSeconds: 1_800, agentSeconds: 0 },
   ],
   projects: [
-    { project: { id: "p1", name: "General" }, durationSeconds: 8_040 },
-    { project: { id: "p2", name: "Client" }, durationSeconds: 3_600 },
+    { project: { id: "p1", name: "General", icon: "grid", color: "#a3b3c2" }, durationSeconds: 8_040 },
+    { project: { id: "p2", name: "Client", icon: "rocket", color: "#ff9d8a" }, durationSeconds: 3_600 },
   ],
   agents: [{ source: "claude_code", durationSeconds: 10_800 }],
   members: teamMembers,
@@ -360,6 +360,23 @@ describe("dashboard", () => {
     expect(stats.queryByRole("group", { name: "Projects or agents" })).toBeNull();
     expect(stats.queryByText("Local agents, shared visibility")).toBeNull();
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
+  });
+
+  it("wears each project's own icon and color on the board, the Projects list and the person card", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const tiles = (scope: HTMLElement) => [...scope.querySelectorAll(".project-icon")]
+      .map((tile) => [tile.getAttribute("data-icon"), tile.querySelector("rect")?.getAttribute("fill")]);
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    const ownProjects = await stats.findByTestId("member-project-list");
+
+    // Assert: the pair the server sent, General's own among them.
+    expect(tiles(stats.getByRole("table", { name: "People" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
+    expect(tiles(stats.getByRole("region", { name: "Projects" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
+    expect(tiles(ownProjects)).toEqual([["grid", "#a3b3c2"]]);
   });
 
   it.each([
@@ -1787,6 +1804,65 @@ describe("project management", () => {
     expect(dialog).toHaveTextContent("3 roster agents move with it");
     expect(within(dialog).queryByLabelText(/type the project's name to confirm/i)).not.toBeInTheDocument();
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Delete Client" })).toBeEnabled());
+  });
+
+  it("gives the default project its own icon before anyone picks one", async () => {
+    // Arrange
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    // Act
+    const settings = await openSettings(person);
+
+    // Assert: General's pair is one no other project is given unasked.
+    const list = within(settings.getByTestId("project-manage-list"));
+    expect(list.getByText("General").closest("li")?.querySelector(".project-icon")).toHaveAttribute("data-icon", "grid");
+    expect(list.getByText("Client").closest("li")?.querySelector(".project-icon")).not.toHaveAttribute("data-icon", "grid");
+  });
+
+  it("saves the icon and color a member picks for the whole team", async () => {
+    // Arrange
+    const updateProject = vi.fn().mockResolvedValue({ ...webProjects[1], icon: "bolt", color: "#f5c26b" });
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+      updateProject,
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+    const row = settings.getByText("Client").closest("li");
+
+    // Act
+    await person.click(within(row as HTMLElement).getByRole("button", { name: "Change icon" }));
+    const picker = within(settings.getByRole("form", { name: "Icon for Client" }));
+    await person.click(picker.getByRole("button", { name: "Bolt" }));
+    await person.click(picker.getByRole("button", { name: "Amber" }));
+    await person.click(picker.getByRole("button", { name: "Save" }));
+
+    // Assert: the pair goes out, and the list comes back once it is stored.
+    await waitFor(() => expect(updateProject).toHaveBeenCalledWith("p2", { icon: "bolt", color: "#f5c26b" }));
+    expect(await settings.findByTestId("project-manage-list")).toBeInTheDocument();
+    expect(settings.queryByRole("form", { name: "Icon for Client" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the icon picker open and says why when the pick cannot be saved", async () => {
+    // Arrange
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+      updateProject: vi.fn().mockRejectedValue(new ClientError("validation", "Pick an icon and a color from the lists.")),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+    const row = settings.getByText("Client").closest("li");
+
+    // Act
+    await person.click(within(row as HTMLElement).getByRole("button", { name: "Change icon" }));
+    await person.click(within(settings.getByRole("form", { name: "Icon for Client" })).getByRole("button", { name: "Save" }));
+
+    // Assert
+    expect(await settings.findByText("Pick an icon and a color from the lists.")).toHaveAttribute("role", "alert");
+    expect(settings.getByRole("form", { name: "Icon for Client" })).toBeInTheDocument();
   });
 });
 

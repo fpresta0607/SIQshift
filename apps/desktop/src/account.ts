@@ -12,6 +12,8 @@ export type TimerProject = {
   id: string;
   name: string;
   color: string | null;
+  /// One of the built-in icon names, null from a server that predates them.
+  icon: string | null;
 };
 
 export type AccountSnapshot =

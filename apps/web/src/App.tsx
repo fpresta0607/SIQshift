@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   formatDuration,
   formatHumanDuration,
+  projectAppearance,
   type AgentShiftsResponse,
   type LiveAgentSessionsResponse,
   type MeStatsResponse,
@@ -21,6 +22,8 @@ import {
   MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
+  ProjectIconPicker,
+  ProjectIconTile,
   QuietMark,
   SegmentedControl,
   buildAppRows,
@@ -46,6 +49,7 @@ import {
   TeamViewTabs,
   TimeChartCard,
   WorkspaceView,
+  reportedAppearance,
   workspaceBreakdownRows,
 } from "@siqshift/shared/workspace-view";
 
@@ -790,7 +794,9 @@ export const App = ({ client }: AppProps) => {
       id: entry.user.id,
       rank: boardSort === "active" ? entry.rank : index + 1,
       name: entry.user.name,
-      project: entry.project?.name ?? null,
+      project: entry.project === null
+        ? null
+        : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], entry.project.id) },
       activeSeconds: entry.activeSeconds,
       agentSeconds: entry.agentSeconds,
       isSelf: entry.user.id === selfId,
@@ -1126,7 +1132,10 @@ export const App = ({ client }: AppProps) => {
                               <ul className="app-list" data-testid="member-project-list">
                                 {buildProjectRows(memberStats.projects).map((row) => (
                                   <li key={row.projectId} className="app-row">
-                                    <span className="app-name">{row.name}</span>
+                                    <span className="app-name">
+                                      <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], row.projectId)} />
+                                      {row.name}
+                                    </span>
                                     <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>
                                   </li>
                                 ))}
@@ -1406,6 +1415,7 @@ const ProjectsGroup = ({ client, projects, onChanged }: ProjectsGroupProps) => {
   const [newName, setNewName] = useState("");
   const [renamingId, setRenamingId] = useState<string | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
+  const [picking, setPicking] = useState<ProjectListItem | undefined>();
   const [deleting, setDeleting] = useState<{ project: ProjectListItem; usage: ProjectUsageResponse } | undefined>();
   const [reassignTo, setReassignTo] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -1427,7 +1437,20 @@ const ProjectsGroup = ({ client, projects, onChanged }: ProjectsGroupProps) => {
     <details className="settings-group">
       <summary>Projects</summary>
       {error && <p className="error" role="alert">{error}</p>}
-      {deleting === undefined ? (
+      {picking !== undefined ? (
+        <ProjectIconPicker
+          projectName={picking.name}
+          appearance={projectAppearance({ id: picking.id, isDefault: picking.isDefault, icon: picking.icon, color: picking.color })}
+          isBusy={busy}
+          onCancel={() => setPicking(undefined)}
+          onSave={(appearance) => {
+            void act(async () => {
+              await client.updateProject(picking.id, appearance);
+              setPicking(undefined);
+            });
+          }}
+        />
+      ) : deleting === undefined ? (
         <>
           <ul className="manage-list" data-testid="project-manage-list">
             {projects.map((project) => (
@@ -1455,11 +1478,12 @@ const ProjectsGroup = ({ client, projects, onChanged }: ProjectsGroupProps) => {
                 ) : (
                   <>
                     <span className="manage-name">
-                      <span className="project-dot" aria-hidden="true" style={project.color == null ? undefined : { background: project.color }} />
+                      <ProjectIconTile appearance={projectAppearance({ id: project.id, isDefault: project.isDefault, icon: project.icon, color: project.color })} />
                       {project.name}
                       {project.isDefault && <span className="you-tag"> default</span>}
                     </span>
                     <span className="manage-actions">
+                      <button type="button" disabled={busy} onClick={() => setPicking(project)}>Change icon</button>
                       <button type="button" disabled={busy} onClick={() => { setRenamingId(project.id); setRenameDraft(project.name); }}>Rename</button>
                       {!project.isDefault && (
                         <button

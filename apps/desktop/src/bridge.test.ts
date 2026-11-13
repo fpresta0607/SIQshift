@@ -21,7 +21,7 @@ describe("defaultBridge", () => {
     invoke.mockResolvedValueOnce({
       kind: "ready",
       user: { id: ids.user, email: "timer@example.com", name: "Timer" },
-      projects: [{ id: ids.project, name: "Field work", color: 42 }],
+      projects: [{ id: ids.project, name: "Field work", color: 42, icon: null }],
       defaultProjectId: ids.project,
       selectedProjectId: null,
     });
@@ -33,7 +33,7 @@ describe("defaultBridge", () => {
     invoke.mockResolvedValueOnce({
       kind: "ready",
       user: { id: ids.user, email: "timer@example.com", name: "Timer" },
-      projects: [{ id: ids.project, name: "Field work", color: null }],
+      projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass" }],
       defaultProjectId: ids.project,
       selectedProjectId: ids.other,
     });
@@ -41,7 +41,7 @@ describe("defaultBridge", () => {
     await expect(defaultBridge.bootstrap()).resolves.toEqual({
       kind: "ready",
       user: { id: ids.user, email: "timer@example.com", name: "Timer" },
-      projects: [{ id: ids.project, name: "Field work", color: null }],
+      projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass" }],
       defaultProjectId: ids.project,
       selectedProjectId: ids.other,
     });
@@ -497,6 +497,18 @@ describe("defaultBridge", () => {
     expect(invoke).toHaveBeenLastCalledWith("org_overview", undefined);
   });
 
+  it("sends a picked icon and color under the command name and input the host reads", async () => {
+    // Arrange
+    invoke.mockResolvedValueOnce({ id: ids.project, name: "Field work", color: "#c6a1f4", icon: "bolt" });
+
+    // Act
+    const updated = await defaultBridge.projectUpdate(ids.project, { icon: "bolt", color: "#c6a1f4" });
+
+    // Assert
+    expect(updated).toEqual({ id: ids.project, name: "Field work", color: "#c6a1f4", icon: "bolt" });
+    expect(invoke).toHaveBeenLastCalledWith("project_update", { id: ids.project, input: { icon: "bolt", color: "#c6a1f4" } });
+  });
+
   it("renames the workspace under the command name and input the host reads", async () => {
     // Arrange
     const organization = { id: ids.project, name: "Atlas Studio", inviteCode: "ACDEF-GHJKM" };
@@ -516,7 +528,7 @@ describe("defaultBridge", () => {
       activeSeconds: 3_600,
       agentSeconds: 1_800,
       hourly: [{ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_000, agentSeconds: 1_800 }],
-      projects: [{ project: { id: ids.project, name: "Field work" }, durationSeconds: 3_600 }],
+      projects: [{ project: { id: ids.project, name: "Field work", icon: "grid", color: "#a3b3c2" }, durationSeconds: 3_600 }],
       // A runtime this build has never heard of still reads.
       agents: [{ source: "a_runtime_from_the_future", durationSeconds: 1_800 }],
       members: [
@@ -541,6 +553,7 @@ describe("defaultBridge", () => {
     ["a missing member list", { members: undefined }],
     ["a negative total", { activeSeconds: -1 }],
     ["a member without a name", { members: [{ rank: 1, user: { id: ids.user }, activeSeconds: 0, agentSeconds: 0, project: null }] }],
+    ["a project icon that is not a name", { projects: [{ project: { id: ids.project, name: "Field work", icon: 7, color: null }, durationSeconds: 0 }] }],
   ])("rejects a workspace report with %s", async (_case, broken) => {
     // Arrange
     invoke.mockResolvedValueOnce({ activeSeconds: 0, agentSeconds: 0, hourly: [], projects: [], agents: [], members: [], ...broken });

@@ -228,6 +228,23 @@ describe("web client", () => {
       .toBe("application/json");
   });
 
+  it("sends a picked icon and color with one PATCH to the project and returns it", async () => {
+    // Arrange
+    const painted = { id: "p2", name: "Client", icon: "bolt", color: "#c6a1f4", createdAt: "2026-08-11T12:00:00.000Z", isArchived: false, isDefault: false };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(painted)
+    ));
+
+    // Act
+    const response = await client.updateProject("p2", { icon: "bolt", color: "#c6a1f4" });
+
+    // Assert
+    expect(response).toEqual(painted);
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/projects/p2`);
+    expect(call?.[1]?.method).toBe("PATCH");
+    expect(call?.[1]?.body).toBe(JSON.stringify({ icon: "bolt", color: "#c6a1f4" }));
+  });
+
   it("renames the workspace with one PATCH to /organization and returns the renamed workspace", async () => {
     // Arrange
     const renamed = { id: "00000000-0000-4000-8000-000000000001", name: "Field Crew", inviteCode: "ACDEF-GHJKM" };

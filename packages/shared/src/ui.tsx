@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { agentRuntimeForBinary, agentRuntimeLabel } from "./agent-runtimes.js";
 import { friendlyAppName } from "./app-names.js";
 import { formatCount, formatTokens } from "./format.js";
+import { type ProjectAppearance } from "./project-appearance.js";
+import { ProjectIconTile } from "./project-icon-tile.js";
 import { formatHumanDuration } from "./time.js";
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { ChartTooltip } from "./chart-tooltip.js";
@@ -10,6 +12,8 @@ import { ChartTooltip } from "./chart-tooltip.js";
 export { AgentRuntimeIcon } from "./agent-marks.js";
 export { formatCount, formatRangeDays, formatTokens } from "./format.js";
 export { MemberAvatar } from "./member-avatar.js";
+export { ProjectIconPicker } from "./project-icon-picker.js";
+export { ProjectIconTile } from "./project-icon-tile.js";
 export { QuietMark } from "./quiet-mark.js";
 export { SegmentedControl, type SegmentedOption } from "./segmented-control.js";
 export { TokenBarChart, type ChartTokenBucket, type ChartTokens } from "./token-bar-chart.js";
@@ -435,6 +439,8 @@ export type MeterRow = {
   processName: string | undefined;
   /// Extra words beside the name - the folder an agent session is working in.
   detail?: string | undefined;
+  /// A project row's icon and color, drawn in place of an app's mark.
+  appearance?: ProjectAppearance | undefined;
   durationSeconds: number;
   /// Percentage of the longest row, for the bar in the row.
   share: number;
@@ -497,9 +503,11 @@ export const MeterRowItem = ({
   <li className="meter-row">
     {row.source !== undefined
       ? <AgentRuntimeIcon source={row.source} />
-      : iconUrl != null
-        ? <img className="app-mark" src={iconUrl} alt="" />
-        : <span className="app-mark is-plain" aria-hidden="true" />}
+      : row.appearance !== undefined
+        ? <ProjectIconTile appearance={row.appearance} />
+        : iconUrl != null
+          ? <img className="app-mark" src={iconUrl} alt="" />
+          : <span className="app-mark is-plain" aria-hidden="true" />}
     <span className="meter-name">
       {row.label}
       {row.detail !== undefined && <span className="meter-detail"> · {row.detail}</span>}

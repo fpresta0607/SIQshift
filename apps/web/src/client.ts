@@ -5,6 +5,7 @@ import type {
   MeResponse,
   MeStatsResponse,
   OrganizationResponse,
+  ProjectAppearance,
   ProjectDeleteRequest,
   ProjectListItem,
   ProjectListResponse,
@@ -336,7 +337,7 @@ export function createClient(config: ClientConfig) {
       });
       return response.json() as Promise<ProjectListItem>;
     },
-    async updateProject(id: string, patch: { name: string }): Promise<ProjectListItem> {
+    async updateProject(id: string, patch: { name: string } | ProjectAppearance): Promise<ProjectListItem> {
       const response = await apiRequest(`/projects/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },

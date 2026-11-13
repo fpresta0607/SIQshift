@@ -154,6 +154,9 @@ pub struct TimerProject {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    /// One of the built-in icon names; absent from a server that predates them.
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(skip_serializing)]
     pub created_at: String,
 }
@@ -208,8 +211,21 @@ pub struct WorkspaceReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProjectTotal {
-    pub project: LeaderboardMember,
+    pub project: WorkspaceProject,
     pub duration_seconds: u64,
+}
+
+/// A project as the team view lists it, with the icon and color the server
+/// resolved for it; both are absent from a server that predates them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProject {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// A runtime id as the server sent it, so one this build has never heard of
@@ -445,6 +461,8 @@ struct ProjectListItem {
     name: String,
     #[serde(default)]
     color: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
     created_at: String,
     is_archived: bool,
 }
@@ -1133,6 +1151,7 @@ impl ApiClient {
                 id: project.id,
                 name: project.name,
                 color: project.color,
+                icon: project.icon,
                 created_at: project.created_at,
             })
             .collect())
@@ -1161,17 +1180,21 @@ impl ApiClient {
             id: body.id,
             name: body.name,
             color: body.color,
+            icon: body.icon,
             created_at: body.created_at,
         })
     }
 
-    /// Renames or archives a project via `PATCH /projects/:id`.
+    /// Renames or archives a project, or sets its icon and color, via
+    /// `PATCH /projects/:id`.
     pub async fn update_project(
         &self,
         access_token: &str,
         id: &str,
         name: Option<&str>,
         is_archived: Option<bool>,
+        icon: Option<&str>,
+        color: Option<&str>,
     ) -> ApiResult<TimerProject> {
         let mut body = serde_json::Map::new();
         if let Some(name) = name {
@@ -1179,6 +1202,12 @@ impl ApiClient {
         }
         if let Some(is_archived) = is_archived {
             body.insert("isArchived".into(), serde_json::json!(is_archived));
+        }
+        if let Some(icon) = icon {
+            body.insert("icon".into(), serde_json::json!(icon));
+        }
+        if let Some(color) = color {
+            body.insert("color".into(), serde_json::json!(color));
         }
         let response = self
             .http
@@ -1199,6 +1228,7 @@ impl ApiClient {
             id: body.id,
             name: body.name,
             color: body.color,
+            icon: body.icon,
             created_at: body.created_at,
         })
     }
@@ -1781,7 +1811,48 @@ mod tests {
 
         assert_eq!(body.name, "Field work");
         assert_eq!(body.color, None);
+        assert_eq!(body.icon, None);
         assert!(!body.is_archived);
+    }
+
+    /// Any member may pick a project's icon and color: the pair goes out as
+    /// the built-in names, and the project the server answers with reads back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sends_a_picked_icon_and_color_and_reads_the_project_back() {
+        const UPDATED: StubAnswer = (
+            "200 OK",
+            "",
+            r##"{"id": "p1", "name": "Field work", "icon": "bolt", "color": "#c6a1f4", "createdAt": "2026-08-10T12:00:00Z", "isArchived": false}"##,
+        );
+        let (client, served) = scripted_stub(vec![UPDATED]).await;
+
+        let project = client
+            .update_project("token", "p1", None, None, Some("bolt"), Some("#c6a1f4"))
+            .await
+            .expect("the update reads");
+
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "PATCH /projects/p1");
+        let sent: serde_json::Value =
+            serde_json::from_str(&requests[0].1).expect("the request body is JSON");
+        assert_eq!(
+            sent,
+            serde_json::json!({ "icon": "bolt", "color": "#c6a1f4" })
+        );
+        assert_eq!(project.icon.as_deref(), Some("bolt"));
+        assert_eq!(project.color.as_deref(), Some("#c6a1f4"));
+    }
+
+    #[test]
+    fn carries_a_projects_icon_and_color_through_the_team_view() {
+        let row: WorkspaceProjectTotal = serde_json::from_str(
+            r##"{"project": {"id": "p1", "name": "General", "icon": "grid", "color": "#a3b3c2"}, "durationSeconds": 60}"##,
+        )
+        .expect("the project row parses");
+
+        let sent = serde_json::to_value(&row).expect("the project row serializes");
+        assert_eq!(sent["project"]["icon"], "grid");
+        assert_eq!(sent["project"]["color"], "#a3b3c2");
     }
 
     #[test]
@@ -2002,6 +2073,11 @@ mod tests {
         assert_eq!(sent["members"][1]["project"], serde_json::Value::Null);
         assert_eq!(sent["hourly"][0]["hourStart"], "2026-08-06T13:00:00.000Z");
         assert_eq!(sent["projects"][0]["durationSeconds"], 8_040);
+        // A server that predates project icons sends none, and none is made up.
+        assert_eq!(
+            sent["projects"][0]["project"]["icon"],
+            serde_json::Value::Null
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

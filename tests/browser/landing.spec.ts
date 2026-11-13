@@ -23,8 +23,10 @@ for (const width of [390, 1440]) {
     await expect(board).toContainText("Taylor Chen");
     await expect(page.locator(".tv-totals")).toContainText("15h 00m");
     await expect(page.locator(".tv-totals")).toContainText("32h 00m");
+    // Every project wears a built-in icon, and so does each person's top project.
     await expect(projects.locator(".is-plain")).toHaveCount(0);
-    await expect(projects.locator("img")).toHaveCount(3);
+    await expect(projects.locator(".project-icon")).toHaveCount(3);
+    await expect(board.locator(".tv-sub .project-icon")).toHaveCount(3);
     await page.getByRole("button", { name: "Show Alex Morgan's work" }).click();
     expect(await canvas.evaluate(node => Math.round(node.getBoundingClientRect().top))).toBe(0);
     await expect(page.locator(".tv-totals")).toContainText("6h 00m");

@@ -1,3 +1,4 @@
+import type { ProjectAppearance } from "@siqshift/shared";
 import type { AccountSnapshot, TimerProject, TimerUser } from "./account.js";
 
 export type BridgeErrorKind = "auth" | "transient" | "conflict" | "validation" | "unknown" | "account_exists";
@@ -38,7 +39,12 @@ export type WorkspaceReport = {
   agentSeconds: number;
   /// One bucket per local hour of a bounded range; empty over all time.
   hourly: readonly MeStatsHourlyBucket[];
-  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[];
+  /// Each project with the icon and color the server resolved for it, both
+  /// null from a server that predates them.
+  projects: readonly {
+    project: { id: string; name: string; icon: string | null; color: string | null };
+    durationSeconds: number;
+  }[];
   agents: readonly { source: string; durationSeconds: number }[];
   members: readonly WorkspaceMember[];
 };
@@ -477,7 +483,7 @@ export interface TimerBridge {
   /// were read with, or the drawer lists shifts its own head never counted.
   agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
-  projectUpdate(id: string, input: { name?: string; isArchived?: boolean }): Promise<TimerProject>;
+  projectUpdate(id: string, input: { name?: string; isArchived?: boolean } | ProjectAppearance): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
   /// Deletes a project; reassignTo moves its data to another project first.
   projectDelete(id: string, reassignTo: string | null): Promise<void>;
@@ -555,7 +561,7 @@ const decodeUser = (value: unknown): TimerUser => {
 const decodeProject = (value: unknown): TimerProject => {
   const candidate = record(value);
   if (candidate.color !== null && typeof candidate.color !== "string") invalidResponse();
-  return { id: uuid(candidate.id), name: string(candidate.name), color: candidate.color as string | null };
+  return { id: uuid(candidate.id), name: string(candidate.name), color: candidate.color as string | null, icon: stringOrNull(candidate.icon) };
 };
 
 const uuidOrNull = (value: unknown): string | null => (value === null || value === undefined ? null : uuid(value));
@@ -893,7 +899,11 @@ export const decodeWorkspaceReport = (value: unknown): WorkspaceReport => {
     hourly: (hourly as unknown[]).map(decodeHourlyBucket),
     projects: (projects as unknown[]).map((entry) => {
       const total = record(entry);
-      return { project: decodeNamed(total.project), durationSeconds: nonnegativeInteger(total.durationSeconds) };
+      const project = record(total.project);
+      return {
+        project: { ...decodeNamed(project), icon: stringOrNull(project.icon), color: stringOrNull(project.color) },
+        durationSeconds: nonnegativeInteger(total.durationSeconds),
+      };
     }),
     agents: (agents as unknown[]).map((entry) => {
       const total = record(entry);
