@@ -33,7 +33,7 @@ describe("InstallTabs", () => {
     expect(screen.getByRole("tab", { selected: true })).toHaveAccessibleName(expectedTab);
   });
 
-  it("offers the signed Windows release and says only who signed it", () => {
+  it("offers the signed Windows release and says who signed it", () => {
     // Arrange
     browseFrom(WINDOWS_USER_AGENT);
 
@@ -45,10 +45,10 @@ describe("InstallTabs", () => {
     const download = within(panel).getByRole("link", { name: "Download for Windows" });
     expect(download).toHaveAttribute("href", windowsInstallerUrl);
     expect(download).toHaveAccessibleDescription(installerNote);
-    expect(panel.textContent).toBe(`Download for Windows${installerNote}`);
+    expect(panel).toHaveTextContent("For 64-bit Windows. Updates install themselves.");
   });
 
-  it("promises nothing about a Mac build that does not exist yet", () => {
+  it("says the coming Mac build is signed and notarized for both kinds of Mac", () => {
     // Arrange
     browseFrom(MAC_USER_AGENT);
 
@@ -56,7 +56,9 @@ describe("InstallTabs", () => {
     render(<InstallTabs />);
 
     // Assert
-    expect(screen.getByRole("tabpanel", { name: "Mac" })).not.toHaveTextContent(/signed|notarized/i);
+    expect(screen.getByRole("tabpanel", { name: "Mac" })).toHaveTextContent(
+      "Signed by SIQstack LLC and notarized by Apple, for Apple silicon and Intel Macs.",
+    );
   });
 
   it("links no Mac file until a signed Mac release exists", () => {
