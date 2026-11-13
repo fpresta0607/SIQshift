@@ -866,12 +866,13 @@ still designed and not started. What's deliberately not built yet:
   that project's row, while the API and the CSV export report it as unattributed.
 - **One project at a time.** Concurrent agent sessions in different projects do not split a
   session; the last one to report wins, and the boundary between them is a session close.
-- **No tagged release yet.** The **Unsigned test installers** workflow is the
-  distributable: it republishes the `unsigned-latest` release under fixed asset names,
-  which is what the dashboard's **Download for Windows** button links. Its Windows build
-  is code signed by SIQstack LLC through Azure Artifact Signing. A macOS build is published
-  only signed by SIQstack LLC and notarized by Apple, so until the Apple signing secrets
-  are set none is built (see DEPLOY.md). Windows debug builds carry the auto-updater; macOS
+- **No Mac release yet.** The site's **Download for Windows** links, the home page's
+  install selector included, serve the newest signed release, code signed by SIQstack LLC
+  through Azure Artifact Signing. A macOS build is published only signed by SIQstack LLC
+  and notarized by Apple, so until the Apple signing secrets are set none is built (see
+  DEPLOY.md): the home page's Mac tab links nothing, and the dashboard's Mac link stays
+  on the `unsigned-latest` test release, which the **Unsigned test installers** workflow
+  republishes under fixed asset names. Windows builds carry the auto-updater; macOS
   updates are still by hand.
 - Evidence can be forged by a determined user. Automatic recording raises the cost and the
   visibility of padding; it does not attempt cryptographic proof.

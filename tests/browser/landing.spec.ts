@@ -31,6 +31,19 @@ for (const width of [390, 1440]) {
     await expect(page.locator(".workspace-meter-list")).not.toContainText("Relay App");
     await page.getByRole("button", { name: "All members" }).click();
     await expect(page.locator(".workspace-meter-list")).toContainText("Relay App");
+
+    // The install selector flips panels in place: the hero keeps its height and
+    // only the picked system's panel can be seen or reached.
+    const install = page.locator("#install");
+    const heroHeight = () => page.locator(".landing-hero").evaluate(node => node.getBoundingClientRect().height);
+    await expect(install.getByRole("tab", { name: "Windows" })).toHaveAttribute("aria-selected", "true");
+    await expect(install.getByRole("link", { name: "Download for Windows" })).toBeVisible();
+    const heroHeightOnWindows = await heroHeight();
+    await install.getByRole("tab", { name: "Mac" }).click();
+    await expect(install.getByRole("link", { name: "Download for Windows" })).toBeHidden();
+    await expect(install.getByText("Coming soon")).toBeVisible();
+    expect(await heroHeight()).toBe(heroHeightOnWindows);
+    await install.getByRole("tab", { name: "Windows" }).click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.getByRole("heading", { name: /Measure the work/ }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: test.info().outputPath(`landing-${width}.png`), fullPage: true });

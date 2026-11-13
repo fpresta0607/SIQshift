@@ -6,7 +6,7 @@ import { type MeStatsResponse } from "@siqshift/shared";
 import { buildAppRows, recordedBasis } from "@siqshift/shared/ui";
 import { App, rangeQuery } from "./App.js";
 import { ClientError, type Client } from "./client.js";
-import { windowsInstallerUrl } from "./DownloadInstaller.js";
+import { macInstallerUrl, windowsInstallerUrl } from "./DownloadInstaller.js";
 
 // jsdom has no WebGL context; the shader is decorative.
 vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
@@ -1533,13 +1533,20 @@ describe("the home screen", () => {
 });
 
 describe("getting the desktop app", () => {
-  it("does not float the desktop download over the landing page", async () => {
+  it("offers the desktop app in the landing hero before sign-in, never the unsigned Mac file", async () => {
+    // Arrange
     const { container } = render(<App client={clientFor()} />);
-    await screen.findByRole("heading", { name: /Measure the work/ });
 
-    // Account creation leads to the existing download onboarding.
+    // Act
+    const hero = within(await screen.findByRole("region", { name: /Measure the work/ }));
+
+    // Assert
+    expect(hero.getByRole("tablist", { name: "Choose your computer" })).toBeInTheDocument();
+    expect(hero.getByRole("link", { name: "Download for Windows" })).toHaveAttribute("href", windowsInstallerUrl);
+    expect(screen.getByRole("link", { name: /^Download$/ })).toHaveAttribute("href", "#install");
+    expect(container.querySelector(`a[href="${macInstallerUrl}"]`)).toBeNull();
+    // The dashboard's masthead menu stays on the dashboard.
     expect(container.querySelector(".download-menu, .download-corner")).toBeNull();
-    expect(screen.queryByRole("link", { name: /download/i })).not.toBeInTheDocument();
   });
 
   it("keeps the same installer one pill wide in the dashboard masthead", async () => {
