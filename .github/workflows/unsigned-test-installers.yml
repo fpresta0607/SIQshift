@@ -154,7 +154,7 @@ jobs:
       # writes empty `binaries/` stand-ins, and tauri-build copies every
       # sidecar over `target/debug/<name>.exe`. A second invocation reruns the
       # build script and overwrites the helper the first one linked with the
-      # empty stand-in, which staging below would then ship.
+      # empty stand-in, which the staging below refuses.
       - name: Build the helpers
         run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml ${{ matrix.cargo_targets }} --bin siqshift-hook --bin siqshift-browser-host
 
