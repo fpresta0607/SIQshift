@@ -695,12 +695,11 @@ person who made it rather than treating idle as abandoned.
 ## 5. Desktop installers
 
 The repo is public, so release assets are downloadable by anyone. The site's
-**Download for Windows** links, the home page's install selector included,
-point here, at `releases/latest/download/SIQshift-windows-x64-setup.exe`,
-which always serves the newest signed release. The site's Mac links stay on
-the `unsigned-latest` release described under *Unsigned test installers*
-below until a release carries a signed Mac build; until then the home page's
-Mac tab links nothing.
+download links, the home page's install selector included, point here, at
+`releases/latest/download/SIQshift-windows-x64-setup.exe` and
+`releases/latest/download/SIQshift-macos-universal.dmg`, which always serve
+the newest signed release. The site never links the `unsigned-latest` release
+described under *Unsigned test installers* below.
 
 Set these **repository variables** (Settings → Secrets and variables → Actions →
 Variables). They are baked into a public binary, so do not use secrets:
@@ -801,7 +800,8 @@ Compiling and bundling are separate steps (`tauri build --no-bundle`, then `taur
 
 #### macOS code signing
 
-The macOS installer is published only code signed by **SIQstack LLC** with its Developer ID Application certificate and notarized by Apple, or not at all.
+The macOS installer is published only signed with an Apple **Developer ID Application** certificate and notarized by Apple, or not at all.
+The site and the release notes say so without naming a company, because that Developer ID is not SIQstack LLC's.
 It is one universal build for Apple silicon and Intel Macs: each architecture compiles on its own and `lipo` joins the app and both helpers.
 `scripts/stage-helpers.mjs` joins the helpers and also puts each joined one in `target/universal-apple-darwin/<profile>`, because the bundler copies every binary of the desktop crate from there and the build joins only the app into it.
 The bundler signs the app and both helpers with the hardened runtime, has Apple notarize the app and staples the ticket; the workflow then signs, notarizes and staples the `.dmg` itself.
@@ -849,10 +849,10 @@ https://github.com/fpresta0607/SIQshift/releases/download/unsigned-latest/SIQshi
 The tag keeps its old name because every installed copy's updater polls `unsigned-latest/latest.json`.
 After uploading, the run deletes any asset it did not stage, so the release carries exactly the newest build.
 The one exception is the Mac: a run without the Apple signing secrets publishes nothing for it and leaves the release's Mac file as it is.
-Until the first signed Mac build, that file is the earlier unsigned `SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`, which the website still links; the first signed run replaces it with `SIQshift-macos-universal.dmg`, and the website's link has to move to that name right after, or its Mac button 404s.
+Until a run here builds a signed Mac installer, that file is the earlier unsigned `SIQshift-UNSIGNED-TEST-macos-aarch64.dmg`; the website links neither.
 
-`apps/web/src/DownloadInstaller.tsx` hard-codes the Mac URL from this release (until that handover, the earlier unsigned Mac file's URL rather than the signed one); its Windows URL is the signed release's `releases/latest/download/SIQshift-windows-x64-setup.exe`.
-`DownloadInstaller.test.tsx` checks that `release.yml` stages the Windows name and publishes the release as latest, that the Mac URL names this publish job's tag, and that a run without a signed Mac build leaves the Mac file it names on the release, because renaming or deleting an asset on one side alone silently 404s the button.
+`apps/web/src/DownloadInstaller.tsx` hard-codes the signed release's two URLs, `releases/latest/download/SIQshift-windows-x64-setup.exe` and `releases/latest/download/SIQshift-macos-universal.dmg`, and never this release.
+`DownloadInstaller.test.tsx` checks that `release.yml` stages both names and publishes the release as latest, because renaming or deleting an asset on one side alone silently 404s the button, and that a run here without a signed Mac build leaves this release's Mac file in place.
 This is why the assets carry fixed names rather than the versioned ones inside the run artifact: the version travels in the release title, the release notes, and the installed app, not in the URL.
 
 **Do not** link a workflow-run artifact from anywhere public. GitHub requires
@@ -887,7 +887,6 @@ macOS updates are still by hand.
 
 **Installing on macOS.** The signed, notarized `.dmg` installs like any Mac app: mount it, drag SIQshift to Applications and open it.
 macOS asks once whether to open an app downloaded from the internet, and needs nothing else.
-The earlier unsigned test build is not notarized, so Gatekeeper blocks it: after copying the app, clear the quarantine flag with `xattr -dr com.apple.quarantine "/Applications/SIQshift.app"` before it will launch.
 
 ---
 

@@ -41,7 +41,7 @@ for (const width of [390, 1440]) {
     const heroHeightOnWindows = await heroHeight();
     await install.getByRole("tab", { name: "Mac" }).click();
     await expect(install.getByRole("link", { name: "Download for Windows" })).toBeHidden();
-    await expect(install.getByText("Coming soon")).toBeVisible();
+    await expect(install.getByRole("link", { name: "Download for Mac" })).toBeVisible();
     expect(await heroHeight()).toBe(heroHeightOnWindows);
     await install.getByRole("tab", { name: "Windows" }).click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

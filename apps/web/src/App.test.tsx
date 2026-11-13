@@ -1533,7 +1533,7 @@ describe("the home screen", () => {
 });
 
 describe("getting the desktop app", () => {
-  it("offers the desktop app in the landing hero before sign-in, never the unsigned Mac file", async () => {
+  it("offers both signed installers in the landing hero before sign-in, never the unsigned test release", async () => {
     // Arrange
     const { container } = render(<App client={clientFor()} />);
 
@@ -1544,7 +1544,8 @@ describe("getting the desktop app", () => {
     expect(hero.getByRole("tablist", { name: "Choose your computer" })).toBeInTheDocument();
     expect(hero.getByRole("link", { name: "Download for Windows" })).toHaveAttribute("href", windowsInstallerUrl);
     expect(screen.getByRole("link", { name: /^Download$/ })).toHaveAttribute("href", "#install");
-    expect(container.querySelector(`a[href="${macInstallerUrl}"]`)).toBeNull();
+    expect(container.querySelector(`.landing-install a[href="${macInstallerUrl}"]`)).not.toBeNull();
+    expect(container.querySelector('a[href*="unsigned-latest"]')).toBeNull();
     // The dashboard's masthead menu stays on the dashboard.
     expect(container.querySelector(".download-menu, .download-corner")).toBeNull();
   });
