@@ -48,8 +48,10 @@ for (const width of [390, 1440]) {
     await page.getByRole("heading", { name: /Measure the work/ }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: test.info().outputPath(`landing-${width}.png`), fullPage: true });
 
-    const createAccount = page.locator(".landing-actions").getByRole("button", { name: "Create account" });
-    await createAccount.click();
+    // Sign in and Sign up sit in the header at every width; the hero holds only the download.
+    const header = page.getByRole("navigation", { name: "SIQshift navigation" });
+    const signUp = header.getByRole("button", { name: "Sign up" });
+    await signUp.click();
     const dialog = page.getByRole("dialog", { name: "Create your account" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Name", { exact: true })).toBeFocused();
@@ -61,10 +63,10 @@ for (const width of [390, 1440]) {
     await page.screenshot({ path: test.info().outputPath(`signup-${width}.png`) });
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
-    await expect(createAccount).toBeFocused();
+    await expect(signUp).toBeFocused();
     expect(await page.evaluate(() => document.body.style.overflow)).toBe("");
 
-    await page.locator(".landing-actions").getByRole("button", { name: "Log in" }).click();
+    await header.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByRole("dialog", { name: "Sign in" })).toBeVisible();
     await expect(page.getByLabel("Email", { exact: true })).toBeFocused();
     await page.getByRole("button", { name: "Close sign-in window" }).click();

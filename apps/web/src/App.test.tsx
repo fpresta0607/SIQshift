@@ -239,10 +239,10 @@ type Person = ReturnType<typeof userEvent.setup>;
 async function signIn(client: Client) {
   const person = userEvent.setup();
   render(<App client={client} />);
-  await person.click((await screen.findAllByRole("button", { name: "Log in" }))[0]!);
+  await person.click(await screen.findByRole("button", { name: "Sign in" }));
   await person.type(await screen.findByLabelText("Email"), "alex@example.com");
   await person.type(screen.getByLabelText("Password"), "long-enough-password");
-  await person.click(screen.getByRole("button", { name: "Sign in" }));
+  await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Sign in" }));
   return person;
 }
 
@@ -893,6 +893,10 @@ describe("dashboard", () => {
     expect(never).toHaveTextContent("Anything you type into a form, chat, or document.");
     expect(never).toHaveTextContent("SIQshift never reaches inside or controls your other apps.");
     expect(dialog).toHaveTextContent("Everyone sees the same numbers.");
+    // What counts as active on a Mac, which the home page no longer lists.
+    const counted = within(dialog).getByRole("heading", { name: "How time is counted" }).nextElementSibling;
+    expect(counted).toHaveTextContent("On a Mac, music on its own does not keep you active. Video and calls do.");
+    expect(counted).toHaveTextContent("On a Mac, a live microphone keeps you active on macOS 14 or later.");
 
     await person.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -1533,6 +1537,38 @@ describe("the home screen", () => {
 });
 
 describe("getting the desktop app", () => {
+  it("leaves the hero to the download and the header to Sign in and Sign up alone", async () => {
+    // Arrange
+    render(<App client={clientFor()} />);
+
+    // Act
+    const hero = within(await screen.findByRole("region", { name: /Measure the work/ }));
+    const header = within(screen.getByRole("navigation", { name: "SIQshift navigation" }));
+
+    // Assert
+    expect(hero.queryByRole("button", { name: /Create account|Log in|Sign in|Sign up/ })).not.toBeInTheDocument();
+    expect(header.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(header.getByRole("button", { name: "Sign up" })).toBeInTheDocument();
+    expect(header.getAllByRole("button")).toHaveLength(2);
+    expect(header.queryAllByRole("link")).toHaveLength(0);
+  });
+
+  it.each([
+    { control: "Sign in", dialogName: "Sign in" },
+    { control: "Sign up", dialogName: "Create your account" },
+  ])("opens the $dialogName window from the header's $control", async ({ control, dialogName }) => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App client={clientFor()} />);
+    const header = within(await screen.findByRole("navigation", { name: "SIQshift navigation" }));
+
+    // Act
+    await person.click(header.getByRole("button", { name: control }));
+
+    // Assert
+    expect(screen.getByRole("dialog", { name: dialogName })).toBeInTheDocument();
+  });
+
   it("offers both signed installers in the landing hero before sign-in, never the unsigned test release", async () => {
     // Arrange
     const { container } = render(<App client={clientFor()} />);
@@ -1543,7 +1579,6 @@ describe("getting the desktop app", () => {
     // Assert
     expect(hero.getByRole("tablist", { name: "Choose your computer" })).toBeInTheDocument();
     expect(hero.getByRole("link", { name: "Download for Windows" })).toHaveAttribute("href", windowsInstallerUrl);
-    expect(screen.getByRole("link", { name: /^Download$/ })).toHaveAttribute("href", "#install");
     expect(container.querySelector(`.landing-install a[href="${macInstallerUrl}"]`)).not.toBeNull();
     expect(container.querySelector('a[href*="unsigned-latest"]')).toBeNull();
     // The dashboard's masthead menu stays on the dashboard.

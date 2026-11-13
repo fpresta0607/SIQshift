@@ -234,6 +234,19 @@ describe("RecordingPanel", () => {
     expect(never).toHaveTextContent("inside your files");
   });
 
+  it("says what counts as active on a Mac, as the web help does", () => {
+    // Arrange
+    panelFor();
+
+    // Act
+    const panel = screen.getByRole("dialog", { name: "What SIQshift is recording" });
+    const counted = within(panel).getByRole("heading", { name: "How time is counted" }).nextElementSibling;
+
+    // Assert
+    expect(counted).toHaveTextContent("On a Mac, music on its own does not keep you active. Video and calls do.");
+    expect(counted).toHaveTextContent("On a Mac, a live microphone keeps you active on macOS 14 or later.");
+  });
+
   it("explains that nothing is pressed, and where the numbers go", () => {
     panelFor();
 
