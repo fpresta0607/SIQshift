@@ -53,7 +53,7 @@ function readTimeUniform(): number {
  * A WebGL canvas without `preserveDrawingBuffer` reads back as cleared, so the
  * pixels come from a screenshot of the element, handed to a 2D canvas in the
  * page to be measured. An element screenshot is the whole page clipped to that
- * element's box, and the canvas is the whole viewport, so the sign-in card
+ * element's box, and the canvas is the whole viewport, so the landing page
  * over it has to be hidden or its own mint and white pixels count as wave.
  */
 async function waveBand(page: Page, width: number, height: number): Promise<number> {
@@ -63,7 +63,7 @@ async function waveBand(page: Page, width: number, height: number): Promise<numb
   // The landing page is the app's settled state: waiting for it means the
   // booting screen is not still on its way out mid-measurement.
   await page.getByRole("heading", { name: /Measure the work/ }).waitFor();
-  await page.addStyleTag({ content: ".shell > *:not(canvas.shader-bg) { visibility: hidden !important; }" });
+  await page.addStyleTag({ content: ".landing > *:not(.landing-scene) { visibility: hidden !important; }" });
   await page.waitForSelector("canvas.shader-bg");
   await page.evaluate((frames) => (window as unknown as { __advance: (n: number) => void }).__advance(frames), PHASE_FRAMES);
   const shot = (await page.locator("canvas.shader-bg").screenshot()).toString("base64");
