@@ -14,7 +14,7 @@ import { appendFileSync } from "node:fs";
  *   set the release carries Windows alone and says so. With some set the setup
  *   is half built, and the run stops rather than quietly dropping the Mac.
  */
-export const WINDOWS_CREDENTIALS = [
+const WINDOWS_CREDENTIALS = [
   "AZURE_CLIENT_ID",
   "AZURE_TENANT_ID",
   "AZURE_SUBSCRIPTION_ID",
@@ -25,7 +25,7 @@ export const WINDOWS_CREDENTIALS = [
   "TAURI_SIGNING_PRIVATE_KEY",
 ];
 
-export const APPLE_CREDENTIALS = [
+const APPLE_CREDENTIALS = [
   "APPLE_CERTIFICATE",
   "APPLE_CERTIFICATE_PASSWORD",
   "APPLE_SIGNING_IDENTITY",

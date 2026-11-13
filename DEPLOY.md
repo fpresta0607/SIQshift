@@ -827,7 +827,7 @@ change what the website serves.
 
 Windows ships the NSIS `...-setup.exe` only: WiX's `light.exe` cannot bundle
 the unoptimized debug binary into an MSI, so that target is skipped here. The
-tagged release still builds both.
+release ships the NSIS installer only as well.
 
 #### The permanent download URL
 

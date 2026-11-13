@@ -6,16 +6,38 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { APPLE_CREDENTIALS, WINDOWS_CREDENTIALS, resolveReleasePlan } from "./release-signing-state.mjs";
+import { resolveReleasePlan } from "./release-signing-state.mjs";
 
 const script = fileURLToPath(new URL("./release-signing-state.mjs", import.meta.url));
+
+// The credentials the release environment holds, as DEPLOY.md and the plan
+// job's env block list them.
+const WINDOWS_NAMES = [
+  "AZURE_CLIENT_ID",
+  "AZURE_TENANT_ID",
+  "AZURE_SUBSCRIPTION_ID",
+  "SIGNING_ENDPOINT",
+  "SIGNING_ACCOUNT",
+  "SIGNING_PROFILE",
+  "SIGNING_PUBLISHER",
+  "TAURI_SIGNING_PRIVATE_KEY",
+];
+const APPLE_NAMES = [
+  "APPLE_CERTIFICATE",
+  "APPLE_CERTIFICATE_PASSWORD",
+  "APPLE_SIGNING_IDENTITY",
+  "APPLE_TEAM_ID",
+  "APPLE_API_KEY",
+  "APPLE_API_ISSUER",
+  "APPLE_API_PRIVATE_KEY",
+];
 
 const setOnly = (names) => (name) => names.includes(name);
 const targetsOf = (plan) => plan.legs.map((leg) => leg.target);
 
 test("Windows signing alone releases Windows and says the Mac is left out", () => {
   // Arrange
-  const isSet = setOnly(WINDOWS_CREDENTIALS);
+  const isSet = setOnly(WINDOWS_NAMES);
 
   // Act
   const plan = resolveReleasePlan(isSet);
@@ -27,7 +49,7 @@ test("Windows signing alone releases Windows and says the Mac is left out", () =
 });
 
 test("every Windows and Apple credential releases both installers", () => {
-  const plan = resolveReleasePlan(setOnly([...WINDOWS_CREDENTIALS, ...APPLE_CREDENTIALS]));
+  const plan = resolveReleasePlan(setOnly([...WINDOWS_NAMES, ...APPLE_NAMES]));
 
   assert.deepEqual(targetsOf(plan), ["windows", "macos"]);
   assert.equal(plan.notice, undefined);
@@ -35,9 +57,18 @@ test("every Windows and Apple credential releases both installers", () => {
 
 // A release is published signed and updatable or not at all, so no Windows
 // credential is optional, the updater key included.
-for (const absent of WINDOWS_CREDENTIALS) {
+for (const absent of WINDOWS_NAMES) {
   test(`a release without ${absent} stops and names it`, () => {
-    const plan = resolveReleasePlan(setOnly([...WINDOWS_CREDENTIALS, ...APPLE_CREDENTIALS].filter((name) => name !== absent)));
+    const plan = resolveReleasePlan(setOnly([...WINDOWS_NAMES, ...APPLE_NAMES].filter((name) => name !== absent)));
+
+    assert.equal(plan.legs, undefined);
+    assert.match(plan.error, new RegExp(`\\b${absent}\\b`));
+  });
+}
+
+for (const absent of APPLE_NAMES) {
+  test(`Apple signing without ${absent} stops and names it`, () => {
+    const plan = resolveReleasePlan(setOnly([...WINDOWS_NAMES, ...APPLE_NAMES].filter((name) => name !== absent)));
 
     assert.equal(plan.legs, undefined);
     assert.match(plan.error, new RegExp(`\\b${absent}\\b`));
@@ -45,7 +76,7 @@ for (const absent of WINDOWS_CREDENTIALS) {
 }
 
 test("partly configured Apple signing stops instead of quietly dropping the Mac", () => {
-  const plan = resolveReleasePlan(setOnly([...WINDOWS_CREDENTIALS, "APPLE_CERTIFICATE", "APPLE_API_KEY"]));
+  const plan = resolveReleasePlan(setOnly([...WINDOWS_NAMES, "APPLE_CERTIFICATE", "APPLE_API_KEY"]));
 
   assert.equal(plan.legs, undefined);
   assert.match(plan.error, /APPLE_TEAM_ID/);
@@ -54,7 +85,7 @@ test("partly configured Apple signing stops instead of quietly dropping the Mac"
 });
 
 test("the Mac leg builds one universal app for Apple silicon and Intel", () => {
-  const plan = resolveReleasePlan(setOnly([...WINDOWS_CREDENTIALS, ...APPLE_CREDENTIALS]));
+  const plan = resolveReleasePlan(setOnly([...WINDOWS_NAMES, ...APPLE_NAMES]));
   const mac = plan.legs.find((leg) => leg.target === "macos");
 
   assert.equal(mac.tauri_target, "--target universal-apple-darwin");
@@ -65,7 +96,7 @@ test("the Mac leg builds one universal app for Apple silicon and Intel", () => {
 // The test builds install through NSIS; an MSI of the same app would install
 // beside them rather than over them.
 test("the Windows leg builds the NSIS installer only, as a release build", () => {
-  const plan = resolveReleasePlan(setOnly(WINDOWS_CREDENTIALS));
+  const plan = resolveReleasePlan(setOnly(WINDOWS_NAMES));
 
   assert.equal(plan.legs[0].bundle_args, "--bundles nsis");
   assert.match(plan.legs[0].target_dir, /target\/release$/);
@@ -88,8 +119,8 @@ async function runScript(environment) {
 // The workflow hands the script `true` or `false` per credential, never a value.
 test("the script reads the set-or-not flags the workflow passes and writes the matrix", async () => {
   const environment = Object.fromEntries([
-    ...WINDOWS_CREDENTIALS.map((name) => [name, "true"]),
-    ...APPLE_CREDENTIALS.map((name) => [name, "false"]),
+    ...WINDOWS_NAMES.map((name) => [name, "true"]),
+    ...APPLE_NAMES.map((name) => [name, "false"]),
   ]);
 
   const { stdout, output } = await runScript(environment);
@@ -100,7 +131,7 @@ test("the script reads the set-or-not flags the workflow passes and writes the m
 });
 
 test("the script fails the run when a credential is missing", () => {
-  const environment = Object.fromEntries(WINDOWS_CREDENTIALS.map((name) => [name, name === "AZURE_TENANT_ID" ? "false" : "true"]));
+  const environment = Object.fromEntries(WINDOWS_NAMES.map((name) => [name, name === "AZURE_TENANT_ID" ? "false" : "true"]));
 
   assert.throws(
     () => execFileSync(process.execPath, [script], {
