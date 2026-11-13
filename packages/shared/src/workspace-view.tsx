@@ -1,9 +1,8 @@
-import { useId, useState, type ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount } from "./format.js";
 import { MemberAvatar } from "./member-avatar.js";
-import { SegmentedControl } from "./segmented-control.js";
 import { TeamTotals } from "./team-totals.js";
 import { TimeChartCard } from "./time-chart-card.js";
 import { formatHumanDuration } from "./time.js";
@@ -105,9 +104,9 @@ export const WorkspaceView = ({
   agentRows,
   projectIcons,
 }: WorkspaceViewProps) => {
-  const [breakdown, setBreakdown] = useState<"projects" | "agents">("projects");
   const boardTitleId = useId();
-  const rows = breakdown === "projects" ? projectRows : agentRows;
+  const projectsTitleId = useId();
+  const agentsTitleId = useId();
   return (
     <>
       <TeamTotals
@@ -160,25 +159,37 @@ export const WorkspaceView = ({
           </table>
           {boardNotes.map((note) => <p key={note} className="tv-card-foot">{note}</p>)}
         </section>
-        <section className="tv-card tv-list" aria-label="Projects or agents">
-          <div className="tv-card-head">
-            <SegmentedControl
-              label="Projects or agents"
-              options={[{ value: "projects", label: "Projects" }, { value: "agents", label: "Agents" }]}
-              value={breakdown}
-              onChange={setBreakdown}
-            />
-            <span className="tv-card-note">{breakdown === "projects" ? "Recorded time" : "Agent time"}</span>
-          </div>
-          {rows.length === 0 ? (
-            <p className="subtle">Nothing recorded in this range.</p>
-          ) : (
-            <ul className={breakdown === "projects" ? "tv-meter-list" : "tv-meter-list is-agent"}>
-              {rows.map((row) => <MeterRowItem key={row.key} row={row} iconUrl={projectIcons?.[row.key]} />)}
-            </ul>
-          )}
-          {breakdown === "projects" && rows.length > 0 && <p className="tv-card-foot">{RECORDED_TIME_NOTE}</p>}
-        </section>
+        <div className="tv-stack">
+          <section className="tv-card tv-list" aria-labelledby={projectsTitleId}>
+            <div className="tv-card-head">
+              <h4 id={projectsTitleId}>Projects</h4>
+              <span className="tv-card-note">Recorded time</span>
+            </div>
+            {projectRows.length === 0 ? (
+              <p className="subtle">Nothing recorded in this range.</p>
+            ) : (
+              <>
+                <ul className="tv-meter-list">
+                  {projectRows.map((row) => <MeterRowItem key={row.key} row={row} iconUrl={projectIcons?.[row.key]} />)}
+                </ul>
+                <p className="tv-card-foot">{RECORDED_TIME_NOTE}</p>
+              </>
+            )}
+          </section>
+          <section className="tv-card tv-list" aria-labelledby={agentsTitleId}>
+            <div className="tv-card-head">
+              <h4 id={agentsTitleId}>Agents</h4>
+              <span className="tv-card-note">Agent time</span>
+            </div>
+            {agentRows.length === 0 ? (
+              <p className="subtle">Nothing recorded in this range.</p>
+            ) : (
+              <ul className="tv-meter-list is-agent">
+                {agentRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
+              </ul>
+            )}
+          </section>
+        </div>
       </div>
     </>
   );

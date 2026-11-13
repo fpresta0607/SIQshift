@@ -253,8 +253,7 @@ async function openAllStats(person: Person) {
   return within(await screen.findByRole("dialog", { name: "All stats" }));
 }
 
-/// The dialog's Humans or Agents switch. The team view's breakdown has an
-/// Agents toggle of its own, so the dialog holds two buttons by that name.
+/// The dialog's Humans or Agents switch.
 const agentsTab = (dialog: ReturnType<typeof within>) =>
   within(dialog.getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
 
@@ -351,11 +350,14 @@ describe("dashboard", () => {
     const [, first, second] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamGeneral2h 14m3h 00m$/);
     expect(second).toHaveTextContent(/^2AAlexYouClient1h 00m0s$/);
-    const breakdown = within(stats.getByRole("region", { name: "Projects or agents" }));
-    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
-    await person.click(within(breakdown.getByRole("group", { name: "Projects or agents" })).getByRole("button", { name: "Agents" }));
-    expect(breakdown.getByText("Agent time")).toBeInTheDocument();
-    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
+    // Both lists at once, with no switch between them.
+    const projects = within(stats.getByRole("region", { name: "Projects" }));
+    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
+    expect(projects.getByText("Recorded time")).toBeInTheDocument();
+    const agents = within(stats.getByRole("region", { name: "Agents" }));
+    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
+    expect(agents.getByText("Agent time")).toBeInTheDocument();
+    expect(stats.queryByRole("group", { name: "Projects or agents" })).toBeNull();
     expect(stats.queryByText("Local agents, shared visibility")).toBeNull();
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
   });

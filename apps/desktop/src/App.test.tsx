@@ -297,8 +297,7 @@ const openAllStats = async (person: ReturnType<typeof userEvent.setup>): Promise
   return screen.getByRole("dialog", { name: /SIQstack|All stats/ });
 };
 
-/// The dialog's Humans or Agents switch. The team view's breakdown has an
-/// Agents toggle of its own, so the dialog holds two buttons by that name.
+/// The dialog's Humans or Agents switch.
 const agentsTab = (panel: HTMLElement): HTMLElement =>
   within(within(panel).getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
 
@@ -1339,11 +1338,14 @@ describe("the team board", () => {
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m$/);
     expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m$/);
-    const breakdown = within(view.getByRole("region", { name: "Projects or agents" }));
-    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);
-    await person.click(within(breakdown.getByRole("group", { name: "Projects or agents" })).getByRole("button", { name: "Agents" }));
-    expect(breakdown.getByText("Agent time")).toBeInTheDocument();
-    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code1h 30m"]);
+    // Both lists at once, with no switch between them.
+    const projects = within(view.getByRole("region", { name: "Projects" }));
+    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);
+    expect(projects.getByText("Recorded time")).toBeInTheDocument();
+    const agents = within(view.getByRole("region", { name: "Agents" }));
+    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code1h 30m"]);
+    expect(agents.getByText("Agent time")).toBeInTheDocument();
+    expect(view.queryByRole("group", { name: "Projects or agents" })).toBeNull();
     expect(view.queryByText("Local agents, shared visibility")).toBeNull();
     expect(bridge.workspaceReport).toHaveBeenCalled();
   });
