@@ -438,9 +438,12 @@ mod tests {
         );
     }
 
-    // The test process runs inside the runner's logged-in GUI session, so the
-    // window server must describe it; a `None` here means a wrong key or value
-    // type, and the fast user switching guard could never fire.
+    // The test process runs inside the runner's logged-in GUI session, on the
+    // console and unlocked, so the window server must describe it as such. A
+    // missing console entry means a wrong key or value type, and the fast user
+    // switching guard could never fire; a lock read here means the
+    // undocumented lock entry reads as locked on an unlocked screen, and every
+    // poll would record nothing.
     #[test]
     fn session_probe_reads_the_window_server() {
         // Act
@@ -451,29 +454,27 @@ mod tests {
             session.on_console.is_some(),
             "CGSession did not say whether this session is on the console"
         );
+        assert!(
+            !session.is_screen_locked,
+            "CGSession read the runner's unlocked screen as locked"
+        );
     }
 
+    // The same unlocked session on the console: the poll must read the input
+    // clock and never read Locked.
     #[test]
-    fn poll_reads_locked_exactly_when_the_real_session_is_locked_or_off_the_console() {
-        // Arrange
-        let session = read_login_session();
-        let is_locked = session.is_screen_locked || session.on_console == Some(false);
-
+    fn poll_reads_the_runners_unlocked_session_as_active_or_idle() {
         // Act
         let signal = Poller::new().poll();
 
         // Assert
-        if is_locked {
-            assert_eq!(signal, ActivitySignal::Locked);
-        } else {
-            assert!(
-                matches!(
-                    signal,
-                    ActivitySignal::Active { .. } | ActivitySignal::Idle { .. }
-                ),
-                "{signal:?}"
-            );
-        }
+        assert!(
+            matches!(
+                signal,
+                ActivitySignal::Active { .. } | ActivitySignal::Idle { .. }
+            ),
+            "{signal:?}"
+        );
     }
 
     #[test]
