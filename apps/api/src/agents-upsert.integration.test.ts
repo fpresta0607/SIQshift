@@ -224,7 +224,7 @@ integration("agents operator-and-repo identity upsert", () => {
     expect(await repository.findById(subject, named.id)).toMatchObject({ name: "Alex's helper", status: "registered" });
   });
   // The regression this whole change exists for, and the one the Overlord has
-  // now reported twice. Five `precisiondocs` rows sat on one roster because
+  // now reported twice. Five `novawebsite` rows sat on one roster because
   // every treehouse worktree is its own path and identity keyed on the path,
   // while the name was composed from the last segment - so all five rendered
   // the same string. Keyed by path, displayed by basename.
@@ -235,12 +235,12 @@ integration("agents operator-and-repo identity upsert", () => {
   // insert.
   it("gives two worktrees of one remote a single identity", async () => {
     const now = new Date();
-    const remote = "git@github.com:fpresta0607/precisiondocs.git";
+    const remote = "git@github.com:acme/novawebsite.git";
     const base = { organizationId, ownerUserId, source: "claude_code", projectId: null, name: "Claude Code", now } as const;
     const worktrees = [
-      "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/1/precisiondocs",
-      "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/2/precisiondocs",
-      "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/3/precisiondocs",
+      "C:/Users/riley/.treehouse/novawebsite-fdd5f2/1/novawebsite",
+      "C:/Users/riley/.treehouse/novawebsite-fdd5f2/2/novawebsite",
+      "C:/Users/riley/.treehouse/novawebsite-fdd5f2/3/novawebsite",
     ];
     const minted = [];
     for (const repoRoot of worktrees) {
@@ -249,14 +249,14 @@ integration("agents operator-and-repo identity upsert", () => {
 
     expect(new Set(minted.map((agent) => agent.id)).size).toBe(1);
     const record = await repository.findById(subject, minted[0]!.id);
-    expect(record?.repoKey).toBe("github.com/fpresta0607/precisiondocs");
+    expect(record?.repoKey).toBe("github.com/acme/novawebsite");
     // The root stays on the row as evidence of where the work happened - the
     // first worktree that minted it - and never moves the identity again.
     expect(record?.repoRoot).toBe(worktrees[0]);
-    expect(record?.name).toBe("Claude Code @ precisiondocs");
+    expect(record?.name).toBe("Claude Code @ novawebsite");
   });
 
-  // `PrecisionDocs-AI` and `precisiondocs` are one GitHub repository checked
+  // `NovaWebsite-AI` and `novawebsite` are one GitHub repository checked
   // out twice on one machine, under two directory names and two different
   // spellings of the same remote. No basename comparison could ever collapse
   // these; only the remote can.
@@ -265,13 +265,13 @@ integration("agents operator-and-repo identity upsert", () => {
     const base = { organizationId, ownerUserId, source: "codex", projectId: null, name: "Codex", now } as const;
     const first = await repository.upsertForKey({
       ...base,
-      repoRoot: "C:/dev/PrecisionDocs-AI",
-      repoRemote: "https://github.com/fpresta0607/PrecisionDocs-AI.git",
+      repoRoot: "C:/dev/NovaWebsite-AI",
+      repoRemote: "https://github.com/acme/NovaWebsite-AI.git",
     });
     const second = await repository.upsertForKey({
       ...base,
-      repoRoot: "C:/dev/code-goblins/projects/precisiondocs",
-      repoRemote: "git@github.com:fpresta0607/precisiondocs-ai.git",
+      repoRoot: "C:/dev/relay-app/projects/novawebsite",
+      repoRemote: "git@github.com:acme/novawebsite-ai.git",
     });
 
     expect(second.id).toBe(first.id);
@@ -279,7 +279,7 @@ integration("agents operator-and-repo identity upsert", () => {
     // whichever checkout's directory happened to mint the row. Reading the
     // directory first is how a worktree's folder name became the displayed
     // codebase for a whole repository.
-    expect((await repository.findById(subject, first.id))?.name).toBe("Codex @ precisiondocs-ai");
+    expect((await repository.findById(subject, first.id))?.name).toBe("Codex @ novawebsite-ai");
   });
 
   // The label follows the identity even when the directory could have supplied

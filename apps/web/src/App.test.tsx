@@ -11,7 +11,7 @@ import { macInstallerUrl, windowsInstallerUrl } from "./DownloadInstaller.js";
 // jsdom has no WebGL context; the shader is decorative.
 vi.mock("@siqshift/shared/webgl-shader", () => ({ WebGLShader: () => null }));
 
-const organization = { id: "00000000-0000-4000-8000-000000000001", name: "SIQstack", inviteCode: "ACDEF-GHJKM" };
+const organization = { id: "00000000-0000-4000-8000-000000000001", name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" };
 
 /// The App's own Today-card tick, which these tests drive by hand.
 const TODAY_REFRESH_MS = 60_000;
@@ -334,14 +334,14 @@ describe("dashboard", () => {
     // Arrange
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({ workspace }));
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
 
     // Act
     const stats = await openAllStats(person);
     await stats.findByLabelText("Totals");
 
     // Assert
-    expect(stats.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(stats.getByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(stats.getByText(/^Last 30 days · /)).toBeInTheDocument();
     expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 14m");
     expect(teamTotal(stats, "Agent time")).toHaveTextContent("3h 00m");
@@ -465,7 +465,7 @@ describe("dashboard", () => {
 
   it("shows the invite code and copies it on request", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
     expect(await settings.findByText("ACDEF-GHJKM")).toBeInTheDocument();
 
@@ -482,7 +482,7 @@ describe("dashboard", () => {
     // Arrange
     const renameOrganization = vi.fn().mockResolvedValue({ organization: { ...organization, name: "Field Crew" } });
     const person = await signIn(clientFor({ renameOrganization }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     // Act
@@ -504,7 +504,7 @@ describe("dashboard", () => {
     const refusal = "Only a workspace administrator can rename the workspace.";
     const renameOrganization = vi.fn().mockRejectedValue(new ClientError("auth", refusal));
     const person = await signIn(clientFor({ renameOrganization }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     // Act
@@ -514,7 +514,7 @@ describe("dashboard", () => {
 
     // Assert
     expect(await settings.findByRole("alert")).toHaveTextContent(refusal);
-    expect(screen.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
   });
 
@@ -522,7 +522,7 @@ describe("dashboard", () => {
     // Arrange
     const renameOrganization = vi.fn();
     const person = await signIn(clientFor({ renameOrganization }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     // Act
@@ -532,13 +532,13 @@ describe("dashboard", () => {
 
     // Assert
     expect(renameOrganization).not.toHaveBeenCalled();
-    expect(settings.getByText("SIQstack")).toBeInTheDocument();
+    expect(settings.getByText("Lumen Studio")).toBeInTheDocument();
   });
 
   it("says the workspace is the team and anyone with the code joins it, on any email domain", async () => {
     // Arrange
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     // Act
     const settings = await openSettings(person);
@@ -549,7 +549,7 @@ describe("dashboard", () => {
 
   it("reports a denied clipboard inside the settings panel that covers the page", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
@@ -563,7 +563,7 @@ describe("dashboard", () => {
   it("keeps a board that fails after a successful join clear of the join form", async () => {
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({ workspace }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     workspace.mockRejectedValueOnce(new ClientError("transient", "The board is taking a break."));
@@ -686,7 +686,7 @@ describe("dashboard", () => {
       .mockResolvedValueOnce({ projects: pickableProjects, selectedProjectId: null })
       .mockRejectedValue(new ClientError("transient", "The project list is taking a break."));
     const person = await signIn(clientFor({ projects }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
@@ -705,7 +705,7 @@ describe("dashboard", () => {
       .mockResolvedValueOnce(workspaceReport)
       .mockRejectedValue(new ClientError("transient", "The board is taking a break."));
     const person = await signIn(clientFor({ projects, workspace }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const settings = await openSettings(person);
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
@@ -776,7 +776,7 @@ describe("dashboard", () => {
 
   it("lets the download menu keep an Escape press to itself inside the settings panel", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
     await person.click(settings.getByRole("button", { name: /download/i }));
     expect(settings.getByRole("link", { name: "Download for Windows" })).toBeInTheDocument();
@@ -929,7 +929,7 @@ describe("dashboard", () => {
 
   it("explains how the app works from the dashboard help button", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     await person.click(screen.getByRole("button", { name: "How SIQshift works" }));
 
@@ -970,7 +970,7 @@ describe("dashboard", () => {
   it("reloads with device-local instant bounds when the range changes", async () => {
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({ workspace }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     const callsBefore = workspace.mock.calls.length;
@@ -985,7 +985,7 @@ describe("dashboard", () => {
   it("asks for everything by sending no bounds on all time", async () => {
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const person = await signIn(clientFor({ workspace }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(stats.getByRole("button", { name: "All time" }));
@@ -1071,7 +1071,7 @@ describe("dashboard", () => {
     expect(screen.getByRole("link", { name: "Download for Windows" })).toHaveAttribute("href", windowsInstallerUrl);
 
     await person.click(screen.getByRole("button", { name: "Skip to your dashboard" }));
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
   });
 
   it("names the new workspace when no invite code is given", async () => {
@@ -1083,14 +1083,14 @@ describe("dashboard", () => {
     await person.type(screen.getByLabelText("Name"), "Alex Morgan");
     await person.type(screen.getByLabelText("Email"), "alex@example.com");
     await person.type(screen.getByLabelText("Password"), "long-enough-password");
-    await person.type(screen.getByLabelText(/Workspace name/), "  SIQstack  ");
+    await person.type(screen.getByLabelText(/Workspace name/), "  Lumen Studio  ");
     await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create account" }));
 
     await waitFor(() => expect(signUp).toHaveBeenCalledWith({
       email: "alex@example.com",
       password: "long-enough-password",
       name: "Alex Morgan",
-      workspaceName: "SIQstack",
+      workspaceName: "Lumen Studio",
     }));
   });
 
@@ -1108,7 +1108,7 @@ describe("dashboard", () => {
   it("takes a returning account straight to the dashboard", async () => {
     await signIn(clientFor());
 
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /the app/i })).not.toBeInTheDocument();
   });
 
@@ -1116,7 +1116,7 @@ describe("dashboard", () => {
     const client = clientFor({ restoreSession: vi.fn().mockResolvedValue(true) });
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
   });
 
@@ -1158,7 +1158,7 @@ describe("dashboard", () => {
       meStats: vi.fn().mockRejectedValue(refused()),
     }));
 
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(await screen.findByText(/would not accept/)).toBeInTheDocument();
     const settings = await openSettings(person);
     expect(await settings.findByText("ACDEF-GHJKM")).toBeInTheDocument();
@@ -1205,7 +1205,7 @@ describe("dashboard", () => {
     const claimAdmin = vi.fn().mockRejectedValue(new ClientError("validation", "A workspace administrator already exists."));
     await signIn(clientFor({ claimAdmin }));
 
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(claimAdmin).toHaveBeenCalledTimes(1);
     // A 409 once an admin exists is a silent no-op, never an error on screen.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -1295,7 +1295,7 @@ describe("dashboard", () => {
     const olderStats = { ...memberStats, hourly: undefined } as unknown as MeStatsResponse;
     const person = await signIn(clientFor({ meStats: vi.fn().mockResolvedValue(olderStats) }));
 
-    expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     await openAllStats(person);
     const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     expect(stats.getByTestId("breakdown")).toHaveTextContent("Active time");
@@ -1400,7 +1400,7 @@ describe("dashboard", () => {
         concurrency: { t0Seconds: 2_220, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
         byAgent: [],
         projects: [
-          { project: { id: "p2", name: "peakCraftsman" }, durationSeconds: 5_640, attributedSeconds: 5_640, unattributedSeconds: 0, sessionCount: 2 },
+          { project: { id: "p2", name: "Atlas Portal" }, durationSeconds: 5_640, attributedSeconds: 5_640, unattributedSeconds: 0, sessionCount: 2 },
           { project: { id: "p1", name: "General" }, durationSeconds: 1_320, attributedSeconds: 0, unattributedSeconds: 1_320, sessionCount: 1 },
         ],
         apps: [
@@ -1423,7 +1423,7 @@ describe("dashboard", () => {
     // Both lists now close on the same total: 1h 34m + 22m of projects, and
     // 20m + 12m + 5m of apps with the 1h 19m nobody was in front of anything.
     const projects = stats.getByTestId("member-project-list");
-    expect(projects).toHaveTextContent("peakCraftsman1h 34m");
+    expect(projects).toHaveTextContent("Atlas Portal1h 34m");
     expect(projects).toHaveTextContent("General22m");
     expect(projects).not.toHaveTextContent("Unattributed");
     const apps = stats.getByTestId("member-app-list");
@@ -1482,7 +1482,7 @@ describe("dashboard", () => {
       organization: organizationCall,
       workspace: vi.fn().mockResolvedValue(workspaceOfOne),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     await person.type(settings.getByLabelText("Their invite code"), "acdef-ghjkm");
@@ -1501,7 +1501,7 @@ describe("dashboard", () => {
       joinOrganization,
       workspace: vi.fn().mockResolvedValue(workspaceOfOne),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     await person.type(settings.getByLabelText("Their invite code"), "ACDEF-GHJKM");
@@ -1518,7 +1518,7 @@ describe("the home screen", () => {
   it("leads with today's total under today's date, the way the app does", async () => {
     await signIn(clientFor());
 
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     // The clock is the page: one accumulated figure for the day, and the date
     // it belongs to above it.
     await waitFor(() => expect(screen.getByTestId("elapsed-time")).toHaveTextContent("02:00:00"));
@@ -1651,7 +1651,7 @@ describe("getting the desktop app", () => {
 
   it("keeps the same installer one pill wide in the dashboard masthead", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const trigger = screen.getByRole("button", { name: /download/i });
     expect(trigger.closest(".masthead-actions")).not.toBeNull();
@@ -1665,7 +1665,7 @@ describe("getting the desktop app", () => {
 
   it("hands out one installer everywhere, including from the help dialog", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     await person.click(screen.getByRole("button", { name: "How SIQshift works" }));
 
     const dialog = screen.getByRole("dialog", { name: "How SIQshift works" });
@@ -1710,7 +1710,7 @@ describe("project management", () => {
       workspace,
       meStats,
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     await person.click(screen.getByTestId("filing-change"));
     await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
@@ -1726,7 +1726,7 @@ describe("project management", () => {
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
       updateProject,
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     const row = settings.getByText("Client").closest("li");
@@ -1770,7 +1770,7 @@ describe("project management", () => {
     const person = await signIn(clientFor({
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     const dialog = screen.getByRole("dialog", { name: "Settings" });
@@ -1791,7 +1791,7 @@ describe("project management", () => {
       projectUsage: vi.fn().mockResolvedValue({ sessionCount: 0, durationSeconds: 0, agentSessionCount: 0, agentCount: 0 }),
       deleteProject,
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
 
     const otherRow = settings.getByText("Client").closest("li");
@@ -1806,7 +1806,7 @@ describe("project management", () => {
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
       projectUsage: vi.fn().mockResolvedValue({ sessionCount: 2, durationSeconds: 3_600, agentSessionCount: 5, agentCount: 3 }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
     const dialog = screen.getByRole("dialog", { name: "Settings" });
 
@@ -1828,7 +1828,7 @@ describe("project management", () => {
     const person = await signIn(clientFor({
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     // Act
     const settings = await openSettings(person);
@@ -1846,7 +1846,7 @@ describe("project management", () => {
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
       updateProject,
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
     const row = settings.getByText("Client").closest("li");
 
@@ -1869,7 +1869,7 @@ describe("project management", () => {
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
       updateProject: vi.fn().mockRejectedValue(new ClientError("validation", "Pick an icon and a color from the lists.")),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const settings = await openSettings(person);
     const row = settings.getByText("Client").closest("li");
 
@@ -1907,7 +1907,7 @@ describe("the agents tab", () => {
     [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("data-tokens")));
   const openTokenChart = async (): Promise<{ person: Person; chart: HTMLElement }> => {
     const person = await signIn(clientFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenChart }) }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
     return { person, chart: within(await screen.findByTestId("agent-shifts")).getByTestId("token-chart") };
@@ -1941,7 +1941,7 @@ describe("the agents tab", () => {
 
   it("maps every shift under its codebase, with the total recorded on top", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -1979,7 +1979,7 @@ describe("the agents tab", () => {
         ],
       }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -1997,7 +1997,7 @@ describe("the agents tab", () => {
     // browser, because jsdom has no layout engine. That only holds while the
     // app really does emit these classes, so this is the pin between the two.
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2021,7 +2021,7 @@ describe("the agents tab", () => {
 
   it("opens on a board of the people whose agents ran, heaviest first", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2066,7 +2066,7 @@ describe("the agents tab", () => {
         ],
       }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2097,7 +2097,7 @@ describe("the agents tab", () => {
         ],
       }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2113,7 +2113,7 @@ describe("the agents tab", () => {
       .mockResolvedValueOnce(agentShiftsResponse)
       .mockRejectedValue(new Error("nope"));
     const person = await signIn(clientFor({ agentShifts }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2139,7 +2139,7 @@ describe("the agents tab", () => {
       });
     });
     const person = await signIn(clientFor({ agentShifts }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2169,7 +2169,7 @@ describe("the agents tab", () => {
   it("shows no board when one person's agents did all the work", async () => {
     const soloResponse = { ...agentShiftsResponse, people: [agentShiftsResponse.people[0]!] };
     const person = await signIn(clientFor({ agentShifts: vi.fn().mockResolvedValue(soloResponse) }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2181,7 +2181,7 @@ describe("the agents tab", () => {
 
   it("keeps each codebase's shifts in a drawer that starts closed", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2203,7 +2203,7 @@ describe("the agents tab", () => {
   it("gives each codebase a board row: its rank, a mark, the name, its tokens and its agent time", async () => {
     // Arrange
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const stats = await openAllStats(person);
 
     // Act
@@ -2237,7 +2237,7 @@ describe("the agents tab", () => {
         ],
       }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
     const stats = await openAllStats(person);
 
     // Act
@@ -2259,7 +2259,7 @@ describe("the agents tab", () => {
     vi.setSystemTime(new Date("2026-08-06T20:00:00.000Z"));
     try {
       const person = await signIn(clientFor());
-      await screen.findByRole("heading", { name: "SIQstack" });
+      await screen.findByRole("heading", { name: "Lumen Studio" });
 
       const stats = await openAllStats(person);
       await person.click(agentsTab(stats));
@@ -2281,7 +2281,7 @@ describe("the agents tab", () => {
 
   it("gives each shift its own line: when, who, what model, what commits", async () => {
     const person = await signIn(clientFor());
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2305,7 +2305,7 @@ describe("the agents tab", () => {
   it("asks for a group's shifts only when its drawer opens, under the filters the head was totalled with", async () => {
     const agentShiftRows = vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query)));
     const person = await signIn(clientFor({ agentShiftRows }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2331,7 +2331,7 @@ describe("the agents tab", () => {
   it("pages a long drawer rather than pulling the whole group at once", async () => {
     const agentShiftRows = vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query, 1)));
     const person = await signIn(clientFor({ agentShiftRows }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2386,7 +2386,7 @@ describe("the agents tab", () => {
       });
     });
     const person = await signIn(clientFor({ agentShiftRows }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2415,7 +2415,7 @@ describe("the agents tab", () => {
       .mockRejectedValueOnce(new Error("nope"))
       .mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query)));
     const person = await signIn(clientFor({ agentShiftRows }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
@@ -2440,7 +2440,7 @@ describe("the agents tab", () => {
     const person = await signIn(clientFor({
       agentShifts: vi.fn().mockResolvedValue({ filters: {}, totalAgentSeconds: 0, people: [], hourly: [], groups: [] }),
     }));
-    await screen.findByRole("heading", { name: "SIQstack" });
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));

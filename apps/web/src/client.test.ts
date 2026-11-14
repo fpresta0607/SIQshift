@@ -36,7 +36,7 @@ describe("web client", () => {
     const { client, fetchMock } = clientWith(async (url) => {
       if (url.endsWith("/sign-in/email")) return jsonResponse({ token: "session" });
       if (url.endsWith("/token")) return jsonResponse({ token: "jwt-1" });
-      return jsonResponse({ organization: { id: "o", name: "SIQstack", inviteCode: "ACDEF-GHJKM" } });
+      return jsonResponse({ organization: { id: "o", name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" } });
     });
 
     await client.signIn({ email: "alex@example.com", password: "long-enough-password" });
@@ -59,7 +59,7 @@ describe("web client", () => {
   it("restores a live cookie session and serves API calls with the fresh token", async () => {
     const { client, fetchMock } = clientWith(async (url) => {
       if (url.endsWith("/token")) return jsonResponse({ token: "jwt-restored" });
-      return jsonResponse({ organization: { id: "o", name: "SIQstack", inviteCode: "ACDEF-GHJKM" } });
+      return jsonResponse({ organization: { id: "o", name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" } });
     });
 
     expect(await client.restoreSession()).toBe(true);
