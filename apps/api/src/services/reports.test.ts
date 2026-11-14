@@ -2197,7 +2197,7 @@ describe("agent shifts", () => {
 
   it("groups worktree shifts under the repository their identity is keyed on, not the worktree's folder", async () => {
     const reports = new Reports();
-    const goblin = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/dev/relay-app", agentRepoKey: "github.com/fpresta0607/relay-app" };
+    const goblin = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/dev/relay-app", agentRepoKey: "github.com/acme/relay-app" };
     reports.agentIntervals = [
       // A goblin's worktree folder is named for its task, not its codebase,
       // and it is not opaque enough to read as a run directory.
