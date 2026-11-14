@@ -26,11 +26,29 @@ const rowBoxes = (page: import("@playwright/test").Page) =>
       };
     }));
 
+/** Every repo row's box on the Agents page, plus the boxes of the cells inside it. */
+const repoRowBoxes = (page: import("@playwright/test").Page) =>
+  page.locator(".tv-repos .tv-row").evaluateAll((rows) =>
+    rows.map((row) => {
+      const box = (selector: string): { left: number; right: number; width: number } => {
+        const rect = row.querySelector(selector)!.getBoundingClientRect();
+        return { left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width) };
+      };
+      return {
+        name: row.querySelector(".tv-name")!.textContent ?? "",
+        rank: box(".tv-rank"),
+        mark: box(".repo-mark"),
+        nameCell: box(".tv-name"),
+        tokens: box(".tv-num:not(.is-agent)"),
+        agentTime: box(".tv-num.is-agent"),
+      };
+    }));
+
 // Both apps lay the Today card out in the same `.screen` column, so the same
 // three claims are made about each of them.
 for (const app of ["desktop", "web"] as const) {
   test.describe(`Today's session rows in ${app}`, () => {
-    test("stay one column in the window the app opens at", async ({ page }) => {
+    test("stay one column in a narrow window", async ({ page }) => {
       await page.setViewportSize({ width: 520, height: 920 });
       await openTodayCard(page, app);
 
@@ -170,47 +188,51 @@ test.describe("a connected agent's row on the desktop", () => {
   });
 });
 
-test("a wide window spends its room on the name, not only on the bar", async ({ page }) => {
-  // A fixed 10rem name cap ellipsized repo labels on a maximised dashboard
-  // while the bar beside them ran past 1,000px. The name shares the row's
-  // spare width with the bar instead, so it grows when the window does.
+test("a wide window spends its room on the repo's name", async ({ page }) => {
+  // A fixed 10rem name cap once ellipsized repo labels on a maximised
+  // dashboard while the row beside them ran past 1,000px. The name is the
+  // row's one flexible column, so it grows when the window does.
   await page.setViewportSize({ width: 900, height: 700 });
   await openAgentsGroup(page, "web");
-  const narrow = (await rowBoxes(page))[0]!.nameCell.width;
+  const narrow = (await repoRowBoxes(page))[0]!.nameCell.width;
 
   await page.setViewportSize({ width: 1800, height: 700 });
   await openAgentsGroup(page, "web");
-  const wide = (await rowBoxes(page))[0]!.nameCell.width;
+  const wide = (await repoRowBoxes(page))[0]!.nameCell.width;
 
   expect(wide).toBeGreaterThan(narrow);
 });
 
 for (const app of ["desktop", "web"] as const) {
   test.describe(`the Agents tab in ${app}`, () => {
-    test("gives each codebase a Today row: mark, name, proportional bar, duration", async ({ page }) => {
-      await page.setViewportSize({ width: 900, height: 700 });
-      await openAgentsGroup(page, app);
+    for (const width of [390, 900, 1400]) {
+      test(`lines each codebase up under its column heads at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 700 });
+        await openAgentsGroup(page, app);
 
-      const heads = await rowBoxes(page);
-      expect(heads).toHaveLength(2);
+        const rows = await repoRowBoxes(page);
+        expect(rows).toHaveLength(2);
+        const heads = await page.locator(".tv-repos .tv-cols").evaluate((cols) =>
+          [...cols.children].map((cell) => Math.round(cell.getBoundingClientRect().right)));
 
-      // One scan line: four cells, in order, on the same columns in every row.
-      for (const head of heads) {
-        expect(head.mark.right).toBeLessThanOrEqual(head.nameCell.left);
-        expect(head.nameCell.right).toBeLessThanOrEqual(head.share.left);
-        expect(head.share.right).toBeLessThanOrEqual(head.duration.left);
-      }
-      expect(new Set(heads.map((head) => head.share.left)).size).toBe(1);
-      expect(new Set(heads.map((head) => head.duration.right)).size).toBe(1);
+        // One scan line: rank, mark, name, tokens, agent time, in order and
+        // never overlapping, on the same columns in every row.
+        for (const row of rows) {
+          expect(row.rank.right, row.name).toBeLessThanOrEqual(row.mark.left);
+          expect(row.mark.right, row.name).toBeLessThanOrEqual(row.nameCell.left);
+          expect(row.nameCell.right, row.name).toBeLessThanOrEqual(row.tokens.left);
+          expect(row.tokens.right, row.name).toBeLessThanOrEqual(row.agentTime.left);
+          // Each figure ends where its column's head does, so "Tokens" and
+          // "Agent time" stand over their own numbers.
+          expect(row.tokens.right, row.name).toBe(heads[3]);
+          expect(row.agentTime.right, row.name).toBe(heads[4]);
+        }
 
-      // The bar is a share of the recorded agent time, not decoration: 75% and
-      // 25% of the same track.
-      expect(heads.map((head) => Math.round(((head.fill ?? 0) / head.share.width) * 100))).toEqual([75, 25]);
-
-      // The held tag rides in the name's `·` subtitle, and only the group that
-      // has a decided commit carries one.
-      expect(heads.map((head) => head.name.includes("· 50% held"))).toEqual([true, false]);
-    });
+        // The held tag rides in the name's subtitle, and only the group that
+        // has a decided commit carries one.
+        expect(rows.map((row) => row.name.includes("50% held"))).toEqual([true, false]);
+      });
+    }
 
     // A phone is where this row runs out of room first, and an open drawer is
     // the only way to see one. The tab used to live in the dashboard's own
@@ -268,7 +290,7 @@ for (const app of ["desktop", "web"] as const) {
 
       // Both heads stay measured whatever the drawer is doing, so the scan
       // line the test above pins is not a property of being open.
-      expect(await rowBoxes(page)).toHaveLength(2);
+      expect(await repoRowBoxes(page)).toHaveLength(2);
     });
   });
 }
@@ -286,7 +308,7 @@ for (const app of ["desktop", "web"] as const) {
 
       const measured = await page.evaluate(() => {
         const modal = document.querySelector<HTMLElement>(".modal")!;
-        const total = document.querySelector<HTMLElement>(".member-total, .today-total")!;
+        const total = document.querySelector<HTMLElement>(".tv-person-total")!;
         return {
           viewport: document.documentElement.clientWidth,
           documentScrollWidth: document.documentElement.scrollWidth,

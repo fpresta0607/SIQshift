@@ -1,3 +1,4 @@
+import { DEFAULT_PROJECT_APPEARANCE, projectAppearance } from "@siqshift/shared";
 import { describe, expect, it } from "vitest";
 
 import { createProject, listProjects, type ProjectRepository } from "./projects.js";
@@ -7,6 +8,8 @@ const subject = {
   userId: "e1c7e513-b094-4d4c-ae55-21790ae019a4",
   role: "member" as const,
 };
+
+const assigned = (id: string) => projectAppearance({ id, isDefault: false, icon: null, color: null });
 
 describe("project service", () => {
   it("lists only active projects accessible to the authenticated member in deterministic order", async () => {
@@ -20,15 +23,16 @@ describe("project service", () => {
       ],
       findForMember: async () => null,
       createForMember: async () => { throw new Error("not implemented"); },
+      defaultIdForOrganization: async () => "a1e7c513-b094-4d4c-ae55-21790ae019a4",
     };
 
     await expect(listProjects(repository, subject)).resolves.toEqual({
       projects: [
-        { id: "a1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Alpha", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
-        { id: "b1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Alpha", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
-        { id: "d1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Zebra", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
-        { id: "c1e7c513-b094-4d4c-ae55-21790ae019a4", name: "alpha", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
-        { id: "e1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Álpha", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
+        { id: "a1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Alpha", ...DEFAULT_PROJECT_APPEARANCE, createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
+        { id: "b1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Alpha", ...assigned("b1e7c513-b094-4d4c-ae55-21790ae019a4"), createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
+        { id: "d1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Zebra", ...assigned("d1e7c513-b094-4d4c-ae55-21790ae019a4"), createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
+        { id: "c1e7c513-b094-4d4c-ae55-21790ae019a4", name: "alpha", ...assigned("c1e7c513-b094-4d4c-ae55-21790ae019a4"), createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
+        { id: "e1e7c513-b094-4d4c-ae55-21790ae019a4", name: "Álpha", ...assigned("e1e7c513-b094-4d4c-ae55-21790ae019a4"), createdAt: "2026-08-10T12:00:00.000Z", isArchived: false },
       ],
     });
   });
@@ -49,11 +53,13 @@ describe("project service", () => {
         calls.push({ organizationId: callSubject.organizationId, userId: callSubject.userId, name });
         return created;
       },
+      defaultIdForOrganization: async () => "a1e7c513-b094-4d4c-ae55-21790ae019a4",
     };
 
     await expect(createProject(repository, subject, "Field work")).resolves.toEqual({
       id: created.id,
       name: "Field work",
+      ...assigned(created.id),
       createdAt: "2026-08-10T12:00:00.000Z",
       isArchived: false,
     });

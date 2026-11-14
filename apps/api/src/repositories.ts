@@ -1,4 +1,4 @@
-import type { ActivitySegmentKind, AgentSource, SessionAttribution } from "@siqshift/shared";
+import type { ActivitySegmentKind, AgentSource, PictureType, SessionAttribution } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "./auth.js";
 
@@ -9,6 +9,9 @@ export interface ProjectRecord {
   archived: boolean;
   /** Where automatic time lands when nothing names a project; refuses deletion. */
   isDefault: boolean;
+  /** The built-in icon and color a member picked; null until one does. */
+  icon: string | null;
+  color: string | null;
   createdAt: Date;
 }
 
@@ -40,8 +43,17 @@ export interface ProjectRepository {
   findForMember(subject: AuthenticatedSubject, projectId: string): Promise<ProjectRecord | null>;
   /** Creates the project and the creator's membership in one transaction. */
   createForMember(subject: AuthenticatedSubject, name: string): Promise<ProjectRecord>;
-  /** Renames or archives; null when the project is not the caller's to change. */
-  updateForMember?(subject: AuthenticatedSubject, projectId: string, patch: { name?: string; archived?: boolean }): Promise<ProjectRecord | null>;
+  /**
+   * The project automatic time lands in, by the report path's rule: the
+   * flagged one, else the oldest active one. Null with no active project.
+   */
+  defaultIdForOrganization(subject: AuthenticatedSubject): Promise<string | null>;
+  /** Renames, archives or repaints; null when the project is not the caller's to change. */
+  updateForMember?(
+    subject: AuthenticatedSubject,
+    projectId: string,
+    patch: { name?: string; archived?: boolean; icon?: string; color?: string },
+  ): Promise<ProjectRecord | null>;
   /** What deleting the project would take with it, for the confirm dialog. */
   usageForOrganization?(subject: AuthenticatedSubject, projectId: string): Promise<ProjectUsageRecord>;
   /**
@@ -59,6 +71,27 @@ export interface ProjectRepository {
 export interface ViewPreferencesRecord {
   scope: string;
   range: string;
+}
+
+/** A stored picture: the type its bytes declare, the bytes, and the version that names them. */
+export interface PictureRecord {
+  contentType: PictureType;
+  bytes: Uint8Array;
+  version: string;
+}
+
+/**
+ * Pictures by upload only. The write path names no user id: a member saves
+ * and removes their own picture alone, and a read stays inside the subject's
+ * organization.
+ */
+export interface PictureRepository {
+  /** Stores the caller's picture and its version in one transaction, replacing any before it. */
+  save(subject: AuthenticatedSubject, picture: PictureRecord): Promise<void>;
+  /** Deletes the caller's picture and clears its version; having none is not an error. */
+  remove(subject: AuthenticatedSubject): Promise<void>;
+  /** A member's picture; null for no picture, or for anyone outside the subject's organization. */
+  find(subject: AuthenticatedSubject, userId: string): Promise<PictureRecord | null>;
 }
 
 /** The one dashboard view state both surfaces share; one row per member, last write wins. */
@@ -126,6 +159,11 @@ export interface ReportLookupRecord {
   name: string;
 }
 
+/** A workspace member as the board lists them; the picture version is null without a picture. */
+export interface MemberRecord extends ReportLookupRecord {
+  pictureVersion: string | null;
+}
+
 export interface ReportRowRecord {
   id: string;
   user: ReportLookupRecord;
@@ -186,7 +224,8 @@ export interface ProjectTotalRecord {
 
 export interface MemberProjectTotalRecord {
   userId: string;
-  project: ReportLookupRecord;
+  /** With the icon and color stored for it, null where no member picked one. */
+  project: ReportLookupRecord & { icon: string | null; color: string | null };
   /** sql sums surface as string/bigint. */
   durationSeconds: number | string | bigint | null;
 }
@@ -251,6 +290,8 @@ export interface AgentIntervalRecord {
    * exactly as untied.
    */
   projectName?: string | null;
+  /** The runtime's own id for the session, `<session id>~<unix start>` on a continuation shift. */
+  externalSessionId: string;
   startedAt: Date;
   endedAt: Date;
 }
@@ -317,7 +358,7 @@ export interface ReportRepository {
    */
   readMedianSessionSeconds(subject: AuthenticatedSubject, query: ReportQuery): Promise<number | null>;
   /** Every member of the workspace, so the board can list them all - zeros included. */
-  readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]>;
+  readMembersForOrganization(subject: AuthenticatedSubject): Promise<MemberRecord[]>;
   /** Per-project totals for one member — the reporting math scoped to the caller for /me/stats. */
   readProjectTotalsForMember(subject: AuthenticatedSubject, query: ReportQuery): Promise<ProjectTotalRecord[]>;
   /** Recorded time per member and project across the caller's workspace, for the workspace view's projects and each member's top project. */
@@ -728,6 +769,14 @@ export interface AgentUsageRepository {
    * none.
    */
   sumByBucketAndProject(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageProjectBucketTotalRecord[]>;
+  /**
+   * Counters summed per agent session under the chart's scope - the range on
+   * the bucket start, the member, and the project through the shift - so the
+   * Agents tab can total each repo and runtime by the shifts it holds. One row
+   * per session that reported usage, carrying the session's runtime key so a
+   * board holding only a continuation of it can still find it.
+   */
+  sumBySession(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]>;
   /** The same per-hour sums narrowed to one agent, for the paystub's own series. */
   sumByBucketForAgent(subject: AuthenticatedSubject, agentId: string, query: ReportQuery): Promise<AgentUsageBucketTotalRecord[]>;
   /** Counters summed per agent over the query's scope, for the pay-run report and /me/stats rows. */
@@ -748,6 +797,19 @@ export interface AgentUsageBucketTotalRecord {
 /** One hour bucket's summed counters for one project; null when the shifts named no project. */
 export interface AgentUsageProjectBucketTotalRecord extends AgentUsageBucketTotalRecord {
   project: ReportLookupRecord | null;
+}
+
+/** One agent session's summed token counters over a range; sql sums surface as string/bigint. */
+export interface AgentUsageSessionTotalsRecord {
+  agentSessionId: string;
+  /** The session's runtime key: its owner, its runtime and the runtime's own id for it. */
+  userId: string;
+  source: string;
+  externalSessionId: string;
+  inputTokens: number | string | bigint | null;
+  outputTokens: number | string | bigint | null;
+  cacheCreationInputTokens: number | string | bigint | null;
+  cacheReadInputTokens: number | string | bigint | null;
 }
 
 /**

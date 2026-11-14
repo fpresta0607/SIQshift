@@ -55,6 +55,10 @@ class MemoryProjects implements ProjectRepository {
   public async createForMember(): Promise<ProjectRecord> {
     throw new Error("not implemented");
   }
+
+  public async defaultIdForOrganization(): Promise<string | null> {
+    throw new Error("not implemented");
+  }
 }
 
 class MemorySessions implements SessionRepository {

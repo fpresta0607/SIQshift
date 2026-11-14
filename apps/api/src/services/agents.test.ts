@@ -163,6 +163,9 @@ class MemoryUsage implements AgentUsageRepository {
   public async sumByBucketAndProject(): ReturnType<AgentUsageRepository["sumByBucketAndProject"]> {
     throw new Error("not used");
   }
+  public async sumBySession(): ReturnType<AgentUsageRepository["sumBySession"]> {
+    throw new Error("not used");
+  }
   public async sumByBucketForAgent(): Promise<AgentUsageBucketTotalRecord[]> {
     return this.buckets;
   }

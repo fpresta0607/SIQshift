@@ -1,3 +1,4 @@
+import { DEFAULT_PROJECT_APPEARANCE, projectAppearance } from "@siqshift/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { createApp } from "../app.js";
@@ -9,6 +10,7 @@ const ids = {
   organization: "0e59dfd6-3d1f-4795-9420-3ab65f0df843",
   user: "e1c7e513-b094-4d4c-ae55-21790ae019a4",
   project: "a1c7e513-b094-4d4c-ae55-21790ae019a4",
+  secondProject: "a2c7e513-b094-4d4c-ae55-21790ae019a4",
 };
 const config = parseEnv({
   DATABASE_URL: "postgres://siqshift:password@localhost:5432/siqshift",
@@ -34,24 +36,39 @@ beforeAll(async () => {
 
 class MemoryProjects implements ProjectRepository {
   public readonly records: ProjectRecord[] = [
-    { id: ids.project, organizationId: ids.organization, name: "General", archived: false, isDefault: false, createdAt: new Date("2026-08-10T12:00:00.000Z") },
+    { id: ids.project, organizationId: ids.organization, name: "General", archived: false, isDefault: false, icon: null, color: null, createdAt: new Date("2026-08-10T12:00:00.000Z") },
   ];
   public readonly deleted: { projectId: string; reassignTo: string | null }[] = [];
+  /**
+   * The id the real repository's query answers as the default; its rule is
+   * proven against PostgreSQL in projects-delete.integration.test.ts, so the
+   * routes only have to draw whatever it names.
+   */
+  public defaultId: string | null = ids.project;
   /** Archived rows included, exactly as the real repository now returns them. */
   public async listForMember() { return this.records; }
   public async findForMember(subject: { organizationId: string }, projectId: string) {
     return this.records.find((record) => record.id === projectId && record.organizationId === subject.organizationId) ?? null;
   }
   public async createForMember(subject: { organizationId: string; userId: string }, name: string) {
-    const record: ProjectRecord = { id: crypto.randomUUID(), organizationId: subject.organizationId, name, archived: false, isDefault: false, createdAt: new Date("2026-08-10T12:00:00.000Z") };
+    const record: ProjectRecord = { id: crypto.randomUUID(), organizationId: subject.organizationId, name, archived: false, isDefault: false, icon: null, color: null, createdAt: new Date("2026-08-10T12:00:00.000Z") };
     this.records.push(record);
     return record;
   }
-  public async updateForMember(_subject: { organizationId: string }, projectId: string, patch: { name?: string; archived?: boolean }) {
+  public async defaultIdForOrganization() {
+    return this.defaultId;
+  }
+  public async updateForMember(
+    _subject: { organizationId: string },
+    projectId: string,
+    patch: { name?: string; archived?: boolean; icon?: string; color?: string },
+  ) {
     const record = this.records.find((candidate) => candidate.id === projectId);
     if (record === undefined) return null;
     if (patch.name !== undefined) record.name = patch.name;
     if (patch.archived !== undefined) record.archived = patch.archived;
+    if (patch.icon !== undefined) record.icon = patch.icon;
+    if (patch.color !== undefined) record.color = patch.color;
     return record;
   }
   public async usageForOrganization() {
@@ -62,6 +79,21 @@ class MemoryProjects implements ProjectRepository {
     const index = this.records.findIndex((record) => record.id === projectId);
     if (index >= 0) this.records.splice(index, 1);
   }
+}
+
+/** A second project, a day younger than General unless a test says otherwise. */
+function secondProject(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
+  return {
+    id: ids.secondProject,
+    organizationId: ids.organization,
+    name: "Side work",
+    archived: false,
+    isDefault: false,
+    icon: null,
+    color: null,
+    createdAt: new Date("2026-08-11T12:00:00.000Z"),
+    ...overrides,
+  };
 }
 
 function createTestApp(projects = new MemoryProjects()) {
@@ -223,5 +255,83 @@ describe("project routes", () => {
 
     expect(response.status).toBe(409);
     expect(projects.deleted).toEqual([]);
+  });
+
+  it("stores the icon and color a member picks and shows them to the rest of the workspace", async () => {
+    const projects = new MemoryProjects();
+    const app = createTestApp(projects);
+
+    const picked = await app.request(`http://api.test/projects/${ids.project}`, {
+      method: "PATCH",
+      headers: { authorization: bearerHeader, "content-type": "application/json" },
+      body: JSON.stringify({ icon: "rocket", color: "#85c6ff" }),
+    });
+    const listed = await app.request("http://api.test/projects", { headers: { authorization: adminBearerHeader } });
+
+    expect(picked.status).toBe(200);
+    await expect(picked.json()).resolves.toMatchObject({ id: ids.project, name: "General", icon: "rocket", color: "#85c6ff" });
+    await expect(listed.json()).resolves.toMatchObject({ projects: [{ id: ids.project, icon: "rocket", color: "#85c6ff" }] });
+  });
+
+  it.each([
+    { label: "an icon outside the list", body: { icon: "unicorn" } },
+    { label: "an icon in the wrong case", body: { icon: "Rocket" } },
+    { label: "a color outside the palette", body: { color: "#123456" } },
+    { label: "a color given by its name", body: { color: "Mint" } },
+  ])("refuses $label with a validation error and stores nothing", async ({ body }) => {
+    const projects = new MemoryProjects();
+    const app = createTestApp(projects);
+
+    const response = await app.request(`http://api.test/projects/${ids.project}`, {
+      method: "PATCH",
+      headers: { authorization: bearerHeader, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: { code: "validation_error", message: "Invalid request body." } });
+    expect(projects.records).toEqual([expect.objectContaining({ icon: null, color: null })]);
+  });
+
+  it("draws the project the repository names as the default with the default pair, and General with the pair its id assigns", async () => {
+    // Arrange: nothing carries the flag and General is the older project, so
+    // a route that worked the default out from the flag or from the ages
+    // instead of asking the repository would draw General as the default.
+    const projects = new MemoryProjects();
+    projects.records.push(secondProject());
+    projects.defaultId = ids.secondProject;
+    const app = createTestApp(projects);
+
+    // Act
+    const listed = await app.request("http://api.test/projects", { headers: { authorization: bearerHeader } });
+
+    // Assert: General's pair worked out from the FNV-1a spec rather than the
+    // code - 32-bit FNV-1a over its id is 0x22ebc167, which is 12 (home) mod
+    // the 23 icons besides grid, and 4 (coral) mod the 7 colors besides slate
+    // once shifted right by 8.
+    const { projects: items } = (await listed.json()) as { projects: { id: string; icon: string; color: string }[] };
+    expect(items.find((item) => item.id === ids.secondProject)).toMatchObject(DEFAULT_PROJECT_APPEARANCE);
+    expect(items.find((item) => item.id === ids.project)).toMatchObject({ icon: "home", color: "#ff9d8a" });
+  });
+
+  it("answers a new project with the pair its id assigns, and every member reads that same pair", async () => {
+    const projects = new MemoryProjects();
+    const app = createTestApp(projects);
+
+    const created = await app.request("http://api.test/projects", {
+      method: "POST",
+      headers: { authorization: bearerHeader, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Field work" }),
+    });
+    const project = (await created.json()) as { id: string };
+    const reads = await Promise.all([bearerHeader, adminBearerHeader, bearerHeader].map(async (authorization) => {
+      const listed = await app.request("http://api.test/projects", { headers: { authorization } });
+      return ((await listed.json()) as { projects: { id: string; icon: string; color: string }[] }).projects
+        .find((item) => item.id === project.id);
+    }));
+
+    const assigned = projectAppearance({ id: project.id, isDefault: false, icon: null, color: null });
+    expect(project).toMatchObject(assigned);
+    expect(reads).toEqual([expect.objectContaining(assigned), expect.objectContaining(assigned), expect.objectContaining(assigned)]);
   });
 });

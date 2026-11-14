@@ -1,16 +1,21 @@
+import { DEFAULT_PROJECT_APPEARANCE } from "@siqshift/shared";
+import { Hono } from "hono";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { createApp } from "../app.js";
+import { createApp, createAuthenticationMiddleware, type ApiEnvironment } from "../app.js";
 import { createTestAuth } from "../test-tokens.js";
 import { parseEnv } from "../env.js";
 import type {
   AgentIntervalRecord,
   AgentRecord,
   AgentRepository,
+  AgentUsageRepository,
+  AgentUsageSessionTotalsRecord,
   ReportRepository,
   ReportRowRecord,
 } from "../repositories.js";
 import type { AuthenticatedSubject } from "../auth.js";
+import { createReportService } from "../services/reports.js";
 import { createReportRoutes } from "./reports.js";
 
 const ids = {
@@ -74,7 +79,7 @@ class Reports implements ReportRepository {
     throw new Error("not used by these routes");
   }
   public async readMembersForOrganization() {
-    return [{ id: ids.user, name: "Alex" }];
+    return [{ id: ids.user, name: "Alex", pictureVersion: "1111111111111111" }];
   }
   public async readPresenceIntervals() {
     return [{ user: { id: ids.user, name: "Alex" }, startedAt: new Date("2026-08-06T13:00:00.000Z"), endedAt: new Date("2026-08-06T14:00:00.000Z") }];
@@ -83,7 +88,7 @@ class Reports implements ReportRepository {
     return [];
   }
   public async readProjectTotalsByMemberForOrganization() {
-    return [{ userId: ids.user, project: { id: ids.project, name: "Timer" }, durationSeconds: "3600" }];
+    return [{ userId: ids.user, project: { id: ids.project, name: "Timer", icon: null, color: null }, durationSeconds: "3600" }];
   }
   public async readProjectTotalsForMember(): Promise<never> {
     throw new Error("not used by these routes");
@@ -113,6 +118,12 @@ class Reports implements ReportRepository {
 class Agents implements Partial<AgentRepository> {
   public constructor(public records: AgentRecord[] = []) {}
   public async listForOrganization() { return this.records; }
+}
+
+/** Token usage as the shifts map reads it: one summed row per agent session. */
+class Usage implements Partial<AgentUsageRepository> {
+  public constructor(private readonly sessions: AgentUsageSessionTotalsRecord[]) {}
+  public async sumBySession() { return this.sessions; }
 }
 
 function app(reports = new Reports(), agents = new Agents()) {
@@ -159,6 +170,9 @@ describe("report routes", () => {
     });
     expect(body.hourly).toHaveLength(24);
     expect(body.hourly[13]).toEqual({ hourStart: "2026-08-06T13:00:00.000Z", activeSeconds: 3_600, agentSeconds: 0 });
+    expect(body.projects[0].project).toEqual({ id: ids.project, name: "Timer", ...DEFAULT_PROJECT_APPEARANCE });
+    expect(body.members[0].project).toEqual({ id: ids.project, name: "Timer" });
+    expect(body.members[0].user).toEqual({ id: ids.user, name: "Alex", pictureVersion: "1111111111111111" });
   });
 
   it("refuses a workspace read without a token, outside the workspace, or naming one member", async () => {
@@ -360,6 +374,55 @@ describe("report routes", () => {
         // Nothing decided, so no rate at all rather than a fake zero.
         heldRate: null,
       }],
+    });
+  });
+
+  it("carries each group's tokens, the runtimes and the token totals through the strict response schema", async () => {
+    const sessionId = "11c7e513-b094-4d4c-ae55-21790ae019a4";
+    const reports = new Reports();
+    reports.agentIntervals = [{
+      sessionId,
+      user: { id: ids.user, name: "Alex" },
+      source: "claude_code",
+      model: null,
+      cwd: "C:\\dev\\siqshift",
+      projectId: ids.project,
+      agentId: "e1c7e513-b094-4d4c-ae55-21790ae019a4",
+      agentRepoRoot: null,
+      agentRepoKey: null,
+      startedAt: new Date("2026-08-06T14:00:00.000Z"),
+      endedAt: new Date("2026-08-06T15:00:00.000Z"),
+    }];
+    const usage = new Usage([{
+      agentSessionId: sessionId,
+      userId: ids.user,
+      source: "claude_code",
+      externalSessionId: "claude-session-1",
+      inputTokens: "100",
+      outputTokens: "400",
+      cacheCreationInputTokens: "20",
+      cacheReadInputTokens: "3000",
+    }]);
+    // Mounted on its own, because createApp only wires token usage beside the
+    // upload routes and their repositories, none of which this read touches.
+    const routes = new Hono<ApiEnvironment>();
+    routes.use("*", createAuthenticationMiddleware(
+      { config, keys, accounts: { resolve: async () => user } },
+      () => new Date("2026-08-06T14:00:00.000Z"),
+    ));
+    routes.route("/reports", createReportRoutes(createReportService({
+      reports,
+      agents: new Agents() as AgentRepository,
+      agentUsage: usage as AgentUsageRepository,
+    })));
+
+    const response = await routes.request("http://api.test/reports/agent-shifts", { headers: { authorization: bearerHeader } });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      groups: [{ repo: "siqshift", agentSeconds: 3_600, shiftCount: 1, tokens: 3_520 }],
+      runtimes: [{ source: "claude_code", agentSeconds: 3_600, shiftCount: 1, tokens: 3_520 }],
+      tokenTotals: { tokensIn: 3_120, tokensOut: 400, tokens: 3_520 },
     });
   });
 

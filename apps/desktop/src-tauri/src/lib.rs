@@ -634,6 +634,34 @@ async fn me_stats(
         .await
 }
 
+/// Puts up the signed-in member's own picture, already drawn small by the
+/// window, and answers with their account under the new picture version.
+#[tauri::command]
+async fn picture_upload(state: State<'_, AppState>, bytes: Vec<u8>) -> ApiResult<TimerUser> {
+    let access_token = state.access_token().await?;
+    state.client.upload_picture(&access_token, bytes).await
+}
+
+#[tauri::command]
+async fn picture_remove(state: State<'_, AppState>) -> ApiResult<TimerUser> {
+    let access_token = state.access_token().await?;
+    state.client.remove_picture(&access_token).await
+}
+
+/// A teammate's picture bytes under the version their board row named.
+#[tauri::command]
+async fn member_picture(
+    state: State<'_, AppState>,
+    user_id: String,
+    version: String,
+) -> ApiResult<Vec<u8>> {
+    let access_token = state.access_token().await?;
+    state
+        .client
+        .member_picture(&access_token, &user_id, &version)
+        .await
+}
+
 /// The team view All stats opens on, over the overlay's range. Bounds arrive
 /// together or not at all; both absent asks for all time.
 #[tauri::command]
@@ -708,8 +736,8 @@ async fn agent_shift_rows(
         .await
 }
 
-/// Who is running an agent right now, grouped by person, for the live view at
-/// the top of the Agents tab. No bounds: the view reads now.
+/// Who is running an agent right now, grouped by person, for the Agents tab's
+/// Live now card. No bounds: the view reads now.
 #[tauri::command]
 async fn agent_live_sessions(state: State<'_, AppState>) -> ApiResult<LiveAgentSessions> {
     let access_token = state.access_token().await?;
@@ -765,6 +793,10 @@ pub struct ProjectUpdateInput {
     name: Option<String>,
     #[serde(default)]
     is_archived: Option<bool>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
 }
 
 #[tauri::command]
@@ -781,6 +813,8 @@ async fn project_update(
             &id,
             input.name.as_deref().map(str::trim),
             input.is_archived,
+            input.icon.as_deref(),
+            input.color.as_deref(),
         )
         .await
 }
@@ -1234,6 +1268,9 @@ pub fn run() {
             settings_get,
             settings_update,
             me_stats,
+            picture_upload,
+            picture_remove,
+            member_picture,
             workspace_report,
             agent_shifts,
             agent_shift_rows,
@@ -1284,11 +1321,13 @@ mod tests {
                 id: "u1".to_string(),
                 email: "alex@example.com".to_string(),
                 name: "Alex Morgan".to_string(),
+                picture_version: None,
             },
             projects: vec![TimerProject {
                 id: "p1".to_string(),
                 name: "General".to_string(),
                 color: None,
+                icon: None,
                 created_at: "2026-08-10T12:00:00Z".to_string(),
             }],
         }
@@ -1334,12 +1373,14 @@ mod tests {
                 id: "p-zebra".to_string(),
                 name: "Zebra".to_string(),
                 color: None,
+                icon: None,
                 created_at: "2026-08-10T12:00:00Z".to_string(),
             },
             TimerProject {
                 id: "p-alpha".to_string(),
                 name: "Alpha".to_string(),
                 color: None,
+                icon: None,
                 created_at: "2026-08-09T12:00:00Z".to_string(),
             },
         ];

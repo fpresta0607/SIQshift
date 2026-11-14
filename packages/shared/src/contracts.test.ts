@@ -47,6 +47,7 @@ import {
   pathMappingUpdateRequestSchema,
   projectListItemSchema,
   projectPathMappingSchema,
+  projectUpdateRequestSchema,
   reportFiltersSchema,
   reportResponseSchema,
   sessionStartRequestSchema,
@@ -55,6 +56,8 @@ import {
   sessionStatusValues,
   sessionStopRequestSchema,
   sessionStopResponseSchema,
+  workspaceMemberSchema,
+  workspaceReportResponseSchema,
 } from "./contracts.js";
 
 const ids = {
@@ -99,6 +102,18 @@ describe("authentication contracts", () => {
       accessToken: "leaked",
     })).toThrow();
   });
+
+  it.each([
+    { label: "accepts an account with a picture version", pictureVersion: "0123456789abcdef", isAccepted: true },
+    { label: "accepts an account without a picture", pictureVersion: null, isAccepted: true },
+    { label: "refuses an empty picture version", pictureVersion: "", isAccepted: false },
+  ])("$label", ({ pictureVersion, isAccepted }) => {
+    const parsed = meResponseSchema.safeParse({
+      user: { id: ids.user, email: "alex@example.com", name: "Alex Morgan", organizationId: ids.organization, pictureVersion },
+    });
+
+    expect(parsed.success).toBe(isAccepted);
+  });
 });
 
 describe("project contracts", () => {
@@ -113,6 +128,56 @@ describe("project contracts", () => {
         isDefault: true,
       }),
     ).toMatchObject({ id: ids.project, isArchived: false, isDefault: true });
+  });
+
+  it("carries a project's icon and color, and still reads a list item from a server that sends neither", () => {
+    const item = { id: ids.project, name: "Website redesign", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false };
+
+    const painted = projectListItemSchema.parse({ ...item, icon: "rocket", color: "#85c6ff" });
+    const plain = projectListItemSchema.parse(item);
+    const unknown = projectListItemSchema.safeParse({ ...item, icon: "unicorn" });
+
+    expect(painted).toMatchObject({ icon: "rocket", color: "#85c6ff" });
+    expect(plain).not.toHaveProperty("icon");
+    expect(unknown.success).toBe(false);
+  });
+
+  it.each([
+    { label: "an icon alone", body: { icon: "rocket" } },
+    { label: "a color alone", body: { color: "#85c6ff" } },
+    { label: "an icon and a color", body: { icon: "grid", color: "#a3b3c2" } },
+  ])("accepts an update that sets $label", ({ body }) => {
+    expect(projectUpdateRequestSchema.safeParse(body).success).toBe(true);
+  });
+
+  it.each([
+    { label: "an icon outside the list", body: { icon: "unicorn" } },
+    { label: "a color outside the palette", body: { color: "#2563eb" } },
+    { label: "a color given by its name", body: { color: "Mint" } },
+    { label: "a cleared icon", body: { icon: null } },
+    { label: "nothing to change", body: {} },
+  ])("refuses an update with $label", ({ body }) => {
+    expect(projectUpdateRequestSchema.safeParse(body).success).toBe(false);
+  });
+
+  it("carries the icon and color on a workspace project row, and still reads a row without them", () => {
+    const response = (project: Record<string, unknown>) => ({
+      filters: {},
+      activeSeconds: 0,
+      agentSeconds: 0,
+      hourly: [],
+      projects: [{ project, durationSeconds: 60 }],
+      agents: [],
+      members: [],
+    });
+
+    const painted = workspaceReportResponseSchema.parse(response({ id: ids.project, name: "Website redesign", icon: "grid", color: "#a3b3c2" }));
+    const plain = workspaceReportResponseSchema.safeParse(response({ id: ids.project, name: "Website redesign" }));
+    const unknown = workspaceReportResponseSchema.safeParse(response({ id: ids.project, name: "Website redesign", icon: "unicorn" }));
+
+    expect(painted.projects[0]?.project).toEqual({ id: ids.project, name: "Website redesign", icon: "grid", color: "#a3b3c2" });
+    expect(plain.success).toBe(true);
+    expect(unknown.success).toBe(false);
   });
 });
 
@@ -314,6 +379,23 @@ describe("session contracts", () => {
 });
 
 describe("report and error contracts", () => {
+  it.each([
+    { label: "accepts a workspace member with a picture version", picture: { pictureVersion: "0123456789abcdef" }, isAccepted: true },
+    { label: "accepts a workspace member without a picture", picture: { pictureVersion: null }, isAccepted: true },
+    { label: "accepts a workspace member from a server that predates pictures", picture: {}, isAccepted: true },
+    { label: "refuses a workspace member with an empty picture version", picture: { pictureVersion: "" }, isAccepted: false },
+  ])("$label", ({ picture, isAccepted }) => {
+    const parsed = workspaceMemberSchema.safeParse({
+      rank: 1,
+      user: { id: ids.user, name: "Alex Morgan", ...picture },
+      activeSeconds: 3_600,
+      agentSeconds: 0,
+      project: null,
+    });
+
+    expect(parsed.success).toBe(isAccepted);
+  });
+
   it("accepts inclusive report filters", () => {
     expect(
       reportFiltersSchema.parse({
@@ -1303,5 +1385,36 @@ describe("agent shifts contracts", () => {
     // The nested strictness, which is what keeps a speculative field off the wire.
     expect(withPeople([{ owner: { id: ids.user, name: "Alex" }, agentSeconds: 3_600, shiftCount: 2, rank: 1 }])).toThrow();
     expect(withPeople([{ owner: { id: ids.user, name: "Alex", email: "a@b.c" }, agentSeconds: 3_600, shiftCount: 2 }])).toThrow();
+  });
+
+  it("carries each group's tokens, the runtimes and the token totals, and still reads a response without them", () => {
+    const withTokens = {
+      ...shiftsResponse,
+      groups: [{ ...shiftsResponse.groups[0], tokens: 3_523 }],
+      runtimes: [
+        { source: "claude_code", agentSeconds: 3_600, shiftCount: 2, tokens: 3_520 },
+        { source: "codex", agentSeconds: 1_800, shiftCount: 1, tokens: 3 },
+      ],
+      tokenTotals: { tokensIn: 3_121, tokensOut: 402, tokens: 3_523 },
+    };
+
+    expect(agentShiftsResponseSchema.parse(withTokens)).toEqual(withTokens);
+    expect(() => agentShiftsResponseSchema.parse(shiftsResponse)).not.toThrow();
+    expect(() => agentShiftsResponseSchema.parse({
+      ...shiftsResponse,
+      runtimes: [{ source: "codex", agentSeconds: 1_800, shiftCount: 1 }],
+    })).not.toThrow();
+  });
+
+  it.each([
+    { field: "a group's tokens", patch: { groups: [{ ...shiftsResponse.groups[0], tokens: -1 }] } },
+    { field: "a runtime's seconds", patch: { runtimes: [{ source: "codex", agentSeconds: -1, shiftCount: 1 }] } },
+    { field: "a runtime's shift count", patch: { runtimes: [{ source: "codex", agentSeconds: 60, shiftCount: -1 }] } },
+    { field: "a runtime's tokens", patch: { runtimes: [{ source: "codex", agentSeconds: 60, shiftCount: 1, tokens: -1 }] } },
+    { field: "the tokens in", patch: { tokenTotals: { tokensIn: -1, tokensOut: 0, tokens: 0 } } },
+    { field: "the tokens out", patch: { tokenTotals: { tokensIn: 0, tokensOut: -1, tokens: 0 } } },
+    { field: "the token total", patch: { tokenTotals: { tokensIn: 0, tokensOut: 0, tokens: -1 } } },
+  ])("refuses a negative count in $field", ({ patch }) => {
+    expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, ...patch })).toThrow();
   });
 });

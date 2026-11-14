@@ -25,6 +25,7 @@ import type {
   AgentSessionRepository,
   AgentUsageRepository,
   PathMappingRepository,
+  PictureRepository,
   ProjectRepository,
   ReportRepository,
   SessionRepository,
@@ -38,6 +39,7 @@ import { createAgentSessionRoutes } from "./routes/agent-sessions.js";
 import { createAgentUsageRoutes } from "./routes/agent-usage.js";
 import { createMeStatsRoutes } from "./routes/me-stats.js";
 import { createPathMappingRoutes } from "./routes/path-mappings.js";
+import { createPictureRoutes } from "./routes/pictures.js";
 import { createPreferencesRoutes } from "./routes/preferences.js";
 import { createProjectRoutes } from "./routes/projects.js";
 import { createReportRoutes } from "./routes/reports.js";
@@ -78,6 +80,7 @@ export interface CreateAppDependencies {
   agentUsageRepository?: AgentUsageRepository;
   pathMappingRepository?: PathMappingRepository;
   viewPreferencesRepository?: ViewPreferencesRepository;
+  pictureRepository?: PictureRepository;
   /**
    * The folded-day cache. Absent, every report reads its intervals live, which
    * is exactly what this API did before the table existed - slower, and correct.
@@ -122,7 +125,7 @@ function createCorsMiddleware(config: AppConfig): MiddlewareHandler<ApiEnvironme
     }
     if (context.req.method === "OPTIONS") {
       if (allowed) {
-        context.header("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
+        context.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
         context.header("access-control-allow-headers", "authorization,content-type");
         context.header("access-control-max-age", "600");
       }
@@ -355,6 +358,11 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
     }
     app.use("/me/preferences", authenticate);
     app.route("/me/preferences", createPreferencesRoutes(dependencies.viewPreferencesRepository, dependencies.projectRepository));
+  }
+  if (dependencies.pictureRepository !== undefined) {
+    app.use("/me/picture", authenticate);
+    app.use("/users/*", authenticate);
+    app.route("/", createPictureRoutes(dependencies.pictureRepository));
   }
   // Built once: both upload paths hand the same fold the instants they wrote,
   // and it is wrapped so a cache-maintenance failure can never turn a

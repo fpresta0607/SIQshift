@@ -95,8 +95,8 @@ async function waveBand(page: Page, width: number, height: number): Promise<numb
 
 test.describe("the WebGL background", () => {
   test("keeps the wave's shape when the window is portrait", async ({ page }) => {
-    // The app's own window is 520x920 and never narrower than 400x600, and a
-    // wave normalised to whichever axis is shorter stretches until only a
+    // The app's own window opens at 1200x700 but resizes down to 400x600, and
+    // a wave normalised to whichever axis is shorter stretches until only a
     // fraction of a period fits across a portrait one - bands sweeping the
     // viewport as straight streaks rather than a wave behind the card. The
     // band is the amplitude made visible, so it holding steady across two very

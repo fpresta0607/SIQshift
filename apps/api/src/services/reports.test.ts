@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summedSeconds, unionSeconds } from "@siqshift/shared";
+import { DEFAULT_PROJECT_APPEARANCE, projectAppearance, summedSeconds, unionSeconds } from "@siqshift/shared";
 import type { AgentShiftsFilters, Interval, ReportFilters } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
@@ -12,10 +12,12 @@ import type {
   AgentUsageModelTotalsRecord,
   AgentUsageProjectBucketTotalRecord,
   AgentUsageRepository,
+  AgentUsageSessionTotalsRecord,
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
   MemberProjectTotalRecord,
+  MemberRecord,
   PresenceIntervalRecord,
   ProjectTotalRecord,
   ReportLookupRecord,
@@ -101,7 +103,7 @@ class Reports implements ReportRepository {
     const middle = Math.floor(lengths.length / 2);
     return lengths.length % 2 === 1 ? lengths[middle]! : Math.round((lengths[middle - 1]! + lengths[middle]!) / 2);
   }
-  public roster: { id: string; name: string }[] = [];
+  public roster: MemberRecord[] = [];
   public async readMembersForOrganization() {
     return this.roster;
   }
@@ -318,6 +320,10 @@ class ShiftCommits implements ShiftCommitRepository {
 type UsageSeed = {
   userId: string;
   agentId: string;
+  agentSessionId: string;
+  /** The session's runtime and the runtime's own id for it, which the usage is filed under. */
+  source: string;
+  externalSessionId: string;
   projectId: string | null;
   model: string | null;
   bucketStartAt: Date;
@@ -328,9 +334,13 @@ type UsageSeed = {
 };
 
 function usageSeed(overrides: Partial<UsageSeed> = {}): UsageSeed {
+  const agentSessionId = overrides.agentSessionId ?? "s1";
   return {
     userId: ids.user,
     agentId: ids.session,
+    agentSessionId,
+    source: "claude_code",
+    externalSessionId: `${agentSessionId}-runtime-id`,
     projectId: ids.project,
     model: null,
     bucketStartAt: new Date("2026-08-06T14:00:00.000Z"),
@@ -403,6 +413,34 @@ class Usage implements AgentUsageRepository {
       byKey.set(key, record);
     }
     return [...byKey.values()];
+  }
+  public async sumBySession(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]> {
+    const bySession = new Map<string, Pick<UsageSeed, "agentSessionId" | "userId" | "source" | "externalSessionId" | "inputTokens" | "outputTokens" | "cacheCreationInputTokens" | "cacheReadInputTokens">>();
+    for (const row of this.scoped(query)) {
+      const totals = bySession.get(row.agentSessionId) ?? {
+        agentSessionId: row.agentSessionId,
+        userId: row.userId,
+        source: row.source,
+        externalSessionId: row.externalSessionId,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
+      totals.inputTokens += row.inputTokens;
+      totals.outputTokens += row.outputTokens;
+      totals.cacheCreationInputTokens += row.cacheCreationInputTokens;
+      totals.cacheReadInputTokens += row.cacheReadInputTokens;
+      bySession.set(row.agentSessionId, totals);
+    }
+    // Strings, the way postgres hands a sum back.
+    return [...bySession.values()].map((totals) => ({
+      ...totals,
+      inputTokens: String(totals.inputTokens),
+      outputTokens: String(totals.outputTokens),
+      cacheCreationInputTokens: String(totals.cacheCreationInputTokens),
+      cacheReadInputTokens: String(totals.cacheReadInputTokens),
+    }));
   }
   public async sumByAgent(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageTotalsRecord[]> {
     this.lastAgentQuery = query;
@@ -774,8 +812,8 @@ describe("leaderboard", () => {
   it("lists a roster member with no recorded time at all as a zero row", async () => {
     const reports = new Reports();
     reports.roster = [
-      { id: ids.user, name: "Alex" },
-      { id: ids.otherUser, name: "Sam" },
+      { id: ids.user, name: "Alex", pictureVersion: null },
+      { id: ids.otherUser, name: "Sam", pictureVersion: null },
     ];
     const service = createReportService({ reports, agents });
 
@@ -785,6 +823,17 @@ describe("leaderboard", () => {
       ["Alex", 0, 0],
       ["Sam", 0, 0],
     ]);
+  });
+
+  it("names a roster-only member by id and name alone, whatever else the roster read carries", async () => {
+    const reports = new Reports();
+    reports.roster = [{ id: ids.user, name: "Alex", pictureVersion: "1111111111111111" }];
+    const service = createReportService({ reports, agents });
+
+    const result = await service.leaderboard(subject, {});
+
+    // The board's schema is strict: a picture version riding along would fail its route.
+    expect(result.entries.map((entry) => entry.user)).toEqual([{ id: ids.user, name: "Alex" }]);
   });
 
   it("maps the unassigned scope onto default-attributed sessions", async () => {
@@ -888,6 +937,7 @@ describe("workspace report", () => {
     agentId: null,
     agentRepoRoot: null,
     agentRepoKey: null,
+    externalSessionId: `${user.id}-${source}-${start.toISOString()}-runtime-id`,
     startedAt: start,
     endedAt: end,
   });
@@ -895,7 +945,11 @@ describe("workspace report", () => {
   /** Alex works 9-11 with two agents through 9-10; Sam works 9-10 with one agent through 10-12; Riley records nothing. */
   const team = (): Reports => {
     const reports = new Reports();
-    reports.roster = [alex, sam, riley];
+    reports.roster = [
+      { ...alex, pictureVersion: "1111111111111111" },
+      { ...sam, pictureVersion: null },
+      { ...riley, pictureVersion: "3333333333333333" },
+    ];
     reports.leaderboardRows = [
       { user: alex, durationSeconds: 7_200, sessionCount: 2, attributedSeconds: 7_200 },
       { user: sam, durationSeconds: 4_200, sessionCount: 2, attributedSeconds: 4_200 },
@@ -933,17 +987,17 @@ describe("workspace report", () => {
     expect(result.hourly[10]).toEqual({ hourStart: hour(10).toISOString(), activeSeconds: 3_600, agentSeconds: 3_600 });
     expect(result.hourly[11]).toEqual({ hourStart: hour(11).toISOString(), activeSeconds: 0, agentSeconds: 3_600 });
     expect(result.projects).toEqual([
-      { project: timer, durationSeconds: 6_000 },
-      { project: side, durationSeconds: 5_400 },
+      { project: { ...timer, ...DEFAULT_PROJECT_APPEARANCE }, durationSeconds: 6_000 },
+      { project: { ...side, ...projectAppearance({ id: side.id, isDefault: false, icon: null, color: null }) }, durationSeconds: 5_400 },
     ]);
     expect(result.agents).toEqual([
       { source: "codex", durationSeconds: 10_800 },
       { source: "claude_code", durationSeconds: 3_600 },
     ]);
     expect(result.members).toEqual([
-      { rank: 1, user: alex, activeSeconds: 7_200, agentSeconds: 7_200, project: timer },
-      { rank: 2, user: sam, activeSeconds: 3_600, agentSeconds: 7_200, project: side },
-      { rank: 3, user: riley, activeSeconds: 0, agentSeconds: 0, project: null },
+      { rank: 1, user: { ...alex, pictureVersion: "1111111111111111" }, activeSeconds: 7_200, agentSeconds: 7_200, project: timer },
+      { rank: 2, user: { ...sam, pictureVersion: null }, activeSeconds: 3_600, agentSeconds: 7_200, project: side },
+      { rank: 3, user: { ...riley, pictureVersion: "3333333333333333" }, activeSeconds: 0, agentSeconds: 0, project: null },
     ]);
   });
 
@@ -962,14 +1016,14 @@ describe("workspace report", () => {
 
     const [workspace, board] = await Promise.all([service.workspace(subject, oneDay), service.leaderboard(subject, oneDay)]);
 
-    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })))
-      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, user, activeSeconds, agentSeconds })));
+    expect(workspace.members.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, userId: user.id, activeSeconds, agentSeconds })))
+      .toEqual(board.entries.map(({ rank, user, activeSeconds, agentSeconds }) => ({ rank, userId: user.id, activeSeconds, agentSeconds })));
     expect(workspace.members.map((member) => member.rank)).toEqual([1, 1, 3]);
   });
 
   it("shows a workspace of one as one row, theirs, with totals and graph equal to their own card", async () => {
     const reports = team();
-    reports.roster = [alex];
+    reports.roster = reports.roster.filter((member) => member.id === alex.id);
     reports.leaderboardRows = reports.leaderboardRows.filter((row) => row.user.id === alex.id);
     reports.presenceIntervals = reports.presenceIntervals.filter((row) => row.user.id === alex.id);
     reports.agentIntervals = reports.agentIntervals.filter((row) => row.user.id === alex.id);
@@ -978,7 +1032,7 @@ describe("workspace report", () => {
 
     const [workspace, card] = await Promise.all([service.workspace(subject, oneDay), service.meStats(subject, oneDay)]);
 
-    expect(workspace.members).toEqual([{ rank: 1, user: alex, activeSeconds: 7_200, agentSeconds: 7_200, project: timer }]);
+    expect(workspace.members).toEqual([{ rank: 1, user: { ...alex, pictureVersion: "1111111111111111" }, activeSeconds: 7_200, agentSeconds: 7_200, project: timer }]);
     expect(workspace.activeSeconds).toBe(card.activeSeconds);
     expect(workspace.agentSeconds).toBe(card.agentSeconds);
     expect(workspace.hourly).toEqual(card.hourly.map(({ hourStart, activeSeconds, agentSeconds }) => ({ hourStart, activeSeconds, agentSeconds })));
@@ -1021,6 +1075,29 @@ describe("workspace report", () => {
     expect(result.hourly).toEqual([]);
     expect(result.activeSeconds).toBe(10_800);
     expect(result.members).toHaveLength(3);
+  });
+
+  it("draws each project row with its picked pair, else its assigned one, and the default project's own by the report rule", async () => {
+    const reports = team();
+    const ledger = { id: "c2c7e513-b094-4d4c-ae55-21790ae019a4", name: "Ledger" };
+    // The rule's answer, not a flag: Timer is the oldest active project here.
+    reports.defaultProject = timer;
+    reports.memberProjectTotals = [
+      { userId: alex.id, project: { ...timer, icon: null, color: null }, durationSeconds: 5_400 },
+      { userId: sam.id, project: { ...side, icon: "rocket", color: "#85c6ff" }, durationSeconds: 3_600 },
+      { userId: riley.id, project: { ...ledger, icon: null, color: null }, durationSeconds: 1_800 },
+    ];
+    const service = createReportService({ reports, agents });
+
+    const result = await service.workspace(subject, oneDay);
+
+    expect(result.projects).toEqual([
+      { project: { ...timer, ...DEFAULT_PROJECT_APPEARANCE }, durationSeconds: 5_400 },
+      { project: { ...side, icon: "rocket", color: "#85c6ff" }, durationSeconds: 3_600 },
+      { project: { ...ledger, ...projectAppearance({ id: ledger.id, isDefault: false, icon: null, color: null }) }, durationSeconds: 1_800 },
+    ]);
+    // A board row names its project alone; the pair belongs to the project rows.
+    expect(result.members.map((member) => member.project)).toEqual([timer, side, ledger]);
   });
 });
 
@@ -1828,6 +1905,7 @@ describe("agent shifts", () => {
       agentId: ids.session,
       agentRepoRoot: null,
       agentRepoKey: null,
+      externalSessionId: `${sessionId}-runtime-id`,
       startedAt: start,
       endedAt: end,
     });
@@ -1902,7 +1980,7 @@ describe("agent shifts", () => {
       expect(result.tokenChart?.buckets.map((bucket) => bucket.tokens)).toEqual([10, null, null, null, null, null, 2]);
     });
 
-    it("reads no usage and draws no chart over an unbounded range, nor without a usage source", async () => {
+    it("reads no bucketed usage and draws no chart over an unbounded range, nor without a usage source", async () => {
       const reports = new Reports();
       reports.agentIntervals = [shift("s1", ids.project, "Timer", at(10), at(11))];
       const usage = new Usage([usageSeed({ bucketStartAt: at(10), inputTokens: 7, outputTokens: 3 })]);
@@ -1914,6 +1992,154 @@ describe("agent shifts", () => {
       expect(usage.projectBucketReads).toBe(0);
       expect(unbounded.totalAgentSeconds).toBe(3_600);
       expect(unread.tokenChart).toBeUndefined();
+    });
+  });
+
+  describe("tokens by repo and runtime", () => {
+    const shift = (sessionId: string, source: string, cwd: string, userId: string, start: Date, end: Date): AgentIntervalRecord => ({
+      sessionId,
+      user: { id: userId, name: userId === ids.user ? "Alex" : "Riley" },
+      source,
+      model: null,
+      cwd,
+      projectId: ids.project,
+      projectName: "Timer",
+      agentId: ids.session,
+      agentRepoRoot: null,
+      agentRepoKey: null,
+      externalSessionId: `${sessionId}-runtime-id`,
+      startedAt: start,
+      endedAt: end,
+    });
+    const board = (): Reports => {
+      const reports = new Reports();
+      reports.agentIntervals = [
+        shift("s1", "claude_code", "C:/dev/siqshift", ids.user, at(10), at(11)),
+        shift("s2", "codex", "C:/dev/siqshift", ids.otherUser, at(12), at(12, 30)),
+        shift("s3", "claude_code", "/home/a/src/quartermaster", ids.user, at(13), at(13, 10)),
+        shift("s4", "pi", "/home/a/src/quartermaster", ids.otherUser, at(14), at(14, 30)),
+      ];
+      return reports;
+    };
+    const usage = (): Usage => new Usage([
+      usageSeed({ agentSessionId: "s1", bucketStartAt: at(10), inputTokens: 100, cacheCreationInputTokens: 20, cacheReadInputTokens: 3_000, outputTokens: 400 }),
+      usageSeed({ agentSessionId: "s2", userId: ids.otherUser, bucketStartAt: at(12), inputTokens: 1, outputTokens: 2 }),
+      usageSeed({ agentSessionId: "s4", userId: ids.otherUser, bucketStartAt: at(14), inputTokens: 10, outputTokens: 10 }),
+      // A session the board does not hold: its tokens belong to no group.
+      usageSeed({ agentSessionId: "s9", bucketStartAt: at(15), inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    ]);
+
+    it("totals each group's tokens and rolls its shifts up by runtime, both reconciling with the groups", async () => {
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      const result = await service.agentShifts(subject, {});
+
+      expect(result.groups.map((group) => [group.repo, group.agentSeconds, group.shiftCount, group.tokens])).toEqual([
+        ["siqshift", 5_400, 2, 3_523],
+        ["quartermaster", 2_400, 2, 20],
+      ]);
+      // Heaviest first, the equal pair ordered by source.
+      expect(result.runtimes).toEqual([
+        { source: "claude_code", agentSeconds: 4_200, shiftCount: 2, tokens: 3_520 },
+        { source: "codex", agentSeconds: 1_800, shiftCount: 1, tokens: 3 },
+        { source: "pi", agentSeconds: 1_800, shiftCount: 1, tokens: 20 },
+      ]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 3_131, tokensOut: 412, tokens: 3_543 });
+      const runtimes = result.runtimes ?? [];
+      expect(runtimes.reduce((sum, runtime) => sum + runtime.agentSeconds, 0)).toBe(result.totalAgentSeconds);
+      expect(runtimes.reduce((sum, runtime) => sum + runtime.shiftCount, 0))
+        .toBe(result.groups.reduce((sum, group) => sum + group.shiftCount, 0));
+      expect(result.groups.reduce((sum, group) => sum + (group.tokens ?? 0), 0)).toBe(result.tokenTotals?.tokens);
+    });
+
+    it("narrows the groups' tokens, the runtimes and the totals to the selected person, and keeps everyone on the board", async () => {
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      const result = await service.agentShifts(subject, { userId: ids.user });
+
+      expect(result.groups.map((group) => [group.repo, group.shiftCount, group.tokens])).toEqual([
+        ["siqshift", 1, 3_520],
+        ["quartermaster", 1, 0],
+      ]);
+      expect(result.runtimes).toEqual([{ source: "claude_code", agentSeconds: 4_200, shiftCount: 2, tokens: 3_520 }]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 3_120, tokensOut: 400, tokens: 3_520 });
+      expect(result.people.map((person) => person.owner.id).sort()).toEqual([ids.user, ids.otherUser].sort());
+    });
+
+    it.each([
+      { label: "an unbounded range", filters: {} },
+      { label: "a bounded range", filters: { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() } },
+    ])("states the tokens over $label", async ({ filters }) => {
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      const result = await service.agentShifts(subject, filters);
+
+      expect(result.tokenTotals).toEqual({ tokensIn: 3_131, tokensOut: 412, tokens: 3_543 });
+      expect(result.groups.map((group) => group.tokens)).toEqual([3_523, 20]);
+    });
+
+    // Activity after the server ended a session - `claude --continue` the
+    // morning after - opens a continuation shift, `<session id>~<unix start>`,
+    // while the desktop keeps filing the session's tokens under its own row.
+    it.each([
+      { label: "only continuations of it, its own shift having ended the night before", ownStart: at(-4), ownEnd: at(-2, 40), shiftCount: 2, agentSeconds: 7_200 },
+      { label: "its own shift beside the continuations", ownStart: at(7), ownEnd: at(8), shiftCount: 3, agentSeconds: 10_800 },
+    ])("credits a session's tokens once when the board holds $label", async ({ ownStart, ownEnd, shiftCount, agentSeconds }) => {
+      // Arrange
+      const reports = new Reports();
+      reports.agentIntervals = [
+        { ...shift("own", "claude_code", "C:/dev/siqshift", ids.user, ownStart, ownEnd), externalSessionId: "resumed" },
+        { ...shift("morning", "claude_code", "C:/dev/siqshift", ids.user, at(9), at(10)), externalSessionId: `resumed~${at(9).getTime() / 1_000}` },
+        { ...shift("afternoon", "claude_code", "C:/dev/siqshift", ids.user, at(13), at(14)), externalSessionId: `resumed~${at(13).getTime() / 1_000}` },
+      ];
+      const usage = new Usage([
+        usageSeed({ agentSessionId: "own", externalSessionId: "resumed", bucketStartAt: at(9), inputTokens: 1_200_000, outputTokens: 300_000 }),
+        usageSeed({ agentSessionId: "own", externalSessionId: "resumed", bucketStartAt: at(13), inputTokens: 400_000, outputTokens: 100_000 }),
+      ]);
+      const service = createReportService({ reports, agentUsage: usage });
+
+      // Act
+      const result = await service.agentShifts(subject, { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() });
+
+      // Assert
+      expect(result.groups.map((group) => [group.repo, group.shiftCount, group.tokens])).toEqual([["siqshift", shiftCount, 2_000_000]]);
+      expect(result.runtimes).toEqual([{ source: "claude_code", agentSeconds, shiftCount, tokens: 2_000_000 }]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 1_600_000, tokensOut: 400_000, tokens: 2_000_000 });
+      // The token chart on the same page draws exactly the tokens the totals state.
+      expect(result.tokenChart?.buckets.reduce((sum, bucket) => sum + (bucket.tokens ?? 0), 0)).toBe(2_000_000);
+    });
+
+    it("leaves a session's tokens out when the board holds only another person's continuation of the same id", async () => {
+      // Arrange
+      const reports = new Reports();
+      reports.agentIntervals = [
+        { ...shift("theirs", "claude_code", "C:/dev/siqshift", ids.otherUser, at(9), at(10)), externalSessionId: `resumed~${at(9).getTime() / 1_000}` },
+      ];
+      const usage = new Usage([
+        usageSeed({ agentSessionId: "mine", externalSessionId: "resumed", bucketStartAt: at(9), inputTokens: 1_000, outputTokens: 1_000 }),
+      ]);
+      const service = createReportService({ reports, agentUsage: usage });
+
+      // Act
+      const result = await service.agentShifts(subject, { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() });
+
+      // Assert
+      expect(result.groups.map((group) => group.tokens)).toEqual([0]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 0, tokensOut: 0, tokens: 0 });
+    });
+
+    it("leaves the tokens out without a usage source, and still rolls up the runtimes", async () => {
+      const service = createReportService({ reports: board() });
+
+      const result = await service.agentShifts(subject, {});
+
+      expect(result.tokenTotals).toBeUndefined();
+      expect(result.groups.every((group) => !("tokens" in group))).toBe(true);
+      expect(result.runtimes).toEqual([
+        { source: "claude_code", agentSeconds: 4_200, shiftCount: 2 },
+        { source: "codex", agentSeconds: 1_800, shiftCount: 1 },
+        { source: "pi", agentSeconds: 1_800, shiftCount: 1 },
+      ]);
     });
   });
 

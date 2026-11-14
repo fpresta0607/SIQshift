@@ -228,6 +228,89 @@ describe("web client", () => {
       .toBe("application/json");
   });
 
+  it("sends a picked icon and color with one PATCH to the project and returns it", async () => {
+    // Arrange
+    const painted = { id: "p2", name: "Client", icon: "bolt", color: "#c6a1f4", createdAt: "2026-08-11T12:00:00.000Z", isArchived: false, isDefault: false };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(painted)
+    ));
+
+    // Act
+    const response = await client.updateProject("p2", { icon: "bolt", color: "#c6a1f4" });
+
+    // Assert
+    expect(response).toEqual(painted);
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/projects/p2`);
+    expect(call?.[1]?.method).toBe("PATCH");
+    expect(call?.[1]?.body).toBe(JSON.stringify({ icon: "bolt", color: "#c6a1f4" }));
+  });
+
+  it("puts up the viewer's picture as raw bytes with one PUT and reads the new version back", async () => {
+    // Arrange
+    const me = { user: { id: "u2", email: "alex@example.com", name: "Alex", pictureVersion: "0123456789abcdef" } };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(me)
+    ));
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+
+    // Act
+    const response = await client.uploadPicture(bytes);
+
+    // Assert
+    expect(response).toEqual(me);
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/me/picture`);
+    expect(call?.[1]?.method).toBe("PUT");
+    expect(call?.[1]?.body).toBe(bytes);
+    expect((call?.[1]?.headers as Record<string, string> | undefined)?.["content-type"]).toBe("image/jpeg");
+  });
+
+  it("takes the viewer's picture down with one DELETE", async () => {
+    // Arrange
+    const me = { user: { id: "u2", email: "alex@example.com", name: "Alex", pictureVersion: null } };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(me)
+    ));
+
+    // Act
+    const response = await client.removePicture();
+
+    // Assert
+    expect(response).toEqual(me);
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/me/picture`);
+    expect(call?.[1]?.method).toBe("DELETE");
+  });
+
+  it("reads a member's picture bytes under the version their row named", async () => {
+    // Arrange
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token")
+        ? jsonResponse({ token: "jwt" })
+        : new Response(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { "content-type": "image/jpeg" } })
+    ));
+
+    // Act
+    const bytes = await client.memberPicture("riley", "0123456789abcdef");
+
+    // Assert
+    expect(bytes).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(`${apiBaseUrl}/users/riley/picture?v=0123456789abcdef`);
+  });
+
+  it("says so when a member's picture is not there", async () => {
+    // Arrange
+    const { client } = clientWith(async (url) => (
+      url.endsWith("/token")
+        ? jsonResponse({ token: "jwt" })
+        : jsonResponse({ error: { code: "not_found", message: "Picture not found." } }, 404)
+    ));
+
+    // Act
+    const read = client.memberPicture("u1", "0123456789abcdef");
+
+    // Assert
+    await expect(read).rejects.toMatchObject({ kind: "validation", message: "Picture not found." });
+  });
+
   it("renames the workspace with one PATCH to /organization and returns the renamed workspace", async () => {
     // Arrange
     const renamed = { id: "00000000-0000-4000-8000-000000000001", name: "Field Crew", inviteCode: "ACDEF-GHJKM" };
