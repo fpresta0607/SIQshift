@@ -342,7 +342,6 @@ export const projectUpdateRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
     isArchived: z.boolean().optional(),
-    replacementProjectId: idSchema.optional(),
     /** Any member may pick the icon and color, from the built-in lists only. */
     icon: z.enum(PROJECT_ICONS).optional(),
     color: z.enum(PROJECT_COLORS).optional(),
@@ -351,7 +350,6 @@ export const projectUpdateRequestSchema = z
   .refine((value) =>
     value.name !== undefined
     || value.isArchived !== undefined
-    || value.replacementProjectId !== undefined
     || value.icon !== undefined
     || value.color !== undefined);
 
