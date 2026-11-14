@@ -1,3 +1,4 @@
+import type { ProjectAppearance } from "@siqshift/shared";
 import type { AccountSnapshot, TimerProject, TimerUser } from "./account.js";
 
 export type BridgeErrorKind = "auth" | "transient" | "conflict" | "validation" | "unknown" | "account_exists";
@@ -25,7 +26,8 @@ export type OrganizationOverview = {
 /// member spent most time on, null when none had any.
 export type WorkspaceMember = {
   rank: number;
-  user: { id: string; name: string };
+  /// `pictureVersion` names the member's picture, null without one.
+  user: { id: string; name: string; pictureVersion: string | null };
   activeSeconds: number;
   agentSeconds: number;
   project: { id: string; name: string } | null;
@@ -38,7 +40,12 @@ export type WorkspaceReport = {
   agentSeconds: number;
   /// One bucket per local hour of a bounded range; empty over all time.
   hourly: readonly MeStatsHourlyBucket[];
-  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[];
+  /// Each project with the icon and color the server resolved for it, both
+  /// null from a server that predates them.
+  projects: readonly {
+    project: { id: string; name: string; icon: string | null; color: string | null };
+    durationSeconds: number;
+  }[];
   agents: readonly { source: string; durationSeconds: number }[];
   members: readonly WorkspaceMember[];
 };
@@ -331,6 +338,17 @@ export type AgentShiftsGroup = {
   agentSeconds: number;
   shiftCount: number;
   heldRate: number | null;
+  /// Tokens in and out the group's shifts reported; absent when the server
+  /// reads no token usage.
+  tokens?: number | undefined;
+};
+
+/// One agent runtime's share of the groups' shifts.
+export type AgentShiftsRuntime = {
+  source: string;
+  agentSeconds: number;
+  shiftCount: number;
+  tokens?: number | undefined;
 };
 
 /// One agent session running right now, as the live view reads it. The
@@ -362,6 +380,12 @@ export type AgentShifts = {
   /// The token bars, as the server computed them; absent from an API that
   /// predates them, which draws no bars.
   tokenChart?: TokenChart | undefined;
+  /// The groups' shifts by agent runtime; absent from an API that predates
+  /// it, which draws no list of agents.
+  runtimes?: readonly AgentShiftsRuntime[] | undefined;
+  /// The tokens the groups' shifts reported; absent when the server reads no
+  /// token usage.
+  tokenTotals?: { tokensIn: number; tokensOut: number; tokens: number } | undefined;
 };
 
 /// One token bar. `tokens` is the server's own total of in and out; all three
@@ -450,6 +474,12 @@ export interface TimerBridge {
   /// The team view All stats opens on, over instant bounds. Both absent asks
   /// for all time.
   workspaceReport(fromAt?: string, toExclusiveAt?: string): Promise<WorkspaceReport>;
+  /// Puts up the signed-in member's own picture, already drawn small, and
+  /// resolves to their account under its new version.
+  pictureUpload(bytes: Uint8Array): Promise<TimerUser>;
+  pictureRemove(): Promise<TimerUser>;
+  /// A member's picture bytes under the version their board row named.
+  memberPicture(userId: string, version: string): Promise<Uint8Array>;
   /// Every shift in the range grouped by the codebase it worked, for the
   /// Agents tab - the group heads alone. Both bounds absent asks for all time.
   agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
@@ -460,7 +490,7 @@ export interface TimerBridge {
   /// were read with, or the drawer lists shifts its own head never counted.
   agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
-  projectUpdate(id: string, input: { name?: string; isArchived?: boolean }): Promise<TimerProject>;
+  projectUpdate(id: string, input: { name?: string; isArchived?: boolean } | ProjectAppearance): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
   /// Deletes a project; reassignTo moves its data to another project first.
   projectDelete(id: string, reassignTo: string | null): Promise<void>;
@@ -532,13 +562,26 @@ const unitRateOrNull = (value: unknown): number | null => {
 
 const decodeUser = (value: unknown): TimerUser => {
   const candidate = record(value);
-  return { id: uuid(candidate.id), email: string(candidate.email), name: string(candidate.name) };
+  return {
+    id: uuid(candidate.id),
+    email: string(candidate.email),
+    name: string(candidate.name),
+    pictureVersion: stringOrNull(candidate.pictureVersion),
+  };
+};
+
+/// Picture bytes, which the host sends as a list of numbers.
+const decodeBytes = (value: unknown): Uint8Array => {
+  if (!Array.isArray(value)) return invalidResponse();
+  const bytes = value as unknown[];
+  if (!bytes.every((byte) => typeof byte === "number" && Number.isInteger(byte) && byte >= 0 && byte <= 255)) invalidResponse();
+  return Uint8Array.from(bytes as number[]);
 };
 
 const decodeProject = (value: unknown): TimerProject => {
   const candidate = record(value);
   if (candidate.color !== null && typeof candidate.color !== "string") invalidResponse();
-  return { id: uuid(candidate.id), name: string(candidate.name), color: candidate.color as string | null };
+  return { id: uuid(candidate.id), name: string(candidate.name), color: candidate.color as string | null, icon: stringOrNull(candidate.icon) };
 };
 
 const uuidOrNull = (value: unknown): string | null => (value === null || value === undefined ? null : uuid(value));
@@ -857,9 +900,10 @@ const decodeNamed = (value: unknown): { id: string; name: string } => {
 
 const decodeWorkspaceMember = (value: unknown): WorkspaceMember => {
   const candidate = record(value);
+  const user = record(candidate.user);
   return {
     rank: nonnegativeInteger(candidate.rank),
-    user: decodeNamed(candidate.user),
+    user: { ...decodeNamed(user), pictureVersion: stringOrNull(user.pictureVersion) },
     activeSeconds: nonnegativeInteger(candidate.activeSeconds),
     agentSeconds: nonnegativeInteger(candidate.agentSeconds),
     project: candidate.project === null ? null : decodeNamed(candidate.project),
@@ -876,7 +920,11 @@ export const decodeWorkspaceReport = (value: unknown): WorkspaceReport => {
     hourly: (hourly as unknown[]).map(decodeHourlyBucket),
     projects: (projects as unknown[]).map((entry) => {
       const total = record(entry);
-      return { project: decodeNamed(total.project), durationSeconds: nonnegativeInteger(total.durationSeconds) };
+      const project = record(total.project);
+      return {
+        project: { ...decodeNamed(project), icon: stringOrNull(project.icon), color: stringOrNull(project.color) },
+        durationSeconds: nonnegativeInteger(total.durationSeconds),
+      };
     }),
     agents: (agents as unknown[]).map((entry) => {
       const total = record(entry);
@@ -1015,9 +1063,31 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
         agentSeconds: nonnegativeInteger(group.agentSeconds ?? 0),
         shiftCount: nonnegativeInteger(group.shiftCount ?? 0),
         heldRate: unitRateOrNull(group.heldRate),
+        tokens: nonnegativeIntegerOrNull(group.tokens) ?? undefined,
       };
     }),
     tokenChart: decodeTokenChart(candidate.tokenChart),
+    runtimes: candidate.runtimes === undefined || candidate.runtimes === null
+      ? undefined
+      : (Array.isArray(candidate.runtimes) ? candidate.runtimes as unknown[] : invalidResponse()).map((entry) => {
+        const runtime = record(entry);
+        return {
+          source: string(runtime.source),
+          agentSeconds: nonnegativeInteger(runtime.agentSeconds ?? 0),
+          shiftCount: nonnegativeInteger(runtime.shiftCount ?? 0),
+          tokens: nonnegativeIntegerOrNull(runtime.tokens) ?? undefined,
+        };
+      }),
+    tokenTotals: candidate.tokenTotals === undefined || candidate.tokenTotals === null
+      ? undefined
+      : (() => {
+        const totals = record(candidate.tokenTotals);
+        return {
+          tokensIn: nonnegativeInteger(totals.tokensIn),
+          tokensOut: nonnegativeInteger(totals.tokensOut),
+          tokens: nonnegativeInteger(totals.tokens),
+        };
+      })(),
   };
 };
 
@@ -1122,6 +1192,9 @@ export const defaultBridge: TimerBridge = {
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
   workspaceReport: (fromAt, toExclusiveAt) => invokeDecoded("workspace_report", decodeWorkspaceReport, { fromAt, toExclusiveAt }),
+  pictureUpload: (bytes) => invokeDecoded("picture_upload", decodeUser, { bytes: Array.from(bytes) }),
+  pictureRemove: () => invokeDecoded("picture_remove", decodeUser),
+  memberPicture: (userId, version) => invokeDecoded("member_picture", decodeBytes, { userId, version }),
   agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
   liveAgentSessions: () => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions),
   agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>

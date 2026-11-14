@@ -16,6 +16,7 @@ import {
   shiftCommits,
   timeSessions,
   userDailyRollups,
+  userPictures,
   userProjectSelections,
   users,
   userViewPreferences,
@@ -52,6 +53,7 @@ import {
   type AgentUsageModelTotalsRecord,
   type AgentUsageProjectBucketTotalRecord,
   type AgentUsageRepository,
+  type AgentUsageSessionTotalsRecord,
   type AgentUsageTotalsRecord,
   type UpsertAgentUsageBucket,
   type InsertShiftCommit,
@@ -71,12 +73,15 @@ import {
   type InsertEndedAgentSession,
   type LeaderboardRowRecord,
   type MemberProjectTotalRecord,
+  type MemberRecord,
   type ObservedSessionInsert,
   type RollupCoverage,
   type UserDailyRollupRecord,
   type UserDailyRollupRepository,
   type PathMappingRecord,
   type PathMappingRepository,
+  type PictureRecord,
+  type PictureRepository,
   type ProjectRecord,
   type ProjectRepository,
   type ProjectTotalRecord,
@@ -136,12 +141,27 @@ function mapCreateError(error: unknown): SessionRepositoryError | null {
   return null;
 }
 
+/**
+ * The project automatic time lands in: the flagged one, else the oldest active
+ * one, because a workspace provisioned without the flag has none flagged. The
+ * report path and the project list both resolve it here, so they agree.
+ */
+async function defaultProjectOf(db: DatabaseConnection["db"], organizationId: string): Promise<ReportLookupRecord | null> {
+  const rows = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(and(eq(projects.organizationId, organizationId), eq(projects.archived, false)))
+    .orderBy(desc(projects.isDefault), asc(projects.createdAt), asc(projects.id))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export class DrizzleProjectRepository implements ProjectRepository {
   public constructor(private readonly db: DatabaseConnection["db"]) {}
 
   public async listForMember(subject: AuthenticatedSubject): Promise<ProjectRecord[]> {
     return this.db
-      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt })
+      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt })
       .from(projects)
       .innerJoin(projectMemberships, and(
         eq(projectMemberships.organizationId, projects.organizationId),
@@ -157,7 +177,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
 
   public async findForMember(subject: AuthenticatedSubject, projectId: string): Promise<ProjectRecord | null> {
     const rows = await this.db
-      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt })
+      .select({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt })
       .from(projects)
       .innerJoin(projectMemberships, and(
         eq(projectMemberships.organizationId, projects.organizationId),
@@ -178,7 +198,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       const [project] = await tx
         .insert(projects)
         .values({ organizationId: subject.organizationId, name })
-        .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt });
+        .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt });
       if (project === undefined) throw new Error("Failed to create the project.");
       await tx
         .insert(projectMemberships)
@@ -187,10 +207,14 @@ export class DrizzleProjectRepository implements ProjectRepository {
     });
   }
 
+  public async defaultIdForOrganization(subject: AuthenticatedSubject): Promise<string | null> {
+    return (await defaultProjectOf(this.db, subject.organizationId))?.id ?? null;
+  }
+
   public async updateForMember(
     subject: AuthenticatedSubject,
     projectId: string,
-    patch: { name?: string; archived?: boolean },
+    patch: { name?: string; archived?: boolean; icon?: string; color?: string },
   ): Promise<ProjectRecord | null> {
     const existing = await this.findForMember(subject, projectId);
     if (existing === null) return null;
@@ -199,9 +223,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .set({
         ...(patch.name === undefined ? {} : { name: patch.name }),
         ...(patch.archived === undefined ? {} : { archived: patch.archived }),
+        ...(patch.icon === undefined ? {} : { icon: patch.icon }),
+        ...(patch.color === undefined ? {} : { color: patch.color }),
       })
       .where(and(eq(projects.id, projectId), eq(projects.organizationId, subject.organizationId)))
-      .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, createdAt: projects.createdAt });
+      .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt });
     return rows[0] ?? null;
   }
 
@@ -334,6 +360,49 @@ export class DrizzleViewPreferencesRepository implements ViewPreferencesReposito
   }
 }
 
+/** One picture per member, keyed by the member, so a second upload replaces the first. */
+export class DrizzlePictureRepository implements PictureRepository {
+  public constructor(private readonly db: DatabaseConnection["db"]) {}
+
+  public async save(subject: AuthenticatedSubject, picture: PictureRecord): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(userPictures)
+        .values({ userId: subject.userId, contentType: picture.contentType, bytes: picture.bytes })
+        .onConflictDoUpdate({
+          target: userPictures.userId,
+          set: { contentType: picture.contentType, bytes: picture.bytes, updatedAt: sql`now()` },
+        });
+      await tx
+        .update(users)
+        .set({ pictureVersion: picture.version, updatedAt: sql`now()` })
+        .where(and(eq(users.id, subject.userId), eq(users.organizationId, subject.organizationId)));
+    });
+  }
+
+  public async remove(subject: AuthenticatedSubject): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.delete(userPictures).where(eq(userPictures.userId, subject.userId));
+      await tx
+        .update(users)
+        .set({ pictureVersion: null, updatedAt: sql`now()` })
+        .where(and(eq(users.id, subject.userId), eq(users.organizationId, subject.organizationId)));
+    });
+  }
+
+  public async find(subject: AuthenticatedSubject, userId: string): Promise<PictureRecord | null> {
+    const rows = await this.db
+      .select({ contentType: userPictures.contentType, bytes: userPictures.bytes, version: users.pictureVersion })
+      .from(userPictures)
+      .innerJoin(users, eq(users.id, userPictures.userId))
+      .where(and(eq(userPictures.userId, userId), eq(users.organizationId, subject.organizationId)))
+      .limit(1);
+    const row = rows[0];
+    if (row === undefined || row.version === null) return null;
+    return { contentType: row.contentType, bytes: row.bytes, version: row.version };
+  }
+}
+
 export class DrizzleSessionRepository implements SessionRepository {
   public constructor(private readonly db: DatabaseConnection["db"]) {}
 
@@ -447,7 +516,7 @@ export class DrizzleAccountStore implements AccountStore {
       }
 
       const [current] = await tx
-        .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role })
+        .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion })
         .from(users)
         .where(eq(users.id, subject.userId))
         .limit(1);
@@ -515,7 +584,7 @@ export class DrizzleAccountStore implements AccountStore {
         .update(users)
         .set({ organizationId: target.id, role: "member", updatedAt: new Date() })
         .where(eq(users.id, subject.userId))
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (moved === undefined) throw new Error("Failed to move the account into its new organization.");
 
       const active = await tx
@@ -586,7 +655,7 @@ export class DrizzleAccountStore implements AccountStore {
           eq(users.organizationId, subject.organizationId),
           eq(users.role, "member"),
         ))
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (user === undefined) throw new Error("The first-admin claimant was no longer an active member.");
       return { kind: "claimed", user };
     });
@@ -645,7 +714,7 @@ export class DrizzleAccountStore implements AccountStore {
           email: identity.email,
           name: identity.name,
         })
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (user === undefined) throw new Error("Failed to create a user for a joining account.");
 
       const active = await tx
@@ -668,7 +737,7 @@ export class DrizzleAccountStore implements AccountStore {
 
   private async find(authUserId: string): Promise<AuthenticatedUser | null> {
     const rows = await this.db
-      .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role })
+      .select({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion })
       .from(users)
       .where(eq(users.id, authUserId))
       .limit(1);
@@ -680,7 +749,7 @@ export class DrizzleAccountStore implements AccountStore {
       .update(users)
       .set({ email: identity.email, name: identity.name, updatedAt: new Date() })
       .where(eq(users.id, identity.authUserId))
-      .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+      .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
     const row = rows[0];
     if (row === undefined) throw new Error("The signed-in account disappeared during profile sync.");
     return row;
@@ -706,7 +775,7 @@ export class DrizzleAccountStore implements AccountStore {
           name: identity.name,
           role: "admin",
         })
-        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role });
+        .returning({ id: users.id, email: users.email, name: users.name, organizationId: users.organizationId, role: users.role, pictureVersion: users.pictureVersion });
       if (user === undefined) throw new Error("Failed to create a user for a new account.");
 
       await tx
@@ -755,13 +824,7 @@ export class DrizzleReportRepository implements ReportRepository {
   }
 
   public async readDefaultProject(subject: AuthenticatedSubject): Promise<ReportLookupRecord | null> {
-    const rows = await this.db
-      .select({ id: projects.id, name: projects.name })
-      .from(projects)
-      .where(and(eq(projects.organizationId, subject.organizationId), eq(projects.archived, false)))
-      .orderBy(desc(projects.isDefault), asc(projects.createdAt), asc(projects.id))
-      .limit(1);
-    return rows[0] ?? null;
+    return defaultProjectOf(this.db, subject.organizationId);
   }
 
   public async findUserForOrganization(subject: AuthenticatedSubject, userId: string): Promise<ReportLookupRecord | null> {
@@ -909,6 +972,7 @@ export class DrizzleReportRepository implements ReportRepository {
         agentId: agentSessions.agentId,
         agentRepoRoot: agents.repoRoot,
         agentRepoKey: agents.repoKey,
+        externalSessionId: agentSessions.externalSessionId,
         startedAt: agentSessions.startedAt,
         endedAt: intervalEnd,
       })
@@ -954,6 +1018,7 @@ export class DrizzleReportRepository implements ReportRepository {
       agentId: row.agentId,
       agentRepoRoot: row.agentRepoRoot,
       agentRepoKey: row.agentRepoKey,
+      externalSessionId: row.externalSessionId,
       startedAt: row.startedAt,
       endedAt: row.endedAt instanceof Date ? row.endedAt : new Date(row.endedAt as unknown as string),
     }));
@@ -1140,9 +1205,9 @@ export class DrizzleReportRepository implements ReportRepository {
     }));
   }
 
-  public async readMembersForOrganization(subject: AuthenticatedSubject): Promise<ReportLookupRecord[]> {
+  public async readMembersForOrganization(subject: AuthenticatedSubject): Promise<MemberRecord[]> {
     return this.db
-      .select({ id: users.id, name: users.name })
+      .select({ id: users.id, name: users.name, pictureVersion: users.pictureVersion })
       .from(users)
       .where(eq(users.organizationId, subject.organizationId))
       .orderBy(asc(users.id));
@@ -1196,6 +1261,8 @@ export class DrizzleReportRepository implements ReportRepository {
         userId: timeSessions.userId,
         projectId: projects.id,
         projectName: projects.name,
+        projectIcon: projects.icon,
+        projectColor: projects.color,
         durationSeconds: sum(timeSessions.durationSeconds),
       })
       .from(timeSessions)
@@ -1204,11 +1271,11 @@ export class DrizzleReportRepository implements ReportRepository {
         eq(projects.id, timeSessions.projectId),
       ))
       .where(and(...this.predicates(subject, query), eq(projects.organizationId, subject.organizationId)))
-      .groupBy(timeSessions.userId, projects.id, projects.name);
+      .groupBy(timeSessions.userId, projects.id, projects.name, projects.icon, projects.color);
 
     return rows.map((row) => ({
       userId: row.userId,
-      project: { id: row.projectId, name: row.projectName },
+      project: { id: row.projectId, name: row.projectName, icon: row.projectIcon, color: row.projectColor },
       durationSeconds: row.durationSeconds,
     }));
   }
@@ -2208,6 +2275,36 @@ export class DrizzleAgentUsageRepository implements AgentUsageRepository {
       ...sums,
       project: projectId === null || projectName === null ? null : { id: projectId, name: projectName },
     }));
+  }
+
+  public async sumBySession(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]> {
+    // The session's runtime key and the four sums alone: this read also runs
+    // over an unbounded range, so it carries nothing the per-shift totals do
+    // not use. The key is what lets a board that holds only a continuation
+    // of a session find the usage filed under the session's own row, and the
+    // join that reads it is also the one the project scope reads through.
+    return this.db
+      .select({
+        agentSessionId: agentSessions.id,
+        userId: agentSessions.userId,
+        source: agentSessions.source,
+        externalSessionId: agentSessions.externalSessionId,
+        inputTokens: sum(agentUsage.inputTokens),
+        outputTokens: sum(agentUsage.outputTokens),
+        cacheCreationInputTokens: sum(agentUsage.cacheCreationInputTokens),
+        cacheReadInputTokens: sum(agentUsage.cacheReadInputTokens),
+      })
+      .from(agentUsage)
+      .innerJoin(agentSessions, and(
+        eq(agentSessions.organizationId, agentUsage.organizationId),
+        eq(agentSessions.id, agentUsage.agentSessionId),
+      ))
+      .where(and(
+        ...this.usageScopeConditions(subject, query),
+        query.projectId === undefined ? undefined : eq(agentSessions.projectId, query.projectId),
+        query.unassignedOnly === true ? isNull(agentSessions.projectId) : undefined,
+      ))
+      .groupBy(agentSessions.id, agentSessions.userId, agentSessions.source, agentSessions.externalSessionId);
   }
 
   public async sumByBucketForAgent(

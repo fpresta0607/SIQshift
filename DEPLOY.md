@@ -561,8 +561,9 @@ liveness ping: a database still behind the running build answers `503` and
 names the migrations it is missing.
 
 As of **2026-09-18** production is level with `0023_activity_segment_retention_index`,
-the journal's head. `0022` and `0023` were applied that day, nineteen days after
+then the journal's head. `0022` and `0023` were applied that day, nineteen days after
 they merged and one day after the build that needs `0022` went live.
+`0024_project_appearance` and `0025_user_pictures` followed it.
 
 ---
 

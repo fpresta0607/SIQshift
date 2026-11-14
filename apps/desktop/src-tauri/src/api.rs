@@ -145,6 +145,10 @@ pub struct TimerUser {
     pub id: String,
     pub email: String,
     pub name: String,
+    /// Names the member's stored picture; absent without one, and from a
+    /// server that predates pictures.
+    #[serde(default)]
+    pub picture_version: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,20 +158,16 @@ pub struct TimerProject {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    /// One of the built-in icon names; absent from a server that predates them.
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(skip_serializing)]
     pub created_at: String,
 }
 
 #[derive(Deserialize)]
 struct MeResponse {
-    user: MeUser,
-}
-
-#[derive(Deserialize)]
-struct MeUser {
-    id: String,
-    email: String,
-    name: String,
+    user: TimerUser,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,8 +208,21 @@ pub struct WorkspaceReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProjectTotal {
-    pub project: LeaderboardMember,
+    pub project: WorkspaceProject,
     pub duration_seconds: u64,
+}
+
+/// A project as the team view lists it, with the icon and color the server
+/// resolved for it; both are absent from a server that predates them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProject {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// A runtime id as the server sent it, so one this build has never heard of
@@ -227,10 +240,21 @@ pub struct WorkspaceAgentTotal {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMember {
     pub rank: u32,
-    pub user: LeaderboardMember,
+    pub user: WorkspaceMemberUser,
     pub active_seconds: u64,
     pub agent_seconds: u64,
     pub project: Option<LeaderboardMember>,
+}
+
+/// A board row's member, with the version that names their picture.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMemberUser {
+    pub id: String,
+    pub name: String,
+    /// Absent without a picture, and from a server that predates pictures.
+    #[serde(default)]
+    pub picture_version: Option<String>,
 }
 
 /// The Agents tab's whole story: what ran, where, grouped by codebase. Every
@@ -252,6 +276,36 @@ pub struct AgentShifts {
     /// that predates them, which leaves the tab without bars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_chart: Option<TokenChart>,
+    /// The groups' shifts rolled up by agent runtime. Absent from an API that
+    /// predates it, which leaves the tab without its list of agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtimes: Option<Vec<AgentShiftsRuntime>>,
+    /// The tokens the groups' shifts reported, as the server summed them.
+    /// Absent when the server reads no token usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_totals: Option<AgentShiftsTokenTotals>,
+}
+
+/// One agent runtime's share of the groups' shifts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsRuntime {
+    pub source: AgentSource,
+    #[serde(default)]
+    pub agent_seconds: u64,
+    #[serde(default)]
+    pub shift_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
+/// The tokens the range's shifts reported, in and out, as the server summed them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsTokenTotals {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub tokens: u64,
 }
 
 /// The Agents tab's token bars: the period's buckets, and each project's bars
@@ -312,6 +366,10 @@ pub struct AgentShiftsGroup {
     /// merged / decided; `None` while nothing has been decided yet.
     #[serde(default)]
     pub held_rate: Option<f64>,
+    /// Tokens in and out the group's shifts reported; absent when the server
+    /// reads no token usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
 }
 
 /// One shift: a terminal session, with the facts it attested itself.
@@ -411,6 +469,8 @@ struct ProjectListItem {
     name: String,
     #[serde(default)]
     color: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
     created_at: String,
     is_archived: bool,
 }
@@ -937,11 +997,7 @@ impl ApiClient {
             .json()
             .await
             .map_err(|_| BridgeError::unknown("The account response could not be read."))?;
-        Ok(TimerUser {
-            id: body.user.id,
-            email: body.user.email,
-            name: body.user.name,
-        })
+        Ok(body.user)
     }
 
     /// Moves an existing account into a teammate's workspace.
@@ -1082,11 +1138,76 @@ impl ApiClient {
 
     pub async fn me(&self, access_token: &str) -> ApiResult<TimerUser> {
         let body: MeResponse = self.get_json(access_token, "/me").await?;
-        Ok(TimerUser {
-            id: body.user.id,
-            email: body.user.email,
-            name: body.user.name,
-        })
+        Ok(body.user)
+    }
+
+    /// Puts up the member's own picture with `PUT /me/picture`. The server
+    /// judges its type by the bytes and answers with the new version.
+    pub async fn upload_picture(&self, access_token: &str, bytes: Vec<u8>) -> ApiResult<TimerUser> {
+        let response = self
+            .http
+            .put(format!("{}/me/picture", self.api_base_url))
+            .bearer_auth(access_token)
+            .header(reqwest::header::CONTENT_TYPE, "image/jpeg")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let body: MeResponse = response
+            .json()
+            .await
+            .map_err(|_| BridgeError::unknown("The account response could not be read."))?;
+        Ok(body.user)
+    }
+
+    /// Takes down the member's own picture with `DELETE /me/picture`.
+    pub async fn remove_picture(&self, access_token: &str) -> ApiResult<TimerUser> {
+        let response = self
+            .http
+            .delete(format!("{}/me/picture", self.api_base_url))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let body: MeResponse = response
+            .json()
+            .await
+            .map_err(|_| BridgeError::unknown("The account response could not be read."))?;
+        Ok(body.user)
+    }
+
+    /// A member's picture bytes, read under the version that names them so the
+    /// server can answer the read as one that never changes.
+    pub async fn member_picture(
+        &self,
+        access_token: &str,
+        user_id: &str,
+        version: &str,
+    ) -> ApiResult<Vec<u8>> {
+        let mut url = Url::parse(&format!("{}/users/{user_id}/picture", self.api_base_url))
+            .map_err(|_| BridgeError::unknown("The request address could not be built."))?;
+        url.query_pairs_mut().append_pair("v", version);
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| classify_transport(&error))?;
+        if !response.status().is_success() {
+            return Err(classify_api_error(response).await);
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|_| BridgeError::unknown("The picture could not be read."))?;
+        Ok(bytes.to_vec())
     }
 
     pub async fn projects(&self, access_token: &str) -> ApiResult<Vec<TimerProject>> {
@@ -1099,6 +1220,7 @@ impl ApiClient {
                 id: project.id,
                 name: project.name,
                 color: project.color,
+                icon: project.icon,
                 created_at: project.created_at,
             })
             .collect())
@@ -1127,17 +1249,21 @@ impl ApiClient {
             id: body.id,
             name: body.name,
             color: body.color,
+            icon: body.icon,
             created_at: body.created_at,
         })
     }
 
-    /// Renames or archives a project via `PATCH /projects/:id`.
+    /// Renames or archives a project, or sets its icon and color, via
+    /// `PATCH /projects/:id`.
     pub async fn update_project(
         &self,
         access_token: &str,
         id: &str,
         name: Option<&str>,
         is_archived: Option<bool>,
+        icon: Option<&str>,
+        color: Option<&str>,
     ) -> ApiResult<TimerProject> {
         let mut body = serde_json::Map::new();
         if let Some(name) = name {
@@ -1145,6 +1271,12 @@ impl ApiClient {
         }
         if let Some(is_archived) = is_archived {
             body.insert("isArchived".into(), serde_json::json!(is_archived));
+        }
+        if let Some(icon) = icon {
+            body.insert("icon".into(), serde_json::json!(icon));
+        }
+        if let Some(color) = color {
+            body.insert("color".into(), serde_json::json!(color));
         }
         let response = self
             .http
@@ -1165,6 +1297,7 @@ impl ApiClient {
             id: body.id,
             name: body.name,
             color: body.color,
+            icon: body.icon,
             created_at: body.created_at,
         })
     }
@@ -1574,6 +1707,35 @@ mod tests {
         );
     }
 
+    /// The tokens per repo, per runtime and in total reach the webview as the
+    /// server sent them, and an API that sends none leaves all three absent
+    /// rather than zero.
+    #[test]
+    fn carries_the_servers_shift_tokens_through_and_leaves_absence_absent() {
+        let shifts: AgentShifts = serde_json::from_str(
+            r#"{
+                "groups": [{"groupKey": "siqshift", "repo": "siqshift", "agentSeconds": 60, "shiftCount": 1, "tokens": 1200}],
+                "runtimes": [{"source": "claude_code", "agentSeconds": 60, "shiftCount": 1, "tokens": 1200}],
+                "tokenTotals": {"tokensIn": 1000, "tokensOut": 200, "tokens": 1200}
+            }"#,
+        )
+        .expect("shift tokens decode");
+        let echoed = serde_json::to_value(&shifts).expect("serializes");
+        assert_eq!(echoed["groups"][0]["tokens"], 1_200);
+        assert_eq!(echoed["runtimes"][0]["source"], "claude_code");
+        assert_eq!(echoed["runtimes"][0]["tokens"], 1_200);
+        assert_eq!(echoed["tokenTotals"]["tokensIn"], 1_000);
+        assert_eq!(echoed["tokenTotals"]["tokens"], 1_200);
+
+        let older: AgentShifts =
+            serde_json::from_str(r#"{"groups": [{"groupKey": "siqshift", "repo": "siqshift"}]}"#)
+                .expect("an older shape decodes");
+        let wire = serde_json::to_value(&older).expect("serializes");
+        assert!(wire["groups"][0].get("tokens").is_none());
+        assert!(wire.get("runtimes").is_none());
+        assert!(wire.get("tokenTotals").is_none());
+    }
+
     /// One group's page decodes the same tolerant way, and an endpoint that is
     /// not there yet is an empty drawer rather than a dead tab.
     #[test]
@@ -1718,7 +1880,163 @@ mod tests {
 
         assert_eq!(body.name, "Field work");
         assert_eq!(body.color, None);
+        assert_eq!(body.icon, None);
         assert!(!body.is_archived);
+    }
+
+    /// Any member may pick a project's icon and color: the pair goes out as
+    /// the built-in names, and the project the server answers with reads back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sends_a_picked_icon_and_color_and_reads_the_project_back() {
+        const UPDATED: StubAnswer = (
+            "200 OK",
+            "",
+            r##"{"id": "p1", "name": "Field work", "icon": "bolt", "color": "#c6a1f4", "createdAt": "2026-08-10T12:00:00Z", "isArchived": false}"##,
+        );
+        let (client, served) = scripted_stub(vec![UPDATED]).await;
+
+        let project = client
+            .update_project("token", "p1", None, None, Some("bolt"), Some("#c6a1f4"))
+            .await
+            .expect("the update reads");
+
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "PATCH /projects/p1");
+        let sent: serde_json::Value =
+            serde_json::from_str(&requests[0].1).expect("the request body is JSON");
+        assert_eq!(
+            sent,
+            serde_json::json!({ "icon": "bolt", "color": "#c6a1f4" })
+        );
+        assert_eq!(project.icon.as_deref(), Some("bolt"));
+        assert_eq!(project.color.as_deref(), Some("#c6a1f4"));
+    }
+
+    #[test]
+    fn carries_a_projects_icon_and_color_through_the_team_view() {
+        let row: WorkspaceProjectTotal = serde_json::from_str(
+            r##"{"project": {"id": "p1", "name": "General", "icon": "grid", "color": "#a3b3c2"}, "durationSeconds": 60}"##,
+        )
+        .expect("the project row parses");
+
+        let sent = serde_json::to_value(&row).expect("the project row serializes");
+        assert_eq!(sent["project"]["icon"], "grid");
+        assert_eq!(sent["project"]["color"], "#a3b3c2");
+    }
+
+    /// The window already drew the picture small; the host passes its bytes
+    /// through as they are and reads the account back under the new version.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn puts_up_the_members_own_picture_and_reads_its_version_back() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "200 OK",
+            "",
+            r#"{"user":{"id":"u1","email":"sam@example.test","name":"Sam Example","pictureVersion":"0123456789abcdef"}}"#,
+        )])
+        .await;
+
+        // Act
+        let user = client
+            .upload_picture("token", b"picture bytes".to_vec())
+            .await
+            .expect("the upload reads");
+
+        // Assert
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "PUT /me/picture");
+        assert_eq!(requests[0].1, "picture bytes");
+        assert_eq!(requests[0].2.as_deref(), Some("Bearer token"));
+        assert_eq!(user.picture_version.as_deref(), Some("0123456789abcdef"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn takes_down_the_members_own_picture() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "200 OK",
+            "",
+            r#"{"user":{"id":"u1","email":"sam@example.test","name":"Sam Example","pictureVersion":null}}"#,
+        )])
+        .await;
+
+        // Act
+        let user = client
+            .remove_picture("token")
+            .await
+            .expect("the removal reads");
+
+        // Assert
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "DELETE /me/picture");
+        assert_eq!(user.picture_version, None);
+    }
+
+    /// A refusal reaches the window in the server's own words.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn says_why_the_server_refused_a_picture() {
+        for (status, body, message) in [
+            (
+                "400 Bad Request",
+                r#"{"error":{"code":"validation_error","message":"A picture must be a JPEG, PNG or WebP image."}}"#,
+                "A picture must be a JPEG, PNG or WebP image.",
+            ),
+            (
+                "413 Payload Too Large",
+                r#"{"error":{"code":"validation_error","message":"Request body is too large."}}"#,
+                "Request body is too large.",
+            ),
+        ] {
+            // Arrange
+            let (client, served) = scripted_stub(vec![(status, "", body)]).await;
+
+            // Act
+            let error = client
+                .upload_picture("token", b"not a picture".to_vec())
+                .await
+                .expect_err("the server refused it");
+
+            // Assert
+            requests_seen(served).await;
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reads_a_members_picture_under_the_version_their_row_named() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![("200 OK", "", "picture bytes")]).await;
+
+        // Act
+        let bytes = client
+            .member_picture("token", "riley", "0123456789abcdef")
+            .await
+            .expect("the picture reads");
+
+        // Assert
+        let requests = requests_seen(served).await;
+        assert_eq!(requests[0].0, "GET /users/riley/picture?v=0123456789abcdef");
+        assert_eq!(requests[0].2.as_deref(), Some("Bearer token"));
+        assert_eq!(bytes, b"picture bytes");
+    }
+
+    #[test]
+    fn carries_each_members_picture_version_through_the_team_view() {
+        for (row, expected) in [
+            (
+                r#"{"rank": 1, "user": {"id": "u1", "name": "Sam Example", "pictureVersion": "0123456789abcdef"}, "activeSeconds": 60, "agentSeconds": 0, "project": null}"#,
+                serde_json::json!("0123456789abcdef"),
+            ),
+            (
+                r#"{"rank": 1, "user": {"id": "u1", "name": "Sam Example"}, "activeSeconds": 60, "agentSeconds": 0, "project": null}"#,
+                serde_json::Value::Null,
+            ),
+        ] {
+            let member: WorkspaceMember = serde_json::from_str(row).expect("the board row parses");
+
+            let sent = serde_json::to_value(&member).expect("the board row serializes");
+            assert_eq!(sent["user"]["pictureVersion"], expected);
+        }
     }
 
     #[test]
@@ -1939,6 +2257,11 @@ mod tests {
         assert_eq!(sent["members"][1]["project"], serde_json::Value::Null);
         assert_eq!(sent["hourly"][0]["hourStart"], "2026-08-06T13:00:00.000Z");
         assert_eq!(sent["projects"][0]["durationSeconds"], 8_040);
+        // A server that predates project icons sends none, and none is made up.
+        assert_eq!(
+            sent["projects"][0]["project"]["icon"],
+            serde_json::Value::Null
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

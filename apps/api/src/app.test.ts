@@ -25,6 +25,7 @@ const account: AuthenticatedUser = {
   name: "Alex Morgan",
   organizationId: ids.organization,
   role: "member",
+  pictureVersion: null,
 };
 
 const now = new Date("2026-08-06T14:00:00.000Z");
@@ -168,6 +169,24 @@ describe("API composition", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://desktop.siqshift.test");
     expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+  });
+
+  it("lets a configured origin upload a picture through preflight", async () => {
+    const { app } = createTestApp();
+
+    const response = await app.request("http://api.test/me/picture", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://desktop.siqshift.test",
+        "access-control-request-method": "PUT",
+        "access-control-request-headers": "authorization,content-type",
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://desktop.siqshift.test");
+    expect(response.headers.get("access-control-allow-methods")?.split(",")).toEqual(expect.arrayContaining(["PUT", "DELETE"]));
+    expect(response.headers.get("access-control-allow-headers")?.split(",")).toEqual(expect.arrayContaining(["authorization", "content-type"]));
   });
 
   it("does not grant CORS access to an unconfigured origin", async () => {
@@ -365,6 +384,7 @@ describe("API composition", () => {
         name: "Casey",
         organizationId: ids.organization,
         role: "member",
+        pictureVersion: null,
       }],
     ]);
     const audit: string[] = [];

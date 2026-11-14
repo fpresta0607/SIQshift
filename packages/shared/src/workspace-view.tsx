@@ -1,78 +1,70 @@
-import { useId, useState, type ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
-import { AgentRuntimeIcon } from "./agent-marks.js";
 import { agentRuntimeLabel } from "./agent-runtimes.js";
+import { formatCount } from "./format.js";
+import { MemberAvatar } from "./member-avatar.js";
+import { projectAppearance, type ProjectAppearance } from "./project-appearance.js";
+import { ProjectIconTile } from "./project-icon-tile.js";
+import { TeamTotals } from "./team-totals.js";
+import { TimeChartCard } from "./time-chart-card.js";
 import { formatHumanDuration } from "./time.js";
-import { HourlyGraph, MeterRowItem, type ChartHourlyBucket, type MeterRow } from "./ui.js";
+import { MeterRowItem, type ChartHourlyBucket, type MeterRow } from "./ui.js";
+
+export { AgentsView, type AgentsViewProps } from "./agents-view.js";
+export { TeamTotals, type TeamTotal } from "./team-totals.js";
+export { TeamViewHead } from "./team-view-head.js";
+export { TeamViewTabs, type TeamViewTab } from "./team-view-tabs.js";
+export { TimeChartCard } from "./time-chart-card.js";
 
 /**
- * The workspace view: the home page's example team workspace, and the team
- * view both apps open from All stats. One component draws all three, so the
- * product looks like what the home page promises and the copies cannot drift.
+ * The team view's Humans page: the home page's example team workspace, and
+ * the page both apps open from All stats. One component draws all three, so
+ * the product looks like what the home page promises and the copies cannot
+ * drift. The Agents page, `AgentsView`, is drawn on the same layout.
  *
  * It draws the numbers it is handed and adds nothing up: the apps pass the
- * server's workspace report, the home page its illustrative data. The
- * `.workspace` rules in `styles/brand.css` lay it out by its own width, since
- * it sits in a wide landing section, a full-window dialog and a 520px window.
+ * server's workspace report, the home page its illustrative data. Its parts
+ * are the children of a `.tv` box the caller draws, under the `TeamViewHead`
+ * the caller also draws, so the head and its controls stay put while a page
+ * loads. The `.tv` rules in `styles/brand.css` lay it out by its own width,
+ * since it sits in a wide landing section, a full-window dialog and a desktop
+ * window.
  *
  * Its own entry rather than part of `./ui`, which it imports: re-exported from
  * there, the two modules would import each other.
  */
 
-/** One leaderboard row. */
+/** One board row. */
 export type WorkspaceViewMember = {
   id: string;
   rank: number;
   name: string;
+  /** The member's picture as a data URL; their initials stand in without one. */
+  picture?: string | undefined;
   /** The project this member spent most time on, or null when none had any. */
-  project: string | null;
+  project: { name: string; appearance: ProjectAppearance } | null;
   activeSeconds: number;
   agentSeconds: number;
   isSelf: boolean;
 };
 
-/** One member the whole view is narrowed to, as the home page's example does on a click. */
-export type WorkspaceFocus = {
-  name: string;
-  project: string | null;
-  onClear: () => void;
-};
-
 export type WorkspaceViewProps = {
-  workspaceName: string;
-  logoUrl?: string;
-  /** Words on the right of the app bar, such as "Example data". */
-  badge?: string;
-  periodLabel: string;
-  focus?: WorkspaceFocus | undefined;
   activeSeconds: number;
   agentSeconds: number;
   hourly: readonly ChartHourlyBucket[];
   members: readonly WorkspaceViewMember[];
-  /** The control beside the board's title: how it is ordered. */
+  /** Beside the board's title: how it is ordered, or the control that orders it. */
   boardTool: ReactNode;
   selectedMemberId: string | undefined;
   onSelectMember: (member: WorkspaceViewMember) => void;
   /** Lines under the board. */
   boardNotes: readonly string[];
   projectRows: readonly MeterRow[];
-  /** Agent rows; each `source` is also named in the footer. */
   agentRows: readonly MeterRow[];
-  /** Image URLs for project rows, by row key. */
-  projectIcons?: Readonly<Record<string, string>>;
 };
 
-const AVATAR_TONES = ["mint", "blue", "purple"] as const;
-
-const initialsOf = (name: string): string =>
-  name
-    .split(/\s+/)
-    .filter((word) => word !== "")
-    .slice(0, 2)
-    .map((word) => word.charAt(0).toUpperCase())
-    .join("");
-
-const countOf = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
+/** Why a project can hold more time than the Active time total above it. */
+export const RECORDED_TIME_NOTE = "Recorded time counts whole sessions, quiet minutes included. Active time counts only minutes at the computer, so a project can show more than the Active time total.";
 
 /** Breakdown rows, each bar a share of its own list's longest row. */
 const shareRows = (rows: readonly Omit<MeterRow, "share">[]): MeterRow[] => {
@@ -80,9 +72,35 @@ const shareRows = (rows: readonly Omit<MeterRow, "share">[]): MeterRow[] => {
   return rows.map((row) => ({ ...row, share: longest === 0 ? 0 : Math.round((row.durationSeconds / longest) * 100) }));
 };
 
+/** A project as a workspace report names it, with the icon and color a server that predates them leaves out. */
+type ReportedProject = { id: string; name: string; icon?: string | null | undefined; color?: string | null | undefined };
+
+/** A project from the caller's own project list, which knows whether it is the workspace's default. */
+type ListedProject = { id: string; isDefault: boolean; icon?: string | null | undefined; color?: string | null | undefined };
+
+/**
+ * The icon and color a project wears on the team view: the pair the workspace
+ * report gives it, else the pair the caller's own project list gives it, else
+ * the pair its id assigns. The report is read with the view, so where it lists
+ * the project the whole view agrees on one pair. The caller's list covers what
+ * it does not list yet - the open stretch's project before it uploads, or any
+ * project while the report loads - and says which project is the default, so
+ * the default still wears its own pair and a picked pair is never swapped for
+ * one the id would assign.
+ */
+export const reportedAppearance = (
+  projects: readonly { project: ReportedProject }[],
+  listed: readonly ListedProject[],
+  projectId: string,
+): ProjectAppearance => {
+  const own = listed.find((project) => project.id === projectId);
+  const resolved = projects.find((entry) => entry.project.id === projectId)?.project ?? own;
+  return projectAppearance({ id: projectId, isDefault: own?.isDefault ?? false, icon: resolved?.icon, color: resolved?.color });
+};
+
 /** A workspace report's two breakdowns as meter rows, in the order the report gives them. */
 export const workspaceBreakdownRows = (report: {
-  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[];
+  projects: readonly { project: ReportedProject; durationSeconds: number }[];
   agents: readonly { source: string; durationSeconds: number }[];
 }): { projectRows: MeterRow[]; agentRows: MeterRow[] } => ({
   projectRows: shareRows(report.projects.map((entry) => ({
@@ -90,6 +108,7 @@ export const workspaceBreakdownRows = (report: {
     label: entry.project.name,
     source: undefined,
     processName: undefined,
+    appearance: projectAppearance({ id: entry.project.id, isDefault: false, icon: entry.project.icon, color: entry.project.color }),
     durationSeconds: entry.durationSeconds,
   }))),
   agentRows: shareRows(report.agents.map((entry) => ({
@@ -102,11 +121,6 @@ export const workspaceBreakdownRows = (report: {
 });
 
 export const WorkspaceView = ({
-  workspaceName,
-  logoUrl,
-  badge,
-  periodLabel,
-  focus,
   activeSeconds,
   agentSeconds,
   hourly,
@@ -117,49 +131,38 @@ export const WorkspaceView = ({
   boardNotes,
   projectRows,
   agentRows,
-  projectIcons,
 }: WorkspaceViewProps) => {
-  const [breakdown, setBreakdown] = useState<"projects" | "agents">("projects");
-  const headlineId = useId();
   const boardTitleId = useId();
-  const rows = breakdown === "projects" ? projectRows : agentRows;
-  const runtimes = agentRows.flatMap((row) => (row.source === undefined ? [] : [row.source]));
+  const projectsTitleId = useId();
+  const agentsTitleId = useId();
   return (
-    <section className="workspace card" aria-labelledby={headlineId}>
-      <div className="workspace-app-bar">
-        <span className="workspace-brand">
-          {logoUrl !== undefined && <img src={logoUrl} alt="" width="28" height="28" />}
-          <span className="workspace-name">{workspaceName}</span>
-          <span className="workspace-label">Workspace</span>
-        </span>
-        {badge !== undefined && <span className="workspace-badge">{badge}</span>}
-      </div>
-      <div className="workspace-body">
-        <div className="workspace-heading">
-          <h3 id={headlineId}>{focus?.name ?? "Your team’s work, together."}</h3>
-          <span>{periodLabel}</span>
-        </div>
-        <div className="workspace-scope">
-          {focus === undefined ? (
-            <span>{countOf(members.length, "person", "people")} across {countOf(projectRows.length, "project", "projects")}</span>
-          ) : (
-            <>
-              {focus.project !== null && <span>{focus.project}</span>}
-              <button type="button" onClick={focus.onClear}>All members ×</button>
-            </>
-          )}
-        </div>
-        <dl className="workspace-metrics">
-          <div><dt>{focus === undefined ? "Team active hours" : "Active work hours"}</dt><dd>{formatHumanDuration(activeSeconds)}</dd></div>
-          <div><dt>Agent runtime</dt><dd>{formatHumanDuration(agentSeconds)}</dd></div>
-        </dl>
-        <HourlyGraph buckets={hourly} personLabel={focus?.name ?? "Team"} />
-        <div className="workspace-grid">
-          <section className="workspace-leaderboard" aria-labelledby={boardTitleId}>
-            <div className="workspace-panel-heading"><h4 id={boardTitleId}>Team leaderboard</h4>{boardTool}</div>
-            <table aria-labelledby={boardTitleId}>
-              <thead><tr><th scope="col">Member / project</th><th scope="col">Active</th><th scope="col">Agents</th></tr></thead>
-              <tbody>{members.map((member, index) => (
+    <>
+      <TeamTotals
+        label="Totals"
+        totals={[
+          { label: "Active time", value: formatHumanDuration(activeSeconds), note: "people at the computer" },
+          { label: "Agent time", value: formatHumanDuration(agentSeconds), note: "agents running", isAgent: true },
+          { label: "People", value: formatCount(members.length), note: "in this workspace" },
+          { label: "Projects", value: formatCount(projectRows.length), note: "with recorded time" },
+        ]}
+      />
+      <TimeChartCard buckets={hourly} />
+      <div className="tv-grid">
+        <section className="tv-card tv-people" aria-labelledby={boardTitleId}>
+          <div className="tv-card-head">
+            <h4 id={boardTitleId}>People</h4>
+            {boardTool}
+          </div>
+          <table aria-labelledby={boardTitleId}>
+            <thead>
+              <tr>
+                <th scope="col">Person</th>
+                <th scope="col">Active time</th>
+                <th scope="col">Agent time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((member) => (
                 <tr key={member.id} className={member.id === selectedMemberId ? "is-selected" : undefined}>
                   <th scope="row">
                     <button
@@ -168,45 +171,59 @@ export const WorkspaceView = ({
                       aria-pressed={member.id === selectedMemberId}
                       onClick={() => onSelectMember(member)}
                     >
-                      <span className="workspace-rank">{member.rank}</span>
-                      <span className={`workspace-avatar ${AVATAR_TONES[index % AVATAR_TONES.length]}`} aria-hidden="true">{initialsOf(member.name)}</span>
-                      <span className="workspace-person">
-                        <span>{member.name}{member.isSelf && <span className="you-tag"> you</span>}</span>
-                        {member.project !== null && <small>{member.project}</small>}
+                      <span className="tv-rank">{member.rank}</span>
+                      <MemberAvatar id={member.id} name={member.name} picture={member.picture} />
+                      <span className="tv-name">
+                        <span>{member.name}{member.isSelf && <span className="tv-you">You</span>}</span>
+                        {member.project !== null && (
+                          <span className="tv-sub">
+                            <ProjectIconTile appearance={member.project.appearance} />
+                            {member.project.name}
+                          </span>
+                        )}
                       </span>
                     </button>
                   </th>
                   <td>{formatHumanDuration(member.activeSeconds)}</td>
-                  <td>{formatHumanDuration(member.agentSeconds)}</td>
+                  <td className="is-agent">{formatHumanDuration(member.agentSeconds)}</td>
                 </tr>
-              ))}</tbody>
-            </table>
-            {boardNotes.map((note) => <p key={note} className="workspace-hint">{note}</p>)}
-          </section>
-          <section className="workspace-breakdown-panel" aria-label="Workspace breakdown">
-            <div className="workspace-tabs" role="group" aria-label="Projects or agents">
-              <button type="button" aria-pressed={breakdown === "projects"} onClick={() => setBreakdown("projects")}>Projects</button>
-              <button type="button" aria-pressed={breakdown === "agents"} onClick={() => setBreakdown("agents")}>Agents</button>
+              ))}
+            </tbody>
+          </table>
+          {boardNotes.map((note) => <p key={note} className="tv-card-foot">{note}</p>)}
+        </section>
+        <div className="tv-stack">
+          <section className="tv-card tv-list" aria-labelledby={projectsTitleId}>
+            <div className="tv-card-head">
+              <h4 id={projectsTitleId}>Projects</h4>
+              <span className="tv-card-note">Recorded time</span>
             </div>
-            <div className="workspace-breakdown" aria-live="polite">
-              <p className="workspace-breakdown-title">{breakdown === "projects" ? "Active time by project" : "Runtime by agent"}</p>
-              {rows.length === 0 ? (
-                <p className="subtle">Nothing recorded in this range.</p>
-              ) : (
-                <ul className="workspace-meter-list">
-                  {rows.map((row) => <MeterRowItem key={row.key} row={row} iconUrl={projectIcons?.[row.key]} />)}
+            {projectRows.length === 0 ? (
+              <p className="subtle">Nothing recorded in this range.</p>
+            ) : (
+              <>
+                <ul className="tv-meter-list">
+                  {projectRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
                 </ul>
-              )}
+                <p className="tv-card-foot">{RECORDED_TIME_NOTE}</p>
+              </>
+            )}
+          </section>
+          <section className="tv-card tv-list" aria-labelledby={agentsTitleId}>
+            <div className="tv-card-head">
+              <h4 id={agentsTitleId}>Agents</h4>
+              <span className="tv-card-note">Agent time</span>
             </div>
+            {agentRows.length === 0 ? (
+              <p className="subtle">Nothing recorded in this range.</p>
+            ) : (
+              <ul className="tv-meter-list is-agent">
+                {agentRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
+              </ul>
+            )}
           </section>
         </div>
-        {runtimes.length > 0 && (
-          <div className="workspace-tools">
-            <span>Local agents, shared visibility</span>
-            {runtimes.map((source) => <span key={source}><AgentRuntimeIcon source={source} />{agentRuntimeLabel(source)}</span>)}
-          </div>
-        )}
       </div>
-    </section>
+    </>
   );
 };

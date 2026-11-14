@@ -268,6 +268,7 @@ class MemoryReports implements ReportRepository {
         agentId: null,
         agentRepoRoot: null,
         agentRepoKey: null,
+        externalSessionId: `${agent.userId}-${agent.startedAt.toISOString()}-runtime-id`,
         startedAt: agent.startedAt,
         endedAt: agent.endedAt ?? agent.lastEventAt,
       }));

@@ -271,13 +271,13 @@ describe("Drizzle report repository", () => {
     }]);
   });
 
-  it("maps per-member project totals across the workspace, preserving postgres sum strings", async () => {
+  it("maps per-member project totals across the workspace with the stored icon and color, preserving postgres sum strings", async () => {
     const rows = {
       innerJoin: () => rows,
       where: () => rows,
       groupBy: async () => [
-        { userId: input.userId, projectId: input.projectId, projectName: "Timer", durationSeconds: "7200" },
-        { userId: input.clientId, projectId: input.projectId, projectName: "Timer", durationSeconds: null },
+        { userId: input.userId, projectId: input.projectId, projectName: "Timer", projectIcon: "rocket", projectColor: "#85c6ff", durationSeconds: "7200" },
+        { userId: input.clientId, projectId: input.projectId, projectName: "Timer", projectIcon: null, projectColor: null, durationSeconds: null },
       ],
     };
     const db = {
@@ -288,8 +288,8 @@ describe("Drizzle report repository", () => {
     const subject = { organizationId: input.organizationId, userId: input.userId, role: "member" as const };
 
     await expect(repository.readProjectTotalsByMemberForOrganization(subject, {})).resolves.toEqual([
-      { userId: input.userId, project: { id: input.projectId, name: "Timer" }, durationSeconds: "7200" },
-      { userId: input.clientId, project: { id: input.projectId, name: "Timer" }, durationSeconds: null },
+      { userId: input.userId, project: { id: input.projectId, name: "Timer", icon: "rocket", color: "#85c6ff" }, durationSeconds: "7200" },
+      { userId: input.clientId, project: { id: input.projectId, name: "Timer", icon: null, color: null }, durationSeconds: null },
     ]);
   });
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import type { AccountSnapshot, SignedInAccount } from "./account.js";
+import type { AccountSnapshot, SignedInAccount, TimerProject, TimerUser } from "./account.js";
 import { sourceLabel } from "./agent-sources.js";
 import {
   bridgeError,
@@ -28,21 +28,27 @@ import {
   findAgentRuntime,
   formatDuration,
   formatHumanDuration as formatHuman,
+  projectAppearance,
   type AgentRuntimeReportsModel,
 } from "@siqshift/shared";
 import {
   AGENT_TIME_LIMIT_NOTE,
   HourlyGraph,
-  LiveSessions,
+  MemberAvatar,
   MemberBreakdown,
   MeterRowItem,
+  PictureField,
+  ProjectIconPicker,
+  ProjectIconTile,
   QuietMark,
-  ShiftGroups,
-  TokenBarChart,
+  SegmentedControl,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
+  formatRangeDays,
+  pictureDataUrl,
   recordedBasis,
+  usePictures,
   type ShiftCursor,
   type ShiftPage,
 } from "@siqshift/shared/ui";
@@ -50,7 +56,15 @@ import { PermissionsCard } from "./PermissionsCard.js";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import {
+  AgentsView,
+  TeamViewHead,
+  TeamViewTabs,
+  TimeChartCard,
+  WorkspaceView,
+  reportedAppearance,
+  workspaceBreakdownRows,
+} from "@siqshift/shared/workspace-view";
 
 type AppProps = {
   bridge?: TimerBridge;
@@ -141,6 +155,8 @@ const RANGE_LABEL: Record<StatsRange, string> = {
   all: "All time",
 };
 
+const RANGE_OPTIONS = (["today", "week", "all"] as const).map((range) => ({ value: range, label: RANGE_LABEL[range] }));
+
 /// The range as instants on this computer's clock: "today" runs from local
 /// midnight to the next one, "week" from local midnight on Monday. Calendar
 /// dates would be read as a UTC day, which rolls over in the afternoon
@@ -190,6 +206,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [inviteCode, setInviteCode] = useState("");
   const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [authBusy, setAuthBusy] = useState(false);
+  /// The picture picked on the sign-up form, put up once the account exists.
+  const [signupPicture, setSignupPicture] = useState<{ bytes: Uint8Array<ArrayBuffer>; preview: string } | undefined>();
+  const [pictureBusy, setPictureBusy] = useState(false);
   const [overview, setOverview] = useState<OrganizationOverview | undefined>();
   const [overviewError, setOverviewError] = useState<string | undefined>();
   const [joinCode, setJoinCode] = useState("");
@@ -219,7 +238,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [overlayTab, setOverlayTab] = useState<"humans" | "agents">("humans");
   const [agentShifts, setAgentShifts] = useState<AgentShifts | undefined>();
   const [agentShiftsError, setAgentShiftsError] = useState<string | undefined>();
-  /// Who is running an agent right now, above the shifts map. Undefined until
+  /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// host has answered; a failed poll keeps the last-good list.
   const [liveSessions, setLiveSessions] = useState<LiveAgentSessions | undefined>();
@@ -229,6 +248,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [quietDraft, setQuietDraft] = useState("");
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [renamingProjectId, setRenamingProjectId] = useState<string | undefined>();
+  const [pickingProject, setPickingProject] = useState<TimerProject | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
   const [deletingProject, setDeletingProject] = useState<{ id: string; name: string; usage: ProjectUsage } | undefined>();
   const [deleteReassignTo, setDeleteReassignTo] = useState("");
@@ -272,6 +292,19 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
 
   const isCurrent = (service: TimerBridge, generation: number): boolean =>
     mounted.current && latestBridge.current === service && bridgeGeneration.current === generation;
+
+  /// The account takes the picture a team report names for its member, so one
+  /// put up, changed or taken down from the web reaches every surface that
+  /// draws the account's - their row, their card and settings.
+  const followReportedPicture = (report: WorkspaceReport): void => {
+    setAccount((known) => {
+      if (known?.kind !== "ready") return known;
+      const own = report.members.find((member) => member.user.id === known.user.id);
+      return own === undefined || own.user.pictureVersion === known.user.pictureVersion
+        ? known
+        : { ...known, user: { ...known.user, pictureVersion: own.user.pictureVersion } };
+    });
+  };
 
   const clearAccountFields = (): void => {
     setPassword("");
@@ -493,6 +526,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           workspaceFailures.current = 0;
           setWorkspace(result);
           setWorkspaceError(undefined);
+          followReportedPicture(result);
         }
       },
       (error: unknown) => {
@@ -802,6 +836,28 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     return () => { active = false; };
   }, [bridge, settingsOpen]);
 
+  // Settings draws the member's picture from the account, which only a team
+  // report brings up to date, and it never opens over All stats; so opening it
+  // reads today's report for the member's own entry. A picture change made
+  // here holds the read back until it lands, so an answer from before the
+  // change cannot put the old picture back.
+  useEffect(() => {
+    if (!settingsOpen || pictureBusy) return undefined;
+    let active = true;
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    const bounds = rangeBounds("today");
+    void service.workspaceReport(bounds?.fromAt, bounds?.toExclusiveAt).then(
+      (result) => {
+        if (active && isCurrent(service, generation)) followReportedPicture(result);
+      },
+      () => {
+        // Advisory only: a failed read keeps the picture the account names.
+      },
+    );
+    return () => { active = false; };
+  }, [bridge, settingsOpen, pictureBusy]);
+
   // The AI-tools group names the models each connected runtime has reported,
   // folded out of the caller's all-time agent splits; like the settings
   // themselves, it reads only while the overlay is open.
@@ -848,7 +904,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     const service = bridge;
     const generation = bridgeGeneration.current;
     try {
-      const snapshot = authMode === "sign-up"
+      let snapshot = authMode === "sign-up"
         ? await service.signup({
             email,
             password,
@@ -856,9 +912,21 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
             ...(inviteCode.trim() === "" ? {} : { inviteCode: inviteCode.trim() }),
           })
         : await service.login({ email, password });
+      // The account exists by now, so a picture that does not go up is said
+      // on the main screen rather than undoing the sign-up.
+      let pictureFailure: string | undefined;
+      if (authMode === "sign-up" && signupPicture !== undefined && snapshot.kind === "ready") {
+        try {
+          snapshot = { ...snapshot, user: await service.pictureUpload(signupPicture.bytes) };
+        } catch (error: unknown) {
+          pictureFailure = `Your picture did not upload: ${bridgeError(error).message} Add it again in settings.`;
+        }
+      }
       if (!isCurrent(service, generation)) return;
       clearAccountFields();
+      setSignupPicture(undefined);
       setAccount(snapshot);
+      if (pictureFailure !== undefined) setAccountError(pictureFailure);
     } catch (error: unknown) {
       if (!isCurrent(service, generation)) return;
       const failure = bridgeError(error);
@@ -945,6 +1013,23 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       if (isCurrent(service, generation)) setSettingsError(bridgeError(error).message);
     } finally {
       if (isCurrent(service, generation)) setProjectBusy(false);
+    }
+  };
+
+  /// Puts up or takes down the member's own picture. The account carries the
+  /// new version, so every surface drawing it reads the new picture.
+  const changePicture = async (change: (service: TimerBridge) => Promise<TimerUser>): Promise<void> => {
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    setPictureBusy(true);
+    setSettingsError(undefined);
+    try {
+      const user = await change(service);
+      if (isCurrent(service, generation)) setAccount((known) => (known?.kind === "ready" ? { ...known, user } : known));
+    } catch (error: unknown) {
+      if (isCurrent(service, generation)) setSettingsError(bridgeError(error).message);
+    } finally {
+      if (isCurrent(service, generation)) setPictureBusy(false);
     }
   };
 
@@ -1133,6 +1218,15 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     }
   };
 
+  // Each member's picture, read once per version, and asked for again on the
+  // next tick after a read fails. The signed-in member's own rides along so
+  // settings can show it before the team view has loaded.
+  const pictureOf = usePictures(
+    [...workspace?.members.map((member) => member.user) ?? [], ...signedIn === undefined ? [] : [signedIn.user]],
+    bridge.memberPicture,
+    statsTick,
+  );
+
   if (account === undefined) {
     return (
       <main className="app-shell">
@@ -1163,6 +1257,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
             </p>
             {authError && <p className="form-error" role="alert">{authError}</p>}
             <form onSubmit={submitAuth}>
+              {isSignUp && (
+                <PictureField
+                  picture={signupPicture?.preview}
+                  hasPicture={signupPicture !== undefined}
+                  hint="Optional. JPG, PNG or WebP. You can change it later."
+                  isBusy={authBusy}
+                  onPick={(bytes) => {
+                    setSignupPicture({ bytes, preview: pictureDataUrl(bytes, "image/jpeg") });
+                    setAuthError(undefined);
+                  }}
+                  onRemove={() => setSignupPicture(undefined)}
+                  onError={setAuthError}
+                />
+              )}
               {isSignUp && <label>Name<input value={name} onChange={(event) => setName(event.target.value)} type="text" autoComplete="name" required /></label>}
               <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required /></label>
               <label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={isSignUp ? "new-password" : "current-password"} minLength={isSignUp ? 8 : undefined} required /></label>
@@ -1217,6 +1325,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     ? currentProject?.color
     : ready.projects.find((item) => item.id === pinnedProject)?.color) ?? null;
   const defaultProject = ready.projects.find((item) => item.id === ready.defaultProjectId);
+  // The account's projects as the team view's tiles fall back to them, for a
+  // project the workspace report does not list yet.
+  const listedProjects = ready.projects.map((item) => ({ ...item, isDefault: item.id === ready.defaultProjectId }));
   const backlog = monitorStatus === undefined
     ? 0
     : monitorStatus.segmentBacklog + monitorStatus.agentBacklog + monitorStatus.sessionBacklog;
@@ -1341,6 +1452,10 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const boardProjectRows = showingLiveDay
     ? projectRows.map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }))
     : buildProjectRows(boardStats?.projects ?? []).map((row) => ({ id: row.projectId, name: row.name, durationSeconds: row.durationSeconds }));
+  const boardBounds = rangeBounds(boardRange);
+  const boardSubtitle = boardBounds === undefined
+    ? RANGE_LABEL[boardRange]
+    : `${RANGE_LABEL[boardRange]} · ${formatRangeDays(boardBounds.fromAt, boardBounds.toExclusiveAt)}`;
 
   return (
     <main className="app-shell">
@@ -1551,187 +1666,168 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           aria-labelledby="today-title"
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="panel-head">
+          <div className="tv">
             <h2 id="today-title" className="visually-hidden">All stats</h2>
-            <div className="range-toggle" role="group" aria-label="Humans or agents">
-              <button
-                type="button"
-                className={overlayTab === "humans" ? "is-active" : undefined}
-                onClick={() => setOverlayTab("humans")}
-              >
-                Humans
-              </button>
-              <button
-                type="button"
-                className={overlayTab === "agents" ? "is-active" : undefined}
-                onClick={() => setOverlayTab("agents")}
-              >
-                Agents
-              </button>
-            </div>
-            <div className="range-toggle" role="group" aria-label="Date range">
-              {(["today", "week", "all"] as const).map((range) => (
-                <button
-                  key={range}
-                  type="button"
-                  className={boardRange === range ? "is-active" : undefined}
-                  onClick={() => setBoardRange(range)}
-                >
-                  {RANGE_LABEL[range]}
-                </button>
-              ))}
-            </div>
-            <button className="outline-button modal-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
-          </div>
+            <TeamViewHead title={overview?.organization.name ?? "Your workspace"} subtitle={boardSubtitle}>
+              <TeamViewTabs value={overlayTab} onChange={setOverlayTab} />
+              <SegmentedControl label="Date range" options={RANGE_OPTIONS} value={boardRange} onChange={setBoardRange} />
+              <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
+            </TeamViewHead>
 
-          {overlayTab === "agents" ? (
-            <>
-              {agentShiftsError && <p className="form-error" role="alert">{agentShiftsError}</p>}
-              {agentShifts === undefined ? (
-                !agentShiftsError && <p className="subtle">Loading…</p>
-              ) : (
-                <section className="member-stats" aria-labelledby="agent-shifts-title" data-testid="agent-shifts">
-                  <div className="member-stats-head">
-                    <h3 id="agent-shifts-title">Agents · {RANGE_LABEL[boardRange]}</h3>
-                  </div>
-                  {/* The live view reads now, above everything the range
-                      measures: a stale live board would be worse than none. */}
-                  {liveSessionsError !== undefined && liveSessions === undefined ? (
-                    <p className="subtle" role="alert">Could not tell who is running an agent right now.</p>
-                  ) : liveSessions === undefined ? null : (
-                    <LiveSessions people={liveSessions.people} />
-                  )}
-                  <p className="today-total"><strong>{formatHuman(agentShifts.totalAgentSeconds)}</strong> recorded</p>
-                  <p className="subtle metric-hint" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
-                  <HourlyGraph buckets={agentShifts.hourly} />
-                  {agentShifts.tokenChart !== undefined && <TokenBarChart chart={agentShifts.tokenChart} />}
-                  {agentShifts.groups.length === 0 ? (
-                    <p className="subtle">No agent worked in this range.</p>
-                  ) : (
-                    <ShiftGroups
-                      groups={agentShifts.groups}
-                      totalAgentSeconds={agentShifts.totalAgentSeconds}
-                      loadShifts={loadShiftRows}
-                    />
-                  )}
-                </section>
-              )}
-            </>
-          ) : (
-            <>
-              {/* The home page's example workspace, drawn from the server's
-                  report as given. A row is also the selector: whoever is
-                  picked is whose breakdown the panel underneath shows. It opens
-                  on you, and every member's is open to the whole team. */}
-              {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
-              {workspace === undefined ? (
-                !workspaceError && <p className="subtle">Loading…</p>
-              ) : (
-                <WorkspaceView
-                  workspaceName={overview?.organization.name ?? "Your workspace"}
-                  periodLabel={RANGE_LABEL[boardRange]}
-                  activeSeconds={workspace.activeSeconds}
-                  agentSeconds={workspace.agentSeconds}
-                  hourly={workspace.hourly}
-                  members={workspace.members.map((member) => ({
-                    id: member.user.id,
-                    rank: member.rank,
-                    name: member.user.name,
-                    project: member.project?.name ?? null,
-                    activeSeconds: member.activeSeconds,
-                    agentSeconds: member.agentSeconds,
-                    isSelf: member.user.id === ready.user.id,
-                  }))}
-                  boardTool={<span>By active hours</span>}
-                  selectedMemberId={viewedMember.id}
-                  onSelectMember={(picked) => setBoardMember({ id: picked.id, name: picked.name })}
-                  boardNotes={[
-                    ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0
-                      ? []
-                      : ["No recorded time in this range."],
-                    ...workspace.members.length > 1 ? ["Select a teammate to explore their work."] : [],
-                    AGENT_TIME_LIMIT_NOTE,
-                  ]}
-                  {...workspaceBreakdownRows(workspace)}
-                />
-              )}
-
-              <section className="member-stats" aria-labelledby="member-stats-title" data-testid="member-stats">
-            <div className="member-stats-head">
-              <h3 id="member-stats-title">{viewedMember.name} · {RANGE_LABEL[boardRange]}</h3>
-              {!viewingSelf && (
-                <button type="button" className="member-self" onClick={() => setBoardMember(undefined)}>
-                  Show my own
-                </button>
-              )}
-            </div>
-            {boardError && <p className="form-error" role="alert">{boardError}</p>}
-            {boardLoading ? (
-              !boardError && <p className="subtle">Loading…</p>
-            ) : (
+            {overlayTab === "agents" ? (
               <>
-                {/* Recorded is whole sessions; the split below is presence
-                    alone. `recordedBasis` names the gap between them from
-                    measured numbers - the old wording called all of it agent
-                    time on no evidence at all. */}
-                <p className="today-total">
-                  <strong>{formatHuman(boardTotalSeconds)}</strong> recorded
-                  {boardMeasurement !== undefined && (() => {
-                    const basis = recordedBasis(
-                      boardTotalSeconds,
-                      boardMeasurement.activeSeconds,
-                      boardMeasurement.concurrency.awaySeconds,
-                    );
-                    return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
-                  })()}
-                </p>
-                {boardMeasurement !== undefined && (
-                  <>
-                    <MemberBreakdown
-                      activeSeconds={boardMeasurement.activeSeconds}
-                      concurrency={boardMeasurement.concurrency}
-                      self={viewingSelf}
-                    />
-                    <HourlyGraph
-                      buckets={boardMeasurement.hourly}
-                      personLabel={viewingSelf ? "You" : viewedMember.name}
-                    />
-                  </>
-                )}
-                {boardProjectRows.length > 0 && (
-                  <ul className="app-list" data-testid="member-project-list">
-                    {boardProjectRows.map((entry) => (
-                      <li key={entry.id} className="app-row">
-                        <span className="app-name">{entry.name}</span>
-                        <span className="app-duration">{formatHuman(entry.durationSeconds)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {boardAppRows.length === 0 ? (
-                  // Only the caller's own emptiness can be explained by this
-                  // machine's recording state; a teammate's is just empty.
-                  <p className="subtle" data-testid="today-empty">
-                    {viewingSelf ? TODAY_EMPTY[state] : "No recorded time in this range."}
-                  </p>
+                {agentShiftsError && <p className="form-error" role="alert">{agentShiftsError}</p>}
+                {agentShifts === undefined ? (
+                  !agentShiftsError && <p className="subtle">Loading…</p>
                 ) : (
-                  <ul className="app-list" data-testid="member-app-list">
-                    {boardAppRows.map((row) => (
-                      <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
-                        <span className="app-name">
-                          {row.label}
-                          {row.agent && viewingSelf && monitorStatus?.agentActive && <span className="app-active"> · active now</span>}
-                        </span>
-                        <span className="app-duration">{formatHuman(row.durationSeconds)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="tv-page" data-testid="agent-shifts">
+                    <AgentsView
+                      totalAgentSeconds={agentShifts.totalAgentSeconds}
+                      tokenTotals={agentShifts.tokenTotals}
+                      hourly={agentShifts.hourly}
+                      tokenChart={agentShifts.tokenChart}
+                      groups={agentShifts.groups}
+                      runtimes={agentShifts.runtimes}
+                      loadShifts={loadShiftRows}
+                      livePeople={liveSessions?.people}
+                      isLiveFailed={liveSessionsError !== undefined && liveSessions === undefined}
+                    />
+                  </div>
                 )}
               </>
+            ) : (
+              <div className="tv-page">
+                {/* The server's workspace report as given. A board row is also
+                    the selector: whoever is picked is whose card opens under
+                    the board. It opens on you, and every member's is open to
+                    the whole team. */}
+                {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
+                {workspace === undefined ? (
+                  !workspaceError && <p className="subtle">Loading…</p>
+                ) : (
+                  <WorkspaceView
+                    activeSeconds={workspace.activeSeconds}
+                    agentSeconds={workspace.agentSeconds}
+                    hourly={workspace.hourly}
+                    members={workspace.members.map((member) => ({
+                      id: member.user.id,
+                      rank: member.rank,
+                      name: member.user.name,
+                      // Your own row reads your account, which knows a new
+                      // picture before the next report does.
+                      picture: pictureOf(member.user.id === ready.user.id ? ready.user : member.user),
+                      project: member.project === null
+                        ? null
+                        : { name: member.project.name, appearance: reportedAppearance(workspace.projects, listedProjects, member.project.id) },
+                      activeSeconds: member.activeSeconds,
+                      agentSeconds: member.agentSeconds,
+                      isSelf: member.user.id === ready.user.id,
+                    }))}
+                    boardTool={<span className="tv-card-note">Ranked by active time</span>}
+                    selectedMemberId={viewedMember.id}
+                    onSelectMember={(picked) => setBoardMember({ id: picked.id, name: picked.name })}
+                    boardNotes={[
+                      ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0
+                        ? []
+                        : ["No recorded time in this range."],
+                      ...workspace.members.length > 1 ? ["Select a teammate to explore their work."] : [],
+                    ]}
+                    {...workspaceBreakdownRows(workspace)}
+                  />
+                )}
+
+                <section className="tv-card tv-person" aria-labelledby="member-stats-title" data-testid="member-stats">
+                  <div className="tv-card-head tv-person-head">
+                    <h4 id="member-stats-title">
+                      <MemberAvatar
+                        id={viewedMember.id}
+                        name={viewedMember.name}
+                        picture={pictureOf(viewingSelf
+                          ? ready.user
+                          : workspace?.members.find((member) => member.user.id === viewedMember.id)?.user ?? { id: viewedMember.id })}
+                      />
+                      {viewedMember.name}
+                      {viewingSelf && <span className="tv-you">You</span>}
+                    </h4>
+                    {!viewingSelf && (
+                      <button type="button" className="member-self" onClick={() => setBoardMember(undefined)}>
+                        Show my own
+                      </button>
+                    )}
+                  </div>
+                  {boardError && <p className="form-error" role="alert">{boardError}</p>}
+                  {boardLoading ? (
+                    !boardError && <p className="subtle">Loading…</p>
+                  ) : (
+                    <>
+                      {/* Recorded is whole sessions; the split below is
+                          presence alone. `recordedBasis` names the gap between
+                          them from measured numbers - the old wording called
+                          all of it agent time on no evidence at all. */}
+                      <p className="tv-person-total">
+                        <strong>{formatHuman(boardTotalSeconds)}</strong> recorded
+                        {boardMeasurement !== undefined && (() => {
+                          const basis = recordedBasis(
+                            boardTotalSeconds,
+                            boardMeasurement.activeSeconds,
+                            boardMeasurement.concurrency.awaySeconds,
+                          );
+                          return basis === null ? null : <span className="metric-hint"> · {basis}</span>;
+                        })()}
+                      </p>
+                      <div>
+                        {boardMeasurement !== undefined && (
+                          <MemberBreakdown
+                            activeSeconds={boardMeasurement.activeSeconds}
+                            concurrency={boardMeasurement.concurrency}
+                          />
+                        )}
+                      </div>
+                      <div>
+                        <p className="group-label">Projects, apps and agents</p>
+                        {boardProjectRows.length > 0 && (
+                          <ul className="app-list" data-testid="member-project-list">
+                            {boardProjectRows.map((entry) => (
+                              <li key={entry.id} className="app-row">
+                                <span className="app-name">
+                                  <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], listedProjects, entry.id)} />
+                                  {entry.name}
+                                </span>
+                                <span className="app-duration">{formatHuman(entry.durationSeconds)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {boardAppRows.length === 0 ? (
+                          // Only the caller's own emptiness can be explained by
+                          // this machine's recording state; a teammate's is
+                          // just empty.
+                          <p className="subtle" data-testid="today-empty">
+                            {viewingSelf ? TODAY_EMPTY[state] : "No recorded time in this range."}
+                          </p>
+                        ) : (
+                          <ul className="app-list" data-testid="member-app-list">
+                            {boardAppRows.map((row) => (
+                              <li key={row.key} className={row.agent ? "app-row is-agent" : "app-row"}>
+                                <span className="app-name">
+                                  {row.label}
+                                  {row.agent && viewingSelf && monitorStatus?.agentActive && <span className="app-active"> · active now</span>}
+                                </span>
+                                <span className="app-duration">{formatHuman(row.durationSeconds)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      {boardMeasurement !== undefined && <TimeChartCard buckets={boardMeasurement.hourly} isFramed={false} />}
+                    </>
+                  )}
+                </section>
+              </div>
             )}
-          </section>
-            </>
-          )}
+
+            <p className="tv-foot" data-testid="agent-time-limit">{AGENT_TIME_LIMIT_NOTE}</p>
+          </div>
         </section>
         </div>
       )}
@@ -1796,6 +1892,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   </button>
                 </details>
 
+                <details className="settings-group">
+                  <summary>Profile picture</summary>
+                  <PictureField
+                    picture={pictureOf(ready.user)}
+                    hasPicture={ready.user.pictureVersion !== null}
+                    fallback={<MemberAvatar id={ready.user.id} name={ready.user.name} />}
+                    hint="JPG, PNG or WebP. Your team sees it beside your name."
+                    isBusy={pictureBusy}
+                    onPick={(bytes) => void changePicture((service) => service.pictureUpload(bytes))}
+                    onRemove={() => void changePicture((service) => service.pictureRemove())}
+                    onError={setSettingsError}
+                  />
+                </details>
+
                 {monitorStatus !== undefined && monitorStatus.hooks.length > 0 && (
                   <details className="settings-group">
                     <summary>AI tools</summary>
@@ -1851,7 +1961,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
 
                 <details className="settings-group">
                   <summary>Projects</summary>
-                  {deletingProject === undefined ? (
+                  {pickingProject !== undefined ? (
+                    <ProjectIconPicker
+                      projectName={pickingProject.name}
+                      appearance={projectAppearance({ ...pickingProject, isDefault: pickingProject.id === ready.defaultProjectId })}
+                      isBusy={projectBusy}
+                      onCancel={() => setPickingProject(undefined)}
+                      onSave={(appearance) => {
+                        void manageProject(async (service) => {
+                          await service.projectUpdate(pickingProject.id, appearance);
+                          setPickingProject(undefined);
+                        });
+                      }}
+                    />
+                  ) : deletingProject === undefined ? (
                     <ul className="manage-list" data-testid="project-manage-list">
                       {ready.projects.map((item) => (
                         <li key={item.id} className="manage-row">
@@ -1878,11 +2001,12 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                           ) : (
                             <>
                               <span className="manage-name">
-                                <span className="project-dot" aria-hidden="true" style={item.color === null ? undefined : { background: item.color }} />
+                                <ProjectIconTile appearance={projectAppearance({ ...item, isDefault: item.id === ready.defaultProjectId })} />
                                 {item.name}
                                 {item.id === ready.defaultProjectId && <span className="you-tag"> default</span>}
                               </span>
                               <span className="manage-actions">
+                                <button type="button" disabled={projectBusy} onClick={() => setPickingProject(item)}>Change icon</button>
                                 <button type="button" disabled={projectBusy} onClick={() => { setRenamingProjectId(item.id); setRenameDraft(item.name); }}>Rename</button>
                                 {item.id !== ready.defaultProjectId && (
                                   <button

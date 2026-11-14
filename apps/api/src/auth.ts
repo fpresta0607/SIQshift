@@ -10,6 +10,8 @@ export interface AuthenticatedUser {
   name: string;
   organizationId: string;
   role: "admin" | "member";
+  /** Names the stored picture; null without one. */
+  pictureVersion: string | null;
 }
 
 export interface AuthenticatedSubject {

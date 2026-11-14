@@ -58,7 +58,7 @@ answered rather than forgotten:
   verification states the client never receives, so a client-side filter would leave every
   group's held tag silently stale.
 
-The desktop gets the drawers, not the board: its All-stats modal is 440px wide and its Humans tab
+The desktop gets the drawers, not the board: its Humans tab
 already lists every member with their agent time one click away.
 
 **The Agents tab also answers "who is running an agent right now", from `GET
@@ -394,11 +394,15 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
 - Both frontends share `packages/shared`. `styles/brand.css` is a single dark theme
   with no light one to match, so use the tokens rather than literals; it also holds
   `.meter-row`, the four-column scan line (mark, name with a `·` subtitle, share bar
-  or quota dial, duration) that the Today card and the Agents tab both read a
-  breakdown in. Shared React lives behind three entries and **never** `src/index.ts`:
-  `./webgl-shader` (the background) and `./ui` (the hourly chart, the member
-  breakdown, `MeterRowItem` and the row builders, the runtime marks, the Agents-tab
-  drawers). The third, `@siqshift/shared/workspace-view` (the team view both apps and
+  or quota dial, duration) that the Today card and the team view's Projects and
+  Agents lists read a breakdown in, and `.tv-row`, the team view's board line (a
+  mark, a name over a short subtitle, then measures under column heads) that the
+  Agents tab's repo heads (six cells, `.tv-repos .tv-row`, with no share bar) and
+  runtime rows are drawn in. Shared React lives behind three entries and
+  **never** `src/index.ts`: `./webgl-shader` (the background) and `./ui` (the
+  hourly chart, the member breakdown, `MeterRowItem` and the row builders, the
+  runtime marks, the Agents-tab drawers). The third,
+  `@siqshift/shared/workspace-view` (the team view both apps and
   the home page's example draw), stands alone because it imports from `./ui`, so
   re-exporting it from there would make the two modules import each other.
   React and three are those entries' optional peers, so re-exporting any
@@ -410,8 +414,9 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   background became one file; the same applies to anything else drawn twice.
   The background's wave normalises each axis by its own
   extent and scales x by `WAVE_ASPECT`, the landscape hero it was drawn at -
-  `min(resolution.x, resolution.y)` picks the *width* in this app's portrait window
-  and stretches every band into a straight streak.
+  `min(resolution.x, resolution.y)` picks the *width* once this app's window is
+  portrait (it opens at 1200 by 700 but resizes down to 400 wide) and stretches
+  every band into a straight streak.
 - A claim about what a page looks like is checked in a real browser, never in jsdom
   and never against source text. `tests/browser` drives Chromium over the apps' own
   stylesheets and the real shader (`pnpm test:browser`, and the tail of `pnpm test`;

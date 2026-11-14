@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type MeStatsResponse } from "@siqshift/shared";
 import { buildAppRows, recordedBasis } from "@siqshift/shared/ui";
@@ -38,8 +38,8 @@ const workspaceReport = {
     { hourStart: "2026-08-06T14:00:00.000Z", activeSeconds: 1_800, agentSeconds: 0 },
   ],
   projects: [
-    { project: { id: "p1", name: "General" }, durationSeconds: 8_040 },
-    { project: { id: "p2", name: "Client" }, durationSeconds: 3_600 },
+    { project: { id: "p1", name: "General", icon: "grid", color: "#a3b3c2" }, durationSeconds: 8_040 },
+    { project: { id: "p2", name: "Client", icon: "rocket", color: "#ff9d8a" }, durationSeconds: 3_600 },
   ],
   agents: [{ source: "claude_code", durationSeconds: 10_800 }],
   members: teamMembers,
@@ -230,14 +230,17 @@ function clientFor(overrides: Partial<Client> = {}): Client {
     )),
     agentShiftRows: vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query))),
     liveAgentSessions: vi.fn().mockResolvedValue({ people: [] }),
+    uploadPicture: vi.fn().mockResolvedValue({ user: self }),
+    removePicture: vi.fn().mockResolvedValue({ user: self }),
+    // No fixture names a picture, so nothing asks for one unless a test does.
+    memberPicture: vi.fn().mockRejectedValue(new ClientError("validation", "Picture not found.")),
     ...overrides,
   } as unknown as Client;
 }
 
 type Person = ReturnType<typeof userEvent.setup>;
 
-async function signIn(client: Client) {
-  const person = userEvent.setup();
+async function signIn(client: Client, person: Person = userEvent.setup()) {
   render(<App client={client} />);
   await person.click(await screen.findByRole("button", { name: "Sign in" }));
   await person.type(await screen.findByLabelText("Email"), "alex@example.com");
@@ -253,10 +256,13 @@ async function openAllStats(person: Person) {
   return within(await screen.findByRole("dialog", { name: "All stats" }));
 }
 
-/// The dialog's Humans or Agents switch. The team view's breakdown has an
-/// Agents toggle of its own, so the dialog holds two buttons by that name.
+/// The dialog's Humans or Agents switch.
 const agentsTab = (dialog: ReturnType<typeof within>) =>
   within(dialog.getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
+
+/// One figure on the totals row that opens each team view page.
+const teamTotal = (view: ReturnType<typeof within>, label: string) =>
+  within(view.getByLabelText("Totals")).getByText(label).nextElementSibling?.querySelector("b");
 
 /// Projects, the team's invite code and signing out live in the settings
 /// panel, the way the desktop app files them.
@@ -332,27 +338,82 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("SIQstack")).toBeInTheDocument();
-    expect(view.getByText("Last 30 days")).toBeInTheDocument();
-    expect(view.getByText("2 people across 2 projects")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 14m");
-    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("3h 00m");
-    const graph = view.getByTestId("hourly-graph");
+    expect(stats.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(stats.getByText(/^Last 30 days · /)).toBeInTheDocument();
+    expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 14m");
+    expect(teamTotal(stats, "Agent time")).toHaveTextContent("3h 00m");
+    expect(teamTotal(stats, "People")).toHaveTextContent(/^2$/);
+    expect(teamTotal(stats, "Projects")).toHaveTextContent(/^2$/);
+    const graph = within(stats.getByRole("region", { name: "Over time" })).getByTestId("hourly-graph");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
-    const [, first, second] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    const [, first, second] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamGeneral2h 14m3h 00m$/);
-    expect(second).toHaveTextContent(/^2AAlex youClient1h 00m0s$/);
-    const breakdown = within(view.getByRole("region", { name: "Workspace breakdown" }));
-    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
-    await person.click(within(breakdown.getByRole("group", { name: "Projects or agents" })).getByRole("button", { name: "Agents" }));
-    expect(breakdown.getByText("Runtime by agent")).toBeInTheDocument();
-    expect(breakdown.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
-    expect(view.getByText("Local agents, shared visibility").parentElement).toHaveTextContent("Claude Code");
+    expect(second).toHaveTextContent(/^2AAlexYouClient1h 00m0s$/);
+    // Both lists at once, with no switch between them.
+    const projects = within(stats.getByRole("region", { name: "Projects" }));
+    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
+    expect(projects.getByText("Recorded time")).toBeInTheDocument();
+    const agents = within(stats.getByRole("region", { name: "Agents" }));
+    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
+    expect(agents.getByText("Agent time")).toBeInTheDocument();
+    expect(stats.queryByRole("group", { name: "Projects or agents" })).toBeNull();
+    expect(stats.queryByText("Local agents, shared visibility")).toBeNull();
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
+  });
+
+  it("wears each project's own icon and color on the board, the Projects list and the person card", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const tiles = (scope: HTMLElement) => [...scope.querySelectorAll(".project-icon")]
+      .map((tile) => [tile.getAttribute("data-icon"), tile.querySelector("rect")?.getAttribute("fill")]);
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    const ownProjects = await stats.findByTestId("member-project-list");
+
+    // Assert: the pair the server sent, General's own among them.
+    expect(tiles(stats.getByRole("table", { name: "People" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
+    expect(tiles(stats.getByRole("region", { name: "Projects" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
+    expect(tiles(ownProjects)).toEqual([["grid", "#a3b3c2"]]);
+  });
+
+  it("wears the project list's own pair on the person card for a project the board has not listed yet", async () => {
+    // Arrange: the board is still on its way, so only the viewer's project
+    // list, which says General is the default, can draw it.
+    const person = await signIn(clientFor({ workspace: vi.fn().mockReturnValue(new Promise(() => undefined)) }));
+
+    // Act
+    const ownProjects = await (await openAllStats(person)).findByTestId("member-project-list");
+
+    // Assert
+    const tile = ownProjects.querySelector(".project-icon");
+    expect(tile).toHaveAttribute("data-icon", "grid");
+    expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
+  });
+
+  it.each([
+    ["Both", "Hourly active and agent time", ["agent", "human"]],
+    ["Active time", "Hourly active time", ["human"]],
+    ["Agent time", "Hourly agent time", ["agent"]],
+  ])("draws only what the team chart's one toggle picks: %s", async (choice, chartName, lines) => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    const chart = within(await stats.findByRole("region", { name: "Over time" }));
+    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
+
+    // Act
+    await person.click(toggle.getByRole("button", { name: choice }));
+
+    // Assert
+    expect(toggle.getByRole("button", { name: choice })).toHaveAttribute("aria-pressed", "true");
+    const graph = chart.getByRole("img", { name: chartName });
+    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(lines);
   });
 
   it("orders the board only by what its rows show, active or agent time", async () => {
@@ -375,11 +436,11 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("3h 20m");
-    expect(view.getByText("Agent runtime").nextElementSibling).toHaveTextContent("5h 33m");
+    expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 20m");
+    expect(teamTotal(stats, "Agent time")).toHaveTextContent("5h 33m");
   });
 
   it("shows a workspace of one as a single row, the viewer's own", async () => {
@@ -388,18 +449,18 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByText("1 person across 1 project")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent("1h 00m");
-    const [, only, ...rest] = within(view.getByRole("table", { name: "Team leaderboard" })).getAllByRole("row");
+    expect(teamTotal(stats, "People")).toHaveTextContent(/^1$/);
+    expect(teamTotal(stats, "Projects")).toHaveTextContent(/^1$/);
+    expect(teamTotal(stats, "Active time")).toHaveTextContent("1h 00m");
+    const [, only, ...rest] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(rest).toEqual([]);
-    expect(only).toHaveTextContent(/^1AAlex youClient1h 00m0s$/);
+    expect(only).toHaveTextContent(/^1AAlexYouClient1h 00m0s$/);
     expect(within(only!).getByRole("button", { name: "Show Alex's work" })).toHaveAttribute("aria-pressed", "true");
     // Nobody else to pick, so the board does not offer to.
-    expect(view.queryByText("Select a teammate to explore their work.")).toBeNull();
-    expect(view.queryByText("Local agents, shared visibility")).toBeNull();
+    expect(stats.queryByText("Select a teammate to explore their work.")).toBeNull();
   });
 
   it("shows the invite code and copies it on request", async () => {
@@ -578,7 +639,7 @@ describe("dashboard", () => {
 
     const board = await openAllStats(person);
     await person.click(await board.findByRole("button", { name: /Sam/ }));
-    await screen.findByRole("region", { name: /Sam · Last 30 days/ });
+    await screen.findByRole("region", { name: /^Sam/ });
     await person.click(screen.getByRole("button", { name: "Close all stats" }));
 
     const settings = await openSettings(person);
@@ -589,7 +650,7 @@ describe("dashboard", () => {
     // Sam belongs to the workspace just left, so the id must not go on being
     // sent as a filter the new workspace's API refuses.
     const reopened = await openAllStats(person);
-    expect(await reopened.findByRole("region", { name: /Alex · Last 30 days/ })).toBeInTheDocument();
+    expect(await reopened.findByRole("region", { name: /^Alex/ })).toBeInTheDocument();
     const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
     expect(query.get("userId")).toBe("u2");
   });
@@ -945,22 +1006,22 @@ describe("dashboard", () => {
     });
     const person = await signIn(clientFor({ workspace }));
     const stats = await openAllStats(person);
-    await stats.findByRole("region", { name: "Your team’s work, together." });
+    await stats.findByLabelText("Totals");
 
     // Act
     await person.click(stats.getByRole("button", { name: "All time" }));
 
     // Assert: the 30 days already drawn do not stand in for all time.
-    expect(stats.queryByRole("region", { name: "Your team’s work, together." })).not.toBeInTheDocument();
+    expect(stats.queryByLabelText("Totals")).not.toBeInTheDocument();
 
     // Act
     await person.click(stats.getByRole("button", { name: "7d" }));
-    const view = within(await stats.findByRole("region", { name: "Your team’s work, together." }));
+    await stats.findByLabelText("Totals");
     await act(async () => answerAllTime?.(allTime));
 
     // Assert
-    expect(view.getByText("Last 7 days")).toBeInTheDocument();
-    expect(view.getByText("Team active hours").nextElementSibling).toHaveTextContent(/^30m$/);
+    expect(stats.getByText(/^Last 7 days · /)).toBeInTheDocument();
+    expect(teamTotal(stats, "Active time")).toHaveTextContent(/^30m$/);
   });
 
   it("uses local calendar midnights across a daylight-saving boundary", () => {
@@ -1157,7 +1218,7 @@ describe("dashboard", () => {
     const board = await openAllStats(person);
     // You are the highlighted row from the start.
     expect(await board.findByRole("button", { name: /Alex/ })).toHaveAttribute("aria-pressed", "true");
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     // The breakdown leads with active time and splits it into human work and
     // the agent-assisted buckets that actually have time in them.
     const breakdown = stats.getByTestId("breakdown");
@@ -1182,18 +1243,21 @@ describe("dashboard", () => {
     expect(stats.queryByTestId("unattributed-foot")).not.toBeInTheDocument();
   });
 
-  it("states the agent time limit under the board, the breakdown and the Agents tab", async () => {
+  it("states the agent time limit word for word under both the Humans and the Agents page", async () => {
+    // Arrange
     const person = await signIn(clientFor());
-
     const stats = await openAllStats(person);
-    const board = await stats.findByRole("region", { name: "Team leaderboard" });
-    const breakdown = await stats.findByTestId("breakdown");
-    expect(within(board).getByText("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.")).toBeInTheDocument();
-    expect(within(breakdown).getByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    await stats.findByLabelText("Totals");
 
+    // Act
+    const onHumans = stats.getByTestId("agent-time-limit").textContent;
     await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    expect(await panel.findByTestId("agent-time-limit")).toHaveTextContent("A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.");
+    await screen.findByTestId("agent-shifts");
+
+    // Assert
+    const note = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
+    expect(onHumans).toBe(note);
+    expect(stats.getByTestId("agent-time-limit")).toHaveTextContent(note);
   });
 
   it("names the project a session was filed under in the history, also when nothing named one", async () => {
@@ -1233,7 +1297,7 @@ describe("dashboard", () => {
 
     expect(await screen.findByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     expect(stats.getByTestId("breakdown")).toHaveTextContent("Active time");
     expect(stats.queryByTestId("hourly-graph")).not.toBeInTheDocument();
   });
@@ -1251,7 +1315,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     // Pin the series by their hooks, never by a path count: gradient areas
     // are paths too. The chart must emit <path d="M… L…"> elements, not
     // polylines fed a path string: `points` cannot parse path commands, so a
@@ -1293,7 +1357,7 @@ describe("dashboard", () => {
 
     // Act
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     const graph = stats.getByTestId("hourly-graph");
 
     // Assert
@@ -1312,7 +1376,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     const breakdown = stats.getByTestId("breakdown");
     expect(breakdown).toHaveTextContent("With 3+ agents");
     expect(breakdown).toHaveTextContent("1h 30m");
@@ -1348,7 +1412,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
 
     // No agent claim on a window whose measured agent time is zero.
     const total = stats.getByText(/recorded/).closest("p");
@@ -1379,7 +1443,7 @@ describe("dashboard", () => {
     }));
 
     await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /Alex · Last 30 days/ }));
+    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
     const breakdown = stats.getByTestId("breakdown");
     expect(breakdown).toHaveTextContent("Human work");
     expect(breakdown).not.toHaveTextContent("Total agent time");
@@ -1393,7 +1457,7 @@ describe("dashboard", () => {
     const board = await openAllStats(person);
     await person.click(await board.findByRole("button", { name: /Sam/ }));
 
-    expect(await screen.findByRole("region", { name: /Sam · Last 30 days/ })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: /^Sam/ })).toBeInTheDocument();
     const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
     expect(query.get("userId")).toBe("u1");
     expect(query.get("fromAt")).not.toBeNull();
@@ -1404,10 +1468,10 @@ describe("dashboard", () => {
 
     const board = await openAllStats(person);
     await person.click(await board.findByRole("button", { name: /Sam/ }));
-    await screen.findByRole("region", { name: /Sam · Last 30 days/ });
+    await screen.findByRole("region", { name: /^Sam/ });
 
     await person.click(screen.getByRole("button", { name: "Show my own" }));
-    expect(await screen.findByRole("region", { name: /Alex · Last 30 days/ })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: /^Alex/ })).toBeInTheDocument();
   });
 
   it("lets a stranded account join a teammate's workspace and reloads", async () => {
@@ -1758,6 +1822,65 @@ describe("project management", () => {
     expect(within(dialog).queryByLabelText(/type the project's name to confirm/i)).not.toBeInTheDocument();
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Delete Client" })).toBeEnabled());
   });
+
+  it("gives the default project its own icon before anyone picks one", async () => {
+    // Arrange
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+
+    // Act
+    const settings = await openSettings(person);
+
+    // Assert: General's pair is one no other project is given unasked.
+    const list = within(settings.getByTestId("project-manage-list"));
+    expect(list.getByText("General").closest("li")?.querySelector(".project-icon")).toHaveAttribute("data-icon", "grid");
+    expect(list.getByText("Client").closest("li")?.querySelector(".project-icon")).not.toHaveAttribute("data-icon", "grid");
+  });
+
+  it("saves the icon and color a member picks for the whole team", async () => {
+    // Arrange
+    const updateProject = vi.fn().mockResolvedValue({ ...webProjects[1], icon: "bolt", color: "#f5c26b" });
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+      updateProject,
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+    const row = settings.getByText("Client").closest("li");
+
+    // Act
+    await person.click(within(row as HTMLElement).getByRole("button", { name: "Change icon" }));
+    const picker = within(settings.getByRole("form", { name: "Icon for Client" }));
+    await person.click(picker.getByRole("button", { name: "Bolt" }));
+    await person.click(picker.getByRole("button", { name: "Amber" }));
+    await person.click(picker.getByRole("button", { name: "Save" }));
+
+    // Assert: the pair goes out, and the list comes back once it is stored.
+    await waitFor(() => expect(updateProject).toHaveBeenCalledWith("p2", { icon: "bolt", color: "#f5c26b" }));
+    expect(await settings.findByTestId("project-manage-list")).toBeInTheDocument();
+    expect(settings.queryByRole("form", { name: "Icon for Client" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the icon picker open and says why when the pick cannot be saved", async () => {
+    // Arrange
+    const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
+      updateProject: vi.fn().mockRejectedValue(new ClientError("validation", "Pick an icon and a color from the lists.")),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const settings = await openSettings(person);
+    const row = settings.getByText("Client").closest("li");
+
+    // Act
+    await person.click(within(row as HTMLElement).getByRole("button", { name: "Change icon" }));
+    await person.click(within(settings.getByRole("form", { name: "Icon for Client" })).getByRole("button", { name: "Save" }));
+
+    // Assert
+    expect(await settings.findByText("Pick an icon and a color from the lists.")).toHaveAttribute("role", "alert");
+    expect(settings.getByRole("form", { name: "Icon for Client" })).toBeInTheDocument();
+  });
 });
 
 describe("the agents tab", () => {
@@ -1796,20 +1919,24 @@ describe("the agents tab", () => {
 
     // Assert: one bar per hour that burned anything, at the server's total.
     expect(drawnTokens(chart)).toEqual([999, 3_000]);
-    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(0);
   });
 
-  it("narrows the bars to a picked project and lists one with no tokens unpickable", async () => {
+  it("switches the chart from tokens to agent time with its one toggle", async () => {
     // Arrange
-    const { person, chart } = await openTokenChart();
+    const { person } = await openTokenChart();
+    const chart = within(within(screen.getByTestId("agent-shifts")).getByRole("region", { name: "Over time" }));
+    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
+    expect(toggle.getByRole("button", { name: "Tokens" })).toHaveAttribute("aria-pressed", "true");
+    expect(chart.queryByRole("combobox")).not.toBeInTheDocument();
 
     // Act
-    await person.selectOptions(within(chart).getByRole("combobox", { name: "Project" }), "p1");
+    await person.click(toggle.getByRole("button", { name: "Agent time" }));
 
-    // Assert
-    expect(drawnTokens(chart)).toEqual([700, 77]);
-    expect(chart.querySelectorAll("rect.is-ghost")).toHaveLength(2);
-    expect(within(chart).getByRole("option", { name: "Ledger · no tokens" })).toBeDisabled();
+    // Assert: agent time alone, in place of the bars.
+    expect(chart.queryByTestId("token-chart")).not.toBeInTheDocument();
+    const graph = chart.getByRole("img", { name: "Hourly agent time" });
+    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
+    expect(chart.getByText("Each point is one hour.")).toBeInTheDocument();
   });
 
   it("maps every shift under its codebase, with the total recorded on top", async () => {
@@ -1820,10 +1947,10 @@ describe("the agents tab", () => {
     await person.click(agentsTab(stats));
 
     const panel = within(await screen.findByTestId("agent-shifts"));
-    // The header mirrors a member's breakdown: the range and the recorded
-    // total, then the codebases, heaviest first - no leaderboard to filter.
-    expect(panel.getByRole("heading", { level: 3, name: /Agents ·/ })).toBeInTheDocument();
-    expect(panel.getByText("2h 00m")).toBeInTheDocument();
+    // The totals row leads with the recorded agent time, then the codebases,
+    // heaviest first.
+    await panel.findByLabelText("Totals");
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent(/^2h 00m$/);
     const groups = panel.getAllByTestId("shift-group");
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("siqshift");
@@ -1865,7 +1992,7 @@ describe("the agents tab", () => {
     consoleError.mockRestore();
   });
 
-  it("emits the meter row the layout suite styles, four cells to a row", async () => {
+  it("emits the repo row the layout suite styles, six cells to a row", async () => {
     // tests/browser/harness.ts hand-writes this markup to measure it in a real
     // browser, because jsdom has no layout engine. That only holds while the
     // app really does emit these classes, so this is the pin between the two.
@@ -1874,18 +2001,18 @@ describe("the agents tab", () => {
 
     const stats = await openAllStats(person);
     await person.click(agentsTab(stats));
-    const heads = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group")
+    const heads = (await within(await screen.findByTestId("agent-shifts")).findAllByTestId("shift-group"))
       .map((group) => group.querySelector(".shift-group-head"));
 
     for (const head of heads) {
       expect(head).not.toBeNull();
-      expect(head!).toHaveClass("meter-row");
-      expect(head!.children).toHaveLength(4);
+      expect(head!).toHaveClass("tv-row");
+      expect(head!.children).toHaveLength(6);
       // The drawer's own contract, and the reason the count above must stay
-      // four: the head is the `summary` and it is the `details`' first child.
+      // six: the head is the `summary` and it is the `details`' first child.
       // jsdom only treats the first `summary` as the toggle, so a wrapper
       // would silently disable opening in tests while still working in
-      // Chromium, and a fifth cell would wrap the four-track grid.
+      // Chromium, and a seventh cell would wrap the six-track grid.
       expect(head!.tagName).toBe("SUMMARY");
       expect(head!.parentElement!.tagName).toBe("DETAILS");
       expect(head!.parentElement!.firstElementChild).toBe(head);
@@ -2024,9 +2151,10 @@ describe("the agents tab", () => {
     await waitFor(() => expect(agentShifts.mock.calls.length).toBeGreaterThan(before));
     const query = new URLSearchParams((agentShifts.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
     expect(query.get("userId")).toBe("u3");
-    // The heading names who the tab is narrowed to, and the board that picked
-    // them is still there to unpick them with.
-    expect(await screen.findByRole("heading", { level: 3, name: /^Sam ·/ })).toBeInTheDocument();
+    // The heading names who the tab is narrowed to, over that person's own
+    // total, and the board that picked them is still there to unpick them with.
+    expect(await screen.findByRole("heading", { level: 4, name: "People · Sam" })).toBeInTheDocument();
+    expect(teamTotal(stats, "Agent time")).toHaveTextContent(/^30m$/);
     expect(within(screen.getByTestId("agent-people")).getAllByRole("button")).toHaveLength(2);
 
     await person.click(screen.getByRole("button", { name: "All people" }));
@@ -2035,7 +2163,7 @@ describe("the agents tab", () => {
       const latest = new URLSearchParams((agentShifts.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
       expect(latest.has("userId")).toBe(false);
     });
-    expect(await screen.findByRole("heading", { level: 3, name: /^Agents ·/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 4, name: "People" })).toBeInTheDocument();
   });
 
   it("shows no board when one person's agents did all the work", async () => {
@@ -2072,28 +2200,59 @@ describe("the agents tab", () => {
     expect(group).toHaveAttribute("open");
   });
 
-  it("gives each codebase a Today row: a mark, the name, its share, its duration", async () => {
+  it("gives each codebase a board row: its rank, a mark, the name, its tokens and its agent time", async () => {
+    // Arrange
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "SIQstack" });
-
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const groups = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group");
 
-    // The head reads in the shared meter row, so a column of codebases scans
-    // the way Today's breakdown does. The bar is this codebase's share of the
-    // recorded agent time: 5,400s and 1,800s of 7,200s.
-    const shares = groups.map((group) => {
-      // `head?.querySelector(...)` would be `undefined` - and pass - when the
-      // head itself is missing, so the head is asserted before it is read.
-      const head = group.querySelector(".meter-row.shift-group-head");
-      expect(head).not.toBeNull();
-      expect(head!.querySelector(".project-dot")).not.toBeNull();
-      expect(head!.querySelector(".meter-name")).not.toBeNull();
-      expect(head!.querySelector(".meter-duration")).not.toBeNull();
-      return head!.querySelector<HTMLElement>(".meter-bar")?.style.getPropertyValue("--share");
-    });
-    expect(shares).toEqual(["75%", "25%"]);
+    // Act
+    await person.click(agentsTab(stats));
+    const groups = await within(await screen.findByTestId("agent-shifts")).findAllByTestId("shift-group");
+
+    // Assert: the head reads on the People board's columns, so the two pages
+    // scan alike. An API that sends no tokens gets a dash, never a zero.
+    const cells = groups.map((group) => [...group.querySelector("summary.shift-group-head")?.children ?? []].map((cell) => cell.textContent));
+    expect(cells).toEqual([
+      ["1", "S", "siqshift50% held · 2 shifts", "-", "1h 30m", ""],
+      ["2", "?", "Run worktree, codebase not identified1 shift", "-", "30m", ""],
+    ]);
+  });
+
+  it("ranks the codebases and the agents by tokens when the server sends them, in short form", async () => {
+    // Arrange: the label-less group burned the most, and still comes last.
+    const ledger = { groupKey: "ledger", repo: "ledger", agentSeconds: 600, shiftCount: 1, heldRate: null, tokens: 900_000 };
+    const person = await signIn(clientFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShiftsResponse,
+        tokenTotals: { tokensIn: 900_000, tokensOut: 300_000, tokens: 1_200_000 },
+        groups: [
+          { ...agentShiftsResponse.groups[0]!, tokens: 50_000 },
+          { ...agentShiftsResponse.groups[1]!, tokens: 2_000_000 },
+          ledger,
+        ],
+        runtimes: [
+          { source: "claude_code", agentSeconds: 5_400, shiftCount: 2, tokens: 300_000 },
+          { source: "pi", agentSeconds: 1_800, shiftCount: 1, tokens: 950 },
+        ],
+      }),
+    }));
+    await screen.findByRole("heading", { name: "SIQstack" });
+    const stats = await openAllStats(person);
+
+    // Act
+    await person.click(agentsTab(stats));
+    const panel = within(await screen.findByTestId("agent-shifts"));
+    await panel.findByLabelText("Totals");
+
+    // Assert
+    expect(teamTotal(panel, "Tokens")).toHaveTextContent(/^1.2M$/);
+    expect(within(panel.getByLabelText("Totals")).getByText("900k in · 300k out")).toBeInTheDocument();
+    const repos = panel.getAllByTestId("shift-group").map((group) => group.querySelector(".tv-name > span")?.textContent);
+    expect(repos).toEqual(["ledger", "siqshift", "Run worktree, codebase not identified"]);
+    expect(panel.getAllByTestId("shift-group")[0]!.querySelector(".tv-num")).toHaveAttribute("title", "900,000 tokens");
+    const agents = within(panel.getByRole("region", { name: "Agents" })).getAllByRole("listitem");
+    expect(agents.map((row) => row.textContent)).toEqual(["Claude Code2 shifts300k1h 30m", "Pi1 shift95030m"]);
   });
 
   it("shows no hourly graph on all time, keeping the groups and total", async () => {
@@ -2287,5 +2446,251 @@ describe("the agents tab", () => {
     await person.click(agentsTab(stats));
 
     expect(await screen.findByText("No agent worked in this range.")).toBeInTheDocument();
+  });
+});
+
+/// The leading bytes of a JPEG, which is all the picture checks read.
+const JPEG_BYTES = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01];
+const JPEG_DATA_URL = `data:image/jpeg;base64,${btoa(String.fromCharCode(...JPEG_BYTES))}`;
+const PICTURE_VERSION = "0123456789abcdef";
+
+const jpegFile = (): File => new File([new Uint8Array(JPEG_BYTES)], "me.jpg", { type: "image/jpeg" });
+
+/// The team view with Sam wearing a picture.
+const reportWithSamsPicture = {
+  ...workspaceReport,
+  members: teamMembers.map((member) => (
+    member.user.id === "u1" ? { ...member, user: { ...member.user, pictureVersion: PICTURE_VERSION } } : member
+  )),
+};
+
+/// Opens settings and unfolds its Profile picture group, returning the group.
+async function openPictureGroup(person: Person) {
+  const summary = (await openSettings(person)).getByText("Profile picture");
+  await person.click(summary);
+  const group = summary.closest("details");
+  if (group === null) throw new Error("The Profile picture summary is outside its group.");
+  return group;
+}
+
+/// Opens the sign-up form, picks a picture first, then fills and sends it.
+async function signUpWithPicture(person: Person) {
+  await person.click((await screen.findAllByRole("button", { name: "Create account" }))[0]!);
+  await person.upload(screen.getByLabelText("Add a picture"), jpegFile());
+  await screen.findByLabelText("Change picture");
+  await person.type(screen.getByLabelText("Name"), "Alex Morgan");
+  await person.type(screen.getByLabelText("Email"), "alex@example.com");
+  await person.type(screen.getByLabelText("Password"), "long-enough-password");
+  await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create account" }));
+}
+
+describe("profile pictures", () => {
+  // jsdom draws nothing, so the crop runs on stand-ins: any picture opens as
+  // 400 by 300, and the canvas hands back the small JPEG above.
+  let restoreDrawing = (): void => undefined;
+  beforeEach(() => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 400, height: 300, close: vi.fn() })));
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, "toBlob")
+      .mockImplementation((callback) => callback(new Blob([new Uint8Array(JPEG_BYTES)], { type: "image/jpeg" })));
+    restoreDrawing = () => {
+      getContext.mockRestore();
+      toBlob.mockRestore();
+      vi.unstubAllGlobals();
+    };
+  });
+  afterEach(() => restoreDrawing());
+
+  it("shows a teammate's picture on the board and their card, read once, with initials for anyone without one", async () => {
+    // Arrange
+    const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
+    const person = await signIn(clientFor({ memberPicture, workspace: vi.fn().mockResolvedValue(reportWithSamsPicture) }));
+
+    // Act
+    const stats = await openAllStats(person);
+    const [, samRow, ownRow] = within(await stats.findByRole("table", { name: "People" })).getAllByRole("row");
+    await person.click(stats.getByRole("button", { name: /Sam/ }));
+
+    // Assert
+    await waitFor(() => expect(samRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    expect(ownRow?.querySelector(".member-avatar")).toHaveTextContent(/^A$/);
+    const card = stats.getByTestId("member-stats");
+    await waitFor(() => expect(card.querySelector("h4 img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    expect(memberPicture).toHaveBeenCalledTimes(1);
+    expect(memberPicture).toHaveBeenCalledWith("u1", PICTURE_VERSION);
+  });
+
+  it("keeps a teammate's initials when their picture cannot be read", async () => {
+    // Arrange
+    const memberPicture = vi.fn().mockRejectedValue(new ClientError("transient", "Cannot reach the server."));
+    const person = await signIn(clientFor({ memberPicture, workspace: vi.fn().mockResolvedValue(reportWithSamsPicture) }));
+
+    // Act
+    const stats = await openAllStats(person);
+    const [, samRow] = within(await stats.findByRole("table", { name: "People" })).getAllByRole("row");
+    await waitFor(() => expect(memberPicture).toHaveBeenCalled());
+
+    // Assert
+    expect(samRow?.querySelector(".member-avatar")).toHaveTextContent(/^S$/);
+    expect(samRow?.querySelector("img")).toBeNull();
+  });
+
+  it("asks again for a picture whose read failed at the next refresh, and shows it once it arrives", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Arrange: the first read meets a server that is briefly out of reach.
+      const memberPicture = vi.fn()
+        .mockRejectedValueOnce(new ClientError("transient", "Cannot reach the server."))
+        .mockResolvedValue(new Uint8Array(JPEG_BYTES));
+      const person = await signIn(clientFor({ memberPicture, workspace: vi.fn().mockResolvedValue(reportWithSamsPicture) }));
+      const stats = await openAllStats(person);
+      const [, samRow] = within(await stats.findByRole("table", { name: "People" })).getAllByRole("row");
+      await waitFor(() => expect(memberPicture).toHaveBeenCalledTimes(1));
+
+      // Act: the page's next refresh.
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS);
+
+      // Assert
+      await waitFor(() => expect(samRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+      expect(memberPicture).toHaveBeenCalledTimes(2);
+      expect(memberPicture).toHaveBeenLastCalledWith("u1", PICTURE_VERSION);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { label: "put up", before: null, after: PICTURE_VERSION, control: "Change picture", removeButtons: 1 },
+    { label: "taken down", before: PICTURE_VERSION, after: null, control: "Add a picture", removeButtons: 0 },
+  ])("shows in settings a picture $label from another device since the page loaded", async ({ before, after, control, removeButtons }) => {
+    // Arrange: /me answers the page's load before the change, and every read after it.
+    const person = await signIn(clientFor({
+      me: vi.fn()
+        .mockResolvedValueOnce({ user: { ...self, pictureVersion: before } })
+        .mockResolvedValue({ user: { ...self, pictureVersion: after } }),
+      memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
+    }));
+
+    // Act
+    const group = within(await openPictureGroup(person));
+
+    // Assert
+    expect(await group.findByLabelText(control)).toBeInTheDocument();
+    expect(group.queryAllByRole("button", { name: "Remove" })).toHaveLength(removeButtons);
+  });
+
+  it("puts up the picture a member picks in settings as a small square and shows it as theirs", async () => {
+    // Arrange: /me names whatever picture the server holds.
+    let held: string | null = null;
+    const uploadPicture = vi.fn().mockImplementation(async () => {
+      held = PICTURE_VERSION;
+      return { user: { ...self, pictureVersion: PICTURE_VERSION } };
+    });
+    const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
+    const person = await signIn(clientFor({
+      uploadPicture,
+      memberPicture,
+      me: vi.fn().mockImplementation(async () => ({ user: { ...self, pictureVersion: held } })),
+    }));
+    const group = within(await openPictureGroup(person));
+
+    // Act
+    await person.upload(group.getByLabelText("Add a picture"), jpegFile());
+
+    // Assert
+    await waitFor(() => expect(uploadPicture).toHaveBeenCalledWith(new Uint8Array(JPEG_BYTES)));
+    expect(await group.findByLabelText("Change picture")).toBeInTheDocument();
+    expect(group.getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    await waitFor(() => expect(memberPicture).toHaveBeenCalledWith(self.id, PICTURE_VERSION));
+  });
+
+  it.each([
+    ["a text file", new File(["not a picture"], "notes.txt", { type: "text/plain" })],
+    ["a file named as a JPEG whose bytes are not one", new File(["not a picture"], "me.jpg", { type: "image/jpeg" })],
+  ])("refuses %s before sending anything", async (_case, file) => {
+    // Arrange: a person can pick any file once the dialog shows all files.
+    const uploadPicture = vi.fn();
+    const person = await signIn(clientFor({ uploadPicture }), userEvent.setup({ applyAccept: false }));
+    const group = within(await openPictureGroup(person));
+
+    // Act
+    await person.upload(group.getByLabelText("Add a picture"), file);
+
+    // Assert
+    expect(await screen.findByText("Pick a JPG, PNG or WebP picture.")).toHaveAttribute("role", "alert");
+    expect(uploadPicture).not.toHaveBeenCalled();
+  });
+
+  it("says why a picture could not be put up and keeps the field as it was", async () => {
+    // Arrange
+    const uploadPicture = vi.fn().mockRejectedValue(new ClientError("transient", "The server is unavailable. Try again shortly."));
+    const person = await signIn(clientFor({ uploadPicture }));
+    const group = within(await openPictureGroup(person));
+
+    // Act
+    await person.upload(group.getByLabelText("Add a picture"), jpegFile());
+
+    // Assert
+    expect(await screen.findByText("The server is unavailable. Try again shortly.")).toHaveAttribute("role", "alert");
+    await waitFor(() => expect(group.getByLabelText("Add a picture")).toBeEnabled());
+    expect(group.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  it("takes the member's picture down and shows their initials again", async () => {
+    // Arrange: /me names whatever picture the server holds.
+    let held: string | null = PICTURE_VERSION;
+    const removePicture = vi.fn().mockImplementation(async () => {
+      held = null;
+      return { user: { ...self, pictureVersion: null } };
+    });
+    const person = await signIn(clientFor({
+      me: vi.fn().mockImplementation(async () => ({ user: { ...self, pictureVersion: held } })),
+      memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
+      removePicture,
+    }));
+    const group = await openPictureGroup(person);
+    await waitFor(() => expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+
+    // Act
+    await person.click(within(group).getByRole("button", { name: "Remove" }));
+
+    // Assert
+    expect(await within(group).findByLabelText("Add a picture")).toBeInTheDocument();
+    expect(removePicture).toHaveBeenCalledTimes(1);
+    expect(group.querySelector(".member-avatar")).toHaveTextContent(/^A$/);
+  });
+
+  it("puts up the picture picked at sign-up once the account exists", async () => {
+    // Arrange
+    const signUp = vi.fn().mockResolvedValue(undefined);
+    const uploadPicture = vi.fn().mockResolvedValue({ user: { ...self, pictureVersion: PICTURE_VERSION } });
+    const person = userEvent.setup();
+    render(<App client={clientFor({ signUp, uploadPicture })} />);
+
+    // Act
+    await signUpWithPicture(person);
+
+    // Assert
+    expect(await screen.findByRole("heading", { name: /the app/i })).toBeInTheDocument();
+    expect(uploadPicture).toHaveBeenCalledWith(new Uint8Array(JPEG_BYTES));
+    expect(signUp.mock.invocationCallOrder[0]).toBeLessThan(uploadPicture.mock.invocationCallOrder[0] ?? 0);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the new account and says so when the sign-up picture does not go up", async () => {
+    // Arrange
+    const uploadPicture = vi.fn().mockRejectedValue(new ClientError("transient", "The server is unavailable. Try again shortly."));
+    const person = userEvent.setup();
+    render(<App client={clientFor({ uploadPicture })} />);
+
+    // Act
+    await signUpWithPicture(person);
+
+    // Assert
+    expect(await screen.findByRole("heading", { name: /the app/i })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Your picture did not upload: The server is unavailable. Try again shortly. Add it again in settings.",
+    );
   });
 });

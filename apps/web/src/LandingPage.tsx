@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import { TeamViewHead, WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
 import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
@@ -12,23 +12,23 @@ const hours = [
   [0, 0], [1800, 2400], [3300, 5400], [3000, 6600], [900, 3600],
   [2700, 7200], [3300, 6300], [2400, 4500], [600, 1800], [0, 600],
 ] as const;
+// Fictional projects wearing the app's own built-in icons and colors.
+const exampleProjects = [
+  { id: "atlas", name: "Atlas Portal", icon: "compass", color: "#62e4ba" },
+  { id: "nova", name: "Nova Website", icon: "globe", color: "#85c6ff" },
+  { id: "relay", name: "Relay App", icon: "bolt", color: "#c6a1f4" },
+] as const;
+const [atlas, nova, relay] = exampleProjects;
 const members = [
-  { id: "alex", name: "Alex Morgan", project: "Atlas Portal", projects: [14400, 7200, 0], agents: [28800, 21600] },
-  { id: "jordan", name: "Jordan Lee", project: "Relay App", projects: [7200, 3600, 7200], agents: [14400, 21600] },
-  { id: "taylor", name: "Taylor Chen", project: "Nova Website", projects: [0, 7200, 7200], agents: [14400, 14400] },
+  { id: "alex", name: "Alex Morgan", project: atlas, projects: [14400, 7200, 0], agents: [28800, 21600] },
+  { id: "jordan", name: "Jordan Lee", project: relay, projects: [7200, 3600, 7200], agents: [14400, 21600] },
+  { id: "taylor", name: "Taylor Chen", project: nova, projects: [0, 7200, 7200], agents: [14400, 14400] },
 ];
 const agentSources = ["claude_code", "codex"];
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
-const projectIcon = (color: string, drawing: string) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="${color}"/><g fill="none" stroke="#071016" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${drawing}</g></svg>`)}`;
-// Original marks for fictional projects; runtime marks are the app's real icons.
-const exampleProjects = [
-  { id: "atlas", name: "Atlas Portal", icon: projectIcon("#62e4ba", '<path d="m8 24 8-16 8 16M11 19h10"/>') },
-  { id: "nova", name: "Nova Website", icon: projectIcon("#85c6ff", '<path d="m16 6 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z"/>') },
-  { id: "relay", name: "Relay App", icon: projectIcon("#c6a1f4", '<rect x="8" y="7" width="10" height="12" rx="3"/><rect x="14" y="13" width="10" height="12" rx="3"/>') },
-];
-const projectIcons = Object.fromEntries(exampleProjects.map(project => [project.id, project.icon]));
 const boardMembers = members.map((member, index) => ({
-  id: member.id, rank: index + 1, name: member.name, project: member.project,
+  id: member.id, rank: index + 1, name: member.name,
+  project: { name: member.project.name, appearance: { icon: member.project.icon, color: member.project.color } },
   activeSeconds: sum(member.projects), agentSeconds: sum(member.agents), isSelf: false,
 }));
 
@@ -64,24 +64,28 @@ function ProductPreview() {
   });
   return (
     <figure className="landing-preview" aria-labelledby="preview-caption">
-      <WorkspaceView
-        workspaceName="Atlas Studio"
-        logoUrl="/favicon.png"
-        badge="Example data"
-        periodLabel="Today"
-        focus={selectedMember && { name: selectedMember.name, project: selectedMember.project, onClear: () => setMemberId(null) }}
-        activeSeconds={activeSeconds}
-        agentSeconds={agentSeconds}
-        hourly={exampleDay}
-        members={boardMembers}
-        boardTool={<span>By active hours</span>}
-        selectedMemberId={memberId ?? undefined}
-        onSelectMember={member => setMemberId(member.id === memberId ? null : member.id)}
-        boardNotes={["Select a teammate to explore their work."]}
-        projectRows={projectRows}
-        agentRows={agentRows}
-        projectIcons={projectIcons}
-      />
+      <div className="tv tv-frame">
+        <TeamViewHead
+          title={selectedMember?.name ?? "Atlas Studio"}
+          subtitle={selectedMember === undefined ? "Today" : `${selectedMember.project.name} · Today`}
+        >
+          {selectedMember === undefined
+            ? <span className="tv-badge">Example data</span>
+            : <button type="button" className="ghost" onClick={() => setMemberId(null)}>All members</button>}
+        </TeamViewHead>
+        <WorkspaceView
+          activeSeconds={activeSeconds}
+          agentSeconds={agentSeconds}
+          hourly={exampleDay}
+          members={boardMembers}
+          boardTool={<span className="tv-card-note">Ranked by active time</span>}
+          selectedMemberId={memberId ?? undefined}
+          onSelectMember={member => setMemberId(member.id === memberId ? null : member.id)}
+          boardNotes={["Select a teammate to explore their work."]}
+          projectRows={projectRows}
+          agentRows={agentRows}
+        />
+      </div>
       <figcaption id="preview-caption">An example team workspace. Active hours and agent runtime are measured separately, including agents running in parallel.</figcaption>
     </figure>
   );

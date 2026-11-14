@@ -225,3 +225,13 @@ export {
 } from "./intervals.js";
 export type { ConcurrencyBreakdown, ConcurrencyMs, Interval, TimeMeasurement, TimeMeasurementMs } from "./intervals.js";
 export { formatDuration, formatHumanDuration } from "./time.js";
+export {
+  DEFAULT_PROJECT_APPEARANCE,
+  PROJECT_COLOR_NAMES,
+  PROJECT_COLORS,
+  PROJECT_ICONS,
+  projectAppearance,
+} from "./project-appearance.js";
+export type { ProjectAppearance, ProjectColor, ProjectIcon } from "./project-appearance.js";
+export { PICTURE_MAX_BYTES, PICTURE_TYPES, pictureTypeOf } from "./picture.js";
+export type { PictureType } from "./picture.js";

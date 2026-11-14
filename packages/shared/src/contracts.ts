@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { inviteCodePattern } from "./invite-code.js";
+import { PROJECT_COLORS, PROJECT_ICONS } from "./project-appearance.js";
 
 const idSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -41,6 +42,8 @@ export const userSchema = z
     name: z.string().min(1),
     organizationId: idSchema,
     role: z.enum(["admin", "member"]).default("member"),
+    /** Names the stored picture in its URL; null without one, absent from a server that predates pictures. */
+    pictureVersion: z.string().min(1).nullable().optional(),
   })
   .strict();
 
@@ -247,7 +250,12 @@ export const workspaceHourlyBucketSchema = z
 export const workspaceMemberSchema = z
   .object({
     rank: z.number().int().positive(),
-    user: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+    user: z.object({
+      id: idSchema,
+      name: z.string().min(1),
+      /** Names the member's picture in its URL; null without one, absent from a server that predates pictures. */
+      pictureVersion: z.string().min(1).nullable().optional(),
+    }).strict(),
     activeSeconds: z.number().int().nonnegative().safe(),
     agentSeconds: z.number().int().nonnegative().safe(),
     /** The project with the most recorded time in range; null for a member who recorded none. */
@@ -271,7 +279,13 @@ export const workspaceReportResponseSchema = z
     hourly: z.array(workspaceHourlyBucketSchema),
     /** Recorded time per project across the team, heaviest first. */
     projects: z.array(z.object({
-      project: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
+      project: z.object({
+        id: idSchema,
+        name: z.string().min(1),
+        /** The icon and color the project list shows for it; absent from a server that predates them. */
+        icon: z.enum(PROJECT_ICONS).nullable().optional(),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+      }).strict(),
       durationSeconds: z.number().int().nonnegative().safe(),
     }).strict()),
     /** Agent runtime per agent runtime, heaviest first. */
@@ -303,6 +317,8 @@ export const projectListItemSchema = z
   .object({
     id: idSchema,
     name: z.string().min(1),
+    /** The icon a member picked, else the one assigned from the id; absent from a server that predates it. */
+    icon: z.enum(PROJECT_ICONS).nullable().optional(),
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
     createdAt: z.string().datetime(),
     isArchived: z.boolean(),
@@ -327,9 +343,17 @@ export const projectUpdateRequestSchema = z
     name: z.string().trim().min(1).max(80).optional(),
     isArchived: z.boolean().optional(),
     replacementProjectId: idSchema.optional(),
+    /** Any member may pick the icon and color, from the built-in lists only. */
+    icon: z.enum(PROJECT_ICONS).optional(),
+    color: z.enum(PROJECT_COLORS).optional(),
   })
   .strict()
-  .refine((value) => value.name !== undefined || value.isArchived !== undefined || value.replacementProjectId !== undefined);
+  .refine((value) =>
+    value.name !== undefined
+    || value.isArchived !== undefined
+    || value.replacementProjectId !== undefined
+    || value.icon !== undefined
+    || value.color !== undefined);
 
 /** What deleting a project would take with it; shown in the confirm dialog. */
 export const projectUsageResponseSchema = z
@@ -1036,6 +1060,12 @@ export const agentShiftsResponseSchema = z
         shiftCount: z.number().int().nonnegative().safe(),
         /** merged / decided; null while nothing has been decided. */
         heldRate: heldRateSchema,
+        /**
+         * Tokens in plus out that this group's shifts reported inside the
+         * range; zero when they reported none. Absent when the API reads no
+         * token usage, and from an API older than the field.
+         */
+        tokens: z.number().int().nonnegative().safe().optional(),
       })
       // A cause explains a missing name and nothing else: a named group
       // carrying one is a contradiction, and the wire refuses it.
@@ -1047,6 +1077,33 @@ export const agentShiftsResponseSchema = z
      * its API draws no chart rather than failing the tab.
      */
     tokenChart: tokenChartSchema.optional(),
+    /**
+     * One row per agent runtime among the shifts the groups hold, heaviest
+     * agent time first and `source` breaking a tie. Its seconds and counts
+     * add up to the groups', and its `tokens` to theirs. Optional, because an
+     * API older than the field sends none.
+     */
+    runtimes: z.array(z
+      .object({
+        source: agentSourceSchema,
+        agentSeconds: z.number().int().nonnegative().safe(),
+        shiftCount: z.number().int().nonnegative().safe(),
+        tokens: z.number().int().nonnegative().safe().optional(),
+      })
+      .strict()).optional(),
+    /**
+     * The tokens the groups' shifts reported, summed the way the chart sums a
+     * bar, so `tokens` is the sum of the groups' own. Stated for an unbounded
+     * range too, unlike the chart. Absent when the API reads no token usage.
+     */
+    tokenTotals: z
+      .object({
+        tokensIn: z.number().int().nonnegative().safe(),
+        tokensOut: z.number().int().nonnegative().safe(),
+        tokens: z.number().int().nonnegative().safe(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
