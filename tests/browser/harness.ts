@@ -276,23 +276,23 @@ export async function openMemberStats(page: Page, app: "desktop" | "web"): Promi
       <div class="tv-page">
         <section class="tv-card tv-person" data-testid="member-stats">
           <div class="tv-card-head tv-person-head">
-            <h4><span class="member-avatar mint" aria-hidden="true">FP</span>Francesco Presta<span class="tv-you">You</span></h4>
+            <h4><span class="member-avatar mint" aria-hidden="true">AM</span>Alex Morgan<span class="tv-you">You</span></h4>
           </div>
           <p class="tv-person-total">
-            <strong>1h 56m</strong> recorded
-            <span class="metric-hint"> · 1h 19m of it away from the keyboard, 57m of that with an agent running</span>
+            <strong>2h 47m</strong> recorded
+            <span class="metric-hint"> · 1h 28m of it away from the keyboard, 43m of that with an agent running</span>
           </p>
           <div></div>
           <div>
             <p class="group-label">Projects, apps and agents</p>
             <ul class="app-list" data-testid="member-project-list">
-              ${appRow("peakCraftsman", "1h 34m")}
+              ${appRow("Atlas Portal", "2h 25m")}
               ${appRow("General", "22m")}
             </ul>
             <ul class="app-list" data-testid="member-app-list">
-              ${appRow("Windows Terminal", "20m")}
-              ${appRow("Google Chrome", "12m")}
-              ${appRow("Quiet time", "1h 24m")}
+              ${appRow("Windows Terminal", "41m")}
+              ${appRow("Google Chrome", "33m")}
+              ${appRow("Quiet time", "1h 33m")}
             </ul>
           </div>
         </section>

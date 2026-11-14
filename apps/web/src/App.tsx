@@ -327,6 +327,11 @@ export const App = ({ client }: AppProps) => {
       if (request !== boardRequest.current) return undefined;
       setWorkspace(report);
       setDataError(undefined);
+      // The board names the viewer's picture as it stands now, so one changed
+      // from the desktop reaches settings with the next board, not the next
+      // load. A board from a server that predates pictures names none.
+      const own = report.members.find((entry) => entry.user.id === selfId);
+      if (own?.user.pictureVersion !== undefined) setSelfPictureVersion(own.user.pictureVersion);
       return undefined;
     } catch (error: unknown) {
       if (request !== boardRequest.current) return undefined;
@@ -340,7 +345,7 @@ export const App = ({ client }: AppProps) => {
       setDataError(message);
       return message;
     }
-  }, [client, range, scopeParams, expireSession]);
+  }, [client, range, scopeParams, expireSession, selfId]);
 
   useEffect(() => {
     setWorkspace(undefined);
@@ -738,14 +743,16 @@ export const App = ({ client }: AppProps) => {
     }
   };
 
-  // Each member's picture, read once per version. The viewer's own rides
-  // along so settings can show it before the board has loaded.
+  // Each member's picture, read once per version, and asked for again on the
+  // next tick after a read fails. The viewer's own rides along so settings can
+  // show it before the board has loaded.
   const pictureOf = usePictures(
     [
       ...workspace?.members.map((entry) => entry.user) ?? [],
       ...selfId === undefined ? [] : [{ id: selfId, pictureVersion: selfPictureVersion }],
     ],
     client.memberPicture,
+    todayTick,
   );
 
   if (booting) {
@@ -860,7 +867,7 @@ export const App = ({ client }: AppProps) => {
       picture: pictureOf(entry.user),
       project: entry.project === null
         ? null
-        : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], entry.project.id) },
+        : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], projects, entry.project.id) },
       activeSeconds: entry.activeSeconds,
       agentSeconds: entry.agentSeconds,
       isSelf: entry.user.id === selfId,
@@ -1201,7 +1208,7 @@ export const App = ({ client }: AppProps) => {
                                 {buildProjectRows(memberStats.projects).map((row) => (
                                   <li key={row.projectId} className="app-row">
                                     <span className="app-name">
-                                      <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], row.projectId)} />
+                                      <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], projects, row.projectId)} />
                                       {row.name}
                                     </span>
                                     <span className="app-duration">{formatHumanDuration(row.durationSeconds)}</span>

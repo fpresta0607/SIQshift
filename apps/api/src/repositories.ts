@@ -290,6 +290,12 @@ export interface AgentIntervalRecord {
    * exactly as untied.
    */
   projectName?: string | null;
+  /**
+   * The runtime's own id for the session, `<session id>~<unix start>` on a
+   * continuation shift. Absent from a read that does not carry it, which the
+   * board reads as a session's own shift.
+   */
+  externalSessionId?: string;
   startedAt: Date;
   endedAt: Date;
 }
@@ -771,7 +777,8 @@ export interface AgentUsageRepository {
    * Counters summed per agent session under the chart's scope - the range on
    * the bucket start, the member, and the project through the shift - so the
    * Agents tab can total each repo and runtime by the shifts it holds. One row
-   * per session that reported usage.
+   * per session that reported usage, carrying the session's runtime key so a
+   * board holding only a continuation of it can still find it.
    */
   sumBySession(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]>;
   /** The same per-hour sums narrowed to one agent, for the paystub's own series. */
@@ -799,6 +806,10 @@ export interface AgentUsageProjectBucketTotalRecord extends AgentUsageBucketTota
 /** One agent session's summed token counters over a range; sql sums surface as string/bigint. */
 export interface AgentUsageSessionTotalsRecord {
   agentSessionId: string;
+  /** The session's runtime key: its owner, its runtime and the runtime's own id for it. */
+  userId: string;
+  source: string;
+  externalSessionId: string;
   inputTokens: number | string | bigint | null;
   outputTokens: number | string | bigint | null;
   cacheCreationInputTokens: number | string | bigint | null;

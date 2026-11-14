@@ -39,6 +39,12 @@ class MemoryProjects implements ProjectRepository {
     { id: ids.project, organizationId: ids.organization, name: "General", archived: false, isDefault: false, icon: null, color: null, createdAt: new Date("2026-08-10T12:00:00.000Z") },
   ];
   public readonly deleted: { projectId: string; reassignTo: string | null }[] = [];
+  /**
+   * The id the real repository's query answers as the default; its rule is
+   * proven against PostgreSQL in projects-delete.integration.test.ts, so the
+   * routes only have to draw whatever it names.
+   */
+  public defaultId: string | null = ids.project;
   /** Archived rows included, exactly as the real repository now returns them. */
   public async listForMember() { return this.records; }
   public async findForMember(subject: { organizationId: string }, projectId: string) {
@@ -49,14 +55,8 @@ class MemoryProjects implements ProjectRepository {
     this.records.push(record);
     return record;
   }
-  /** The real rule: the flagged project, else the oldest active one, ties broken by id. */
-  public async defaultIdForOrganization(subject: { organizationId: string }) {
-    const [first] = this.records
-      .filter((record) => record.organizationId === subject.organizationId && !record.archived)
-      .sort((left, right) => Number(right.isDefault) - Number(left.isDefault)
-        || left.createdAt.getTime() - right.createdAt.getTime()
-        || left.id.localeCompare(right.id));
-    return first?.id ?? null;
+  public async defaultIdForOrganization() {
+    return this.defaultId;
   }
   public async updateForMember(
     _subject: { organizationId: string },
@@ -293,47 +293,29 @@ describe("project routes", () => {
     expect(projects.records).toEqual([expect.objectContaining({ icon: null, color: null })]);
   });
 
-  it.each([
-    {
-      label: "the oldest active project when no project carries the flag",
-      second: secondProject(),
-      isGeneralArchived: false,
-      defaultId: ids.project,
-      otherId: ids.secondProject,
-    },
-    {
-      label: "the flagged project over an older one",
-      second: secondProject({ isDefault: true }),
-      isGeneralArchived: false,
-      defaultId: ids.secondProject,
-      otherId: ids.project,
-    },
-    {
-      label: "the oldest project still active when an older one is archived",
-      second: secondProject(),
-      isGeneralArchived: true,
-      defaultId: ids.secondProject,
-      otherId: ids.project,
-    },
-  ])("draws $label with the default pair and the other with its assigned pair", async ({ second, isGeneralArchived, defaultId, otherId }) => {
+  it("draws the project the repository names as the default with the default pair, and General with the pair its id assigns", async () => {
+    // Arrange: nothing carries the flag and General is the older project, so
+    // a route that worked the default out from the flag or from the ages
+    // instead of asking the repository would draw General as the default.
     const projects = new MemoryProjects();
-    projects.records.push(second);
-    for (const record of projects.records) {
-      if (record.id === ids.project) record.archived = isGeneralArchived;
-    }
+    projects.records.push(secondProject());
+    projects.defaultId = ids.secondProject;
     const app = createTestApp(projects);
 
-    const listed = await app.request("http://api.test/projects?includeArchived=true", { headers: { authorization: bearerHeader } });
+    // Act
+    const listed = await app.request("http://api.test/projects", { headers: { authorization: bearerHeader } });
 
+    // Assert: General's pair worked out from the FNV-1a spec rather than the
+    // code - 32-bit FNV-1a over its id is 0x22ebc167, which is 12 (home) mod
+    // the 23 icons besides grid, and 4 (coral) mod the 7 colors besides slate
+    // once shifted right by 8.
     const { projects: items } = (await listed.json()) as { projects: { id: string; icon: string; color: string }[] };
-    expect(items.find((item) => item.id === defaultId)).toMatchObject(DEFAULT_PROJECT_APPEARANCE);
-    expect(items.find((item) => item.id === otherId))
-      .toMatchObject(projectAppearance({ id: otherId, isDefault: false, icon: null, color: null }));
+    expect(items.find((item) => item.id === ids.secondProject)).toMatchObject(DEFAULT_PROJECT_APPEARANCE);
+    expect(items.find((item) => item.id === ids.project)).toMatchObject({ icon: "home", color: "#ff9d8a" });
   });
 
   it("answers a new project with the pair its id assigns, and every member reads that same pair", async () => {
     const projects = new MemoryProjects();
-    projects.records.push(secondProject({ isDefault: true }));
     const app = createTestApp(projects);
 
     const created = await app.request("http://api.test/projects", {

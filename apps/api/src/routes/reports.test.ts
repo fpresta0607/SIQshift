@@ -395,6 +395,9 @@ describe("report routes", () => {
     }];
     const usage = new Usage([{
       agentSessionId: sessionId,
+      userId: ids.user,
+      source: "claude_code",
+      externalSessionId: "claude-session-1",
       inputTokens: "100",
       outputTokens: "400",
       cacheCreationInputTokens: "20",

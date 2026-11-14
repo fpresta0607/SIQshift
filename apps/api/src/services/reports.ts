@@ -1199,19 +1199,27 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         agentUsage?.sumBySession(subject, usageQuery),
       ]);
       // A session's tokens land on the group and the runtime of its shift on
-      // the board. A session the board does not hold is left out, so the
-      // groups, the runtimes and the totals all sum the same shifts.
-      const tokensBySession = sessionUsage === undefined
-        ? undefined
-        : new Map(sessionUsage.map((row) => [row.agentSessionId, tokenFigures({
-          inputTokens: safeInteger(row.inputTokens, "session input tokens"),
-          outputTokens: safeInteger(row.outputTokens, "session output tokens"),
-          cacheCreationInputTokens: safeInteger(row.cacheCreationInputTokens, "session cache creation tokens"),
-          cacheReadInputTokens: safeInteger(row.cacheReadInputTokens, "session cache read tokens"),
-        })]));
-      const tokenSum = (shifts: readonly AgentShiftRow[], figure: "tokensIn" | "tokensOut" | "tokens"): number =>
-        shifts.reduce((total, shift) => total + (tokensBySession?.get(shift.id)?.[figure] ?? 0), 0);
+      // the board, so the groups, the runtimes and the totals all sum the
+      // same shifts. The desktop files a continuation shift's tokens under the
+      // session it continues, so a session the board holds only continuations
+      // of lands on one of them, and a session it holds no shift of is left out.
       const shifts = board.groups.flatMap((group) => group.shifts);
+      const shiftIds = new Set(shifts.map((shift) => shift.id));
+      const tokensByShift = new Map<string, TokenTotals>();
+      for (const row of sessionUsage ?? []) {
+        const shiftId = shiftIds.has(row.agentSessionId)
+          ? row.agentSessionId
+          : board.continuations.get(agentSessionKey(row.userId, row.source, row.externalSessionId))?.id;
+        if (shiftId === undefined) continue;
+        const totals = tokensByShift.get(shiftId) ?? { ...ZERO_TOKENS };
+        totals.inputTokens += safeInteger(row.inputTokens, "session input tokens");
+        totals.outputTokens += safeInteger(row.outputTokens, "session output tokens");
+        totals.cacheCreationInputTokens += safeInteger(row.cacheCreationInputTokens, "session cache creation tokens");
+        totals.cacheReadInputTokens += safeInteger(row.cacheReadInputTokens, "session cache read tokens");
+        tokensByShift.set(shiftId, totals);
+      }
+      const tokenSum = (list: readonly AgentShiftRow[], figure: "tokensIn" | "tokensOut" | "tokens"): number =>
+        list.reduce((total, shift) => total + (tokenFigures(tokensByShift.get(shift.id) ?? null)[figure] ?? 0), 0);
       const shiftsBySource = new Map<string, AgentShiftRow[]>();
       for (const shift of shifts) {
         const list = shiftsBySource.get(shift.source);
@@ -1237,7 +1245,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           agentSeconds: group.agentSeconds,
           shiftCount: group.shifts.length,
           heldRate: heldRateOf(group.commits),
-          ...(tokensBySession === undefined ? {} : { tokens: tokenSum(group.shifts, "tokens") }),
+          ...(sessionUsage === undefined ? {} : { tokens: tokenSum(group.shifts, "tokens") }),
         })),
         ...(chart === undefined ? {} : { tokenChart: chart }),
         runtimes: [...shiftsBySource]
@@ -1245,10 +1253,10 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
             source,
             agentSeconds: list.reduce((total, shift) => total + shift.agentSeconds, 0),
             shiftCount: list.length,
-            ...(tokensBySession === undefined ? {} : { tokens: tokenSum(list, "tokens") }),
+            ...(sessionUsage === undefined ? {} : { tokens: tokenSum(list, "tokens") }),
           }))
           .sort((a, b) => b.agentSeconds - a.agentSeconds || a.source.localeCompare(b.source)),
-        ...(tokensBySession === undefined ? {} : {
+        ...(sessionUsage === undefined ? {} : {
           tokenTotals: {
             tokensIn: tokenSum(shifts, "tokensIn"),
             tokensOut: tokenSum(shifts, "tokensOut"),
@@ -1396,6 +1404,12 @@ async function readShiftBoard(
   groups: ShiftBoardGroup[];
   people: Map<string, AgentShiftsResponse["people"][number]>;
   range: Partial<Interval>;
+  /**
+   * The board's continuation shifts by the session each continues, keyed by
+   * `agentSessionKey`: the earliest when the board holds several, so two
+   * reads of one range pick the same shift.
+   */
+  continuations: Map<string, AgentShiftRow>;
 }> {
   const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
   await authorizeFilters(dependencies.reports, subject, query);
@@ -1423,6 +1437,7 @@ async function readShiftBoard(
   type NullCause = ShiftBoardGroup["nullCause"];
   const groups = new Map<string, ShiftBoardGroup>();
   const people = new Map<string, AgentShiftsResponse["people"][number]>();
+  const continuations = new Map<string, AgentShiftRow>();
   for (const interval of intervals) {
     // Browser spans are attention, not shifts, the roster's own rule.
     if (!rosterEligibleSource(interval.source)) continue;
@@ -1458,9 +1473,7 @@ async function readShiftBoard(
       : { id: interval.projectId, name: interval.projectName };
     const group = groups.get(key)
       ?? { key, repo, nullCause, agentSeconds: 0, commits: [], shifts: [] };
-    group.agentSeconds += shiftSeconds;
-    group.commits.push(...shiftCommitList);
-    group.shifts.push({
+    const shift: AgentShiftRow = {
       id: interval.sessionId,
       source: interval.source,
       owner: { id: interval.user.id, name: interval.user.name },
@@ -1470,8 +1483,17 @@ async function readShiftBoard(
       agentSeconds: shiftSeconds,
       commitCount: shiftCommitList.length,
       project,
-    });
+    };
+    group.agentSeconds += shiftSeconds;
+    group.commits.push(...shiftCommitList);
+    group.shifts.push(shift);
     groups.set(key, group);
+    const continued = continuedSessionId(interval.externalSessionId);
+    if (continued !== undefined) {
+      const sessionKey = agentSessionKey(interval.user.id, interval.source, continued);
+      const earliest = continuations.get(sessionKey);
+      if (earliest === undefined || shift.startedAt < earliest.startedAt) continuations.set(sessionKey, shift);
+    }
   }
 
   for (const group of groups.values()) {
@@ -1492,7 +1514,22 @@ async function readShiftBoard(
       .sort((a, b) => Number(a.repo === null) - Number(b.repo === null) || b.agentSeconds - a.agentSeconds),
     people,
     range,
+    continuations,
   };
+}
+
+/** One agent session as its runtime names it: the owner, the runtime, and the runtime's own id for it. */
+function agentSessionKey(userId: string, source: string, externalSessionId: string): string {
+  return `${userId}|${source}|${externalSessionId}`;
+}
+
+/**
+ * The runtime's id for the session a continuation shift continues: the desktop
+ * records the shift it opens after the server ended one as
+ * `<session id>~<unix start>`. Undefined for a session's own shift.
+ */
+function continuedSessionId(externalSessionId: string | undefined): string | undefined {
+  return externalSessionId === undefined ? undefined : /^(.+)~\d+$/s.exec(externalSessionId)?.[1];
 }
 
 /**

@@ -321,6 +321,9 @@ type UsageSeed = {
   userId: string;
   agentId: string;
   agentSessionId: string;
+  /** The session's runtime and the runtime's own id for it, which the usage is filed under. */
+  source: string;
+  externalSessionId: string;
   projectId: string | null;
   model: string | null;
   bucketStartAt: Date;
@@ -331,10 +334,13 @@ type UsageSeed = {
 };
 
 function usageSeed(overrides: Partial<UsageSeed> = {}): UsageSeed {
+  const agentSessionId = overrides.agentSessionId ?? "s1";
   return {
     userId: ids.user,
     agentId: ids.session,
-    agentSessionId: "s1",
+    agentSessionId,
+    source: "claude_code",
+    externalSessionId: `${agentSessionId}-runtime-id`,
     projectId: ids.project,
     model: null,
     bucketStartAt: new Date("2026-08-06T14:00:00.000Z"),
@@ -409,10 +415,18 @@ class Usage implements AgentUsageRepository {
     return [...byKey.values()];
   }
   public async sumBySession(_subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]> {
-    const bySession = new Map<string, { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number }>();
+    const bySession = new Map<string, Pick<UsageSeed, "agentSessionId" | "userId" | "source" | "externalSessionId" | "inputTokens" | "outputTokens" | "cacheCreationInputTokens" | "cacheReadInputTokens">>();
     for (const row of this.scoped(query)) {
-      const totals = bySession.get(row.agentSessionId)
-        ?? { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+      const totals = bySession.get(row.agentSessionId) ?? {
+        agentSessionId: row.agentSessionId,
+        userId: row.userId,
+        source: row.source,
+        externalSessionId: row.externalSessionId,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
       totals.inputTokens += row.inputTokens;
       totals.outputTokens += row.outputTokens;
       totals.cacheCreationInputTokens += row.cacheCreationInputTokens;
@@ -420,8 +434,8 @@ class Usage implements AgentUsageRepository {
       bySession.set(row.agentSessionId, totals);
     }
     // Strings, the way postgres hands a sum back.
-    return [...bySession].map(([agentSessionId, totals]) => ({
-      agentSessionId,
+    return [...bySession.values()].map((totals) => ({
+      ...totals,
       inputTokens: String(totals.inputTokens),
       outputTokens: String(totals.outputTokens),
       cacheCreationInputTokens: String(totals.cacheCreationInputTokens),
@@ -2059,6 +2073,56 @@ describe("agent shifts", () => {
 
       expect(result.tokenTotals).toEqual({ tokensIn: 3_131, tokensOut: 412, tokens: 3_543 });
       expect(result.groups.map((group) => group.tokens)).toEqual([3_523, 20]);
+    });
+
+    // Activity after the server ended a session - `claude --continue` the
+    // morning after - opens a continuation shift, `<session id>~<unix start>`,
+    // while the desktop keeps filing the session's tokens under its own row.
+    it.each([
+      { label: "only continuations of it, its own shift having ended the night before", ownStart: at(-4), ownEnd: at(-2, 40), shiftCount: 2, agentSeconds: 7_200 },
+      { label: "its own shift beside the continuations", ownStart: at(7), ownEnd: at(8), shiftCount: 3, agentSeconds: 10_800 },
+    ])("credits a session's tokens once when the board holds $label", async ({ ownStart, ownEnd, shiftCount, agentSeconds }) => {
+      // Arrange
+      const reports = new Reports();
+      reports.agentIntervals = [
+        { ...shift("own", "claude_code", "C:/dev/siqshift", ids.user, ownStart, ownEnd), externalSessionId: "resumed" },
+        { ...shift("morning", "claude_code", "C:/dev/siqshift", ids.user, at(9), at(10)), externalSessionId: `resumed~${at(9).getTime() / 1_000}` },
+        { ...shift("afternoon", "claude_code", "C:/dev/siqshift", ids.user, at(13), at(14)), externalSessionId: `resumed~${at(13).getTime() / 1_000}` },
+      ];
+      const usage = new Usage([
+        usageSeed({ agentSessionId: "own", externalSessionId: "resumed", bucketStartAt: at(9), inputTokens: 1_200_000, outputTokens: 300_000 }),
+        usageSeed({ agentSessionId: "own", externalSessionId: "resumed", bucketStartAt: at(13), inputTokens: 400_000, outputTokens: 100_000 }),
+      ]);
+      const service = createReportService({ reports, agentUsage: usage });
+
+      // Act
+      const result = await service.agentShifts(subject, { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() });
+
+      // Assert
+      expect(result.groups.map((group) => [group.repo, group.shiftCount, group.tokens])).toEqual([["siqshift", shiftCount, 2_000_000]]);
+      expect(result.runtimes).toEqual([{ source: "claude_code", agentSeconds, shiftCount, tokens: 2_000_000 }]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 1_600_000, tokensOut: 400_000, tokens: 2_000_000 });
+      // The token chart on the same page draws exactly the tokens the totals state.
+      expect(result.tokenChart?.buckets.reduce((sum, bucket) => sum + (bucket.tokens ?? 0), 0)).toBe(2_000_000);
+    });
+
+    it("leaves a session's tokens out when the board holds only another person's continuation of the same id", async () => {
+      // Arrange
+      const reports = new Reports();
+      reports.agentIntervals = [
+        { ...shift("theirs", "claude_code", "C:/dev/siqshift", ids.otherUser, at(9), at(10)), externalSessionId: `resumed~${at(9).getTime() / 1_000}` },
+      ];
+      const usage = new Usage([
+        usageSeed({ agentSessionId: "mine", externalSessionId: "resumed", bucketStartAt: at(9), inputTokens: 1_000, outputTokens: 1_000 }),
+      ]);
+      const service = createReportService({ reports, agentUsage: usage });
+
+      // Act
+      const result = await service.agentShifts(subject, { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() });
+
+      // Assert
+      expect(result.groups.map((group) => group.tokens)).toEqual([0]);
+      expect(result.tokenTotals).toEqual({ tokensIn: 0, tokensOut: 0, tokens: 0 });
     });
 
     it("leaves the tokens out without a usage source, and still rolls up the runtimes", async () => {

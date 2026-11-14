@@ -972,6 +972,7 @@ export class DrizzleReportRepository implements ReportRepository {
         agentId: agentSessions.agentId,
         agentRepoRoot: agents.repoRoot,
         agentRepoKey: agents.repoKey,
+        externalSessionId: agentSessions.externalSessionId,
         startedAt: agentSessions.startedAt,
         endedAt: intervalEnd,
       })
@@ -1017,6 +1018,7 @@ export class DrizzleReportRepository implements ReportRepository {
       agentId: row.agentId,
       agentRepoRoot: row.agentRepoRoot,
       agentRepoKey: row.agentRepoKey,
+      externalSessionId: row.externalSessionId,
       startedAt: row.startedAt,
       endedAt: row.endedAt instanceof Date ? row.endedAt : new Date(row.endedAt as unknown as string),
     }));
@@ -2276,34 +2278,33 @@ export class DrizzleAgentUsageRepository implements AgentUsageRepository {
   }
 
   public async sumBySession(subject: AuthenticatedSubject, query: ReportQuery): Promise<AgentUsageSessionTotalsRecord[]> {
-    const projectScoped = query.projectId !== undefined || query.unassignedOnly === true;
-    const conditions = this.usageScopeConditions(subject, query);
-    // The session id and the four sums alone: this read also runs over an
-    // unbounded range, so it carries nothing the per-shift totals do not use.
-    const base = this.db
+    // The session's runtime key and the four sums alone: this read also runs
+    // over an unbounded range, so it carries nothing the per-shift totals do
+    // not use. The key is what lets a board that holds only a continuation
+    // of a session find the usage filed under the session's own row, and the
+    // join that reads it is also the one the project scope reads through.
+    return this.db
       .select({
-        agentSessionId: agentUsage.agentSessionId,
+        agentSessionId: agentSessions.id,
+        userId: agentSessions.userId,
+        source: agentSessions.source,
+        externalSessionId: agentSessions.externalSessionId,
         inputTokens: sum(agentUsage.inputTokens),
         outputTokens: sum(agentUsage.outputTokens),
         cacheCreationInputTokens: sum(agentUsage.cacheCreationInputTokens),
         cacheReadInputTokens: sum(agentUsage.cacheReadInputTokens),
       })
-      .from(agentUsage);
-    const rows = await (projectScoped
-      ? base
-        .innerJoin(agentSessions, and(
-          eq(agentSessions.organizationId, agentUsage.organizationId),
-          eq(agentSessions.id, agentUsage.agentSessionId),
-        ))
-        .where(and(
-          ...conditions,
-          query.projectId === undefined ? isNull(agentSessions.projectId) : eq(agentSessions.projectId, query.projectId),
-        ))
-        .groupBy(agentUsage.agentSessionId)
-      : base
-        .where(and(...conditions))
-        .groupBy(agentUsage.agentSessionId));
-    return rows;
+      .from(agentUsage)
+      .innerJoin(agentSessions, and(
+        eq(agentSessions.organizationId, agentUsage.organizationId),
+        eq(agentSessions.id, agentUsage.agentSessionId),
+      ))
+      .where(and(
+        ...this.usageScopeConditions(subject, query),
+        query.projectId === undefined ? undefined : eq(agentSessions.projectId, query.projectId),
+        query.unassignedOnly === true ? isNull(agentSessions.projectId) : undefined,
+      ))
+      .groupBy(agentSessions.id, agentSessions.userId, agentSessions.source, agentSessions.externalSessionId);
   }
 
   public async sumByBucketForAgent(

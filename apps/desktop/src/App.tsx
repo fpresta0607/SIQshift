@@ -513,6 +513,16 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           workspaceFailures.current = 0;
           setWorkspace(result);
           setWorkspaceError(undefined);
+          // The report names the member's picture as it stands now, so one
+          // changed or removed from the web reaches every surface that draws
+          // the account's - their row, their card and settings - by the next
+          // report rather than the next sign-in.
+          const own = result.members.find((member) => member.user.id === signedIn.user.id);
+          if (own !== undefined) {
+            setAccount((known) => (known?.kind === "ready" && known.user.pictureVersion !== own.user.pictureVersion
+              ? { ...known, user: { ...known.user, pictureVersion: own.user.pictureVersion } }
+              : known));
+          }
         }
       },
       (error: unknown) => {
@@ -1182,11 +1192,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     }
   };
 
-  // Each member's picture, read once per version. The signed-in member's own
-  // rides along so settings can show it before the team view has loaded.
+  // Each member's picture, read once per version, and asked for again on the
+  // next tick after a read fails. The signed-in member's own rides along so
+  // settings can show it before the team view has loaded.
   const pictureOf = usePictures(
     [...workspace?.members.map((member) => member.user) ?? [], ...signedIn === undefined ? [] : [signedIn.user]],
     bridge.memberPicture,
+    statsTick,
   );
 
   if (account === undefined) {
@@ -1287,6 +1299,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     ? currentProject?.color
     : ready.projects.find((item) => item.id === pinnedProject)?.color) ?? null;
   const defaultProject = ready.projects.find((item) => item.id === ready.defaultProjectId);
+  // The account's projects as the team view's tiles fall back to them, for a
+  // project the workspace report does not list yet.
+  const listedProjects = ready.projects.map((item) => ({ ...item, isDefault: item.id === ready.defaultProjectId }));
   const backlog = monitorStatus === undefined
     ? 0
     : monitorStatus.segmentBacklog + monitorStatus.agentBacklog + monitorStatus.sessionBacklog;
@@ -1677,7 +1692,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                       picture: pictureOf(member.user.id === ready.user.id ? ready.user : member.user),
                       project: member.project === null
                         ? null
-                        : { name: member.project.name, appearance: reportedAppearance(workspace.projects, member.project.id) },
+                        : { name: member.project.name, appearance: reportedAppearance(workspace.projects, listedProjects, member.project.id) },
                       activeSeconds: member.activeSeconds,
                       agentSeconds: member.agentSeconds,
                       isSelf: member.user.id === ready.user.id,
@@ -1749,7 +1764,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                             {boardProjectRows.map((entry) => (
                               <li key={entry.id} className="app-row">
                                 <span className="app-name">
-                                  <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], entry.id)} />
+                                  <ProjectIconTile appearance={reportedAppearance(workspace?.projects ?? [], listedProjects, entry.id)} />
                                   {entry.name}
                                 </span>
                                 <span className="app-duration">{formatHuman(entry.durationSeconds)}</span>

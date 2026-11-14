@@ -75,16 +75,27 @@ const shareRows = (rows: readonly Omit<MeterRow, "share">[]): MeterRow[] => {
 /** A project as a workspace report names it, with the icon and color a server that predates them leaves out. */
 type ReportedProject = { id: string; name: string; icon?: string | null | undefined; color?: string | null | undefined };
 
+/** A project from the caller's own project list, which knows whether it is the workspace's default. */
+type ListedProject = { id: string; isDefault: boolean; icon?: string | null | undefined; color?: string | null | undefined };
+
 /**
- * The icon and color a workspace report gives a project, or the pair its id
- * assigns when the report does not list it or predates them.
+ * The icon and color a project wears on the team view: the pair the workspace
+ * report gives it, else the pair the caller's own project list gives it, else
+ * the pair its id assigns. The report is read with the view, so where it lists
+ * the project the whole view agrees on one pair. The caller's list covers what
+ * it does not list yet - the open stretch's project before it uploads, or any
+ * project while the report loads - and says which project is the default, so
+ * the default still wears its own pair and a picked pair is never swapped for
+ * one the id would assign.
  */
 export const reportedAppearance = (
   projects: readonly { project: ReportedProject }[],
+  listed: readonly ListedProject[],
   projectId: string,
 ): ProjectAppearance => {
-  const reported = projects.find((entry) => entry.project.id === projectId)?.project;
-  return projectAppearance({ id: projectId, isDefault: false, icon: reported?.icon, color: reported?.color });
+  const own = listed.find((project) => project.id === projectId);
+  const resolved = projects.find((entry) => entry.project.id === projectId)?.project ?? own;
+  return projectAppearance({ id: projectId, isDefault: own?.isDefault ?? false, icon: resolved?.icon, color: resolved?.color });
 };
 
 /** A workspace report's two breakdowns as meter rows, in the order the report gives them. */

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { PICTURE_MAX_BYTES } from "@siqshift/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -97,25 +95,33 @@ function pngOfSize(size: number): Uint8Array {
   return bytes;
 }
 
-const versionOf = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+/** The version a picture upload answered with, which every other read names it by. */
+async function versionFrom(response: Response): Promise<string> {
+  const { user } = (await response.json()) as { user: { pictureVersion: string } };
+  return user.pictureVersion;
+}
 
 describe("picture routes", () => {
   it.each([
     { type: "image/jpeg", bytes: samples.jpeg },
     { type: "image/png", bytes: samples.png },
     { type: "image/webp", bytes: samples.webp },
-  ])("stores a $type upload by its bytes, whatever its header says, and answers with its version", async ({ type, bytes }) => {
+  ])("stores a $type upload by its bytes, whatever its header says, and serves it for good under the version it answers with", async ({ type, bytes }) => {
     const { app } = createTestApp();
 
     const response = await upload(app, bearerHeaders.user, bytes, "application/octet-stream");
-    const read = await app.request(`http://api.test/users/${ids.user}/picture`, { headers: { authorization: bearerHeaders.teammate } });
+    const { user } = (await response.json()) as { user: { pictureVersion: string } };
+    const read = await app.request(`http://api.test/users/${ids.user}/picture?v=${user.pictureVersion}`, {
+      headers: { authorization: bearerHeaders.teammate },
+    });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      user: { id: ids.user, email: "alex@example.com", name: "Alex", organizationId: ids.organization, role: "member", pictureVersion: versionOf(bytes) },
+    expect(user).toEqual({
+      id: ids.user, email: "alex@example.com", name: "Alex", organizationId: ids.organization, role: "member", pictureVersion: expect.any(String),
     });
     expect(read.status).toBe(200);
     expect(read.headers.get("content-type")).toBe(type);
+    expect(read.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
     expect(new Uint8Array(await read.arrayBuffer())).toEqual(bytes);
   });
 
@@ -125,8 +131,7 @@ describe("picture routes", () => {
     { label: "a stale version", query: () => "?v=0000000000000000", cacheControl: "private, no-cache" },
   ])("serves a teammate's picture under $label with its type, tag and caching", async ({ query, cacheControl }) => {
     const { app } = createTestApp();
-    await upload(app, bearerHeaders.user, samples.png);
-    const version = versionOf(samples.png);
+    const version = await versionFrom(await upload(app, bearerHeaders.user, samples.png));
 
     const response = await app.request(`http://api.test/users/${ids.user}/picture${query(version)}`, {
       headers: { authorization: bearerHeaders.teammate },
@@ -220,29 +225,32 @@ describe("picture routes", () => {
     await expect(again.json()).resolves.toMatchObject({ user: { id: ids.user, pictureVersion: null } });
   });
 
-  it("replaces the first upload with the second and moves the version", async () => {
+  it("replaces the first upload with the second under a new version, so a link naming the first is no longer cached for good", async () => {
     const { app, pictures } = createTestApp();
 
-    const first = await upload(app, bearerHeaders.user, samples.jpeg);
-    const second = await upload(app, bearerHeaders.user, samples.png);
+    const firstVersion = await versionFrom(await upload(app, bearerHeaders.user, samples.jpeg));
+    const secondVersion = await versionFrom(await upload(app, bearerHeaders.user, samples.png));
     const read = await app.request(`http://api.test/users/${ids.user}/picture`, { headers: { authorization: bearerHeaders.user } });
+    const staleLink = await app.request(`http://api.test/users/${ids.user}/picture?v=${firstVersion}`, { headers: { authorization: bearerHeaders.user } });
 
-    await expect(first.json()).resolves.toMatchObject({ user: { pictureVersion: versionOf(samples.jpeg) } });
-    await expect(second.json()).resolves.toMatchObject({ user: { pictureVersion: versionOf(samples.png) } });
+    expect(secondVersion).not.toBe(firstVersion);
     expect(pictures.pictures.size).toBe(1);
     expect(read.headers.get("content-type")).toBe("image/png");
-    expect(read.headers.get("etag")).toBe(`"${versionOf(samples.png)}"`);
+    expect(read.headers.get("etag")).toBe(`"${secondVersion}"`);
     expect(new Uint8Array(await read.arrayBuffer())).toEqual(samples.png);
+    expect(staleLink.headers.get("cache-control")).toBe("private, no-cache");
+    expect(new Uint8Array(await staleLink.arrayBuffer())).toEqual(samples.png);
   });
 
-  it("carries the version on /me: null before an upload, the upload's after", async () => {
+  it("carries the version on /me: null before an upload, the one the upload answered with after", async () => {
     const { app } = createTestApp();
 
     const before = await app.request("http://api.test/me", { headers: { authorization: bearerHeaders.user } });
-    await upload(app, bearerHeaders.user, samples.jpeg);
+    const version = await versionFrom(await upload(app, bearerHeaders.user, samples.jpeg));
     const after = await app.request("http://api.test/me", { headers: { authorization: bearerHeaders.user } });
 
     await expect(before.json()).resolves.toMatchObject({ user: { id: ids.user, pictureVersion: null } });
-    await expect(after.json()).resolves.toMatchObject({ user: { id: ids.user, pictureVersion: versionOf(samples.jpeg) } });
+    expect(version).toEqual(expect.any(String));
+    await expect(after.json()).resolves.toMatchObject({ user: { id: ids.user, pictureVersion: version } });
   });
 });

@@ -9,13 +9,17 @@ const keyOf = (id: string, version: string): string => `${id}/${version}`;
 
 /**
  * Members' pictures as data URLs, each read once per version: a new version is
- * a new read, and a member whose read fails, or whose bytes are no picture,
- * keeps their initials. The server answers a versioned read as immutable, so
- * even a reload costs nothing it has to send again.
+ * a new read, and a member whose bytes are no picture keeps their initials. A
+ * read that fails keeps them on initials until `refreshTick` next moves - the
+ * caller's own refresh, which asks again - so a server that was out of reach
+ * for a moment costs one refresh rather than the rest of the session. The
+ * server answers a versioned read as immutable, so even a reload costs nothing
+ * it has to send again.
  */
 export const usePictures = (
   owners: readonly PictureOwner[],
   read: (id: string, version: string) => Promise<Uint8Array>,
+  refreshTick: number,
 ): ((owner: PictureOwner) => string | undefined) => {
   const [pictures, setPictures] = useState<Readonly<Record<string, string>>>({});
   const asked = useRef(new Set<string>());
@@ -31,12 +35,13 @@ export const usePictures = (
           const type = pictureTypeOf(bytes);
           if (type !== null) setPictures((known) => ({ ...known, [key]: pictureDataUrl(bytes, type) }));
         },
-        // Initials are the answer to a picture that cannot be had.
-        () => undefined,
+        () => {
+          asked.current.delete(key);
+        },
       );
     }
     // `wanted` is rebuilt every render; its signature is what changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature, read]);
+  }, [signature, read, refreshTick]);
   return (owner) => (owner.pictureVersion == null ? undefined : pictures[keyOf(owner.id, owner.pictureVersion)]);
 };

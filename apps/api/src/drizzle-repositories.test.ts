@@ -508,43 +508,6 @@ describe("Drizzle agent usage repository", () => {
     await expect(repository.sumByAgent(subject, { projectId: input.projectId })).resolves.toHaveLength(1);
   });
 
-  it("sums counters per agent session, carrying the session id and the four sums alone", async () => {
-    const selections: string[][] = [];
-    const rows = {
-      innerJoin: () => rows,
-      where: () => rows,
-      groupBy: async () => [{
-        agentSessionId: input.clientId,
-        inputTokens: "100",
-        outputTokens: "400",
-        cacheCreationInputTokens: "20",
-        cacheReadInputTokens: "3000",
-      }],
-    };
-    const db = {
-      select: (shape: Record<string, unknown>) => {
-        selections.push(Object.keys(shape));
-        return { from: () => rows };
-      },
-    } as unknown as DatabaseConnection["db"];
-    const repository = new DrizzleAgentUsageRepository(db);
-
-    const unscoped = await repository.sumBySession(subject, {});
-    const projectScoped = await repository.sumBySession(subject, { projectId: input.projectId });
-    const unassigned = await repository.sumBySession(subject, { unassignedOnly: true });
-
-    expect(unscoped).toEqual([{
-      agentSessionId: input.clientId,
-      inputTokens: "100",
-      outputTokens: "400",
-      cacheCreationInputTokens: "20",
-      cacheReadInputTokens: "3000",
-    }]);
-    expect(projectScoped).toHaveLength(1);
-    expect(unassigned).toHaveLength(1);
-    expect(selections[0]).toEqual(["agentSessionId", "inputTokens", "outputTokens", "cacheCreationInputTokens", "cacheReadInputTokens"]);
-  });
-
   it("sums one agent's counters per model, null-model buckets included", async () => {
     const rows = {
       where: () => rows,

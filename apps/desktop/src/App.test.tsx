@@ -1373,6 +1373,27 @@ describe("the team board", () => {
     expect(tiles(ownProjects)).toEqual([["flask", "#f5c26b"]]);
   });
 
+  it("wears the account's own pair on the person card for a project the team report has not listed yet", async () => {
+    // Arrange: the report is still on its way, so only the account's own list,
+    // which the server resolved, can draw the default project the day is in.
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      bootstrap: vi.fn().mockResolvedValue({
+        ...account,
+        projects: [{ ...project, icon: "grid", color: "#a3b3c2" }, { ...otherProject, icon: "rocket", color: "#ff9d8a" }],
+      }),
+      workspaceReport: vi.fn().mockReturnValue(new Promise(() => undefined)),
+    })} />);
+
+    // Act
+    const ownProjects = await within(await openAllStats(person)).findByTestId("member-project-list");
+
+    // Assert
+    const tile = ownProjects.querySelector(".project-icon");
+    expect(tile).toHaveAttribute("data-icon", "grid");
+    expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
+  });
+
   it("draws only agent time once the team chart's one toggle picks it", async () => {
     // Arrange
     const person = userEvent.setup();
@@ -2559,6 +2580,56 @@ describe("profile pictures", () => {
     // Assert
     expect(samRow?.querySelector(".member-avatar")).toHaveTextContent(/^S$/);
     expect(samRow?.querySelector("img")).toBeNull();
+  });
+
+  it("asks again for a picture whose read failed at the next refresh, and shows it once it arrives", async () => {
+    // Arrange: the first read meets a server that is briefly out of reach.
+    vi.useFakeTimers();
+    const memberPicture = vi.fn()
+      .mockRejectedValueOnce({ kind: "transient", message: "Could not reach the server." })
+      .mockResolvedValue(new Uint8Array(JPEG_BYTES));
+    render(<App bridge={bridgeFor({
+      bootstrap: vi.fn().mockResolvedValue({ ...account, user: { ...user, pictureVersion: PICTURE_VERSION } }),
+      memberPicture,
+    })} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(memberPicture).toHaveBeenCalledTimes(1);
+
+    // Act: the minute's refresh.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    vi.useRealTimers();
+    const group = await openPictureGroup(userEvent.setup());
+
+    // Assert
+    expect(memberPicture).toHaveBeenCalledTimes(2);
+    expect(memberPicture).toHaveBeenLastCalledWith(user.id, PICTURE_VERSION);
+    await waitFor(() => expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+  });
+
+  it("draws the member's own picture put up from the web once the team report names it, on their row, their card and in settings", async () => {
+    // Arrange: the account was read before the change, the report after it.
+    const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
+    const reportWithOwnPicture = {
+      ...workspaceReport,
+      members: workspaceReport.members.map((member) => (
+        member.user.id === user.id ? { ...member, user: { ...member.user, pictureVersion: PICTURE_VERSION } } : member
+      )),
+    } satisfies WorkspaceReport;
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ memberPicture, workspaceReport: vi.fn().mockResolvedValue(reportWithOwnPicture) })} />);
+
+    // Act
+    const panel = await openAllStats(person);
+    const [, , ownRow] = within(await within(panel).findByRole("table", { name: "People" })).getAllByRole("row");
+    await waitFor(() => expect(ownRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    const cardPicture = within(panel).getByTestId("member-stats").querySelector("h4 img.member-avatar")?.getAttribute("src");
+    await person.click(within(panel).getByRole("button", { name: "Close all stats" }));
+    const group = await openPictureGroup(person);
+
+    // Assert
+    expect(cardPicture).toBe(JPEG_DATA_URL);
+    expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL);
+    expect(within(group).getByRole("button", { name: "Remove" })).toBeInTheDocument();
   });
 
   it("puts up the picture a member picks in settings as a small square and shows it as theirs", async () => {

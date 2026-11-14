@@ -382,6 +382,20 @@ describe("dashboard", () => {
     expect(tiles(ownProjects)).toEqual([["grid", "#a3b3c2"]]);
   });
 
+  it("wears the project list's own pair on the person card for a project the board has not listed yet", async () => {
+    // Arrange: the board is still on its way, so only the viewer's project
+    // list, which says General is the default, can draw it.
+    const person = await signIn(clientFor({ workspace: vi.fn().mockReturnValue(new Promise(() => undefined)) }));
+
+    // Act
+    const ownProjects = await (await openAllStats(person)).findByTestId("member-project-list");
+
+    // Assert
+    const tile = ownProjects.querySelector(".project-icon");
+    expect(tile).toHaveAttribute("data-icon", "grid");
+    expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
+  });
+
   it.each([
     ["Both", "Hourly active and agent time", ["agent", "human"]],
     ["Active time", "Hourly active time", ["human"]],
@@ -2520,6 +2534,51 @@ describe("profile pictures", () => {
     // Assert
     expect(samRow?.querySelector(".member-avatar")).toHaveTextContent(/^S$/);
     expect(samRow?.querySelector("img")).toBeNull();
+  });
+
+  it("asks again for a picture whose read failed at the next refresh, and shows it once it arrives", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Arrange: the first read meets a server that is briefly out of reach.
+      const memberPicture = vi.fn()
+        .mockRejectedValueOnce(new ClientError("transient", "Cannot reach the server."))
+        .mockResolvedValue(new Uint8Array(JPEG_BYTES));
+      const person = await signIn(clientFor({ memberPicture, workspace: vi.fn().mockResolvedValue(reportWithSamsPicture) }));
+      const stats = await openAllStats(person);
+      const [, samRow] = within(await stats.findByRole("table", { name: "People" })).getAllByRole("row");
+      await waitFor(() => expect(memberPicture).toHaveBeenCalledTimes(1));
+
+      // Act: the page's next refresh.
+      await vi.advanceTimersByTimeAsync(TODAY_REFRESH_MS);
+
+      // Assert
+      await waitFor(() => expect(samRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+      expect(memberPicture).toHaveBeenCalledTimes(2);
+      expect(memberPicture).toHaveBeenLastCalledWith("u1", PICTURE_VERSION);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows in settings the picture the board names for the viewer, put up from another device since the page loaded", async () => {
+    // Arrange: /me was read before the change, the board after it.
+    const reportWithOwnPicture = {
+      ...workspaceReport,
+      members: teamMembers.map((member) => (
+        member.user.id === self.id ? { ...member, user: { ...member.user, pictureVersion: PICTURE_VERSION } } : member
+      )),
+    };
+    const person = await signIn(clientFor({
+      memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
+      workspace: vi.fn().mockResolvedValue(reportWithOwnPicture),
+    }));
+
+    // Act
+    const group = await openPictureGroup(person);
+
+    // Assert
+    await waitFor(() => expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    expect(within(group).getByRole("button", { name: "Remove" })).toBeInTheDocument();
   });
 
   it("puts up the picture a member picks in settings as a small square and shows it as theirs", async () => {

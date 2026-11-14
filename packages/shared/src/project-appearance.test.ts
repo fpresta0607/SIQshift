@@ -4,11 +4,19 @@ import {
   DEFAULT_PROJECT_APPEARANCE,
   PROJECT_COLOR_NAMES,
   PROJECT_COLORS,
-  PROJECT_ICONS,
   projectAppearance,
 } from "./project-appearance.js";
 
 const PROJECT_ID = "5b0e8f0e-52a4-4c3e-9d0f-3f2f8f1f7a01";
+
+/**
+ * The pair PROJECT_ID is assigned, worked out from the FNV-1a spec rather than
+ * from the code: 32-bit FNV-1a over the id's ASCII bytes (offset basis
+ * 0x811c9dc5, prime 0x01000193) is 0x69224709. Mod 23, the icons without the
+ * default's grid, that is 5: book. Shifted right by 8 and mod 7, the colors
+ * without the default's slate, it is 4: coral.
+ */
+const PROJECT_ID_PAIR = { icon: "book", color: "#ff9d8a" } as const;
 
 describe("a project's icon and color", () => {
   it("shows the pair a member chose", () => {
@@ -23,13 +31,16 @@ describe("a project's icon and color", () => {
     expect(appearance).toEqual(DEFAULT_PROJECT_APPEARANCE);
   });
 
-  it("assigns an unchosen project the same pair on every read", () => {
-    const first = projectAppearance({ id: PROJECT_ID, isDefault: false, icon: null, color: null });
-    const second = projectAppearance({ id: PROJECT_ID, isDefault: false, icon: undefined, color: undefined });
+  // A changed hash or a reordered list re-skins every project nobody picked a
+  // pair for, and splits the pair a client falls back to from the one the
+  // server answers with.
+  it.each([
+    { label: "stored as null", stored: { icon: null, color: null } },
+    { label: "absent from an older server", stored: { icon: undefined, color: undefined } },
+  ])("assigns an unchosen project the pair its id hashes to, with its pair $label", ({ stored }) => {
+    const appearance = projectAppearance({ id: PROJECT_ID, isDefault: false, ...stored });
 
-    expect(second).toEqual(first);
-    expect(PROJECT_ICONS).toContain(first.icon);
-    expect(PROJECT_COLORS).toContain(first.color);
+    expect(appearance).toEqual(PROJECT_ID_PAIR);
   });
 
   it("never assigns the default project's pair to another project", () => {
@@ -45,13 +56,11 @@ describe("a project's icon and color", () => {
     { stored: { icon: "unicorn", color: "#85c6ff" }, kept: "color" as const },
     { stored: { icon: "rocket", color: "#000000" }, kept: "icon" as const },
   ])("replaces a stored value the lists no longer hold and keeps the $kept", ({ stored, kept }) => {
-    const assigned = projectAppearance({ id: PROJECT_ID, isDefault: false, icon: null, color: null });
-
     const appearance = projectAppearance({ id: PROJECT_ID, isDefault: false, ...stored });
 
     expect(appearance).toEqual(kept === "color"
-      ? { icon: assigned.icon, color: stored.color }
-      : { icon: stored.icon, color: assigned.color });
+      ? { icon: PROJECT_ID_PAIR.icon, color: stored.color }
+      : { icon: stored.icon, color: PROJECT_ID_PAIR.color });
   });
 
   it("names every color for the picker", () => {
