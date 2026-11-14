@@ -2560,32 +2560,39 @@ describe("profile pictures", () => {
     }
   });
 
-  it("shows in settings the picture the board names for the viewer, put up from another device since the page loaded", async () => {
-    // Arrange: /me was read before the change, the board after it.
-    const reportWithOwnPicture = {
-      ...workspaceReport,
-      members: teamMembers.map((member) => (
-        member.user.id === self.id ? { ...member, user: { ...member.user, pictureVersion: PICTURE_VERSION } } : member
-      )),
-    };
+  it.each([
+    { label: "put up", before: null, after: PICTURE_VERSION, control: "Change picture", removeButtons: 1 },
+    { label: "taken down", before: PICTURE_VERSION, after: null, control: "Add a picture", removeButtons: 0 },
+  ])("shows in settings a picture $label from another device since the page loaded", async ({ before, after, control, removeButtons }) => {
+    // Arrange: /me answers the page's load before the change, and every read after it.
     const person = await signIn(clientFor({
+      me: vi.fn()
+        .mockResolvedValueOnce({ user: { ...self, pictureVersion: before } })
+        .mockResolvedValue({ user: { ...self, pictureVersion: after } }),
       memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
-      workspace: vi.fn().mockResolvedValue(reportWithOwnPicture),
     }));
 
     // Act
-    const group = await openPictureGroup(person);
+    const group = within(await openPictureGroup(person));
 
     // Assert
-    await waitFor(() => expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
-    expect(within(group).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    expect(await group.findByLabelText(control)).toBeInTheDocument();
+    expect(group.queryAllByRole("button", { name: "Remove" })).toHaveLength(removeButtons);
   });
 
   it("puts up the picture a member picks in settings as a small square and shows it as theirs", async () => {
-    // Arrange
-    const uploadPicture = vi.fn().mockResolvedValue({ user: { ...self, pictureVersion: PICTURE_VERSION } });
+    // Arrange: /me names whatever picture the server holds.
+    let held: string | null = null;
+    const uploadPicture = vi.fn().mockImplementation(async () => {
+      held = PICTURE_VERSION;
+      return { user: { ...self, pictureVersion: PICTURE_VERSION } };
+    });
     const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
-    const person = await signIn(clientFor({ uploadPicture, memberPicture }));
+    const person = await signIn(clientFor({
+      uploadPicture,
+      memberPicture,
+      me: vi.fn().mockImplementation(async () => ({ user: { ...self, pictureVersion: held } })),
+    }));
     const group = within(await openPictureGroup(person));
 
     // Act
@@ -2631,10 +2638,14 @@ describe("profile pictures", () => {
   });
 
   it("takes the member's picture down and shows their initials again", async () => {
-    // Arrange
-    const removePicture = vi.fn().mockResolvedValue({ user: { ...self, pictureVersion: null } });
+    // Arrange: /me names whatever picture the server holds.
+    let held: string | null = PICTURE_VERSION;
+    const removePicture = vi.fn().mockImplementation(async () => {
+      held = null;
+      return { user: { ...self, pictureVersion: null } };
+    });
     const person = await signIn(clientFor({
-      me: vi.fn().mockResolvedValue({ user: { ...self, pictureVersion: PICTURE_VERSION } }),
+      me: vi.fn().mockImplementation(async () => ({ user: { ...self, pictureVersion: held } })),
       memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
       removePicture,
     }));

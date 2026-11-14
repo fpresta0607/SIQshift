@@ -327,11 +327,6 @@ export const App = ({ client }: AppProps) => {
       if (request !== boardRequest.current) return undefined;
       setWorkspace(report);
       setDataError(undefined);
-      // The board names the viewer's picture as it stands now, so one changed
-      // from the desktop reaches settings with the next board, not the next
-      // load. A board from a server that predates pictures names none.
-      const own = report.members.find((entry) => entry.user.id === selfId);
-      if (own?.user.pictureVersion !== undefined) setSelfPictureVersion(own.user.pictureVersion);
       return undefined;
     } catch (error: unknown) {
       if (request !== boardRequest.current) return undefined;
@@ -345,7 +340,7 @@ export const App = ({ client }: AppProps) => {
       setDataError(message);
       return message;
     }
-  }, [client, range, scopeParams, expireSession, selfId]);
+  }, [client, range, scopeParams, expireSession]);
 
   useEffect(() => {
     setWorkspace(undefined);
@@ -523,6 +518,26 @@ export const App = ({ client }: AppProps) => {
     setSessionPage(1);
     setSessionRows([]);
   }, [scope, range, sessionsOpen]);
+
+  // Settings draws the viewer's picture from what /me last said, so opening it
+  // asks again: a picture put up or taken down from the desktop since then
+  // shows here. A picture change made here holds the read back until it lands,
+  // so an answer from before the change cannot undo it.
+  useEffect(() => {
+    if (!settingsOpen || pictureBusy) return undefined;
+    let cancelled = false;
+    void client.me().then(
+      ({ user }) => {
+        if (!cancelled) setSelfPictureVersion(user.pictureVersion ?? null);
+      },
+      () => {
+        // Advisory only: a failed read keeps the picture settings already shows.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, settingsOpen, pictureBusy]);
 
   // One overlay owns Escape at a time, innermost first, so one press closes
   // one dialog.

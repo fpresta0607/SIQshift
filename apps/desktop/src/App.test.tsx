@@ -2505,6 +2505,15 @@ const reportWithSamsPicture = {
   )),
 } satisfies WorkspaceReport;
 
+/// The team view naming the signed-in member's picture by `version`, null
+/// once it is taken down - what the server's report says for them.
+const reportNamingOwnPicture = (version: string | null): WorkspaceReport => ({
+  ...workspaceReport,
+  members: workspaceReport.members.map((member) => (
+    member.user.id === user.id ? { ...member, user: { ...member.user, pictureVersion: version } } : member
+  )),
+});
+
 /// Opens settings and unfolds its Profile picture group, returning the group.
 const openPictureGroup = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
   const summary = within(await openSettings(person)).getByText("Profile picture");
@@ -2591,6 +2600,7 @@ describe("profile pictures", () => {
     render(<App bridge={bridgeFor({
       bootstrap: vi.fn().mockResolvedValue({ ...account, user: { ...user, pictureVersion: PICTURE_VERSION } }),
       memberPicture,
+      workspaceReport: vi.fn().mockResolvedValue(reportNamingOwnPicture(PICTURE_VERSION)),
     })} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(memberPicture).toHaveBeenCalledTimes(1);
@@ -2609,14 +2619,8 @@ describe("profile pictures", () => {
   it("draws the member's own picture put up from the web once the team report names it, on their row, their card and in settings", async () => {
     // Arrange: the account was read before the change, the report after it.
     const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
-    const reportWithOwnPicture = {
-      ...workspaceReport,
-      members: workspaceReport.members.map((member) => (
-        member.user.id === user.id ? { ...member, user: { ...member.user, pictureVersion: PICTURE_VERSION } } : member
-      )),
-    } satisfies WorkspaceReport;
     const person = userEvent.setup();
-    render(<App bridge={bridgeFor({ memberPicture, workspaceReport: vi.fn().mockResolvedValue(reportWithOwnPicture) })} />);
+    render(<App bridge={bridgeFor({ memberPicture, workspaceReport: vi.fn().mockResolvedValue(reportNamingOwnPicture(PICTURE_VERSION)) })} />);
 
     // Act
     const panel = await openAllStats(person);
@@ -2632,12 +2636,40 @@ describe("profile pictures", () => {
     expect(within(group).getByRole("button", { name: "Remove" })).toBeInTheDocument();
   });
 
+  it.each([
+    { label: "put up", before: null, after: PICTURE_VERSION, control: "Change picture", removeButtons: 1 },
+    { label: "taken down", before: PICTURE_VERSION, after: null, control: "Add a picture", removeButtons: 0 },
+  ])("shows in settings a picture $label from the web since the account was read, with All stats never opened", async ({ before, after, control, removeButtons }) => {
+    // Arrange: today's team report already says what the web did.
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      bootstrap: vi.fn().mockResolvedValue({ ...account, user: { ...user, pictureVersion: before } }),
+      memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
+      workspaceReport: vi.fn().mockResolvedValue(reportNamingOwnPicture(after)),
+    })} />);
+
+    // Act
+    const group = within(await openPictureGroup(person));
+
+    // Assert
+    expect(await group.findByLabelText(control)).toBeInTheDocument();
+    expect(group.queryAllByRole("button", { name: "Remove" })).toHaveLength(removeButtons);
+  });
+
   it("puts up the picture a member picks in settings as a small square and shows it as theirs", async () => {
-    // Arrange
-    const pictureUpload = vi.fn().mockResolvedValue({ ...user, pictureVersion: PICTURE_VERSION });
+    // Arrange: the team report names whatever picture the server holds.
+    let held: string | null = null;
+    const pictureUpload = vi.fn().mockImplementation(async () => {
+      held = PICTURE_VERSION;
+      return { ...user, pictureVersion: PICTURE_VERSION };
+    });
     const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
     const person = userEvent.setup();
-    render(<App bridge={bridgeFor({ pictureUpload, memberPicture })} />);
+    render(<App bridge={bridgeFor({
+      pictureUpload,
+      memberPicture,
+      workspaceReport: vi.fn().mockImplementation(async () => reportNamingOwnPicture(held)),
+    })} />);
     const group = within(await openPictureGroup(person));
 
     // Act
@@ -2685,13 +2717,18 @@ describe("profile pictures", () => {
   });
 
   it("takes the member's picture down and shows their initials again", async () => {
-    // Arrange
-    const pictureRemove = vi.fn().mockResolvedValue(user);
+    // Arrange: the team report names whatever picture the server holds.
+    let held: string | null = PICTURE_VERSION;
+    const pictureRemove = vi.fn().mockImplementation(async () => {
+      held = null;
+      return user;
+    });
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({
       bootstrap: vi.fn().mockResolvedValue({ ...account, user: { ...user, pictureVersion: PICTURE_VERSION } }),
       memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
       pictureRemove,
+      workspaceReport: vi.fn().mockImplementation(async () => reportNamingOwnPicture(held)),
     })} />);
     const group = await openPictureGroup(person);
     await waitFor(() => expect(group.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));

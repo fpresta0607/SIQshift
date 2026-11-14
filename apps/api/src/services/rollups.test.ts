@@ -55,6 +55,7 @@ const agentInterval = (
   agentId: null,
   agentRepoRoot: null,
   agentRepoKey: null,
+  externalSessionId: `s-${userId}-${start.toISOString()}-runtime-id`,
   startedAt: start,
   endedAt: end,
   ...overrides,

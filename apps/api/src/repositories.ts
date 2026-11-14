@@ -290,12 +290,8 @@ export interface AgentIntervalRecord {
    * exactly as untied.
    */
   projectName?: string | null;
-  /**
-   * The runtime's own id for the session, `<session id>~<unix start>` on a
-   * continuation shift. Absent from a read that does not carry it, which the
-   * board reads as a session's own shift.
-   */
-  externalSessionId?: string;
+  /** The runtime's own id for the session, `<session id>~<unix start>` on a continuation shift. */
+  externalSessionId: string;
   startedAt: Date;
   endedAt: Date;
 }

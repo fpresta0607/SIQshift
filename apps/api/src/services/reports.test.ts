@@ -937,6 +937,7 @@ describe("workspace report", () => {
     agentId: null,
     agentRepoRoot: null,
     agentRepoKey: null,
+    externalSessionId: `${user.id}-${source}-${start.toISOString()}-runtime-id`,
     startedAt: start,
     endedAt: end,
   });
@@ -1904,6 +1905,7 @@ describe("agent shifts", () => {
       agentId: ids.session,
       agentRepoRoot: null,
       agentRepoKey: null,
+      externalSessionId: `${sessionId}-runtime-id`,
       startedAt: start,
       endedAt: end,
     });
@@ -2005,6 +2007,7 @@ describe("agent shifts", () => {
       agentId: ids.session,
       agentRepoRoot: null,
       agentRepoKey: null,
+      externalSessionId: `${sessionId}-runtime-id`,
       startedAt: start,
       endedAt: end,
     });

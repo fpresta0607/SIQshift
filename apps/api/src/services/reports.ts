@@ -1528,8 +1528,8 @@ function agentSessionKey(userId: string, source: string, externalSessionId: stri
  * records the shift it opens after the server ended one as
  * `<session id>~<unix start>`. Undefined for a session's own shift.
  */
-function continuedSessionId(externalSessionId: string | undefined): string | undefined {
-  return externalSessionId === undefined ? undefined : /^(.+)~\d+$/s.exec(externalSessionId)?.[1];
+function continuedSessionId(externalSessionId: string): string | undefined {
+  return /^(.+)~\d+$/s.exec(externalSessionId)?.[1];
 }
 
 /**

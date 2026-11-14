@@ -293,6 +293,19 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const isCurrent = (service: TimerBridge, generation: number): boolean =>
     mounted.current && latestBridge.current === service && bridgeGeneration.current === generation;
 
+  /// The account takes the picture a team report names for its member, so one
+  /// put up, changed or taken down from the web reaches every surface that
+  /// draws the account's - their row, their card and settings.
+  const followReportedPicture = (report: WorkspaceReport): void => {
+    setAccount((known) => {
+      if (known?.kind !== "ready") return known;
+      const own = report.members.find((member) => member.user.id === known.user.id);
+      return own === undefined || own.user.pictureVersion === known.user.pictureVersion
+        ? known
+        : { ...known, user: { ...known.user, pictureVersion: own.user.pictureVersion } };
+    });
+  };
+
   const clearAccountFields = (): void => {
     setPassword("");
     setName("");
@@ -513,16 +526,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           workspaceFailures.current = 0;
           setWorkspace(result);
           setWorkspaceError(undefined);
-          // The report names the member's picture as it stands now, so one
-          // changed or removed from the web reaches every surface that draws
-          // the account's - their row, their card and settings - by the next
-          // report rather than the next sign-in.
-          const own = result.members.find((member) => member.user.id === signedIn.user.id);
-          if (own !== undefined) {
-            setAccount((known) => (known?.kind === "ready" && known.user.pictureVersion !== own.user.pictureVersion
-              ? { ...known, user: { ...known.user, pictureVersion: own.user.pictureVersion } }
-              : known));
-          }
+          followReportedPicture(result);
         }
       },
       (error: unknown) => {
@@ -831,6 +835,28 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     );
     return () => { active = false; };
   }, [bridge, settingsOpen]);
+
+  // Settings draws the member's picture from the account, which only a team
+  // report brings up to date, and it never opens over All stats; so opening it
+  // reads today's report for the member's own entry. A picture change made
+  // here holds the read back until it lands, so an answer from before the
+  // change cannot put the old picture back.
+  useEffect(() => {
+    if (!settingsOpen || pictureBusy) return undefined;
+    let active = true;
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    const bounds = rangeBounds("today");
+    void service.workspaceReport(bounds?.fromAt, bounds?.toExclusiveAt).then(
+      (result) => {
+        if (active && isCurrent(service, generation)) followReportedPicture(result);
+      },
+      () => {
+        // Advisory only: a failed read keeps the picture the account names.
+      },
+    );
+    return () => { active = false; };
+  }, [bridge, settingsOpen, pictureBusy]);
 
   // The AI-tools group names the models each connected runtime has reported,
   // folded out of the caller's all-time agent splits; like the settings
