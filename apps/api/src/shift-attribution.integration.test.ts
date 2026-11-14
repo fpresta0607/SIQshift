@@ -85,7 +85,7 @@ integration("shifts map attribution over a real database", () => {
       insert into agents (id, organization_id, owner_user_id, project_id, repo_root, repo_key, source, name, status)
       values (
         ${agentId}, ${user.organizationId}, ${user.id}, null, ${runWorktree},
-        'github.com/fpresta0607/precisiondocs-ai', 'claude_code', 'Claude Code @ precisiondocs-ai', 'anonymous'
+        'github.com/acme/novawebsite-ai', 'claude_code', 'Claude Code @ novawebsite-ai', 'anonymous'
       )
     `;
 
@@ -107,6 +107,6 @@ integration("shifts map attribution over a real database", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json() as { groups: { repo: string | null; nullCause?: string | null; shiftCount: number }[] };
-    expect(body.groups).toContainEqual(expect.objectContaining({ repo: "precisiondocs-ai", nullCause: null, shiftCount: 1 }));
+    expect(body.groups).toContainEqual(expect.objectContaining({ repo: "novawebsite-ai", nullCause: null, shiftCount: 1 }));
   }, 120_000);
 });

@@ -42,7 +42,7 @@ describe("isHomeOrTempDirectory", () => {
   });
 
   it.each([
-    "C:/dev/code-goblins",
+    "C:/dev/relay-app",
     "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
     "C:/Users/Sam/fieldNotes",
     "/home/alex/src/quartermaster",
@@ -170,14 +170,14 @@ describe("normalizeRemote", () => {
   // remote is the only identifier that is the same in every worktree, in a
   // second checkout under a different directory name, and on another machine.
   it("reduces every spelling of one remote to the same value", () => {
-    const expected = "github.com/fpresta0607/precisiondocs";
-    expect(normalizeRemote("git@github.com:fpresta0607/precisiondocs.git")).toBe(expected);
-    expect(normalizeRemote("https://github.com/fpresta0607/precisiondocs.git")).toBe(expected);
-    expect(normalizeRemote("https://github.com/fpresta0607/precisiondocs")).toBe(expected);
-    expect(normalizeRemote("ssh://git@github.com/fpresta0607/precisiondocs.git")).toBe(expected);
-    expect(normalizeRemote("git://github.com/fpresta0607/precisiondocs.git")).toBe(expected);
-    expect(normalizeRemote("https://GitHub.COM/FPresta0607/PrecisionDocs.GIT")).toBe(expected);
-    expect(normalizeRemote("  https://github.com/fpresta0607/precisiondocs/  ")).toBe(expected);
+    const expected = "github.com/acme/novawebsite";
+    expect(normalizeRemote("git@github.com:acme/novawebsite.git")).toBe(expected);
+    expect(normalizeRemote("https://github.com/acme/novawebsite.git")).toBe(expected);
+    expect(normalizeRemote("https://github.com/acme/novawebsite")).toBe(expected);
+    expect(normalizeRemote("ssh://git@github.com/acme/novawebsite.git")).toBe(expected);
+    expect(normalizeRemote("git://github.com/acme/novawebsite.git")).toBe(expected);
+    expect(normalizeRemote("https://GitHub.COM/Acme/NovaWebsite.GIT")).toBe(expected);
+    expect(normalizeRemote("  https://github.com/acme/novawebsite/  ")).toBe(expected);
   });
 
   it("drops credentials and transport, which name no repository", () => {
@@ -220,20 +220,20 @@ describe("normalizeRemote", () => {
 describe("identityRepoKey", () => {
   // The defect, stated as a test: two worktrees, two paths, one repository.
   it("gives two worktrees of one remote the same key", () => {
-    const remote = "git@github.com:fpresta0607/precisiondocs.git";
-    const first = identityRepoKey("C:/Users/riley/.treehouse/precisiondocs-fdd5f2/1/precisiondocs", remote);
-    const second = identityRepoKey("C:/Users/riley/.treehouse/precisiondocs-fdd5f2/2/precisiondocs", remote);
-    expect(first).toBe("github.com/fpresta0607/precisiondocs");
+    const remote = "git@github.com:acme/novawebsite.git";
+    const first = identityRepoKey("C:/Users/riley/.treehouse/novawebsite-fdd5f2/1/novawebsite", remote);
+    const second = identityRepoKey("C:/Users/riley/.treehouse/novawebsite-fdd5f2/2/novawebsite", remote);
+    expect(first).toBe("github.com/acme/novawebsite");
     expect(second).toBe(first);
   });
 
   // Two checkouts of one GitHub repository under different directory names -
-  // `C:/dev/PrecisionDocs-AI` and `C:/dev/code-goblins/projects/precisiondocs`.
+  // `C:/dev/NovaWebsite-AI` and `C:/dev/relay-app/projects/novawebsite`.
   // No basename comparison could ever collapse these; only the remote can.
   it("gives two checkouts under different names the same key", () => {
-    const ai = identityRepoKey("C:/dev/PrecisionDocs-AI", "https://github.com/fpresta0607/precisiondocs.git");
-    const goblins = identityRepoKey("C:/dev/code-goblins/projects/precisiondocs", "git@github.com:fpresta0607/precisiondocs.git");
-    expect(ai).toBe(goblins);
+    const ai = identityRepoKey("C:/dev/NovaWebsite-AI", "https://github.com/acme/novawebsite.git");
+    const nested = identityRepoKey("C:/dev/relay-app/projects/novawebsite", "git@github.com:acme/novawebsite.git");
+    expect(ai).toBe(nested);
   });
 
   // A worktree names no codebase, but the repository it holds is still known.
@@ -260,7 +260,7 @@ describe("identityRepoKey", () => {
 
 describe("repoKeyLabel", () => {
   it("names the repository from a remote key and the directory from a path key", () => {
-    expect(repoKeyLabel("github.com/fpresta0607/precisiondocs")).toBe("precisiondocs");
+    expect(repoKeyLabel("github.com/acme/novawebsite")).toBe("novawebsite");
     expect(repoKeyLabel("path:C:/dev/SIQshift")).toBe("SIQshift");
   });
 
@@ -275,7 +275,7 @@ describe("agentCodebaseLabel", () => {
   // every worktree. The key is what the identity is, so the key names it.
   it("names the repository the identity is keyed on, not the worktree that minted the row", () => {
     expect(agentCodebaseLabel("C:/dev/clock-in-worktrees/fix-login", "github.com/acme/clock-in")).toBe("clock-in");
-    expect(agentCodebaseLabel("C:/dev/PrecisionDocs-AI", "github.com/fpresta0607/precisiondocs-ai")).toBe("precisiondocs-ai");
+    expect(agentCodebaseLabel("C:/dev/NovaWebsite-AI", "github.com/acme/novawebsite-ai")).toBe("novawebsite-ai");
   });
 
   it("reads a path key as its own directory, and falls back to the root only without a key", () => {
@@ -374,22 +374,22 @@ describe("resolveProjectForCwd", () => {
   // without any worktree-specific logic - this test pins it so the nested
   // case is never quietly lost.
   it("matches a worktree nested under the mapped project root", () => {
-    const mappings = [mapping("C:/dev/peakCraftsman", projectA)];
-    expect(resolveProjectForCwd("C:\\dev\\peakCraftsman\\.worktrees\\gb-peak-simplify", mappings)).toBe(projectA);
+    const mappings = [mapping("C:/dev/atlasPortal", projectA)];
+    expect(resolveProjectForCwd("C:\\dev\\atlasPortal\\.worktrees\\gb-atlas-simplify", mappings)).toBe(projectA);
   });
 
   // And the gap the nested case leaves: a worktree the operator keeps
   // outside the project root can never match by prefix at all.
   it("matches nothing for a worktree stored outside every mapped root", () => {
-    const mappings = [mapping("C:/dev/peakCraftsman", projectA)];
-    expect(resolveProjectForCwd("C:\\Users\\riley\\.treehouse\\peakcraftsman-4b3191\\peakcraftsman", mappings)).toBeNull();
+    const mappings = [mapping("C:/dev/atlasPortal", projectA)];
+    expect(resolveProjectForCwd("C:\\Users\\riley\\.treehouse\\atlasportal-4b3191\\atlasportal", mappings)).toBeNull();
   });
 });
 
 describe("resolveProjectForRemote", () => {
   it("resolves a repository the path lane cannot reach through its remote", () => {
-    const mappings = [mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/peakcraftsman.git")];
-    expect(resolveProjectForRemote("https://github.com/acme/peakcraftsman", mappings)).toBe(projectA);
+    const mappings = [mapping("C:/dev/atlasPortal", projectA, "path_prefix", "git@github.com:acme/atlasportal.git")];
+    expect(resolveProjectForRemote("https://github.com/acme/atlasportal", mappings)).toBe(projectA);
   });
 
   it("normalizes both sides before comparing, never compares verbatim", () => {
@@ -409,7 +409,7 @@ describe("resolveProjectForRemote", () => {
 
   it("answers null when no mapping names the remote", () => {
     const mappings = [
-      mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/peakcraftsman.git"),
+      mapping("C:/dev/atlasPortal", projectA, "path_prefix", "git@github.com:acme/atlasportal.git"),
       mapping("C:/dev/other", projectB),
     ];
     expect(resolveProjectForRemote("https://github.com/acme/unrelated.git", mappings)).toBeNull();
@@ -420,13 +420,13 @@ describe("resolveProjectForRemote", () => {
   // codebases and never collapse into one project because their paths look
   // alike or their mappings sit nearby.
   it("never resolves one remote through a mapping that names a different one", () => {
-    const mappings = [mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/peakcraftsman.git")];
-    expect(resolveProjectForRemote("git@github.com:acme/peakcraftsman-extra.git", mappings)).toBeNull();
+    const mappings = [mapping("C:/dev/atlasPortal", projectA, "path_prefix", "git@github.com:acme/atlasportal.git")];
+    expect(resolveProjectForRemote("git@github.com:acme/atlasportal-extra.git", mappings)).toBeNull();
   });
 
   it("answers null when the matching mappings disagree about the project", () => {
     const mappings = [
-      mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/api.git"),
+      mapping("C:/dev/atlasPortal", projectA, "path_prefix", "git@github.com:acme/api.git"),
       mapping("C:/elsewhere", projectB, "path_prefix", "https://github.com/acme/api.git"),
     ];
     expect(resolveProjectForRemote("git@github.com:acme/api.git", mappings)).toBeNull();
@@ -434,7 +434,7 @@ describe("resolveProjectForRemote", () => {
 
   it("agrees when the matching mappings name the same project twice", () => {
     const mappings = [
-      mapping("C:/dev/peakCraftsman", projectA, "path_prefix", "git@github.com:acme/api.git"),
+      mapping("C:/dev/atlasPortal", projectA, "path_prefix", "git@github.com:acme/api.git"),
       mapping("C:/elsewhere", projectA, "path_prefix", "https://github.com/acme/api.git"),
     ];
     expect(resolveProjectForRemote("git@github.com:acme/api.git", mappings)).toBe(projectA);

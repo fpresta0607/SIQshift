@@ -247,7 +247,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   preferencesGet: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
   preferencesSet: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
   orgOverview: vi.fn().mockResolvedValue({
-    organization: { id: "00000000-0000-4000-8000-000000000900", name: "SIQstack", inviteCode: "ACDEF-GHJKM" },
+    organization: { id: "00000000-0000-4000-8000-000000000900", name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" },
   }),
   orgJoin: vi.fn().mockResolvedValue({
     organization: { id: "00000000-0000-4000-8000-000000000901", name: "Joined Team", inviteCode: "PQRTU-VWXY3" },
@@ -299,7 +299,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
 const openAllStats = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
   await person.click(await screen.findByTestId("all-stats-trigger"));
   // The overlay is titled by the workspace it shows.
-  return screen.getByRole("dialog", { name: /SIQstack|All stats/ });
+  return screen.getByRole("dialog", { name: /Lumen Studio|All stats/ });
 };
 
 /// The dialog's Humans or Agents switch.
@@ -532,7 +532,7 @@ describe("recording", () => {
 
     // The header says where time is landing, in words rather than an icon.
     const where = await screen.findByTestId("filing-where");
-    await waitFor(() => expect(where).toHaveTextContent("SIQstack"));
+    await waitFor(() => expect(where).toHaveTextContent("Lumen Studio"));
     expect(where).toHaveTextContent(project.name);
 
     // Collapsed by default: no dropdown competing with the clock.
@@ -1331,7 +1331,7 @@ describe("the team board", () => {
     await view.findByLabelText("Totals");
 
     // Assert
-    expect(view.getByRole("heading", { name: "SIQstack" })).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(view.getByText(/^Today · /)).toBeInTheDocument();
     expect(teamTotal(panel, "Active time")).toHaveTextContent("2h 56m");
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
@@ -1841,7 +1841,7 @@ describe("the team board", () => {
       preferencesGet: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
   preferencesSet: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
   orgOverview: vi.fn().mockResolvedValue({
-        organization: { id: "00000000-0000-4000-8000-000000000900", name: "SIQstack", inviteCode: "ACDEF-GHJKM" },
+        organization: { id: "00000000-0000-4000-8000-000000000900", name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" },
       }),
     });
     const person = userEvent.setup();
@@ -1911,7 +1911,7 @@ describe("the team board", () => {
     expect(await team.findByText("Atlas Studio")).toBeInTheDocument();
     expect(team.queryByLabelText("New name for the workspace")).not.toBeInTheDocument();
     expect(screen.getByTestId("filing-where")).toHaveTextContent("Atlas Studio");
-    expect(screen.getByTestId("filing-where")).not.toHaveTextContent("SIQstack");
+    expect(screen.getByTestId("filing-where")).not.toHaveTextContent("Lumen Studio");
     // The answer to the rename is the new name: nothing is read again.
     expect(bridge.orgOverview).toHaveBeenCalledTimes(1);
   });
@@ -1936,8 +1936,8 @@ describe("the team board", () => {
     expect(alert).toHaveAttribute("role", "alert");
     // The sentence sits in the form it answers, which stays open to fix.
     expect(alert.closest("form")).toContainElement(team.getByLabelText("New name for the workspace"));
-    expect(screen.getByTestId("filing-where")).toHaveTextContent("SIQstack");
-    expect(screen.getByTestId("filing-where")).not.toHaveTextContent("SIQstack Crew");
+    expect(screen.getByTestId("filing-where")).toHaveTextContent("Lumen Studio");
+    expect(screen.getByTestId("filing-where")).not.toHaveTextContent("Lumen Studio Crew");
     // A refusal is not a lost session: the settings stay open, signed in.
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
   });
@@ -1956,7 +1956,7 @@ describe("the team board", () => {
 
     // Assert
     expect(bridge.orgRename).not.toHaveBeenCalled();
-    expect(team.getByText("SIQstack")).toBeInTheDocument();
+    expect(team.getByText("Lumen Studio")).toBeInTheDocument();
     expect(team.queryByLabelText("New name for the workspace")).not.toBeInTheDocument();
     expect(team.getByRole("button", { name: "Rename the workspace" })).toBeInTheDocument();
   });

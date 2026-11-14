@@ -865,11 +865,11 @@ describe("roster minting", () => {
   it("carries the remote to the identity, and shares one upsert across two worktrees", async () => {
     const agents = new MemoryAgents();
     const { agentSessions, service } = createService({ agents });
-    const remote = "git@github.com:fpresta0607/precisiondocs.git";
+    const remote = "git@github.com:acme/novawebsite.git";
 
     await service.ingest(subject, [
-      event({ externalSessionId: "one", repoRoot: "C:/w/precisiondocs-fdd5f2/1/precisiondocs", repoRemote: remote }),
-      event({ externalSessionId: "two", repoRoot: "C:/w/precisiondocs-fdd5f2/2/precisiondocs", repoRemote: remote }),
+      event({ externalSessionId: "one", repoRoot: "C:/w/novawebsite-fdd5f2/1/novawebsite", repoRemote: remote }),
+      event({ externalSessionId: "two", repoRoot: "C:/w/novawebsite-fdd5f2/2/novawebsite", repoRemote: remote }),
       event({ externalSessionId: "three", repoRoot: "C:/dev/other", repoRemote: null }),
     ]);
 
