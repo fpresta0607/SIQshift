@@ -58,7 +58,7 @@ answered rather than forgotten:
   verification states the client never receives, so a client-side filter would leave every
   group's held tag silently stale.
 
-The desktop gets the drawers, not the board: its All-stats modal is 440px wide and its Humans tab
+The desktop gets the drawers, not the board: its Humans tab
 already lists every member with their agent time one click away.
 
 **The Agents tab also answers "who is running an agent right now", from `GET

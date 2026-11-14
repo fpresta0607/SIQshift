@@ -239,8 +239,8 @@ select:disabled { opacity: .55; }
    so the heaviest-first sort still reads straight down. A .meter-row is itself
    a four-column grid, and 20rem is the narrowest column that still leaves the
    name its 10rem, the bar something to draw in and the duration a single line;
-   under twice that plus the gap the panel simply gets one column, which is the
-   520px window the app opens at. */
+   under twice that plus the gap the panel simply gets one column, as it does
+   once the window is resized narrow. */
 .meter-list { columns: 20rem 2; column-gap: 20px; margin: 0; padding: 0; list-style: none; }
 /* A multicol container has no row gap to give - `row-gap` does not apply
    between items in one - so the 2px that separated the rows as a grid rides on

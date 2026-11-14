@@ -172,7 +172,7 @@ export const App = ({ client }: AppProps) => {
   const [boardTab, setBoardTab] = useState<"humans" | "agents">("humans");
   const [agentShifts, setAgentShifts] = useState<AgentShiftsResponse | undefined>();
   const [agentShiftsFailed, setAgentShiftsFailed] = useState(false);
-  /// Who is running an agent right now, above the shifts map. Undefined until
+  /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// server has answered.
   const [liveSessions, setLiveSessions] = useState<LiveAgentSessionsResponse | undefined>();

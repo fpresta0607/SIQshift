@@ -736,8 +736,8 @@ async fn agent_shift_rows(
         .await
 }
 
-/// Who is running an agent right now, grouped by person, for the live view at
-/// the top of the Agents tab. No bounds: the view reads now.
+/// Who is running an agent right now, grouped by person, for the Agents tab's
+/// Live now card. No bounds: the view reads now.
 #[tauri::command]
 async fn agent_live_sessions(state: State<'_, AppState>) -> ApiResult<LiveAgentSessions> {
     let access_token = state.access_token().await?;

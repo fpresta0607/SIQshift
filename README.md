@@ -176,28 +176,27 @@ directly, and the app list - which measures foreground presence - closes on it w
 time** row, the same way the Today card does.
 
 A person's breakdown stops at what is the person's: their active time and those concurrency
-rows. Everything the agents themselves did lives on the **Agents tab**, as a map of shifts
-grouped by the codebase they worked: the recorded total on top, then one group per repo with
-its shifts underneath - each shift naming its runtime, its operator, the model it drove, and
-the commits it recorded. A group states its own totals; its shifts are fetched when you open
+rows.
+Everything the agents themselves did lives on the **Agents tab**, laid out like the Humans tab: the totals on top (tokens, agent time, shifts and repos), then the shifts grouped by the codebase they worked, one group per repo ranked by the tokens its shifts reported and then by agent time, with its shifts underneath - each shift naming its runtime, its operator, the model it drove, and the commits it recorded.
+Beside the repos, the agent runtimes that ran are ranked the same way, with who is running an agent right now beneath them.
+A group states its own totals; its shifts are fetched when you open
 it, a page at a time behind a **Show more** row, so a tab that draws four numbers per group
 never carries a month of shifts to do it.
 A shift names its codebase by the repository its first commit landed in, else the repository its roster identity is keyed on, else its working directory.
 The repository outranks the folder because a worktree's folder is named for its task, and one repository's shifts group together however a checkout capitalised its folder.
 A home folder or the temp tree names no codebase unless the repository's remote does.
 A shift that can name nothing at all groups last, split by why: **No working directory recorded** when nothing was captured, **Home or temp folder, no codebase** when the work happened in one, and **Run worktree, codebase not identified** when the work happened in a per-run directory whose repository no runtime identified - a named absence, so a capture gap never reads like work that legitimately had no repo.
-The web tab opens on a board of the people whose agents ran, ranked by agent time, and picking
-one narrows the map to their shifts; the desktop gets the map alone, since its Humans tab
-already lists every member.
+The web tab opens on a board of the people whose agents ran, ranked by agent time, and picking one narrows everything below it to their shifts; the desktop has no such board, since its Humans tab already lists every member.
 A group's held share appears only once a commit is decided. The concurrency split sums to active time and the
 agent split sums to agent time; one shared module, `packages/shared/src/intervals.ts`, computes
 all of it so the invariants (`active = t0+t1+t2+t3+`, `agent = Σ n·tn + away`) hold everywhere.
 
-Both surfaces also chart each hour as lightweight SVG with no chart library, with a
-**Time | Tokens** switch shown only when the range holds token data: active and agent time on
-the time side — agents in green, the person in gray — and tokens in (blue) and out (purple) on
-the token side. An hour with no token data breaks the token line rather than drawing a zero
-that never happened. Hours are bucketed to the viewer's local midnight-to-midnight calendar,
+Both surfaces also chart each hour as lightweight SVG with no chart library.
+Each chart in All stats has one toggle, and it picks what the chart shows.
+The Humans chart, and the one in a person's card, plots active and agent time - agents in green, the person in gray - as both lines or either one alone, each on a scale that fits the lines drawn.
+The Agents chart shows either the tokens burned, in and out together, as one bar per hour (per day across a range longer than a day), or agent time, and draws its toggle only when it has both to show.
+A bucket with no token data draws no bar and reads as a dash rather than a zero that never happened.
+Hours are bucketed to the viewer's local midnight-to-midnight calendar,
 never UTC. The web dashboard reuses its existing today/7d/30d/90d range filter for the graph;
 **All time** is unbounded and has no graph, on either tab in either app — its full history
 lives in the CSV export. Both apps chart the course of the day on their main screen, and both
@@ -559,7 +558,7 @@ A pnpm workspace. Contracts flow down; nothing flows back up.
 
 | Package | What lives there |
 |---|---|
-| **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the two React entries the frontends share — `./webgl-shader` (the WebGL background) and `./ui` (the hourly chart, the member breakdown, the Today meter rows, the runtime marks, the Agents-tab drawers). React and three are those entries' optional peers, so the API pulls neither. |
+| **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the three React entries the frontends share: `./webgl-shader` (the WebGL background), `./ui` (the hourly chart, the member breakdown, the Today meter rows, the runtime marks, the Agents-tab drawers) and `./workspace-view` (the team view both apps and the home page draw). React and three are those entries' optional peers, so the API pulls neither. |
 | **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, the migration runner, and the journal comparison `/health` answers from. |
 | **`apps/api`** | Hono API: env validation, Neon Auth JWT verification, services (sessions, activity, agent sessions, attribution, reports), Drizzle repositories, CSV export. |
 | **`apps/desktop`** | The tray app. React UI over a Tauri 2 Rust host: `monitor.rs` (activity), `spool.rs` (shared with the helper binaries), `uploader.rs`, `recovery.rs`, the All stats overlay, and the `siqshift-hook` and `siqshift-browser-host` bin targets. |

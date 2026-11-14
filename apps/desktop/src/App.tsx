@@ -238,7 +238,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [overlayTab, setOverlayTab] = useState<"humans" | "agents">("humans");
   const [agentShifts, setAgentShifts] = useState<AgentShifts | undefined>();
   const [agentShiftsError, setAgentShiftsError] = useState<string | undefined>();
-  /// Who is running an agent right now, above the shifts map. Undefined until
+  /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// host has answered; a failed poll keeps the last-good list.
   const [liveSessions, setLiveSessions] = useState<LiveAgentSessions | undefined>();
