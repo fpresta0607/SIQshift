@@ -11,10 +11,10 @@
  * Identity used to be (organization, owner, source, repo_root), and a repo
  * root is a *path*. Every treehouse worktree is its own path, so every worktree
  * minted its own agent; because the display name is composed from the last
- * segment, five different identities all rendered "Claude Code @ precisiondocs".
+ * segment, five different identities all rendered "Claude Code @ novawebsite".
  * Keyed by path, displayed by basename. Two checkouts of one GitHub repository
- * under different directory names - `C:\dev\PrecisionDocs-AI` and
- * `C:\dev\code-goblins\projects\precisiondocs` - are the same defect with no
+ * under different directory names - `C:\dev\NovaWebsite-AI` and
+ * `C:\dev\relay-app\projects\novawebsite` - are the same defect with no
  * basename to compare at all.
  *
  * `0016_agent_identity_by_remote` moved the key onto `agents.repo_key` and

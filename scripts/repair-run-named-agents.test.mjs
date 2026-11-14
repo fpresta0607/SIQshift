@@ -26,9 +26,9 @@ test("a capitalised checkout re-homes onto its own remote-keyed row", () => {
 });
 
 test("a second checkout under another spelling reaches the same repository row", () => {
-  const repository = agent({ id: "row-remote", repo_root: "C:/dev/precisiondocs", repo_key: "github.com/fpresta0607/precisiondocs-ai" });
+  const repository = agent({ id: "row-remote", repo_root: "C:/dev/novawebsite", repo_key: "github.com/acme/novawebsite-ai" });
 
-  assert.equal(findCodebaseRow([repository], "PrecisionDocs-AI")?.id, "row-remote");
+  assert.equal(findCodebaseRow([repository], "NovaWebsite-AI")?.id, "row-remote");
 });
 
 test("the oldest matching row wins and an unrelated codebase never does", () => {

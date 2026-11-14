@@ -163,10 +163,10 @@ integration("a late agent backlog over a real database", () => {
   it("places a gate worktree shift through the operator's own shifts of the same repository", async () => {
     const gate = "C:/Users/op/.no-mistakes/worktrees/3946e592fa2c/01M244TFYBDE1JF7DNGW0H8Y1P";
     await upload([
-      { source: "claude_code", externalSessionId: "checkout", event: "started", occurredAt: at(0), cwd: "C:/dev/precisiondocs", repoRoot: "C:/dev/precisiondocs", repoRemote: "https://github.com/acme/PrecisionDocs-AI.git" },
+      { source: "claude_code", externalSessionId: "checkout", event: "started", occurredAt: at(0), cwd: "C:/dev/novawebsite", repoRoot: "C:/dev/novawebsite", repoRemote: "https://github.com/acme/NovaWebsite-AI.git" },
     ]);
     await upload([
-      { source: "codex", externalSessionId: "reviewer", event: "started", occurredAt: at(2), cwd: gate, repoRoot: gate, repoRemote: "git@github.com:acme/precisiondocs-ai.git" },
+      { source: "codex", externalSessionId: "reviewer", event: "started", occurredAt: at(2), cwd: gate, repoRoot: gate, repoRemote: "git@github.com:acme/novawebsite-ai.git" },
       { source: "claude_code", externalSessionId: "unplaced", event: "started", occurredAt: at(2), cwd: gate, repoRoot: gate, repoRemote: "https://github.com/acme/elsewhere" },
     ]);
 

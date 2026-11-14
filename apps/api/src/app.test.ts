@@ -53,7 +53,7 @@ function createTestApp(
       resolved.push(identity.authUserId);
       return account;
     },
-    findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+    findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
     joinOrganization: async () => account,
   };
   const app = createApp({
@@ -223,7 +223,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async (_identity, inviteCode) => { seen.push(inviteCode); return account; },
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async () => account,
       },
     });
@@ -247,7 +247,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async (_identity, _inviteCode, workspaceName) => { seen.push(workspaceName); return account; },
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async () => account,
       },
     });
@@ -258,11 +258,11 @@ describe("API composition", () => {
       body: JSON.stringify(body),
     });
 
-    expect((await post({ workspaceName: "SIQstack" })).status).toBe(200);
+    expect((await post({ workspaceName: "Lumen Studio" })).status).toBe(200);
     expect((await post({})).status).toBe(200);
     expect((await post({ workspaceName: "  " })).status).toBe(400);
 
-    expect(seen).toEqual(["SIQstack", undefined]);
+    expect(seen).toEqual(["Lumen Studio", undefined]);
   });
 
   it("rejects an invite code that could not be one", async () => {
@@ -287,7 +287,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async (_identity, inviteCode) => { seen.push(inviteCode); return account; },
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async () => account,
       },
     });
@@ -307,7 +307,7 @@ describe("API composition", () => {
   it.each([
     [{ inviteCode: 42 }, "The invite code must be text, or left out."],
     [{ workspaceName: "  " }, "A workspace name needs 1 to 80 characters."],
-    [{ teamName: "SIQstack" }, "The server does not accept the field teamName."],
+    [{ teamName: "Lumen Studio" }, "The server does not accept the field teamName."],
   ])("names what to fix in a provisioning body it refuses: %j", async (body, message) => {
     // Arrange
     const { app } = createTestApp();
@@ -329,7 +329,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async (_identity, inviteCode) => { codes.push(inviteCode); return account; },
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async () => account,
       },
     });
@@ -364,7 +364,7 @@ describe("API composition", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      organization: { id: ids.organization, name: "SIQstack", inviteCode: "ACDEF-GHJKM" },
+      organization: { id: ids.organization, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" },
     });
   });
 
@@ -394,7 +394,7 @@ describe("API composition", () => {
         if (member === undefined) throw new Error("Unknown member");
         return member;
       },
-      findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+      findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
       joinOrganization: async () => account,
       claimFirstAdmin: async (subject) => {
         const member = members.get(subject.userId);
@@ -431,7 +431,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async () => account,
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async () => account,
         claimFirstAdmin: async () => ({ kind: "not_member" }),
       },
@@ -562,7 +562,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async () => account,
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async (_subject, code) => { seen.push(code); return account; },
       },
     });
@@ -583,7 +583,7 @@ describe("API composition", () => {
     const { app } = createTestApp({
       accounts: {
         resolve: async () => account,
-        findOrganization: async (id) => ({ id, name: "SIQstack", inviteCode: "ACDEF-GHJKM" }),
+        findOrganization: async (id) => ({ id, name: "Lumen Studio", inviteCode: "ACDEF-GHJKM" }),
         joinOrganization: async () => {
           throw new AppError("conflict", "This account has already recorded time in its current workspace, so it cannot be moved.");
         },

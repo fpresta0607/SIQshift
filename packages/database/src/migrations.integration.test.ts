@@ -366,7 +366,7 @@ integration(
     const ownerId = randomUUID();
     const otherOwnerId = randomUUID();
     const siqshift = "C:/dev/siqshift";
-    const worktree = "C:/Users/riley/.treehouse/precisiondocs-fdd5f2/2/precisiondocs";
+    const worktree = "C:/Users/riley/.treehouse/novawebsite-fdd5f2/2/novawebsite";
 
     beforeAll(async () => {
       if (!databaseUrl) return;
@@ -389,7 +389,7 @@ integration(
         insert into agents (organization_id, owner_user_id, source, repo_root, name, status)
         values
           (${organizationId}, ${ownerId}, 'claude_code', ${siqshift}, 'Claude Code @ siqshift', 'anonymous'),
-          (${organizationId}, ${ownerId}, 'claude_code', ${worktree}, 'Claude Code @ precisiondocs', 'anonymous'),
+          (${organizationId}, ${ownerId}, 'claude_code', ${worktree}, 'Claude Code @ novawebsite', 'anonymous'),
           (${organizationId}, ${ownerId}, 'claude_code', null, 'Claude Code @ unassigned', 'anonymous'),
           (${organizationId}, ${otherOwnerId}, 'claude_code', ${siqshift}, 'Claude Code @ siqshift', 'anonymous'),
           (${organizationId}, ${otherOwnerId}, 'claude_code', null, 'Claude Code @ unassigned', 'anonymous'),

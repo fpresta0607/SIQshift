@@ -323,7 +323,7 @@ export const agents = pgTable(
     // The codebase this agent works, as the working directory its shifts
     // reported. Evidence, never identity: a human reading the roster wants to
     // know where the work happened, and the first directory that minted the
-    // row answers that. Keying on it is what put five `precisiondocs` rows on
+    // row answers that. Keying on it is what put five `novawebsite` rows on
     // one operator's roster - every worktree is its own path.
     repoRoot: text("repo_root"),
     // The identity: the repository's normalized remote (`github.com/owner/repo`),

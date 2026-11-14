@@ -164,7 +164,7 @@ export function normalizeRemote(remote: string): string | null {
  * 1. **The normalized remote.** The only identifier that is the same in every
  *    worktree, in a second checkout of the same repository under another
  *    directory name, and on another machine - which is the whole point. Keying
- *    on the repo root instead is what put five `precisiondocs` rows on one
+ *    on the repo root instead is what put five `novawebsite` rows on one
  *    operator's roster: every treehouse worktree is its own path, so every
  *    worktree minted its own agent, and because the name is composed from the
  *    last segment all five rendered the same string. Keyed by path, displayed
@@ -264,7 +264,7 @@ export function shiftCodebaseLabel(path: string | null, repoKey: string | null =
  * repository its first commit landed in, else the repository its identity is
  * keyed on, else its working directory. The identity outranks the folder
  * because a worktree's folder is named for its task - a goblin's
- * `.worktrees/gb-cg-ci-speed` split one repository into a group per task - and
+ * `.worktrees/gb-ra-ci-speed` split one repository into a group per task - and
  * a label that matches the identity's in all but case takes the identity's
  * spelling, so a checkout's capitalisation never splits a repository in two.
  */

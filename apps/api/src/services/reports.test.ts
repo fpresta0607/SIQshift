@@ -2158,7 +2158,7 @@ describe("agent shifts", () => {
         projectId: ids.project,
         agentId: ids.session,
         agentRepoRoot: "C:/Users/riley/.no-mistakes/worktrees/3946e592fa2c/01M1ZNNGRXGEJ0B31V2MJTY7BX",
-        agentRepoKey: "github.com/fpresta0607/precisiondocs-ai",
+        agentRepoKey: "github.com/acme/novawebsite-ai",
         startedAt: at(10),
         endedAt: at(11),
       },
@@ -2170,7 +2170,7 @@ describe("agent shifts", () => {
     // The identity's own name wins over the worktree's, and a named group
     // carries no cause.
     expect(result.groups).toHaveLength(1);
-    expect(result.groups[0]).toMatchObject({ repo: "precisiondocs-ai", nullCause: null, shiftCount: 1 });
+    expect(result.groups[0]).toMatchObject({ repo: "novawebsite-ai", nullCause: null, shiftCount: 1 });
   });
 
   it("splits the codebase-less groups by why, so one bucket never hides two answers", async () => {
@@ -2197,37 +2197,37 @@ describe("agent shifts", () => {
 
   it("groups worktree shifts under the repository their identity is keyed on, not the worktree's folder", async () => {
     const reports = new Reports();
-    const goblin = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/dev/code-goblins", agentRepoKey: "github.com/fpresta0607/code-goblins" };
+    const goblin = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/dev/relay-app", agentRepoKey: "github.com/fpresta0607/relay-app" };
     reports.agentIntervals = [
       // A goblin's worktree folder is named for its task, not its codebase,
       // and it is not opaque enough to read as a run directory.
-      { ...goblin, sessionId: "s1", cwd: "C:\\dev\\code-goblins\\.worktrees\\gb-cg-ci-speed", startedAt: at(10), endedAt: at(11) },
-      { ...goblin, sessionId: "s2", cwd: "C:\\dev\\code-goblins\\.worktrees\\gb-cg-flakes-3", startedAt: at(11), endedAt: at(12) },
-      { ...goblin, sessionId: "s3", cwd: "C:\\dev\\code-goblins", startedAt: at(12), endedAt: at(13) },
+      { ...goblin, sessionId: "s1", cwd: "C:\\dev\\relay-app\\.worktrees\\gb-ra-ci-speed", startedAt: at(10), endedAt: at(11) },
+      { ...goblin, sessionId: "s2", cwd: "C:\\dev\\relay-app\\.worktrees\\gb-ra-flakes-3", startedAt: at(11), endedAt: at(12) },
+      { ...goblin, sessionId: "s3", cwd: "C:\\dev\\relay-app", startedAt: at(12), endedAt: at(13) },
     ];
     const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
-    expect(result.groups.map((group) => [group.repo, group.shiftCount])).toEqual([["code-goblins", 3]]);
+    expect(result.groups.map((group) => [group.repo, group.shiftCount])).toEqual([["relay-app", 3]]);
   });
 
   it("folds one repository's spellings into one group under its identity's name", async () => {
     const reports = new Reports();
-    const outreach = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/Users/alex/coldOutreachPrecisionDocs", agentRepoKey: "github.com/acme/coldoutreachprecisiondocs" };
+    const outreach = { user: { id: ids.user, name: "Alex" }, source: "claude_code" as const, model: null, projectId: ids.project, agentId: ids.session, agentRepoRoot: "C:/Users/alex/coldOutreachNovaWebsite", agentRepoKey: "github.com/acme/coldoutreachnovawebsite" };
     reports.agentIntervals = [
       // The main checkout's folder keeps its capitalisation; a worktree with an
       // opaque name falls back to the remote, which is lowercased. One codebase.
-      { ...outreach, sessionId: "s1", cwd: "C:\\Users\\alex\\coldOutreachPrecisionDocs", startedAt: at(10), endedAt: at(11) },
-      { ...outreach, sessionId: "s2", cwd: "C:\\Users\\alex\\coldOutreachPrecisionDocs\\.claude\\worktrees\\consolidate-csvs-google-sheet-0f77f7", startedAt: at(11), endedAt: at(12) },
+      { ...outreach, sessionId: "s1", cwd: "C:\\Users\\alex\\coldOutreachNovaWebsite", startedAt: at(10), endedAt: at(11) },
+      { ...outreach, sessionId: "s2", cwd: "C:\\Users\\alex\\coldOutreachNovaWebsite\\.claude\\worktrees\\consolidate-csvs-google-sheet-0f77f7", startedAt: at(11), endedAt: at(12) },
       // No identity key at all, only a folder spelled another way.
-      { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/Users/alex/ColdOutreachPrecisionDocs", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
+      { sessionId: "s3", user: { id: ids.user, name: "Alex" }, source: "claude_code", model: null, cwd: "C:/Users/alex/ColdOutreachNovaWebsite", projectId: ids.project, agentId: ids.otherAgent, agentRepoRoot: null, agentRepoKey: null, startedAt: at(12), endedAt: at(13) },
     ];
     const service = createReportService({ reports });
 
     const result = await service.agentShifts(subject, {});
 
-    expect(result.groups.map((group) => [group.repo, group.shiftCount])).toEqual([["coldoutreachprecisiondocs", 3]]);
+    expect(result.groups.map((group) => [group.repo, group.shiftCount])).toEqual([["coldoutreachnovawebsite", 3]]);
     const rows = await service.agentShiftRows(subject, { groupKey: result.groups[0]!.groupKey, pageSize: 50 });
     expect(rows.shifts.map((shift) => shift.id).sort()).toEqual(["s1", "s2", "s3"]);
   });
@@ -2272,7 +2272,7 @@ describe("agent shifts", () => {
         projectId: ids.project,
         agentId: ids.session,
         agentRepoRoot: null,
-        agentRepoKey: "github.com/fpresta0607/precisiondocs-ai",
+        agentRepoKey: "github.com/acme/novawebsite-ai",
         startedAt: at(10),
         endedAt: at(11),
       },
