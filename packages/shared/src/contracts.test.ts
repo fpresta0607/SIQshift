@@ -156,6 +156,7 @@ describe("project contracts", () => {
     { label: "a color given by its name", body: { color: "Mint" } },
     { label: "a cleared icon", body: { icon: null } },
     { label: "nothing to change", body: {} },
+    { label: "only a replacement project", body: { replacementProjectId: ids.project } },
   ])("refuses an update with $label", ({ body }) => {
     expect(projectUpdateRequestSchema.safeParse(body).success).toBe(false);
   });

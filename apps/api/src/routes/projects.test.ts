@@ -293,6 +293,25 @@ describe("project routes", () => {
     expect(projects.records).toEqual([expect.objectContaining({ icon: null, color: null })]);
   });
 
+  it("refuses an update that carries only a replacement project with a validation error", async () => {
+    // Arrange: moving a project's data elsewhere belongs to DELETE's reassignTo,
+    // so an update carrying nothing else has nothing the server applies.
+    const projects = new MemoryProjects();
+    projects.records.push(secondProject());
+    const app = createTestApp(projects);
+
+    // Act
+    const response = await app.request(`http://api.test/projects/${ids.project}`, {
+      method: "PATCH",
+      headers: { authorization: bearerHeader, "content-type": "application/json" },
+      body: JSON.stringify({ replacementProjectId: ids.secondProject }),
+    });
+
+    // Assert
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: { code: "validation_error", message: "Invalid request body." } });
+  });
+
   it("draws the project the repository names as the default with the default pair, and General with the pair its id assigns", async () => {
     // Arrange: nothing carries the flag and General is the older project, so
     // a route that worked the default out from the flag or from the ages
