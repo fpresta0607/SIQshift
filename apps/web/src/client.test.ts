@@ -289,11 +289,11 @@ describe("web client", () => {
     ));
 
     // Act
-    const bytes = await client.memberPicture("u1", "0123456789abcdef");
+    const bytes = await client.memberPicture("riley", "0123456789abcdef");
 
     // Assert
     expect(bytes).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(`${apiBaseUrl}/users/u1/picture?v=0123456789abcdef`);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(`${apiBaseUrl}/users/riley/picture?v=0123456789abcdef`);
   });
 
   it("says so when a member's picture is not there", async () => {

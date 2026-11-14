@@ -2009,13 +2009,13 @@ mod tests {
 
         // Act
         let bytes = client
-            .member_picture("token", "u2", "0123456789abcdef")
+            .member_picture("token", "riley", "0123456789abcdef")
             .await
             .expect("the picture reads");
 
         // Assert
         let requests = requests_seen(served).await;
-        assert_eq!(requests[0].0, "GET /users/u2/picture?v=0123456789abcdef");
+        assert_eq!(requests[0].0, "GET /users/riley/picture?v=0123456789abcdef");
         assert_eq!(requests[0].2.as_deref(), Some("Bearer token"));
         assert_eq!(bytes, b"picture bytes");
     }
