@@ -556,11 +556,12 @@ export const shiftCommits = pgTable(
 
 // Token counters read from an agent runtime's own session logs by the desktop
 // app - usage numbers only, never a word of transcript content - bucketed by
-// hour, model, and sidechain flag. Two uniques carry the whole dedup story:
-// (org, user, client_id) makes replayed uploads idempotent, exactly as it does
-// for shift_commits, and (org, agent_session_id, bucket_start_at, model,
-// sidechain) pins one row per bucket so a re-read of the same transcript
-// region restates the bucket total instead of adding to it.
+// hour, model, and sidechain flag. A client_id names one bucket, and
+// (org, agent_session_id, bucket_start_at, model, sidechain) pins one row per
+// bucket: ingest upserts on that key, so a replay, a grown restatement under
+// the same client_id, or a re-read of the same transcript region restates the
+// bucket total upward instead of adding to it. (org, user, client_id) keeps a
+// client_id from naming a second bucket.
 export const agentUsage = pgTable(
   "agent_usage",
   {
