@@ -2335,34 +2335,68 @@ describe("the dashboard filter", () => {
     expect(within(panel).getByText(/^Project's last 366 days · /)).toBeInTheDocument();
   });
 
-  it.each([
-    { behavior: "pulls From back to a To set before it", edits: [["To", "2026-07-20"]], from: "2026-07-20", to: "2026-07-20" },
-    { behavior: "pushes To on to a From set after it", edits: [["To", "2026-08-01"], ["From", "2026-08-03"]], from: "2026-08-03", to: "2026-08-03" },
-    { behavior: "holds To to 366 days after an early From", edits: [["From", "2025-01-01"]], from: "2025-01-01", to: "2026-01-01" },
-    { behavior: "holds From to 366 days before a late To", edits: [["From", "2025-01-01"], ["To", "2026-08-05"]], from: "2025-08-05", to: "2026-08-05" },
-    { behavior: "keeps a typed To on or before today", edits: [["To", "2026-09-01"]], from: "2026-07-31", to: "2026-08-06" },
-  ])("$behavior, so the days stay ones the reports read", async ({ edits, from, to }) => {
-    // Arrange: custom days open on 2026-07-31 to 2026-08-06.
+  /// The instants a read is sent for custom days on the viewer's own clock: the first day's midnight to the midnight after the last.
+  const readFor = (from: string, to: string): [string, string, undefined] => {
+    const [fromYear, fromMonth, fromDate] = from.split("-").map(Number);
+    const [toYear, toMonth, toDate] = to.split("-").map(Number);
+    return [new Date(fromYear!, fromMonth! - 1, fromDate!).toISOString(), new Date(toYear!, toMonth! - 1, toDate! + 1).toISOString(), undefined];
+  };
+  const dayNote = /^Pick a From day on or before To/;
+  const openLastWeek = async (bridge: ReturnType<typeof bridgeFor>): Promise<HTMLElement> => {
     pinToday();
-    const bridge = bridgeFor();
     const person = userEvent.setup();
     render(<App bridge={bridge} />);
     const panel = await openAllStats(person);
     await person.click(pickCustom(panel));
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(...readFor("2026-07-31", "2026-08-06")));
+    return panel;
+  };
+
+  it.each([
+    { field: "From", typed: ["0002-07-31", "0020-07-31", "0202-07-31", "2025-08-06"], from: "2025-08-06", to: "2026-08-06" },
+    { field: "To", typed: ["0002-08-01", "0020-08-01", "0202-08-01", "2026-08-01"], from: "2026-07-31", to: "2026-08-01" },
+  ])("leaves the other day alone while a year is typed into $field, and reads once when the date is whole", async ({ field, typed, from, to }) => {
+    // Arrange: custom days open on 2026-07-31 to 2026-08-06; Chromium writes a typed year digit by digit.
+    const bridge = bridgeFor();
+    const panel = await openLastWeek(bridge);
+    const readsBefore = vi.mocked(bridge.workspaceReport).mock.calls.length;
 
     // Act
-    for (const [label, value] of edits) fireEvent.change(within(panel).getByLabelText(label!), { target: { value } });
+    for (const value of typed.slice(0, -1)) fireEvent.change(within(panel).getByLabelText(field), { target: { value } });
+
+    // Assert: the half-typed year moves nothing else and asks for nothing.
+    expect(within(panel).getByLabelText(field === "From" ? "To" : "From")).toHaveValue(field === "From" ? "2026-08-06" : "2026-07-31");
+    expect(within(panel).getByText(dayNote)).toBeInTheDocument();
+    expect(bridge.workspaceReport).toHaveBeenCalledTimes(readsBefore);
+
+    // Act
+    fireEvent.change(within(panel).getByLabelText(field), { target: { value: typed.at(-1) } });
 
     // Assert
     expect(within(panel).getByLabelText("From")).toHaveValue(from);
     expect(within(panel).getByLabelText("To")).toHaveValue(to);
-    const [fromYear, fromMonth, fromDate] = from.split("-").map(Number);
-    const [toYear, toMonth, toDate] = to.split("-").map(Number);
-    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
-      new Date(fromYear!, fromMonth! - 1, fromDate!).toISOString(),
-      new Date(toYear!, toMonth! - 1, toDate! + 1).toISOString(),
-      undefined,
-    ));
+    expect(within(panel).queryByText(dayNote)).not.toBeInTheDocument();
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenCalledTimes(readsBefore + 1));
+    expect(bridge.workspaceReport).toHaveBeenLastCalledWith(...readFor(from, to));
+  });
+
+  it.each([
+    { behavior: "a To set before From", field: "To", value: "2026-07-20" },
+    { behavior: "a From more than 366 days before To", field: "From", value: "2025-08-05" },
+  ])("says what to pick, and keeps reading the last good days, for $behavior", async ({ field, value }) => {
+    // Arrange: the reports read at most 367 days of instants, so 366 whole days with a daylight-saving hour to spare.
+    const bridge = bridgeFor();
+    const panel = await openLastWeek(bridge);
+    const readsBefore = vi.mocked(bridge.workspaceReport).mock.calls.length;
+
+    // Act
+    fireEvent.change(within(panel).getByLabelText(field), { target: { value } });
+
+    // Assert
+    expect(within(panel).getByLabelText(field)).toHaveValue(value);
+    expect(within(panel).getByText(dayNote)).toBeInTheDocument();
+    expect(bridge.workspaceReport).toHaveBeenCalledTimes(readsBefore);
+    expect(bridge.workspaceReport).toHaveBeenLastCalledWith(...readFor("2026-07-31", "2026-08-06"));
   });
 
   it("draws an app's OS icon from whichever of its names the host has one for, on the person picked", async () => {

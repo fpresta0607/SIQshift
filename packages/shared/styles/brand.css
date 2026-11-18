@@ -248,6 +248,7 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-days input { min-height: 34px; border: 1px solid var(--glass-border); border-radius: 8px; padding: 3px 8px; background: rgba(3, 5, 10, .55); color: #ffffff; color-scheme: dark; font: inherit; font-size: .8rem; }
 .tv-days .ghost { padding: 6px 12px; font-size: .78rem; }
 .tv-days .ghost[aria-pressed="true"] { border-color: var(--glass-border-hover); color: var(--mint); }
+.tv-days-note { flex-basis: 100%; margin: 0; color: var(--text-secondary); font-size: .74rem; }
 
 .tv-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .tv-total { min-width: 0; border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 10px 14px 11px; background: rgba(3, 5, 10, .5); }
