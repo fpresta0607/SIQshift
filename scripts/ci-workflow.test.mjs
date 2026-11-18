@@ -8,7 +8,9 @@ import { load as parseYaml } from "js-yaml";
 // two mirror steps never retried and the `rust` job's apt step ran 45 minutes
 // until cancelled. No job set a timeout, so GitHub's 360-minute default applied
 // (issue #167). Every mirror command now runs under `timeout`, and every job
-// ends well inside GitHub's default.
+// ends well inside GitHub's default. A total limit cannot tell a slow mirror
+// from a stalled one, so apt's own idle timeout ends a stalled try first and
+// the outer `timeout` stays as a backstop for one that only trickles.
 const workflow = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
 
 // GitHub's default is 360 minutes; every job here normally ends in well under 10.
@@ -57,6 +59,21 @@ describe("mirror steps", () => {
         if (timed.groups.subcommand !== "update") {
           assert.ok(timed.groups.elevation, `reaches root apt under a timeout that cannot signal it: ${line.trim()}`);
         }
+      }
+    });
+
+    test(`${jobName} ends a stalled try with apt's idle timeout before the outer timeout`, () => {
+      const smallestOuterTimeoutSeconds = Math.min(...invocations.map((line) => Number(line.match(TIMED_MIRROR_COMMAND).groups.seconds)));
+      for (const protocol of ["http", "https"]) {
+        // The apt.conf form `Acquire::http::Timeout "60";` or the option form `Acquire::http::Timeout=60`.
+        const idleTimeout = script.match(new RegExp(`Acquire::${protocol}::Timeout(?:\\s+"|=)(\\d+)`));
+        assert.ok(idleTimeout, `${jobName} does not set Acquire::${protocol}::Timeout`);
+        const idleTimeoutSeconds = Number(idleTimeout[1]);
+        assert.ok(idleTimeoutSeconds > 0, `${jobName} sets Acquire::${protocol}::Timeout to ${idleTimeoutSeconds}, which apt reads as no timeout`);
+        assert.ok(
+          idleTimeoutSeconds < smallestOuterTimeoutSeconds,
+          `${jobName} Acquire::${protocol}::Timeout of ${idleTimeoutSeconds} s is not below its ${smallestOuterTimeoutSeconds} s outer timeout, so a stall would reach the backstop`,
+        );
       }
     });
 
