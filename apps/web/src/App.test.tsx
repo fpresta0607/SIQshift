@@ -1124,9 +1124,21 @@ describe("dashboard", () => {
     const client = clientFor({
       workspace: vi.fn().mockRejectedValue(new ClientError("auth", "Your session expired. Sign in again.")),
     });
+    // Each time the page changes, whether the sign-in window holding the
+    // message is open: a message in a window not yet open leaves only the
+    // landing page on screen.
+    const dialogOpenWithMessage: boolean[] = [];
+    const observer = new MutationObserver(() => {
+      for (const message of screen.queryAllByText(/session expired/)) {
+        dialogOpenWithMessage.push(message.closest("dialog")?.open === true);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
     await signIn(client);
 
     expect(await screen.findByText(/session expired/)).toBeInTheDocument();
+    observer.disconnect();
+    expect(dialogOpenWithMessage).not.toContain(false);
     expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
   });
 
