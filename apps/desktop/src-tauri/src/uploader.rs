@@ -57,9 +57,10 @@ const REGISTRY_UPLOAD_BATCH_SIZE: usize = 100;
 const REGISTRY_BATCHES_PER_PASS: usize = 10;
 
 /// How many `unknown_session` answers a shift commit or usage row gets before
-/// it is given up. The agent spool drains before either registry uploads, so a
-/// shift that is coming lands within a pass or two; a dozen answers, an hour of
-/// passes at the least, covers one held up by an agent-spool backlog.
+/// it is given up. Either registry uploads only in a pass that emptied the
+/// agent spools, so the session a row names has already been sent; a row the
+/// server still answers this way names a session it refused or one held where
+/// this upload cannot reach, and the extra answers allow for one landing late.
 pub(crate) const UNKNOWN_SESSION_ATTEMPT_LIMIT: u32 = 12;
 
 /// The server's retention window, `RETENTION_DAYS` in
@@ -270,8 +271,8 @@ pub(crate) async fn upload_once(
     complete &= upload_sessions(client, &token, &paths.sessions_path).await;
 
     // Shift commits reference an agent session by external id; uploading them
-    // before both agent-spool drains have succeeded this pass would race a
-    // session that has not reached the server yet. Usage counters carry the
+    // before this pass has emptied both agent spools would race a session that
+    // has not reached the server yet. Usage counters carry the
     // same reference, so they wait on the same gate.
     if agent_spool_drained && browser_spool_drained {
         let now = unix_now();
@@ -345,6 +346,11 @@ async fn upload_sessions(client: &ApiClient, token: &str, path: &Path) -> bool {
 /// Bounded per pass rather than looped to empty, because `truncate_acked`
 /// deliberately leaves a spool that rotated between the read and the ack alone:
 /// a fixed number of batches cannot spin on one, and the next pass carries on.
+///
+/// Returns whether the spool is empty. A pass that stops at its bound with
+/// events left reports false, so nothing that names their sessions uploads
+/// ahead of them. An event the server refuses is acknowledged like any other,
+/// so a refusal never keeps the spool from emptying.
 async fn upload_agent_spool(client: &ApiClient, token: &str, path: &Path) -> bool {
     for _ in 0..AGENT_BATCHES_PER_PASS {
         let pending = match spool::read_pending_batch(path, AGENT_UPLOAD_BATCH_SIZE) {
@@ -376,7 +382,7 @@ async fn upload_agent_spool(client: &ApiClient, token: &str, path: &Path) -> boo
             return false;
         }
     }
-    true
+    spool::read_pending_batch(path, 1).is_ok_and(|pending| pending.events.is_empty())
 }
 
 /// Uploads the shift commits this pass sends, under the rules
@@ -1528,7 +1534,7 @@ mod tests {
             &[usage_entry("orphan", OTHER_WORKSPACE_SESSION, now - 3_600)],
         );
 
-        for attempt in 1..=UNKNOWN_SESSION_ATTEMPT_LIMIT {
+        for attempt in 1..=12 {
             let (port, server) = stub_batches(1, |_, body| verdicts_by_session(body)).await;
             assert!(upload_agent_usage_spool(&stub_client(port), "token", &path, now).await);
             server.await.expect("the stub finishes");
@@ -1536,7 +1542,7 @@ mod tests {
             assert_eq!(entry.unknown_session_attempts, attempt);
             assert_eq!(
                 entry.rejected,
-                attempt == UNKNOWN_SESSION_ATTEMPT_LIMIT,
+                attempt == 12,
                 "given up exactly at the limit"
             );
         }
@@ -1589,8 +1595,9 @@ mod tests {
         let usage_path = dir.join("agent-usage.json");
         let commits_path = dir.join("shift-commits.json");
         let now = fixture_now();
-        let expired_at = now - SERVER_RETENTION_SECONDS - 3_600;
-        let kept_at = now - SERVER_RETENTION_SECONDS + 3_600;
+        let retention_days_in_seconds = 90 * 86_400;
+        let expired_at = now - retention_days_in_seconds - 3_600;
+        let kept_at = now - retention_days_in_seconds + 3_600;
         write_usage_registry(
             &usage_path,
             &[
@@ -1830,6 +1837,73 @@ mod tests {
             50,
             "the two accepted batches left the spool; only the rest replays"
         );
+    }
+
+    /// Shift commits and usage rows upload only once the agent spool is
+    /// empty, so a pass that stops at its batch bound with events still
+    /// spooled must not report the spool drained: those events name sessions
+    /// the server does not hold yet.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pass_that_stops_with_events_left_does_not_report_the_spool_drained() {
+        let dir = temp_dir("agent-capped");
+        let path = dir.join("agent-spool.jsonl");
+        let per_pass = AGENT_BATCHES_PER_PASS * AGENT_UPLOAD_BATCH_SIZE;
+        spool_agent_events(&path, per_pass + 1);
+
+        let (port, server) = stub_batches(AGENT_BATCHES_PER_PASS, |_, _| {
+            Some((200, r#"{"results":[]}"#.to_string()))
+        })
+        .await;
+        assert!(
+            !upload_agent_spool(&stub_client(port), "token", &path).await,
+            "a spool with events left is not drained"
+        );
+
+        server.await.expect("the stub finishes");
+        assert_eq!(
+            spool::read_pending(&path)
+                .expect("the spool reads")
+                .events
+                .len(),
+            1,
+            "the event past the pass's bound waits for the next pass"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An event the server refuses on every pass must not hold shift commits
+    /// and usage rows forever: it is acknowledged with its batch, so the spool
+    /// still empties and reports drained.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_agent_event_leaves_the_spool_drained() {
+        let dir = temp_dir("agent-refused");
+        let path = dir.join("agent-spool.jsonl");
+        spool_agent_events(&path, 1);
+
+        let (port, server) = stub_batches(1, |_, _| {
+            Some((
+                200,
+                r#"{"results":[{"externalSessionId":"session-0","accepted":false,"reason":"validation_error"}]}"#
+                    .to_string(),
+            ))
+        })
+        .await;
+        assert!(
+            upload_agent_spool(&stub_client(port), "token", &path).await,
+            "a refused event does not keep the spool undrained"
+        );
+
+        server.await.expect("the stub finishes");
+        assert!(
+            spool::read_pending(&path)
+                .expect("the spool reads")
+                .events
+                .is_empty(),
+            "the refused event left the spool"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The wire trap the projection exists for: the spool line now carries
