@@ -28,7 +28,7 @@ import { WorkChart, type ChartTokens } from "./work-chart.js";
 export { TeamTotals, type TeamTotal } from "./team-totals.js";
 export { TeamViewHead } from "./team-view-head.js";
 export { WorkChart, type ChartTokenBucket, type ChartTokens } from "./work-chart.js";
-export { DashboardFilter, dayBounds, localDay, type DashboardDays, type DashboardFilterProject } from "./dashboard-filter.js";
+export { DashboardFilter, customRangeName, dayBounds, localDay, type DashboardDays, type DashboardFilterProject } from "./dashboard-filter.js";
 
 /**
  * The dashboard: one page, no tabs, where every stat is drawn once. Both apps

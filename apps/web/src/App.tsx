@@ -48,6 +48,7 @@ import {
   DashboardFilter,
   DashboardView,
   TeamViewHead,
+  customRangeName,
   dayBounds,
   localDay,
   projectMeterRows,
@@ -938,7 +939,15 @@ export const App = ({ client }: AppProps) => {
         appRows: buildAppRows(memberStats.apps, memberStats.totalDurationSeconds),
       };
   const statsBounds = isCustomRange ? dayBounds(customDays) : rangeBounds(range);
-  const rangeName = isCustomRange ? "Custom" : rangeSentence[range];
+  const filterProjects = projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    appearance: appearanceOf(project.id),
+    firstDay: localDay(new Date(project.createdAt)),
+  }));
+  const rangeName = isCustomRange
+    ? customRangeName(customDays, filterProjects.find((project) => project.id === scope)?.firstDay)
+    : rangeSentence[range];
   const rangeSubtitle = statsBounds === undefined
     ? rangeName
     : `${rangeName} · ${formatRangeDays(statsBounds.fromAt, statsBounds.toExclusiveAt)}`;
@@ -1173,12 +1182,7 @@ export const App = ({ client }: AppProps) => {
                   }}
                   days={customDays}
                   onDays={setCustomDays}
-                  projects={projects.map((project) => ({
-                    id: project.id,
-                    name: project.name,
-                    appearance: appearanceOf(project.id),
-                    firstDay: localDay(new Date(project.createdAt)),
-                  }))}
+                  projects={filterProjects}
                   project={scope}
                   onProject={setScope}
                 />

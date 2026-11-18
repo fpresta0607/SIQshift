@@ -58,6 +58,7 @@ import {
   DashboardFilter,
   DashboardView,
   TeamViewHead,
+  customRangeName,
   dayBounds,
   localDay,
   projectMeterRows,
@@ -1544,7 +1545,15 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           recordedNote: recordedBasis(boardTotalSeconds, boardMeasurement.activeSeconds, boardMeasurement.concurrency.awaySeconds),
           appRows: boardAppRows,
         };
-  const boardRangeLabel = isCustomRange ? "Custom" : RANGE_LABEL[boardRange];
+  const filterProjects = ready.projects.map((item) => ({
+    id: item.id,
+    name: item.name,
+    appearance: appearanceOf(item.id),
+    firstDay: localDay(new Date(item.createdAt)),
+  }));
+  const boardRangeLabel = isCustomRange
+    ? customRangeName(customDays, filterProjects.find((item) => item.id === boardScope)?.firstDay)
+    : RANGE_LABEL[boardRange];
   const boardSubtitle = overlayBounds === undefined
     ? boardRangeLabel
     : `${boardRangeLabel} · ${formatRangeDays(overlayBounds.fromAt, overlayBounds.toExclusiveAt)}`;
@@ -1770,12 +1779,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 }}
                 days={customDays}
                 onDays={setCustomDays}
-                projects={ready.projects.map((item) => ({
-                  id: item.id,
-                  name: item.name,
-                  appearance: appearanceOf(item.id),
-                  firstDay: localDay(new Date(item.createdAt)),
-                }))}
+                projects={filterProjects}
                 project={boardScope}
                 onProject={setBoardScope}
               />

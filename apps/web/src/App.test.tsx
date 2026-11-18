@@ -2500,6 +2500,29 @@ describe("the dashboard's filter", () => {
     expect(lifetime).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("cuts a lifetime longer than the reports read to the project's last 366 days, and says so", async () => {
+    // Arrange: Client began 2026-08-11, over a year before this day; the reports read at most 367 days.
+    vi.setSystemTime(new Date(2027, 8, 1, 15));
+    try {
+      const workspace = vi.fn().mockResolvedValue(workspaceReport);
+      const person = await signIn(clientFor({ projects: twoProjects(), workspace }));
+      const stats = await openAllStats(person);
+      await stats.findByLabelText("Totals");
+      await pickProject(person, stats, /^Client$/);
+
+      // Act
+      await person.click(stats.getByRole("button", { name: "Custom" }));
+
+      // Assert
+      expect(stats.getByLabelText("From")).toHaveValue("2026-09-01");
+      expect(stats.getByLabelText("To")).toHaveValue("2027-09-01");
+      await waitFor(() => expect(boundsOf(workspace.mock.calls.at(-1))).toEqual({ fromAt: midnight("2026-09-01"), toExclusiveAt: midnight("2027-09-01", 1) }));
+      expect(stats.getByText(/^Project's last 366 days · /)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves the days alone when Custom was already open before a project is picked", async () => {
     // Arrange
     const workspace = vi.fn().mockResolvedValue(workspaceReport);

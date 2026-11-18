@@ -2311,6 +2311,60 @@ describe("the dashboard filter", () => {
     expect(within(panel).getByLabelText("From")).toHaveValue("2026-07-20");
   });
 
+  it("cuts a lifetime longer than the reports read to the project's last 366 days, and says so", async () => {
+    // Arrange: Field work began 2026-07-20, over a year before this day; the reports read at most 367 days.
+    vi.setSystemTime(new Date(2027, 7, 6, 15));
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+    await pickProject(person, panel, project.name);
+
+    // Act
+    await person.click(pickCustom(panel));
+
+    // Assert
+    expect(within(panel).getByLabelText("From")).toHaveValue("2026-08-06");
+    expect(within(panel).getByLabelText("To")).toHaveValue("2027-08-06");
+    expect(within(panel).getByRole("button", { name: "Project lifetime" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
+      new Date(2026, 7, 6).toISOString(),
+      new Date(2027, 7, 7).toISOString(),
+      project.id,
+    ));
+    expect(within(panel).getByText(/^Project's last 366 days · /)).toBeInTheDocument();
+  });
+
+  it.each([
+    { behavior: "pulls From back to a To set before it", edits: [["To", "2026-07-20"]], from: "2026-07-20", to: "2026-07-20" },
+    { behavior: "pushes To on to a From set after it", edits: [["To", "2026-08-01"], ["From", "2026-08-03"]], from: "2026-08-03", to: "2026-08-03" },
+    { behavior: "holds To to 366 days after an early From", edits: [["From", "2025-01-01"]], from: "2025-01-01", to: "2026-01-01" },
+    { behavior: "holds From to 366 days before a late To", edits: [["From", "2025-01-01"], ["To", "2026-08-05"]], from: "2025-08-05", to: "2026-08-05" },
+    { behavior: "keeps a typed To on or before today", edits: [["To", "2026-09-01"]], from: "2026-07-31", to: "2026-08-06" },
+  ])("$behavior, so the days stay ones the reports read", async ({ edits, from, to }) => {
+    // Arrange: custom days open on 2026-07-31 to 2026-08-06.
+    pinToday();
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+    await person.click(pickCustom(panel));
+
+    // Act
+    for (const [label, value] of edits) fireEvent.change(within(panel).getByLabelText(label!), { target: { value } });
+
+    // Assert
+    expect(within(panel).getByLabelText("From")).toHaveValue(from);
+    expect(within(panel).getByLabelText("To")).toHaveValue(to);
+    const [fromYear, fromMonth, fromDate] = from.split("-").map(Number);
+    const [toYear, toMonth, toDate] = to.split("-").map(Number);
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
+      new Date(fromYear!, fromMonth! - 1, fromDate!).toISOString(),
+      new Date(toYear!, toMonth! - 1, toDate! + 1).toISOString(),
+      undefined,
+    ));
+  });
+
   it("draws an app's OS icon from whichever of its names the host has one for, on the person picked", async () => {
     // Arrange: Sam's Mac recorded the Chrome time under its own name, which this host has no icon for.
     const appIcons = vi.fn().mockImplementation(async (names: readonly string[]) => (

@@ -12,6 +12,9 @@ export type DashboardFilterProject = { id: string; name: string; appearance: Pro
 
 const CUSTOM = "custom";
 
+/// The most days the reports read at once: they take up to 367 days of instants, and a daylight-saving hour must still fit.
+const MAX_SPAN_DAYS = 366;
+
 /// "All projects" wears four tiles where a project wears its one.
 const ALL_PROJECTS_MARK = (
   <svg className="tv-all-projects" viewBox="0 0 24 24" aria-hidden="true">
@@ -27,6 +30,27 @@ const ALL_PROJECTS_MARK = (
 /// A date input's value for a local calendar day.
 export const localDay = (date: Date): string =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+/// The calendar day `offset` days from `day`.
+const shiftedDay = (day: string, offset: number): string => {
+  const [year, month, date] = day.split("-").map(Number);
+  return localDay(new Date(year!, month! - 1, date! + offset));
+};
+
+const earlierDay = (first: string, second: string): string => (first < second ? first : second);
+const laterDay = (first: string, second: string): string => (first > second ? first : second);
+
+/// A project's lifetime as custom days: from its first day to today, or its last `MAX_SPAN_DAYS` once it is older.
+const lifetimeDays = (firstDay: string, today: string): DashboardDays =>
+  ({ from: laterDay(firstDay, shiftedDay(today, 1 - MAX_SPAN_DAYS)), to: today });
+
+/// What the page head calls custom days: "Custom", unless they are a project's lifetime cut to what the reports read.
+export const customRangeName = (days: DashboardDays, firstDay: string | undefined): string => {
+  if (firstDay === undefined) return "Custom";
+  const lifetime = lifetimeDays(firstDay, localDay(new Date()));
+  const isCutLifetime = lifetime.from !== firstDay && days.from === lifetime.from && days.to === lifetime.to;
+  return isCutLifetime ? `Project's last ${MAX_SPAN_DAYS} days` : "Custom";
+};
 
 /**
  * Instant bounds for calendar days on the viewer's own clock: from the first
@@ -48,7 +72,8 @@ export const dayBounds = (days: DashboardDays): { fromAt: string; toExclusiveAt:
  * custom days - and the project. Every card, the chart and the board read
  * under it, so there is one place to change what the page measures. A picked
  * project offers its whole lifetime as the custom days, from the day it was
- * created to today, and Custom opens on it.
+ * created to today, and Custom opens on it. The days never run backwards or
+ * past what the reports read: the end not being edited moves to keep them so.
  */
 export const DashboardFilter = <Preset extends string>({
   presets,
@@ -76,7 +101,8 @@ export const DashboardFilter = <Preset extends string>({
   const today = localDay(new Date());
   const picked = projects?.find((entry) => entry.id === project);
   const options: readonly SegmentedOption<Preset | typeof CUSTOM>[] = [...presets, { value: CUSTOM, label: "Custom" }];
-  const isLifetime = picked !== undefined && range === CUSTOM && days.from === picked.firstDay && days.to === today;
+  const lifetime = picked === undefined ? undefined : lifetimeDays(picked.firstDay, today);
+  const isLifetime = lifetime !== undefined && range === CUSTOM && days.from === lifetime.from && days.to === lifetime.to;
 
   return (
     <div className="tv-filter">
@@ -87,7 +113,7 @@ export const DashboardFilter = <Preset extends string>({
         onChange={(next) => {
           // Custom opens on the picked project's whole lifetime: the range a
           // project's own question is most often about.
-          if (next === CUSTOM && range !== CUSTOM && picked !== undefined) onDays({ from: picked.firstDay, to: today });
+          if (next === CUSTOM && range !== CUSTOM && lifetime !== undefined) onDays(lifetime);
           onRange(next);
         }}
       />
@@ -133,7 +159,9 @@ export const DashboardFilter = <Preset extends string>({
               value={days.from}
               max={days.to}
               onChange={(event) => {
-                if (event.target.value !== "") onDays({ from: event.target.value, to: days.to });
+                if (event.target.value === "") return;
+                const from = earlierDay(event.target.value, today);
+                onDays({ from, to: earlierDay(laterDay(days.to, from), shiftedDay(from, MAX_SPAN_DAYS - 1)) });
               }}
             />
           </label>
@@ -145,16 +173,18 @@ export const DashboardFilter = <Preset extends string>({
               min={days.from}
               max={today}
               onChange={(event) => {
-                if (event.target.value !== "") onDays({ from: days.from, to: event.target.value });
+                if (event.target.value === "") return;
+                const to = earlierDay(event.target.value, today);
+                onDays({ from: laterDay(earlierDay(days.from, to), shiftedDay(to, 1 - MAX_SPAN_DAYS)), to });
               }}
             />
           </label>
-          {picked !== undefined && (
+          {lifetime !== undefined && (
             <button
               type="button"
               className="ghost"
               aria-pressed={isLifetime}
-              onClick={() => onDays({ from: picked.firstDay, to: today })}
+              onClick={() => onDays(lifetime)}
             >
               Project lifetime
             </button>
