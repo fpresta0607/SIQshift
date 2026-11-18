@@ -20,7 +20,8 @@ use tokio::sync::Notify;
 
 use crate::agent_usage;
 use crate::api::{
-    AgentUsageUpload, ApiClient, MappingKind, PathMapping, SegmentRejection, ShiftCommitUpload,
+    AgentUsageUpload, ApiClient, ErrorKind, MappingKind, PathMapping, SegmentRejection,
+    ShiftCommitUpload,
 };
 use crate::monitor::{
     advance_sessions, iso8601, lock, parse_iso8601, unix_now, ActiveAgent, AgentTracking,
@@ -349,40 +350,67 @@ async fn upload_sessions(client: &ApiClient, token: &str, path: &Path) -> bool {
 ///
 /// Returns whether the spool is empty. A pass that stops at its bound with
 /// events left reports false, so nothing that names their sessions uploads
-/// ahead of them. An event the server refuses is acknowledged like any other,
-/// so a refusal never keeps the spool from emptying.
+/// ahead of them. An event the server refuses inside an answered batch is
+/// acknowledged like any other. A batch the server refuses whole as invalid is
+/// sent again one event at a time, each send counting against the bound, and
+/// an event refused as invalid on its own is dropped, so one malformed event
+/// never keeps the spool from emptying. Any other failure keeps the event for
+/// the next pass.
 async fn upload_agent_spool(client: &ApiClient, token: &str, path: &Path) -> bool {
-    for _ in 0..AGENT_BATCHES_PER_PASS {
-        let pending = match spool::read_pending_batch(path, AGENT_UPLOAD_BATCH_SIZE) {
-            Ok(pending) => pending,
-            Err(_) => return false,
-        };
-        if pending.events.is_empty() {
-            return true;
-        }
-
-        // `startHead` is a spool-local field the shift-capture sidecar reads;
-        // the server's agent-session contract has no such field, so it never
-        // leaves the machine.
-        let mut events = pending.events;
-        for event in &mut events {
-            event.start_head = None;
-        }
-
-        match client.upload_agent_events(token, &events).await {
-            Ok(results) => {
-                let rejected = results.iter().filter(|result| !result.accepted).count();
-                if rejected > 0 {
-                    eprintln!("siqshift: the server rejected {rejected} agent event(s)");
-                }
+    let mut events_to_send_alone = 0;
+    let mut dropped = 0;
+    let is_drained = 'pass: {
+        for _ in 0..AGENT_BATCHES_PER_PASS {
+            let batch_size = if events_to_send_alone > 0 {
+                1
+            } else {
+                AGENT_UPLOAD_BATCH_SIZE
+            };
+            let pending = match spool::read_pending_batch(path, batch_size) {
+                Ok(pending) => pending,
+                Err(_) => break 'pass false,
+            };
+            if pending.events.is_empty() {
+                break 'pass true;
             }
-            Err(_) => return false,
+
+            // `startHead` is a spool-local field the shift-capture sidecar
+            // reads; the server's agent-session contract has no such field, so
+            // it never leaves the machine.
+            let mut events = pending.events;
+            for event in &mut events {
+                event.start_head = None;
+            }
+
+            match client.upload_agent_events(token, &events).await {
+                Ok(results) => {
+                    let rejected = results.iter().filter(|result| !result.accepted).count();
+                    if rejected > 0 {
+                        eprintln!("siqshift: the server rejected {rejected} agent event(s)");
+                    }
+                }
+                Err(error) if error.kind == ErrorKind::Validation => {
+                    if events_to_send_alone == 0 {
+                        events_to_send_alone = events.len();
+                        continue;
+                    }
+                    dropped += 1;
+                }
+                Err(_) => break 'pass false,
+            }
+            events_to_send_alone = events_to_send_alone.saturating_sub(1);
+            if spool::truncate_acked(path, pending.acked_bytes).is_err() {
+                break 'pass false;
+            }
         }
-        if spool::truncate_acked(path, pending.acked_bytes).is_err() {
-            return false;
-        }
+        spool::read_pending_batch(path, 1).is_ok_and(|pending| pending.events.is_empty())
+    };
+    if dropped > 0 {
+        eprintln!(
+            "siqshift: the server refused {dropped} agent event(s) as invalid; dropping them"
+        );
     }
-    spool::read_pending_batch(path, 1).is_ok_and(|pending| pending.events.is_empty())
+    is_drained
 }
 
 /// Uploads the shift commits this pass sends, under the rules
@@ -1904,6 +1932,99 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sent_session_ids(body: &serde_json::Value) -> Vec<String> {
+        batch_rows(body)
+            .iter()
+            .map(|event| {
+                event["externalSessionId"]
+                    .as_str()
+                    .expect("a session id")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// `/agent-sessions` validates the whole request, so one malformed event
+    /// (a `cwd` past the contract's length, say) gets the batch a 400. Sent
+    /// alone, the others land and the malformed one is dropped, so the spool
+    /// still empties and shift commits and usage rows are not held forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_event_refused_as_invalid_on_its_own_is_dropped_and_the_rest_land() {
+        let dir = temp_dir("agent-invalid-dropped");
+        let path = dir.join("agent-spool.jsonl");
+        spool_agent_events(&path, 3);
+
+        let (port, server) = stub_batches(4, |_, body| {
+            Some(
+                if sent_session_ids(body).contains(&"session-1".to_string()) {
+                    (400, r#"{"code":"validation_error"}"#.to_string())
+                } else {
+                    (200, r#"{"results":[]}"#.to_string())
+                },
+            )
+        })
+        .await;
+        assert!(
+            upload_agent_spool(&stub_client(port), "token", &path).await,
+            "the spool empties past the malformed event"
+        );
+
+        assert_eq!(
+            server.await.expect("the stub finishes"),
+            [3, 1, 1, 1],
+            "the refused batch is sent again one event at a time"
+        );
+        assert!(
+            spool::read_pending(&path)
+                .expect("the spool reads")
+                .events
+                .is_empty(),
+            "the malformed event was dropped and the rest left with their acks"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only a validation refusal of the event on its own drops it. A server
+    /// error, an auth refusal, or no answer at all while it is sent alone says
+    /// nothing about the event, so it stays for the next pass.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_event_whose_lone_resend_fails_otherwise_is_kept() {
+        for lone_answer in [
+            Some((500, r#"{"code":"internal_error"}"#)),
+            Some((401, r#"{"code":"unauthorized"}"#)),
+            None,
+        ] {
+            let dir = temp_dir("agent-invalid-kept");
+            let path = dir.join("agent-spool.jsonl");
+            spool_agent_events(&path, 2);
+
+            let (port, server) = stub_batches(2, move |index, _| {
+                if index == 0 {
+                    return Some((400, r#"{"code":"validation_error"}"#.to_string()));
+                }
+                lone_answer.map(|(status, body)| (status, body.to_string()))
+            })
+            .await;
+            assert!(
+                !upload_agent_spool(&stub_client(port), "token", &path).await,
+                "a lone resend that failed otherwise fails the pass ({lone_answer:?})"
+            );
+
+            assert_eq!(server.await.expect("the stub finishes"), [2, 1]);
+            assert_eq!(
+                spool::read_pending(&path)
+                    .expect("the spool reads")
+                    .events
+                    .len(),
+                2,
+                "both events stay for the next pass ({lone_answer:?})"
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// The wire trap the projection exists for: the spool line now carries
