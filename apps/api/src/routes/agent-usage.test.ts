@@ -93,11 +93,6 @@ const inertAgents: AgentRepository = {
 class MemoryAgentUsage implements AgentUsageRepository {
   public readonly records: AgentUsageRecord[] = [];
 
-  public async findByClientId(current: { organizationId: string; userId: string }, clientId: string): Promise<AgentUsageRecord | null> {
-    return this.records.find((row) => row.organizationId === current.organizationId
-      && row.userId === current.userId && row.clientId === clientId) ?? null;
-  }
-
   public async upsertBucket(input: UpsertAgentUsageBucket): Promise<void> {
     const existing = this.records.find((row) => row.organizationId === input.organizationId
       && row.agentSessionId === input.agentSessionId

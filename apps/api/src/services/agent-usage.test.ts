@@ -86,11 +86,6 @@ class MemoryAgents implements AgentRepository {
 class MemoryAgentUsage implements AgentUsageRepository {
   public readonly records: AgentUsageRecord[] = [];
 
-  public async findByClientId(current: AuthenticatedSubject, clientId: string): Promise<AgentUsageRecord | null> {
-    return this.records.find((row) => row.organizationId === current.organizationId
-      && row.userId === current.userId && row.clientId === clientId) ?? null;
-  }
-
   public async upsertBucket(input: UpsertAgentUsageBucket): Promise<void> {
     const existing = this.records.find((row) => row.organizationId === input.organizationId
       && row.agentSessionId === input.agentSessionId
@@ -184,6 +179,34 @@ describe("agent-usage service", () => {
 
     expect(replay).toEqual({ accepted: 1, rejected: [] });
     expect(agentUsage.records).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "a higher restatement raises the stored counters",
+      restated: { inputTokens: 1_800, outputTokens: 400, cacheCreationInputTokens: 150, cacheReadInputTokens: 9_000 },
+      stored: { inputTokens: 1_800, outputTokens: 400, cacheCreationInputTokens: 150, cacheReadInputTokens: 9_000 },
+    },
+    {
+      name: "an equal restatement changes nothing",
+      restated: { inputTokens: 1_000, outputTokens: 250, cacheCreationInputTokens: 100, cacheReadInputTokens: 5_000 },
+      stored: { inputTokens: 1_000, outputTokens: 250, cacheCreationInputTokens: 100, cacheReadInputTokens: 5_000 },
+    },
+    {
+      name: "a lower restatement changes nothing",
+      restated: { inputTokens: 900, outputTokens: 200, cacheCreationInputTokens: 50, cacheReadInputTokens: 4_000 },
+      stored: { inputTokens: 1_000, outputTokens: 250, cacheCreationInputTokens: 100, cacheReadInputTokens: 5_000 },
+    },
+  ])("restates a known clientId's bucket: $name", async ({ restated, stored }) => {
+    const { service, agentUsage } = createService();
+    const entry = usageUpload();
+    await service.ingest(subject, [entry]);
+
+    const result = await service.ingest(subject, [{ ...entry, ...restated }]);
+
+    expect(result).toEqual({ accepted: 1, rejected: [] });
+    expect(agentUsage.records).toHaveLength(1);
+    expect(agentUsage.records[0]).toMatchObject({ clientId: entry.clientId, ...stored });
   });
 
   it("restates a bucket monotonically: a lower re-sent total never decreases the stored counter", async () => {
