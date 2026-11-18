@@ -551,6 +551,47 @@ describe("dashboard", () => {
     expect(rows()).toEqual(["1AAlexYouClient1h 00m0s1.2M1.1M in · 100k out", "2SSamGeneral2h 14m3h 00m-"]);
   });
 
+  it("keeps the board's tokens and ranking while a picked person's read loads, and drops them for a new range", async () => {
+    // Arrange: the team's read carries everyone's tokens; every later read stays pending.
+    const agentShifts = vi.fn()
+      .mockResolvedValueOnce({
+        ...agentShiftsResponse,
+        tokenTotals: { tokensIn: 1_100_000, tokensOut: 100_000, tokens: 1_200_000 },
+        people: [
+          { owner: { id: "u2", name: "Alex" }, agentSeconds: 5_400, shiftCount: 2, tokens: { tokensIn: 1_100_000, tokensOut: 100_000, tokens: 1_200_000 } },
+          { owner: { id: "u1", name: "Sam" }, agentSeconds: 1_800, shiftCount: 1, tokens: null },
+        ],
+      })
+      .mockReturnValue(new Promise(() => {}));
+    const person = await signIn(clientFor({ agentShifts }));
+    const stats = await openAllStats(person);
+    const table = () => within(stats.getByRole("table", { name: "People" }));
+    const rows = () => table().getAllByRole("row").slice(1).map((row) => row.textContent);
+    await within(await stats.findByRole("table", { name: "People" })).findByRole("columnheader", { name: "Tokens" });
+    await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
+    const tokensOrder = ["1AAlexYouClient1h 00m0s1.2M1.1M in · 100k out", "2SSamGeneral2h 14m3h 00m-"];
+    expect(rows()).toEqual(tokensOrder);
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Assert: Sam's read is still out, and the board has not moved.
+    expect(agentShifts).toHaveBeenLastCalledWith(expect.stringContaining("userId=u1"));
+    expect(table().getByRole("columnheader", { name: "Tokens" })).toBeInTheDocument();
+    expect(stats.getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By tokens");
+    expect(rows()).toEqual(tokensOrder);
+
+    // Act: a new range asks a new question of everyone's tokens.
+    await person.click(stats.getByRole("button", { name: "7d" }));
+    await stats.findByText(/^Last 7 days · /);
+    const board = within(await stats.findByRole("table", { name: "People" }));
+
+    // Assert
+    expect(board.queryByRole("columnheader", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(within(stats.getByRole("combobox", { name: /Rank by/ })).queryByRole("option", { name: "By tokens" })).not.toBeInTheDocument();
+  });
+
   it("leaves the board without a Tokens column or ranking while the agents read carries no tokens", async () => {
     // Arrange: an API that reads no token usage sends no token totals and no person's tokens.
     const person = await signIn(clientFor());

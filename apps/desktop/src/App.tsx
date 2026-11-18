@@ -251,6 +251,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [workspaceError, setWorkspaceError] = useState<string | undefined>();
   const [agentShifts, setAgentShifts] = useState<AgentShifts | undefined>();
   const [agentShiftsError, setAgentShiftsError] = useState<string | undefined>();
+  const [boardTokens, setBoardTokens] = useState<{ key: string; agents: AgentShifts } | undefined>();
   /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// host has answered; a failed poll keeps the last-good list.
@@ -338,6 +339,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     setWorkspaceError(undefined);
     setAgentShifts(undefined);
     setAgentShiftsError(undefined);
+    setBoardTokens(undefined);
     setLiveSessions(undefined);
     setLiveSessionsError(undefined);
     statsFailures.current = 0;
@@ -579,7 +581,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastAgentsKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const agentsKey = `${boardRangeKey}|${boardScope}|${boardMember?.id ?? ""}`;
+    const tokensKey = `${boardRangeKey}|${boardScope}`;
+    const agentsKey = `${tokensKey}|${boardMember?.id ?? ""}`;
     const blanked = lastAgentsKey.current !== agentsKey;
     if (blanked) {
       lastAgentsKey.current = agentsKey;
@@ -602,6 +605,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           agentShiftsFailures.current = 0;
           setAgentShifts(result);
           setAgentShiftsError(undefined);
+          setBoardTokens({ key: tokensKey, agents: result });
         }
       },
       (error: unknown) => {
@@ -1819,7 +1823,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     : { name: member.project.name, appearance: appearanceOf(member.project.id) },
                   activeSeconds: member.activeSeconds,
                   agentSeconds: member.agentSeconds,
-                  tokens: personTokensOf(agentShifts, member.user.id),
+                  tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${boardScope}` ? boardTokens.agents : undefined, member.user.id),
                   isSelf: member.user.id === ready.user.id,
                 }))}
                 onSelectPerson={(picked) => setBoardMember(picked === undefined ? undefined : { id: picked.id, name: picked.name })}

@@ -173,6 +173,7 @@ export const App = ({ client }: AppProps) => {
   const [workspace, setWorkspace] = useState<WorkspaceReportResponse | undefined>();
   const [agentShifts, setAgentShifts] = useState<AgentShiftsResponse | undefined>();
   const [agentShiftsFailed, setAgentShiftsFailed] = useState(false);
+  const [boardTokens, setBoardTokens] = useState<{ query: string; agents: AgentShiftsResponse } | undefined>();
   /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// server has answered.
@@ -452,11 +453,14 @@ export const App = ({ client }: AppProps) => {
   useEffect(() => {
     if (!signedIn || !preferencesReady || !allStatsOpen) return undefined;
     let cancelled = false;
+    const boardQuery = scopeParams(statsQuery);
     setAgentShifts(undefined);
     setAgentShiftsFailed(false);
     client.agentShifts(shiftsQuery()).then(
       (result) => {
-        if (!cancelled) setAgentShifts(result);
+        if (cancelled) return;
+        setAgentShifts(result);
+        setBoardTokens({ query: boardQuery, agents: result });
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -470,7 +474,7 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, allStatsOpen, shiftsQuery, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, shiftsQuery, scopeParams, statsQuery, expireSession]);
 
   // The live view reads "now", not the range, so it follows the scope alone
   // and re-asks on the minute tick like the Today panel does - a live card
@@ -610,6 +614,7 @@ export const App = ({ client }: AppProps) => {
     setMemberFailed(false);
     setAgentShifts(undefined);
     setAgentShiftsFailed(false);
+    setBoardTokens(undefined);
     setLiveSessions(undefined);
     setLiveSessionsFailed(false);
     setSessionsOpen(false);
@@ -874,6 +879,7 @@ export const App = ({ client }: AppProps) => {
 
   const boardHasTime = workspace !== undefined
     && (workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0);
+  const boardAgents = boardTokens?.query === scopeParams(statsQuery) ? boardTokens.agents : undefined;
   const boardMembers = (workspace?.members ?? [])
     .map((entry) => ({
       id: entry.user.id,
@@ -885,7 +891,7 @@ export const App = ({ client }: AppProps) => {
         : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], projects, entry.project.id) },
       activeSeconds: entry.activeSeconds,
       agentSeconds: entry.agentSeconds,
-      tokens: personTokensOf(agentShifts, entry.user.id),
+      tokens: personTokensOf(boardAgents, entry.user.id),
       isSelf: entry.user.id === selfId,
     }));
   const appearanceOf = (projectId: string) => reportedAppearance(workspace?.projects ?? [], projects, projectId);
