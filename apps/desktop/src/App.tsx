@@ -1395,7 +1395,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
         ? [...new Set(group.projects)].join(", ")
         : group.sessions > 1 ? `${group.sessions} sessions` : undefined,
       source,
-      processName: undefined,
+      processNames: [],
       // Deliberately not the time since it started. An agent runs beside the
       // editor and the terminal it lives in, so its wall-clock overlaps
       // theirs; counting it as its own slice would total more hours than the
@@ -1651,7 +1651,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     <MeterRowItem
                       key={row.key}
                       row={row}
-                      iconUrl={row.processName === undefined ? undefined : appIcons[row.processName]}
+                      iconUrl={row.processNames.map((name) => appIcons[name]).find((url) => url != null)}
                       measure={row.source === undefined
                         ? undefined
                         : hasQuotaProvider(row.source)

@@ -176,7 +176,7 @@ export const projectMeterRows = (
   key: entry.project.id,
   label: entry.project.name,
   source: undefined,
-  processName: undefined,
+  processNames: [],
   appearance: appearanceOf(entry.project.id),
   durationSeconds: entry.durationSeconds,
 })));

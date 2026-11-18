@@ -1296,6 +1296,28 @@ describe("the today panel", () => {
     expect(list.querySelector(".app-mark.is-plain")).not.toBeNull();
   });
 
+  // Issue 157: the Mac recorded more Chrome time than this Windows machine, so
+  // the joined row's heaviest name is the Mac's, which this host has no icon for.
+  it("shows a joined app's icon from whichever of its names the host has one for", async () => {
+    render(<App bridge={bridgeFor({
+      monitorStatus: vi.fn().mockResolvedValue(recording),
+      appIcons: vi.fn().mockResolvedValue({ "chrome.exe": "data:image/png;base64,AAAA", "Google Chrome": null }),
+      meStats: vi.fn().mockResolvedValue({
+        ...meStats,
+        apps: [
+          { processName: "Google Chrome", durationSeconds: 1_800 },
+          { processName: "chrome.exe", durationSeconds: 600 },
+        ],
+      }),
+    })} />);
+
+    const list = await screen.findByTestId("session-app-list");
+    await waitFor(() => {
+      expect(list.querySelector("img.app-mark")).toHaveAttribute("src", "data:image/png;base64,AAAA");
+    });
+    expect(list.querySelector(".app-mark.is-plain")).toBeNull();
+  });
+
   it("ships a runtime mark for every connector in the roster", async () => {
     render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(recording) })} />);
 

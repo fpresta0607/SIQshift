@@ -48,7 +48,6 @@ import {
   type AgentSessionRepository,
   type AgentUpdatePatch,
   type UpsertAgentForKey,
-  type AgentUsageRecord,
   type AgentUsageBucketTotalRecord,
   type AgentUsageModelTotalsRecord,
   type AgentUsageProjectBucketTotalRecord,
@@ -2130,35 +2129,8 @@ export class DrizzleShiftCommitRepository implements ShiftCommitRepository {
   }
 }
 
-function asAgentUsageRecord(row: typeof agentUsage.$inferSelect): AgentUsageRecord {
-  return {
-    id: row.id,
-    organizationId: row.organizationId,
-    userId: row.userId,
-    agentId: row.agentId,
-    agentSessionId: row.agentSessionId,
-    clientId: row.clientId,
-    bucketStartAt: row.bucketStartAt,
-    model: row.model,
-    sidechain: row.sidechain,
-    inputTokens: row.inputTokens,
-    outputTokens: row.outputTokens,
-    cacheCreationInputTokens: row.cacheCreationInputTokens,
-    cacheReadInputTokens: row.cacheReadInputTokens,
-  };
-}
-
 export class DrizzleAgentUsageRepository implements AgentUsageRepository {
   public constructor(private readonly db: DatabaseConnection["db"]) {}
-
-  public async findByClientId(subject: AuthenticatedSubject, clientId: string): Promise<AgentUsageRecord | null> {
-    const rows = await this.db.select().from(agentUsage).where(and(
-      eq(agentUsage.organizationId, subject.organizationId),
-      eq(agentUsage.userId, subject.userId),
-      eq(agentUsage.clientId, clientId),
-    )).limit(1);
-    return rows[0] === undefined ? null : asAgentUsageRecord(rows[0]);
-  }
 
   public async upsertBucket(input: UpsertAgentUsageBucket): Promise<void> {
     // The bucket unique absorbs a re-read of the same transcript region: each
