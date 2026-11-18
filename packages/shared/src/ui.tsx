@@ -340,6 +340,32 @@ export type AppDuration = { processName: string; durationSeconds: number };
 
 const TOP_APP_ROWS = 8;
 
+/// Each recorder stores its own OS's name for an app - "chrome.exe" on
+/// Windows, "Google Chrome" on a Mac - so the totals arrive keyed per name,
+/// and a person recording on both machines has one app under two. The display
+/// name is where those names become one app, so the time is summed by it here,
+/// before any row is ranked or folded. The heaviest recorded name stands for
+/// the app, for the row key and the OS icon lookup.
+const joinAppNames = (apps: readonly AppDuration[]): AppDuration[] => {
+  const byApp = new Map<string, { processName: string; heaviestSeconds: number; durationSeconds: number }>();
+  for (const app of apps) {
+    const source = agentRuntimeForBinary(app.processName);
+    const identity = source === undefined ? `app:${friendlyAppName(app.processName)}` : `agent:${source}`;
+    const joined = byApp.get(identity);
+    if (joined === undefined) {
+      byApp.set(identity, { processName: app.processName, heaviestSeconds: app.durationSeconds, durationSeconds: app.durationSeconds });
+      continue;
+    }
+    joined.durationSeconds += app.durationSeconds;
+    if (app.durationSeconds > joined.heaviestSeconds
+      || (app.durationSeconds === joined.heaviestSeconds && app.processName < joined.processName)) {
+      joined.processName = app.processName;
+      joined.heaviestSeconds = app.durationSeconds;
+    }
+  }
+  return [...byApp.values()].map(({ processName, durationSeconds }) => ({ processName, durationSeconds }));
+};
+
 /** One row of the All-stats app list. */
 export type AppRow = {
   key: string;
@@ -367,7 +393,7 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
   let agentSeconds = 0;
   const agentSources = new Set<string>();
   const rows: AppRow[] = [];
-  for (const app of apps) {
+  for (const app of joinAppNames(apps)) {
     const agentSource = agentRuntimeForBinary(app.processName);
     if (agentSource !== undefined) {
       agentSeconds += app.durationSeconds;
@@ -452,7 +478,8 @@ export type MeterRow = {
 /// Turns per-app seconds into meter rows. Agent CLIs keep their own row rather
 /// than folding into one: which tool the time went to is the whole question
 /// this surface answers. Everything past the top rows folds into one.
-export const buildMeterRows = (apps: readonly AppDuration[]): MeterRow[] => {
+export const buildMeterRows = (recorded: readonly AppDuration[]): MeterRow[] => {
+  const apps = joinAppNames(recorded);
   const longest = apps.reduce((most, app) => Math.max(most, app.durationSeconds), 0);
   const share = (durationSeconds: number): number =>
     longest === 0 ? 0 : Math.round((durationSeconds / longest) * 100);
