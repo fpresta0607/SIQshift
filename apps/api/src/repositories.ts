@@ -750,7 +750,6 @@ export interface UpsertAgentUsageBucket {
 }
 
 export interface AgentUsageRepository {
-  findByClientId(subject: AuthenticatedSubject, clientId: string): Promise<AgentUsageRecord | null>;
   /**
    * Inserts the bucket row or, on the (org, session, bucket, model, sidechain)
    * conflict, moves each counter to GREATEST(existing, incoming): counters are

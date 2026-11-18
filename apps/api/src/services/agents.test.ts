@@ -151,9 +151,6 @@ class MemoryUsage implements AgentUsageRepository {
   public readonly modelQueries: ReportQuery[] = [];
   public rows: AgentUsageModelTotalsRecord[] = [];
   public buckets: AgentUsageBucketTotalRecord[] = [];
-  public async findByClientId(): ReturnType<AgentUsageRepository["findByClientId"]> {
-    throw new Error("not used");
-  }
   public async upsertBucket(): ReturnType<AgentUsageRepository["upsertBucket"]> {
     throw new Error("not used");
   }

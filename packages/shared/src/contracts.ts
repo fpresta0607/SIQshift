@@ -1267,11 +1267,11 @@ export const shiftCommitBatchResponseSchema = z
 /**
  * One bucket of token counters read from an agent runtime's own session logs
  * by the desktop app - usage numbers only, never a word of transcript content.
- * `clientId` makes replays idempotent, exactly as it does for shift commits.
- * `bucketStartAt` is hour-aligned, and every counter is the cumulative total
- * for its (session, bucket, model, sidechain) tuple, upserted monotonically:
- * a re-read of the same transcript region can only restate a number, never
- * add to it.
+ * `clientId` names one (session, bucket, model, sidechain) tuple, and
+ * `bucketStartAt` is hour-aligned. Every counter is the cumulative total for
+ * that tuple, upserted monotonically: a replay, a grown restatement under the
+ * same `clientId`, or a re-read of the same transcript region can only restate
+ * a number upward, never add to it.
  */
 export const agentUsageUploadSchema = z
   .object({

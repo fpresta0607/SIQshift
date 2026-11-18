@@ -78,17 +78,10 @@ export function createAgentUsageService(dependencies: AgentUsageServiceDependenc
           session.agentId = agentId;
         }
 
-        const existing = await dependencies.agentUsage.findByClientId(subject, entry.clientId);
-        if (existing !== null) {
-          // A replay restates the same cumulative totals the row already
-          // holds, so it is an accepted no-op.
-          accepted += 1;
-          continue;
-        }
-
         // Counters are cumulative bucket totals: the upsert moves each one to
-        // GREATEST(existing, incoming), so a re-read of the same transcript
-        // region can only restate a number upward, never add to it.
+        // GREATEST(existing, incoming), so a replay, a grown restatement under
+        // the same clientId, or a re-read of the same transcript region can
+        // only restate a number upward, never add to it.
         await dependencies.agentUsage.upsertBucket({
           organizationId: subject.organizationId,
           userId: session.userId,

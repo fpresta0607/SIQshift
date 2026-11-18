@@ -357,9 +357,6 @@ class Usage implements AgentUsageRepository {
   public lastBucketQuery: ReportQuery | null = null;
   public lastAgentQuery: ReportQuery | null = null;
   public constructor(public rows: UsageSeed[] = []) {}
-  public async findByClientId(): ReturnType<AgentUsageRepository["findByClientId"]> {
-    throw new Error("not used");
-  }
   public async upsertBucket(): ReturnType<AgentUsageRepository["upsertBucket"]> {
     throw new Error("not used");
   }
