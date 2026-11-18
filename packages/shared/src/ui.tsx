@@ -345,25 +345,27 @@ const TOP_APP_ROWS = 8;
 /// and a person recording on both machines has one app under two. The display
 /// name is where those names become one app, so the time is summed by it here,
 /// before any row is ranked or folded. The heaviest recorded name stands for
-/// the app, for the row key and the OS icon lookup.
-const joinAppNames = (apps: readonly AppDuration[]): AppDuration[] => {
-  const byApp = new Map<string, { processName: string; heaviestSeconds: number; durationSeconds: number }>();
-  for (const app of apps) {
+/// the app as the row key, and every joined name stays on it, heaviest first,
+/// because a host only has icons for its own OS's names.
+type JoinedApp = { processName: string; processNames: string[]; durationSeconds: number };
+
+const joinAppNames = (apps: readonly AppDuration[]): JoinedApp[] => {
+  const heaviestFirst = [...apps].sort((a, b) =>
+    b.durationSeconds - a.durationSeconds
+    || (a.processName < b.processName ? -1 : a.processName > b.processName ? 1 : 0));
+  const byApp = new Map<string, JoinedApp>();
+  for (const app of heaviestFirst) {
     const source = agentRuntimeForBinary(app.processName);
     const identity = source === undefined ? `app:${friendlyAppName(app.processName)}` : `agent:${source}`;
     const joined = byApp.get(identity);
     if (joined === undefined) {
-      byApp.set(identity, { processName: app.processName, heaviestSeconds: app.durationSeconds, durationSeconds: app.durationSeconds });
+      byApp.set(identity, { processName: app.processName, processNames: [app.processName], durationSeconds: app.durationSeconds });
       continue;
     }
+    joined.processNames.push(app.processName);
     joined.durationSeconds += app.durationSeconds;
-    if (app.durationSeconds > joined.heaviestSeconds
-      || (app.durationSeconds === joined.heaviestSeconds && app.processName < joined.processName)) {
-      joined.processName = app.processName;
-      joined.heaviestSeconds = app.durationSeconds;
-    }
   }
-  return [...byApp.values()].map(({ processName, durationSeconds }) => ({ processName, durationSeconds }));
+  return [...byApp.values()];
 };
 
 /** One row of the All-stats app list. */
@@ -463,9 +465,10 @@ export type MeterRow = {
   /// runtime mark, and is how a CLI gets called "Claude Code" rather than
   /// "Claude.exe".
   source: string | undefined;
-  /// The executable behind the row, for the OS icon lookup. Absent on the
-  /// folded "Everything else" row.
-  processName: string | undefined;
+  /// Every recorded name joined into the row, heaviest first, for the OS icon
+  /// lookup: a host draws the icon of the first name it has one for. Empty on
+  /// rows that are not one app, such as the folded "Everything else" row.
+  processNames: readonly string[];
   /// Extra words beside the name - the folder an agent session is working in.
   detail?: string | undefined;
   /// A project row's icon and color, drawn in place of an app's mark.
@@ -491,7 +494,7 @@ export const buildMeterRows = (recorded: readonly AppDuration[]): MeterRow[] => 
         key: app.processName,
         label: source === undefined ? friendlyAppName(app.processName) : agentRuntimeLabel(source),
         source,
-        processName: app.processName,
+        processNames: app.processNames,
         durationSeconds: app.durationSeconds,
         share: share(app.durationSeconds),
       };
@@ -503,7 +506,7 @@ export const buildMeterRows = (recorded: readonly AppDuration[]): MeterRow[] => 
     key: "everything-else",
     label: "Everything else",
     source: undefined,
-    processName: undefined,
+    processNames: [],
     durationSeconds: rest,
     share: share(rest),
   }];
@@ -526,7 +529,7 @@ export const MeterRowItem = ({
 }: {
   row: MeterRow;
   measure?: ReactNode;
-  /// A data URL for the OS icon of `row.processName`, when the host could read
+  /// A data URL for the OS icon of one of `row.processNames`, when the host could read
   /// one. The browser has no such lookup, so the web always draws the placeholder.
   iconUrl?: string | null | undefined;
 }) => (
