@@ -323,11 +323,12 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   keeps what the server already took instead of replaying the whole backlog.
 - Spool-derived evidence (`shift_commits`, and anything modeled on it) is captured
   from the uploader's `upload_once` pass on every platform - not the
-  `#[cfg(windows)]`-gated spool replay - and uploads only after the agent-spool
-  drains succeed that pass. `Started` and `Ended` lines can drain in different
+  `#[cfg(windows)]`-gated spool replay - and uploads only in a pass that emptied
+  the agent spools. `Started` and `Ended` lines can drain in different
   passes, so a persisted sidecar (`shift-windows.json`) carries the open window
-  forward. A server rejection of `unknown_session` is retryable (the row stays
-  unsynced); every other rejection is permanent.
+  forward. A server rejection of `unknown_session` is retryable up to
+  `UNKNOWN_SESSION_ATTEMPT_LIMIT` answers; every other rejection is permanent
+  (see `upload_registry` in `uploader.rs`).
 - Bridge decoders show absence as absence: a stat the API may not send decodes to
   `null` and renders `-`, never 0 (the deployed API can be older than the desktop
   build). Background polls keep last-good data and surface a banner only after
