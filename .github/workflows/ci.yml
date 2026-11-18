@@ -12,6 +12,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # Every SQL-exercising suite gates itself on TEST_DATABASE_URL, so without
     # a server here the migration chain, the tenant foreign keys, the identity
     # upsert and the merge collision guard are all untested. Each suite builds
@@ -74,14 +75,16 @@ jobs:
           # apt keeps every package it downloads in that folder, for the cache.
           printf 'Dir::Cache::Archives "%s/";\nAPT::Keep-Downloaded-Packages "true";\n' "$debs" |
             sudo tee /etc/apt/apt.conf.d/99siqshift-chromium-debs > /dev/null
+          # Each try has a time limit: a stalled mirror never makes apt exit, so
+          # without it the loop never retries.
           for attempt in 1 2 3; do
-            if pnpm exec playwright install-deps chromium; then
+            if timeout 300 pnpm exec playwright install-deps chromium; then
               sudo rm /etc/apt/apt.conf.d/99siqshift-chromium-debs
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then sleep 60; fi
           done
-          echo "::error title=Ubuntu mirrors did not answer::Chromium's system libraries could not be downloaded from the Ubuntu mirrors in 3 tries, 60 seconds apart. Typecheck, tests and build did not run. Rerun this job once the mirrors answer."
+          echo "::error title=Ubuntu mirrors did not answer::Chromium's system libraries could not be downloaded from the Ubuntu mirrors in 3 tries of up to 5 minutes each, 60 seconds apart. Typecheck, tests and build did not run. Rerun this job once the mirrors answer."
           exit 1
       - if: steps.chromium-deps-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -99,6 +102,7 @@ jobs:
   # keeps them as artifacts for the manual store submissions in DEPLOY.md.
   extension:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: corepack enable pnpm
@@ -116,6 +120,7 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       TAURI_SYSTEM_PACKAGES: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
     steps:
@@ -146,14 +151,16 @@ jobs:
             -o "Dir::Cache::Archives=$deps/cache/archives"
           )
           read -ra packages <<< "$TAURI_SYSTEM_PACKAGES"
+          # Each try has a time limit: a stalled mirror never makes apt exit, so
+          # without it the loop never retries.
           for attempt in 1 2 3; do
-            if apt-get update "${apt_options[@]}" &&
-              sudo apt-get --download-only --yes install "${apt_options[@]}" "${packages[@]}"; then
+            if timeout 120 apt-get update "${apt_options[@]}" &&
+              sudo timeout 300 apt-get --download-only --yes install "${apt_options[@]}" "${packages[@]}"; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then sleep 60; fi
           done
-          echo "::error title=Ubuntu mirrors did not answer::The desktop build's system packages could not be downloaded from the Ubuntu mirrors in 3 tries, 60 seconds apart. fmt, clippy and the desktop tests did not run. Rerun this job once the mirrors answer."
+          echo "::error title=Ubuntu mirrors did not answer::The desktop build's system packages could not be downloaded from the Ubuntu mirrors in 3 tries of up to 7 minutes each, 60 seconds apart. fmt, clippy and the desktop tests did not run. Rerun this job once the mirrors answer."
           exit 1
       - if: steps.tauri-deps-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
