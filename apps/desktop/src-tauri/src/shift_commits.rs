@@ -21,6 +21,7 @@ use crate::browser::write_if_changed_locked;
 use crate::git_evidence::{self, Verification};
 use crate::monitor::{iso8601, parse_iso8601, unix_now};
 use crate::spool::{self, AgentEventKind, AgentSource};
+use crate::uploader::{RegistryRow, UploadVerdicts};
 
 /// How long an opened window waits for its `Ended` line before it counts as
 /// abandoned (a crash, a forced quit) and is reaped.
@@ -74,6 +75,35 @@ pub struct CommitEntry {
     pub synced: bool,
     #[serde(default)]
     pub rejected: bool,
+    /// How many times the server answered `unknown_session` for the commit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unknown_session_attempts: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
+impl RegistryRow for CommitEntry {
+    fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    fn happened_at(&self) -> Option<u64> {
+        parse_iso8601(&self.authored_at)
+    }
+
+    fn unknown_session_attempts(&self) -> u32 {
+        self.unknown_session_attempts
+    }
+
+    fn verdict_state(&mut self) -> (&mut bool, &mut bool, &mut u32) {
+        (
+            &mut self.synced,
+            &mut self.rejected,
+            &mut self.unknown_session_attempts,
+        )
+    }
 }
 
 fn read_json_sidecar<T: Default + serde::de::DeserializeOwned>(path: &Path) -> T {
@@ -311,6 +341,7 @@ pub async fn capture_from_spool(
                     verified_at: None,
                     synced: false,
                     rejected: false,
+                    unknown_session_attempts: 0,
                 });
             }
         }
@@ -321,43 +352,32 @@ pub async fn capture_from_spool(
 }
 
 /// Every entry the uploader has not yet gotten a permanent verdict for.
-pub fn unsynced(shift_commits_path: &Path) -> Vec<CommitEntry> {
+pub fn unsynced(shift_commits_path: &Path) -> spool::SpoolResult<Vec<CommitEntry>> {
     spool::with_lock(shift_commits_path, || {
         Ok(read_registry(shift_commits_path)
             .into_iter()
             .filter(|entry| !entry.synced && !entry.rejected)
             .collect())
     })
-    .unwrap_or_default()
 }
 
-/// Marks the given client ids accepted by the server (a permanent, terminal
-/// outcome for upload purposes even while `verification` is still pending).
-pub fn mark_synced(shift_commits_path: &Path, client_ids: &[String]) {
-    let _ = spool::with_lock(shift_commits_path, || {
+/// Records one upload pass's verdicts in one registry write. Returns how many
+/// entries the `unknown_session` bound gave up.
+pub fn record_verdicts(
+    shift_commits_path: &Path,
+    verdicts: &UploadVerdicts<CommitEntry>,
+) -> spool::SpoolResult<usize> {
+    spool::with_lock(shift_commits_path, || {
         let mut registry = read_registry(shift_commits_path);
-        for entry in registry.iter_mut() {
-            if client_ids.iter().any(|id| id == &entry.client_id) {
-                entry.synced = true;
+        let mut given_up = 0;
+        for entry in &mut registry {
+            if verdicts.apply(entry) {
+                given_up += 1;
             }
         }
-        write_registry(shift_commits_path, &registry)
-    });
-}
-
-/// Marks the given client ids permanently rejected by the server — anything
-/// other than the retryable `unknown_session` reason, which the caller keeps
-/// unsynced instead.
-pub fn mark_rejected(shift_commits_path: &Path, client_ids: &[String]) {
-    let _ = spool::with_lock(shift_commits_path, || {
-        let mut registry = read_registry(shift_commits_path);
-        for entry in registry.iter_mut() {
-            if client_ids.iter().any(|id| id == &entry.client_id) {
-                entry.rejected = true;
-            }
-        }
-        write_registry(shift_commits_path, &registry)
-    });
+        write_registry(shift_commits_path, &registry)?;
+        Ok(given_up)
+    })
 }
 
 fn verification_label(verification: Verification) -> &'static str {
@@ -811,6 +831,7 @@ mod tests {
                         verified_at: None,
                         synced: false,
                         rejected: false,
+                        unknown_session_attempts: 0,
                     });
                     write_registry(&path, &registry)
                 });
@@ -826,9 +847,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// One pass's verdicts land in one write, each on only the entry it
+    /// names: accepted is synced, a permanent rejection is rejected, and an
+    /// accepted commit verified since it was sent stays unsynced so its verdict
+    /// still uploads.
     #[test]
-    fn mark_synced_and_mark_rejected_update_only_the_named_entries() {
-        let dir = temp_dir("mark");
+    fn recorded_verdicts_update_only_the_named_entries_as_they_were_sent() {
+        let dir = temp_dir("verdicts");
         let commits_path = dir.join("shift-commits.json");
         let base = CommitEntry {
             client_id: "one".to_string(),
@@ -843,28 +868,62 @@ mod tests {
             verified_at: None,
             synced: false,
             rejected: false,
+            unknown_session_attempts: 0,
         };
-        let mut other = base.clone();
-        other.client_id = "two".to_string();
-        other.sha = "b".repeat(40);
-        write_registry(&commits_path, &[base, other]).expect("write succeeds");
+        let entry = |client_id: &str, sha: char| CommitEntry {
+            client_id: client_id.to_string(),
+            sha: sha.to_string().repeat(40),
+            ..base.clone()
+        };
+        let sent = [entry("one", 'a'), entry("two", 'b'), entry("three", 'c')];
+        let mut verified_since = entry("three", 'c');
+        verified_since.verification = "merged".to_string();
+        verified_since.verified_at = Some(iso8601(1_700_000_600));
+        write_registry(
+            &commits_path,
+            &[
+                sent[0].clone(),
+                sent[1].clone(),
+                verified_since,
+                entry("four", 'd'),
+            ],
+        )
+        .expect("write succeeds");
 
-        mark_synced(&commits_path, &["one".to_string()]);
-        mark_rejected(&commits_path, &["two".to_string()]);
+        let mut verdicts = UploadVerdicts::default();
+        verdicts.absorb(
+            &sent,
+            &[crate::api::SegmentRejection {
+                client_id: "two".to_string(),
+                reason: "validation_error".to_string(),
+            }],
+        );
+        assert_eq!(
+            record_verdicts(&commits_path, &verdicts).expect("recorded"),
+            0
+        );
 
         let registry = read_registry(&commits_path);
-        let one = registry
-            .iter()
-            .find(|entry| entry.client_id == "one")
-            .unwrap();
-        let two = registry
-            .iter()
-            .find(|entry| entry.client_id == "two")
-            .unwrap();
-        assert!(one.synced && !one.rejected);
-        assert!(two.rejected && !two.synced);
+        let find = |client_id: &str| {
+            registry
+                .iter()
+                .find(|entry| entry.client_id == client_id)
+                .expect("the entry is kept")
+        };
+        assert!(find("one").synced && !find("one").rejected);
+        assert!(find("two").rejected && !find("two").synced);
+        assert!(
+            !find("three").synced,
+            "a commit verified since it was sent uploads again"
+        );
+        assert!(!find("four").synced && !find("four").rejected);
 
-        assert_eq!(unsynced(&commits_path), Vec::new());
+        let unsynced: Vec<String> = unsynced(&commits_path)
+            .expect("the registry reads")
+            .into_iter()
+            .map(|entry| entry.client_id)
+            .collect();
+        assert_eq!(unsynced, ["three", "four"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -911,6 +970,7 @@ mod tests {
             verified_at: None,
             synced: true,
             rejected: false,
+            unknown_session_attempts: 0,
         }
     }
 
