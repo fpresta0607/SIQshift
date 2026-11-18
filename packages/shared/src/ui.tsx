@@ -8,6 +8,7 @@ import { ProjectIconTile } from "./project-icon-tile.js";
 import { formatHumanDuration } from "./time.js";
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { ChartTooltip } from "./chart-tooltip.js";
+import { MemberAvatar } from "./member-avatar.js";
 
 export { AgentRuntimeIcon } from "./agent-marks.js";
 export { formatCount, formatRangeDays, formatTokens } from "./format.js";
@@ -18,7 +19,6 @@ export { ProjectIconPicker } from "./project-icon-picker.js";
 export { ProjectIconTile } from "./project-icon-tile.js";
 export { QuietMark } from "./quiet-mark.js";
 export { SegmentedControl, type SegmentedOption } from "./segmented-control.js";
-export { TokenBarChart, type ChartTokenBucket, type ChartTokens } from "./token-bar-chart.js";
 export { usePictures } from "./use-pictures.js";
 
 /**
@@ -42,54 +42,6 @@ export type ConcurrencySplit = {
   t2Seconds: number;
   t3PlusSeconds: number;
 };
-
-/// A person's active time laid out as labeled rows: the hours up top, then
-/// how many agents were running through them. What those agents added up to
-/// belongs to the agent, not the person, so it lives on the Agents tab's
-/// shifts-by-codebase map. The four buckets sum to active time and say nothing
-/// about runtime that fell outside it; that number belongs to `recordedBasis`,
-/// beside the recorded total it explains.
-export const MemberBreakdown = ({
-  activeSeconds,
-  concurrency,
-}: {
-  activeSeconds: number;
-  concurrency: ConcurrencySplit;
-}) => (
-  <div className="breakdown" data-testid="breakdown">
-    <p className="group-label">Active time, split by agents running</p>
-    <div className="metric-row is-headline">
-      <span className="metric-name">Active time</span>
-      <span className="metric-value">{formatHumanDuration(activeSeconds)}</span>
-    </div>
-    <div className="metric-row">
-      <span className="metric-swatch swatch-human" aria-hidden="true" />
-      <span className="metric-name">Human work <span className="metric-hint">(no agent running)</span></span>
-      <span className="metric-value">{formatHumanDuration(concurrency.t0Seconds)}</span>
-    </div>
-    {concurrency.t1Seconds > 0 && (
-      <div className="metric-row">
-        <span className="metric-swatch swatch-agent1" aria-hidden="true" />
-        <span className="metric-name">With 1 agent</span>
-        <span className="metric-value">{formatHumanDuration(concurrency.t1Seconds)}</span>
-      </div>
-    )}
-    {concurrency.t2Seconds > 0 && (
-      <div className="metric-row">
-        <span className="metric-swatch swatch-agent2" aria-hidden="true" />
-        <span className="metric-name">With 2 agents</span>
-        <span className="metric-value">{formatHumanDuration(concurrency.t2Seconds)}</span>
-      </div>
-    )}
-    {concurrency.t3PlusSeconds > 0 && (
-      <div className="metric-row">
-        <span className="metric-swatch swatch-agent3" aria-hidden="true" />
-        <span className="metric-name">With 3+ agents</span>
-        <span className="metric-value">{formatHumanDuration(concurrency.t3PlusSeconds)}</span>
-      </div>
-    )}
-  </div>
-);
 
 /// What "recorded" is made of, in one sentence, from numbers this payload
 /// actually carries.
@@ -142,7 +94,7 @@ const CHART_NAMES: Readonly<Record<TimeMeasure, string>> = {
 };
 
 /// SVG line chart of time and nothing else: agents in the brand green, the
-/// person in gray. Tokens have their own bar chart on the Agents tab. No chart
+/// person in gray: the main screen's day. No chart
 /// library: a fixed viewBox, one path per series, and a gradient area under
 /// each. The scale fits the lines drawn, so a line drawn alone fills the
 /// chart. The server buckets to the caller's local hours, so the x-axis reads
@@ -153,9 +105,8 @@ export const HourlyGraph = ({
   personLabel = "Active time",
 }: {
   buckets: readonly ChartHourlyBucket[];
-  /// "agent" draws no person line at all - the Agents tab plots runtime
-  /// alone, where a flat line at zero would only claim somebody was measured
-  /// and absent.
+  /// "agent" draws no person line at all, where a flat line at zero would
+  /// only claim somebody was measured and absent.
   measure?: TimeMeasure;
   /// Names the presence line.
   personLabel?: string;
@@ -374,6 +325,11 @@ export type AppRow = {
   label: string;
   durationSeconds: number;
   agent: boolean;
+  /// Every recorded name joined into the row, heaviest first, for the OS icon
+  /// lookup. Empty on rows that are not one app: the agents, the fold and quiet time.
+  processNames: readonly string[];
+  /// The agent runtime the agent row is, when it is exactly one; it wears that runtime's mark.
+  source: string | undefined;
 };
 
 /// Heaviest-first app rows for the All-stats breakdown: agent CLIs fold into
@@ -402,7 +358,14 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
       agentSources.add(agentSource);
       continue;
     }
-    rows.push({ key: app.processName, label: friendlyAppName(app.processName), durationSeconds: app.durationSeconds, agent: false });
+    rows.push({
+      key: app.processName,
+      label: friendlyAppName(app.processName),
+      durationSeconds: app.durationSeconds,
+      agent: false,
+      processNames: app.processNames,
+      source: undefined,
+    });
   }
   if (agentSeconds > 0) {
     const sources = [...agentSources];
@@ -411,6 +374,8 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
       label: sources.length === 1 ? agentRuntimeLabel(sources[0] ?? "") : "Agent CLIs",
       durationSeconds: agentSeconds,
       agent: true,
+      processNames: [],
+      source: sources.length === 1 ? sources[0] : undefined,
     });
   }
   rows.sort((a, b) => b.durationSeconds - a.durationSeconds || a.label.localeCompare(b.label));
@@ -425,7 +390,7 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
     : Math.max(0, recordedSeconds - measured);
   const quiet: AppRow[] = quietSeconds < 60
     ? []
-    : [{ key: "quiet-time", label: "Quiet time", durationSeconds: quietSeconds, agent: false }];
+    : [{ key: "quiet-time", label: "Quiet time", durationSeconds: quietSeconds, agent: false, processNames: [], source: undefined }];
   if (rows.length <= TOP_APP_ROWS) return [...rows, ...quiet];
   // The agent row never folds into the tail: the fold would hide the agent
   // runtimes inside "Everything else".
@@ -433,7 +398,7 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
   const rest = rows.slice(TOP_APP_ROWS).filter((row) => !row.agent)
     .reduce((sum, row) => sum + row.durationSeconds, 0);
   if (rest === 0) return [...kept, ...quiet];
-  return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false }, ...quiet];
+  return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false, processNames: [], source: undefined }, ...quiet];
 };
 
 /// One row of a project breakdown.
@@ -561,7 +526,7 @@ export const MeterRowItem = ({
   </li>
 );
 
-/** A shift as both Agents tabs render it. */
+/** A shift as the dashboard's repo drawers render it. */
 export type ShiftRow = {
   id: string;
   source: string;
@@ -575,7 +540,7 @@ export type ShiftRow = {
   project?: { name: string } | null | undefined;
 };
 
-/** One codebase's head, as both Agents tabs render it. The shifts behind it are a separate read. */
+/** One codebase's head, as the dashboard's Repos card renders it. The shifts behind it are a separate read. */
 export type ShiftGroup = {
   /** Names this group to `loadShifts`, and nothing else; the server sends it rather than letting each client derive one. */
   groupKey: string;
@@ -645,7 +610,7 @@ type ShiftDrawer = {
 };
 
 /**
- * The Agents page's repo board: one collapsible group per codebase, ranked in
+ * The dashboard's repo board: one collapsible group per codebase, ranked in
  * the order given, its shifts inside.
  *
  * The head is a board row - rank, the codebase's letter, its name over its
@@ -823,7 +788,7 @@ export const ShiftGroups = ({
   );
 };
 
-/** One running agent session as both Agents tabs render it. */
+/** One running agent session as the dashboard's Live now card renders it. */
 export type LiveSessionRow = {
   id: string;
   /** The honest line the server composed; rendered verbatim, never re-derived. */
@@ -833,14 +798,14 @@ export type LiveSessionRow = {
   source: string;
 };
 
-/** One person's running sessions, as both Agents tabs render them. */
+/** One person's running sessions, as both apps' Live now cards render them. */
 export type LivePersonGroup = {
   owner: { id: string; name: string };
   sessions: readonly LiveSessionRow[];
 };
 
 /**
- * The live view on the Agents page: who is running an agent right now, and
+ * The dashboard's Live now card: who is running an agent right now, and
  * what each one is doing. The server sends only people with at least
  * one running session, so nobody stale can appear here, and an empty roster
  * is the honest "nothing is running" - not an absence to be papered over.
@@ -850,7 +815,14 @@ export type LivePersonGroup = {
  * not support. The codebase label rides beside it because that is the repo the
  * page's Repos card files the session under once it ends.
  */
-export const LiveSessions = ({ people }: { people: readonly LivePersonGroup[] }) => {
+export const LiveSessions = ({
+  people,
+  pictureOf,
+}: {
+  people: readonly LivePersonGroup[];
+  /// A member's picture as a data URL, where the caller has it; initials stand in otherwise.
+  pictureOf?: ((id: string) => string | undefined) | undefined;
+}) => {
   if (people.length === 0) {
     return (
       <p className="subtle live-sessions-empty" data-testid="live-sessions-empty">
@@ -862,6 +834,7 @@ export const LiveSessions = ({ people }: { people: readonly LivePersonGroup[] })
     <section className="live-sessions" data-testid="live-sessions" aria-label="Agents running now">
       {people.map((person) => (
         <div key={person.owner.id} className="live-person">
+          <MemberAvatar id={person.owner.id} name={person.owner.name} picture={pictureOf?.(person.owner.id)} />
           <span className="live-person-name">
             {person.owner.name}
             {person.sessions.length > 1 && <span className="meter-detail"> · {person.sessions.length} agents</span>}

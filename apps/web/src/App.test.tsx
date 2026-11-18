@@ -1,8 +1,9 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type MeStatsResponse } from "@siqshift/shared";
+import { localDay } from "@siqshift/shared/dashboard-view";
 import { buildAppRows, recordedBasis } from "@siqshift/shared/ui";
 import { App, rangeQuery } from "./App.js";
 import { ClientError, type Client } from "./client.js";
@@ -156,8 +157,8 @@ const agentShiftsHourly = [12, 13, 14, 15].map((hour) => ({
   cacheReadInputTokens: null,
 }));
 
-/// The Agents tab's map: two codebases, three shifts, one decided commit.
-/// Heads only - the shifts hang behind `groupKey`.
+/// The agents' read: two codebases, three shifts, one decided commit. Heads
+/// only - the shifts hang behind `groupKey`.
 const agentShiftsResponse = {
   filters: {},
   totalAgentSeconds: 7_200,
@@ -184,7 +185,42 @@ const agentShiftsResponse = {
       heldRate: null,
     },
   ],
+  runtimes: [
+    { source: "claude_code", agentSeconds: 5_400, shiftCount: 2 },
+    { source: "pi", agentSeconds: 1_800, shiftCount: 1 },
+  ],
 };
+
+/// What the server sends for Sam alone: his own tokens, runtimes and repos.
+const samAgentShifts = {
+  ...agentShiftsResponse,
+  filters: { userId: "u1" },
+  totalAgentSeconds: 1_800,
+  tokenTotals: { tokensIn: 40_000, tokensOut: 2_000, tokens: 42_000 },
+  groups: [agentShiftsResponse.groups[1]!],
+  runtimes: [{ source: "pi", agentSeconds: 1_800, shiftCount: 1, tokens: 42_000 }],
+};
+
+/// Sam's own read, with every figure told apart from the viewer's and the team's.
+const samStats = {
+  ...memberStats,
+  totalDurationSeconds: 9_000,
+  activeSeconds: 5_400,
+  agentSeconds: 7_200,
+  concurrency: { t0Seconds: 1_800, t1Seconds: 1_800, t2Seconds: 1_800, t3PlusSeconds: 0, awaySeconds: 0 },
+  projects: [
+    { project: { id: "p2", name: "Client" }, durationSeconds: 9_000, attributedSeconds: 9_000, unattributedSeconds: 0, sessionCount: 2 },
+  ],
+  apps: [{ processName: "Code.exe", durationSeconds: 5_400 }],
+};
+
+const queryOf = (call: readonly unknown[] | undefined): URLSearchParams =>
+  new URLSearchParams(((call?.[0] ?? "") as string).replace(/^\?/, ""));
+
+/// Answers the way the server does: for the person the query names, or for the viewer.
+const meStatsPerPerson = (query = "") => Promise.resolve(queryOf([query]).get("userId") === "u1" ? samStats : memberStats);
+const agentShiftsPerPerson = (query = "") =>
+  Promise.resolve(queryOf([query]).get("userId") === "u1" ? samAgentShifts : agentShiftsResponse);
 
 /// One group's page, cut from the cursor the way the endpoint cuts it: the
 /// first row strictly after the named one in the group's own ordering.
@@ -221,13 +257,7 @@ function clientFor(overrides: Partial<Client> = {}): Client {
     report: vi.fn().mockResolvedValue({ rows: [], totalDurationSeconds: 0, filters: {}, pagination: { page: 1, pageSize: 25, totalRows: 0, totalPages: 0 } }),
     joinOrganization: vi.fn().mockResolvedValue(undefined),
     restoreSession: vi.fn().mockResolvedValue(false),
-    // An unbounded range gets no hourly series, which is what the server
-    // answers: per-hour resolution over all of history means nothing.
-    agentShifts: vi.fn().mockImplementation((query: string = "") => Promise.resolve(
-      new URLSearchParams(query.replace(/^\?/, "")).has("fromAt")
-        ? agentShiftsResponse
-        : { ...agentShiftsResponse, hourly: [] },
-    )),
+    agentShifts: vi.fn().mockResolvedValue(agentShiftsResponse),
     agentShiftRows: vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query))),
     liveAgentSessions: vi.fn().mockResolvedValue({ people: [] }),
     uploadPicture: vi.fn().mockResolvedValue({ user: self }),
@@ -240,12 +270,20 @@ function clientFor(overrides: Partial<Client> = {}): Client {
 
 type Person = ReturnType<typeof userEvent.setup>;
 
-async function signIn(client: Client, person: Person = userEvent.setup()) {
-  render(<App client={client} />);
+/// Fills the sign-in dialog on the page already rendered.
+async function signInAgain(person: Person) {
   await person.click(await screen.findByRole("button", { name: "Sign in" }));
-  await person.type(await screen.findByLabelText("Email"), "alex@example.com");
+  // The dialog keeps the email from an earlier attempt, so clear it first.
+  const email = await screen.findByLabelText("Email");
+  await person.clear(email);
+  await person.type(email, "alex@example.com");
   await person.type(screen.getByLabelText("Password"), "long-enough-password");
   await person.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Sign in" }));
+}
+
+async function signIn(client: Client, person: Person = userEvent.setup()) {
+  render(<App client={client} />);
+  await signInAgain(person);
   return person;
 }
 
@@ -256,13 +294,14 @@ async function openAllStats(person: Person) {
   return within(await screen.findByRole("dialog", { name: "All stats" }));
 }
 
-/// The dialog's Humans or Agents switch.
-const agentsTab = (dialog: ReturnType<typeof within>) =>
-  within(dialog.getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
+/// One figure on the page's one totals row: the team's, or the named person's.
+const totalFigure = (view: ReturnType<typeof within>, label: string, personName?: string) =>
+  within(view.getByLabelText(personName === undefined ? "Totals" : `Totals for ${personName}`))
+    .getByText(label).nextElementSibling?.querySelector("b");
 
-/// One figure on the totals row that opens each team view page.
-const teamTotal = (view: ReturnType<typeof within>, label: string) =>
-  within(view.getByLabelText("Totals")).getByText(label).nextElementSibling?.querySelector("b");
+/// A board row is the page's picker: this points every card at one person.
+const pickPerson = (person: Person, view: ReturnType<typeof within>, name: string) =>
+  person.click(view.getByRole("button", { name: `Show ${name}'s work` }));
 
 /// Projects, the team's invite code and signing out live in the settings
 /// panel, the way the desktop app files them.
@@ -308,7 +347,7 @@ describe("app row folding", () => {
     expect(buildAppRows([], 6_960)).toEqual([]);
     // Under a minute is rounding, not a gap.
     expect(buildAppRows([{ processName: "chrome.exe", durationSeconds: 1_200 }], 1_230))
-      .toEqual([{ key: "chrome.exe", label: "Google Chrome", durationSeconds: 1_200, agent: false }]);
+      .toEqual([{ key: "chrome.exe", label: "Google Chrome", durationSeconds: 1_200, agent: false, processNames: ["chrome.exe"], source: undefined }]);
   });
 });
 
@@ -343,29 +382,72 @@ describe("dashboard", () => {
     // Assert
     expect(stats.getByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(stats.getByText(/^Last 30 days · /)).toBeInTheDocument();
-    expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 14m");
-    expect(teamTotal(stats, "Agent time")).toHaveTextContent("3h 00m");
-    expect(teamTotal(stats, "People")).toHaveTextContent(/^2$/);
-    expect(teamTotal(stats, "Projects")).toHaveTextContent(/^2$/);
-    const graph = within(stats.getByRole("region", { name: "Over time" })).getByTestId("hourly-graph");
+    expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
+    expect(totalFigure(stats, "Agent time")).toHaveTextContent("3h 00m");
+    expect(totalFigure(stats, "Recorded time")).toHaveTextContent("3h 14m");
+    const graph = within(stats.getByRole("region", { name: "Over time" })).getByTestId("work-chart");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
-    expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
+    expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamGeneral2h 14m3h 00m$/);
     expect(second).toHaveTextContent(/^2AAlexYouClient1h 00m0s$/);
-    // Both lists at once, with no switch between them.
+    // Every list at once, with no switch between them.
     const projects = within(stats.getByRole("region", { name: "Projects" }));
     expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
     expect(projects.getByText("Recorded time")).toBeInTheDocument();
     const agents = within(stats.getByRole("region", { name: "Agents" }));
-    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3h 00m"]);
+    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code2 shifts-1h 30m", "Pi1 shift-30m"]);
     expect(agents.getByText("Agent time")).toBeInTheDocument();
+    expect(stats.getByRole("region", { name: "Repos" })).toBeInTheDocument();
+    expect(stats.getByRole("region", { name: /Live now/ })).toBeInTheDocument();
     expect(stats.queryByRole("group", { name: "Projects or agents" })).toBeNull();
     expect(stats.queryByText("Local agents, shared visibility")).toBeNull();
     expect(workspace.mock.calls.at(-1)?.[0]).toContain("fromAt=");
   });
 
-  it("wears each project's own icon and color on the board, the Projects list and the person card", async () => {
+  it("has no Humans or Agents switch: one page holds everything", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Assert
+    expect(stats.queryByRole("group", { name: "Humans or agents" })).toBeNull();
+    expect(stats.queryByRole("button", { name: "Humans" })).toBeNull();
+    expect(stats.queryByRole("button", { name: "Agents" })).toBeNull();
+    expect(stats.queryByRole("tab")).toBeNull();
+  });
+
+  it("draws each kept metric once in one totals row, and no count tiles", async () => {
+    // Arrange: told apart, so a figure drawn from the wrong source shows.
+    const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue({
+        ...workspaceReport,
+        projects: [workspaceReport.projects[0]!, { ...workspaceReport.projects[1]!, durationSeconds: 5_400 }],
+      }),
+      agentShifts: vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenTotals: { tokensIn: 900_000, tokensOut: 300_000, tokens: 1_200_000 } }),
+    }));
+
+    // Act
+    const stats = await openAllStats(person);
+    const totals = within(await stats.findByLabelText("Totals"));
+    await waitFor(() => expect(totalFigure(stats, "Tokens")).toHaveTextContent("1.2M"));
+
+    // Assert
+    expect(stats.getAllByLabelText(/^Totals/)).toHaveLength(1);
+    expect(totals.getAllByRole("term").map((term) => term.textContent)).toEqual(["Tokens", "Active time", "Agent time", "Recorded time"]);
+    expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
+    expect(totalFigure(stats, "Agent time")).toHaveTextContent("3h 00m");
+    // The team's recorded time is its project rows added up: 2h 14m + 1h 30m.
+    expect(totalFigure(stats, "Recorded time")).toHaveTextContent("3h 44m");
+    for (const retired of ["People", "Projects", "Shifts", "Repos"]) {
+      expect(totals.queryByText(retired)).toBeNull();
+    }
+  });
+
+  it("wears each project's own icon and color on the board, the Projects list and a person's projects", async () => {
     // Arrange
     const person = await signIn(clientFor());
     const tiles = (scope: HTMLElement) => [...scope.querySelectorAll(".project-icon")]
@@ -374,46 +456,36 @@ describe("dashboard", () => {
     // Act
     const stats = await openAllStats(person);
     await stats.findByLabelText("Totals");
-    const ownProjects = await stats.findByTestId("member-project-list");
 
     // Assert: the pair the server sent, General's own among them.
     expect(tiles(stats.getByRole("table", { name: "People" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
     expect(tiles(stats.getByRole("region", { name: "Projects" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
-    expect(tiles(ownProjects)).toEqual([["grid", "#a3b3c2"]]);
-  });
 
-  it("wears the project list's own pair on the person card for a project the board has not listed yet", async () => {
-    // Arrange: the board is still on its way, so only the viewer's project
-    // list, which says General is the default, can draw it.
-    const person = await signIn(clientFor({ workspace: vi.fn().mockReturnValue(new Promise(() => undefined)) }));
-
-    // Act
-    const ownProjects = await (await openAllStats(person)).findByTestId("member-project-list");
+    // Act: the viewer's own projects, read by their own request.
+    await pickPerson(person, stats, "Alex");
+    await stats.findByLabelText("Totals for Alex");
 
     // Assert
-    const tile = ownProjects.querySelector(".project-icon");
+    expect(tiles(stats.getByRole("region", { name: "Projects" }))).toEqual([["grid", "#a3b3c2"]]);
+  });
+
+  it("wears the project list's own pair for a project the report has not listed yet", async () => {
+    // Arrange: the workspace report lists only Client, so only the viewer's
+    // project list, which says General is the default, can draw General.
+    const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue({ ...workspaceReport, projects: [workspaceReport.projects[1]!] }),
+    }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    await pickPerson(person, stats, "Alex");
+    const projects = within(await stats.findByRole("region", { name: "Projects" }));
+
+    // Assert
+    const tile = (await projects.findByText("General")).closest("li")?.querySelector(".project-icon");
     expect(tile).toHaveAttribute("data-icon", "grid");
     expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
-  });
-
-  it.each([
-    ["Both", "Hourly active and agent time", ["agent", "human"]],
-    ["Active time", "Hourly active time", ["human"]],
-    ["Agent time", "Hourly agent time", ["agent"]],
-  ])("draws only what the team chart's one toggle picks: %s", async (choice, chartName, lines) => {
-    // Arrange
-    const person = await signIn(clientFor());
-    const stats = await openAllStats(person);
-    const chart = within(await stats.findByRole("region", { name: "Over time" }));
-    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
-
-    // Act
-    await person.click(toggle.getByRole("button", { name: choice }));
-
-    // Assert
-    expect(toggle.getByRole("button", { name: choice })).toHaveAttribute("aria-pressed", "true");
-    const graph = chart.getByRole("img", { name: chartName });
-    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(lines);
   });
 
   it("orders the board only by what its rows show, active or agent time", async () => {
@@ -428,6 +500,32 @@ describe("dashboard", () => {
     expect(within(sort).getAllByRole("option").map((option) => option.textContent)).toEqual(["By active time", "By agent time"]);
   });
 
+  it("re-ranks the board by agent time when it is asked to, never changing who is picked", async () => {
+    // Arrange: Alex has the most agent time but the least active time.
+    const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue({
+        ...workspaceReport,
+        members: [
+          { ...teamMembers[0]!, agentSeconds: 600 },
+          { ...teamMembers[1]!, agentSeconds: 7_200 },
+        ],
+      }),
+    }));
+    const stats = await openAllStats(person);
+    const rows = () => within(stats.getByRole("table", { name: "People" })).getAllByRole("row").slice(1).map((row) => row.textContent);
+    await stats.findByLabelText("Totals");
+    expect(rows()).toEqual(["1SSamGeneral2h 14m10m", "2AAlexYouClient1h 00m2h 00m"]);
+    await pickPerson(person, stats, "Sam");
+
+    // Act
+    await person.selectOptions(stats.getByRole("combobox", { name: /Sort by/ }), "By agent time");
+
+    // Assert
+    expect(rows()).toEqual(["1AAlexYouClient1h 00m2h 00m", "2SSamGeneral2h 14m10m"]);
+    expect(stats.getByRole("button", { name: "Show Sam's work" })).toHaveAttribute("aria-pressed", "true");
+    expect(stats.getByLabelText("Totals for Sam")).toBeInTheDocument();
+  });
+
   it("draws the team totals the server added up, never a sum of the rows", async () => {
     // Arrange
     const person = await signIn(clientFor({
@@ -439,28 +537,35 @@ describe("dashboard", () => {
     await stats.findByLabelText("Totals");
 
     // Assert
-    expect(teamTotal(stats, "Active time")).toHaveTextContent("3h 20m");
-    expect(teamTotal(stats, "Agent time")).toHaveTextContent("5h 33m");
+    expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 20m");
+    expect(totalFigure(stats, "Agent time")).toHaveTextContent("5h 33m");
   });
 
-  it("shows a workspace of one as a single row, the viewer's own", async () => {
+  it("shows a workspace of one as that person: no board, their split and their apps", async () => {
     // Arrange
-    const person = await signIn(clientFor({ workspace: vi.fn().mockResolvedValue(workspaceOfOne) }));
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const person = await signIn(clientFor({ workspace: vi.fn().mockResolvedValue(workspaceOfOne), meStats }));
 
     // Act
     const stats = await openAllStats(person);
-    await stats.findByLabelText("Totals");
+    await stats.findByLabelText("Totals for Alex");
+    await stats.findByRole("region", { name: "Apps" });
 
-    // Assert
-    expect(teamTotal(stats, "People")).toHaveTextContent(/^1$/);
-    expect(teamTotal(stats, "Projects")).toHaveTextContent(/^1$/);
-    expect(teamTotal(stats, "Active time")).toHaveTextContent("1h 00m");
-    const [, only, ...rest] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(rest).toEqual([]);
-    expect(only).toHaveTextContent(/^1AAlexYouClient1h 00m0s$/);
-    expect(within(only!).getByRole("button", { name: "Show Alex's work" })).toHaveAttribute("aria-pressed", "true");
-    // Nobody else to pick, so the board does not offer to.
+    // Assert: nobody else to pick, so no board, no way back and no hint to pick.
+    expect(stats.queryByRole("table", { name: "People" })).toBeNull();
+    expect(stats.queryByRole("button", { name: /^Show / })).toBeNull();
+    expect(stats.queryByRole("button", { name: "Everyone" })).toBeNull();
     expect(stats.queryByText("Select a teammate to explore their work.")).toBeNull();
+    // The person's own read: asked for by their id, and drawn on every card.
+    expect(queryOf(meStats.mock.calls.find((call) => queryOf(call).has("userId"))).get("userId")).toBe("u2");
+    expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("2h 00m");
+    expect(totalFigure(stats, "Agent time", "Alex")).toHaveTextContent("1h 00m");
+    expect(totalFigure(stats, "Recorded time", "Alex")).toHaveTextContent("2h 00m");
+    const split = within(stats.getByRole("region", { name: "Active time, by agents running" }));
+    expect(split.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["No agent running1h 00m", "With 1 agent1h 00m"]);
+    const apps = within(stats.getByRole("region", { name: "Apps" }));
+    expect(apps.getByText("Claude Code")).toBeInTheDocument();
+    expect(apps.getByText("VS Code")).toBeInTheDocument();
   });
 
   it("shows the invite code and copies it on request", async () => {
@@ -634,25 +739,30 @@ describe("dashboard", () => {
   });
 
   it("leaves the old workspace's people behind when the viewer joins another", async () => {
-    const meStats = vi.fn().mockResolvedValue(memberStats);
-    const person = await signIn(clientFor({ meStats }));
-
+    // Arrange
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const person = await signIn(clientFor({ meStats, agentShifts }));
     const board = await openAllStats(person);
-    await person.click(await board.findByRole("button", { name: /Sam/ }));
-    await screen.findByRole("region", { name: /^Sam/ });
+    await pickPerson(person, board, "Sam");
+    await screen.findByLabelText("Totals for Sam");
     await person.click(screen.getByRole("button", { name: "Close all stats" }));
+    const meStatsBeforeJoin = meStats.mock.calls.length;
+    const agentShiftsBeforeJoin = agentShifts.mock.calls.length;
 
+    // Act
     const settings = await openSettings(person);
     await person.type(settings.getByLabelText("Their invite code"), "ZZZZZ-YYYYY");
     await person.click(settings.getByRole("button", { name: "Join this team" }));
     await person.click(settings.getByRole("button", { name: "Close settings" }));
-
-    // Sam belongs to the workspace just left, so the id must not go on being
-    // sent as a filter the new workspace's API refuses.
     const reopened = await openAllStats(person);
-    expect(await reopened.findByRole("region", { name: /^Alex/ })).toBeInTheDocument();
-    const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
-    expect(query.get("userId")).toBe("u2");
+
+    // Assert: Sam belongs to the workspace just left, so the page answers for
+    // the team again and his id is never sent as a filter the new API refuses.
+    expect(await reopened.findByLabelText("Totals")).toBeInTheDocument();
+    await waitFor(() => expect(agentShifts.mock.calls.length).toBeGreaterThan(agentShiftsBeforeJoin));
+    expect(agentShifts.mock.calls.slice(agentShiftsBeforeJoin).map((call) => queryOf(call).get("userId"))).not.toContain("u1");
+    expect(meStats.mock.calls.slice(meStatsBeforeJoin).map((call) => queryOf(call).get("userId"))).not.toContain("u1");
   });
 
   it("drops the old workspace's project scope even when the new list fails to load", async () => {
@@ -727,8 +837,11 @@ describe("dashboard", () => {
     const workspace = vi.fn()
       .mockResolvedValueOnce(workspaceReport)
       .mockResolvedValue({
-        ...workspaceOfOne,
-        members: [{ rank: 1, user: { id: "u9", name: "Robin" }, activeSeconds: 3_600, agentSeconds: 0, project: null }],
+        ...workspaceReport,
+        members: [
+          { rank: 1, user: { id: "u9", name: "Robin" }, activeSeconds: 3_600, agentSeconds: 0, project: null },
+          { rank: 2, user: { id: "u8", name: "Jules" }, activeSeconds: 1_800, agentSeconds: 0, project: null },
+        ],
       });
     const person = await signIn(clientFor({ projects, workspace }));
     const board = await openAllStats(person);
@@ -993,6 +1106,55 @@ describe("dashboard", () => {
     await waitFor(() => expect(workspace).toHaveBeenLastCalledWith(""));
   });
 
+  it("asks every card's report for the range picked, the person's and the agents' too", async () => {
+    // Arrange
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const liveAgentSessions = vi.fn().mockResolvedValue({ people: [] });
+    const person = await signIn(clientFor({ meStats, agentShifts, liveAgentSessions }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "7d" }));
+
+    // Assert: the same bounds on both reads, and the person kept across the change.
+    await waitFor(() => {
+      const bounds = (mock: { mock: { calls: readonly unknown[][] } }) => {
+        const query = queryOf(mock.mock.calls.at(-1));
+        return [query.get("fromAt"), query.get("toExclusiveAt"), query.get("userId")];
+      };
+      const asked = bounds(agentShifts);
+      expect(asked[0]).not.toBeNull();
+      expect(asked[2]).toBe("u1");
+      expect(bounds(meStats)).toEqual(asked);
+    });
+    // The live read is about now, so the range never reaches it.
+    expect(queryOf(liveAgentSessions.mock.calls.at(-1)).has("fromAt")).toBe(false);
+  });
+
+  it("sends no bounds to the agents' read on all time, and draws no chart without hourly buckets", async () => {
+    // Arrange: an unbounded range gets no hourly series, which is what the
+    // server answers; per-hour resolution over all of history means nothing.
+    const workspace = vi.fn().mockImplementation((query = "") =>
+      Promise.resolve(query === "" ? { ...workspaceReport, hourly: [] } : workspaceReport));
+    const agentShifts = vi.fn().mockResolvedValue(agentShiftsResponse);
+    const person = await signIn(clientFor({ workspace, agentShifts }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("region", { name: "Over time" });
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "All time" }));
+
+    // Assert: the repos and totals stay put; the chart, which has nothing to plot, goes.
+    await waitFor(() => expect(stats.queryByRole("region", { name: "Over time" })).not.toBeInTheDocument());
+    await waitFor(() => expect(agentShifts).toHaveBeenLastCalledWith(""));
+    expect(await stats.findAllByTestId("shift-group")).toHaveLength(2);
+    expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
+  });
+
   it("draws the range on screen, never an older range's answer that lands late", async () => {
     // Arrange: all time answers only when told to, after the 7-day read asked later.
     const allTime = { ...workspaceReport, activeSeconds: 90_000 };
@@ -1021,7 +1183,7 @@ describe("dashboard", () => {
 
     // Assert
     expect(stats.getByText(/^Last 7 days · /)).toBeInTheDocument();
-    expect(teamTotal(stats, "Active time")).toHaveTextContent(/^30m$/);
+    expect(totalFigure(stats, "Active time")).toHaveTextContent(/^30m$/);
   });
 
   it("uses local calendar midnights across a daylight-saving boundary", () => {
@@ -1176,39 +1338,76 @@ describe("dashboard", () => {
     expect(await settings.findByText("ACDEF-GHJKM")).toBeInTheDocument();
   });
 
-  it("distinguishes a card that failed to load from a range with nothing in it", async () => {
+  it("distinguishes a board that failed to load from a range with nothing in it", async () => {
+    // Arrange
     const refused = () => new ClientError("validation", "The server would not accept that request.");
     const person = await signIn(clientFor({
       workspace: vi.fn().mockRejectedValue(refused()),
       meStats: vi.fn().mockRejectedValue(refused()),
     }));
 
-    const board = await openAllStats(person);
-    expect(await board.findByText("Could not load hours for this range.")).toBeInTheDocument();
-    // A zero total is a claim about the data; nothing was loaded to claim it from.
-    expect(board.queryByText(/No recorded time in this range yet/)).not.toBeInTheDocument();
-    expect(await board.findByText("Could not load this member's breakdown.")).toBeInTheDocument();
+    // Act
+    const stats = await openAllStats(person);
+
+    // Assert: a zero total is a claim about the data; nothing was loaded to claim it from.
+    expect(await stats.findByText("Could not load hours for this range.")).toBeInTheDocument();
+    expect(stats.queryByText(/No recorded time in this range yet/)).not.toBeInTheDocument();
+    expect(stats.queryByLabelText(/^Totals/)).not.toBeInTheDocument();
+  });
+
+  it("says a person's hours failed to load without calling them zero, and keeps the way back", async () => {
+    // Arrange: only a read for one person is refused.
+    const refused = new ClientError("validation", "The server would not accept that request.");
+    const meStats = vi.fn().mockImplementation((query = "") =>
+      queryOf([query]).has("userId") ? Promise.reject(refused) : Promise.resolve(memberStats));
+    const person = await signIn(clientFor({ meStats }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+
+    // Assert
+    expect(await stats.findByRole("alert")).toHaveTextContent("Could not load this person's hours for this range.");
+    for (const label of ["Active time", "Agent time", "Recorded time"]) {
+      expect(totalFigure(stats, label, "Sam")).toHaveTextContent(/^-$/);
+    }
+    expect(stats.getByRole("region", { name: "Projects" })).toHaveTextContent("Not loaded.");
+    // The agents' own read did not fail, so it is still drawn.
+    expect(stats.getAllByTestId("shift-group")).toHaveLength(2);
+    // The board that picked Sam is still there to unpick him with.
+    expect(stats.getByRole("button", { name: "Everyone" })).toBeInTheDocument();
   });
 
   it("says so plainly when a range has no recorded time", async () => {
+    // Arrange: a workspace of one, so the page is that person's.
     const person = await signIn(clientFor({
       workspace: vi.fn().mockResolvedValue(quietWorkspace),
-      meStats: vi.fn().mockResolvedValue({ ...memberStats, totalDurationSeconds: 0, projects: [], apps: [], byAgent: [] }),
+      meStats: vi.fn().mockResolvedValue({ ...memberStats, totalDurationSeconds: 0, activeSeconds: 0, agentSeconds: 0, projects: [], apps: [], byAgent: [] }),
     }));
 
-    // The home screen says it about today, in the desktop app's own words.
+    // Act: the home screen says it about today, in the desktop app's own words.
     expect(await screen.findByTestId("today-panel-empty")).toHaveTextContent("Nothing has been added up yet.");
     const stats = await openAllStats(person);
+
+    // Assert
     expect(await stats.findByText(/No recorded time in this range yet/)).toBeInTheDocument();
-    expect(await stats.findByText("No recorded time in this range.")).toBeInTheDocument();
+    expect(await within(stats.getByRole("region", { name: "Projects" })).findByText("Nothing recorded in this range.")).toBeInTheDocument();
   });
 
   it("keeps the install hint beside a roster-only zero row", async () => {
+    // Arrange: two people, so there is a board to draw the zero row on.
     const person = await signIn(clientFor({
-      workspace: vi.fn().mockResolvedValue(quietWorkspace),
+      workspace: vi.fn().mockResolvedValue({
+        ...quietWorkspace,
+        members: [...quietWorkspace.members, { rank: 2, user: { id: "u1", name: "Sam" }, activeSeconds: 0, agentSeconds: 0, project: null }],
+      }),
     }));
 
+    // Act
     const board = await openAllStats(person);
+
+    // Assert
     expect(await board.findByText(/No recorded time in this range yet/)).toBeInTheDocument();
     expect(await board.findByRole("row", { name: /Alex/ })).toHaveTextContent("0s");
   });
@@ -1224,52 +1423,48 @@ describe("dashboard", () => {
     expect(screen.queryByText(/administrator already exists/)).not.toBeInTheDocument();
   });
 
-  it("opens on your own breakdown, with agent tools folded into named rows", async () => {
-    const person = await signIn(clientFor());
-
-    const board = await openAllStats(person);
-    // You are the highlighted row from the start.
-    expect(await board.findByRole("button", { name: /Alex/ })).toHaveAttribute("aria-pressed", "true");
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
-    // The breakdown leads with active time and splits it into human work and
-    // the agent-assisted buckets that actually have time in them.
-    const breakdown = stats.getByTestId("breakdown");
-    expect(breakdown).toHaveTextContent("Active time");
-    expect(breakdown).toHaveTextContent("2h 00m");
-    expect(breakdown).toHaveTextContent("Human work");
-    expect(breakdown).toHaveTextContent("With 1 agent");
-    expect(breakdown).not.toHaveTextContent("With 2 agents");
-    // What the agents themselves added up to is the agent's number, not the
-    // person's; it lives on the Agents tab now, with its own table.
-    expect(breakdown).not.toHaveTextContent("while away");
-    expect(breakdown).not.toHaveTextContent("Total agent time");
-    expect(stats.queryByTestId("agent-sessions")).not.toBeInTheDocument();
-    expect(stats.getByText("General")).toBeInTheDocument();
-    // claude.exe reads as the tool it is, so the team sees Claude usage plainly.
-    expect(stats.getAllByText("Claude Code").length).toBeGreaterThan(0);
-    expect(stats.getByText("VS Code")).toBeInTheDocument();
-    // The half hour nothing named a project for was filed under General, and
-    // counts as General's: one row, no separate unattributed line.
-    const projectRows = within(stats.getByTestId("member-project-list")).getAllByRole("listitem");
-    expect(projectRows.map((row) => row.textContent)).toEqual(["General2h 00m"]);
-    expect(stats.queryByTestId("unattributed-foot")).not.toBeInTheDocument();
-  });
-
-  it("states the agent time limit word for word under both the Humans and the Agents page", async () => {
+  it("shows the person picked with agent tools folded into named rows", async () => {
     // Arrange
     const person = await signIn(clientFor());
     const stats = await openAllStats(person);
     await stats.findByLabelText("Totals");
 
     // Act
-    const onHumans = stats.getByTestId("agent-time-limit").textContent;
-    await person.click(agentsTab(stats));
-    await screen.findByTestId("agent-shifts");
+    await pickPerson(person, stats, "Alex");
+    const apps = within(await stats.findByRole("region", { name: "Apps" }));
+
+    // Assert: their active time split into the agent-assisted levels that
+    // actually have time in them.
+    expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("2h 00m");
+    const split = within(stats.getByRole("region", { name: "Active time, by agents running" }));
+    expect(split.getByText("No agent running")).toBeInTheDocument();
+    expect(split.getByText("With 1 agent")).toBeInTheDocument();
+    expect(split.queryByText("With 2 agents")).not.toBeInTheDocument();
+    expect(stats.queryByText(/while away|Total agent time/)).not.toBeInTheDocument();
+    // claude.exe reads as the tool it is, so the team sees Claude usage plainly.
+    expect(apps.getByText("Claude Code")).toBeInTheDocument();
+    expect(apps.getByText("VS Code")).toBeInTheDocument();
+    // The half hour nothing named a project for was filed under General, and
+    // counts as General's: one row, no separate unattributed line.
+    const projects = within(stats.getByRole("region", { name: "Projects" }));
+    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 00m"]);
+    expect(stats.queryByTestId("unattributed-foot")).not.toBeInTheDocument();
+  });
+
+  it("states the agent time limit word for word, once, on the one page", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    const note = stats.getByTestId("agent-time-limit");
 
     // Assert
-    const note = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
-    expect(onHumans).toBe(note);
-    expect(stats.getByTestId("agent-time-limit")).toHaveTextContent(note);
+    expect(note).toHaveTextContent(
+      "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.",
+    );
+    expect(stats.getAllByTestId("agent-time-limit")).toHaveLength(1);
   });
 
   it("names the project a session was filed under in the history, also when nothing named one", async () => {
@@ -1304,18 +1499,26 @@ describe("dashboard", () => {
   });
 
   it("renders an older API response that lacks the hourly series", async () => {
+    // Arrange
     const olderStats = { ...memberStats, hourly: undefined } as unknown as MeStatsResponse;
     const person = await signIn(clientFor({ meStats: vi.fn().mockResolvedValue(olderStats) }));
-
     expect(await screen.findByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
-    expect(stats.getByTestId("breakdown")).toHaveTextContent("Active time");
-    expect(stats.queryByTestId("hourly-graph")).not.toBeInTheDocument();
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    await pickPerson(person, stats, "Alex");
+
+    // Assert
+    expect(await stats.findByLabelText("Totals for Alex")).toBeInTheDocument();
+    expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("2h 00m");
+    expect(stats.queryByTestId("work-chart")).not.toBeInTheDocument();
+    expect(stats.queryByRole("region", { name: "Over time" })).not.toBeInTheDocument();
   });
 
-  it("draws the hourly chart as real path geometry once the API sends buckets", async () => {
+  it("draws the lines as real path geometry once the API sends buckets", async () => {
     const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
       meStats: vi.fn().mockResolvedValue({
         ...memberStats,
         hourly: [
@@ -1326,18 +1529,17 @@ describe("dashboard", () => {
       }),
     }));
 
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
+    const stats = await openAllStats(person);
     // Pin the series by their hooks, never by a path count: gradient areas
     // are paths too. The chart must emit <path d="M… L…"> elements, not
     // polylines fed a path string: `points` cannot parse path commands, so a
     // polyline would hold zero points and the graph would be an empty frame.
-    const graph = stats.getByTestId("hourly-graph");
+    const graph = await stats.findByTestId("work-chart");
     const agentLine = graph.querySelector('path[data-series="agent"]');
-    const humanLine = graph.querySelector('path[data-series="human"]');
+    const activeLine = graph.querySelector('path[data-series="active"]');
     expect(agentLine).not.toBeNull();
-    expect(humanLine).not.toBeNull();
-    for (const line of [agentLine, humanLine]) {
+    expect(activeLine).not.toBeNull();
+    for (const line of [agentLine, activeLine]) {
       const d = line!.getAttribute("d")!;
       expect(d).toMatch(/^M\d/);
       expect(d).toContain("L");
@@ -1349,15 +1551,15 @@ describe("dashboard", () => {
     expect(points).toHaveLength(3);
     expect(points[1]!.y).toBeLessThan(points[0]!.y);
     expect(points[2]!.y).toBeGreaterThan(points[1]!.y);
-    // Day resolution draws a visible dot per bucket.
-    expect(graph.querySelectorAll('circle[data-point="agent"]')).toHaveLength(3);
   });
 
-  // Issue 101: the graph is time and only time, the person in gray against
+  // Issue 101: the lines are time and only time, the person in gray against
   // agents in green, even when the hours the API sends still carry tokens.
-  it("draws exactly two lines, human and agent, and no token series", async () => {
+  // Tokens are drawn only from the agents' own read, as bars.
+  it("draws exactly two lines, active and agent, and no token series from the hours", async () => {
     // Arrange
     const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
       meStats: vi.fn().mockResolvedValue({
         ...memberStats,
         hourly: [
@@ -1368,33 +1570,33 @@ describe("dashboard", () => {
     }));
 
     // Act
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
-    const graph = stats.getByTestId("hourly-graph");
+    const stats = await openAllStats(person);
+    const chart = within(await stats.findByRole("region", { name: "Over time" }));
+    const graph = await chart.findByTestId("work-chart");
 
-    // Assert
+    // Assert: no token key and no bar either, since the server sent no token bars.
     const series = [...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"));
-    expect(series).toEqual(["agent", "human"]);
-    expect(within(graph).queryByRole("button", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(series).toEqual(["agent", "active"]);
+    expect(chart.queryByRole("button", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(graph.querySelector("[data-bar]")).toBeNull();
     expect(graph).not.toHaveTextContent(/token/i);
   });
 
-  it("labels 3+ concurrency in plain words and leaves the agents' own totals to their tab", async () => {
+  it("labels 3+ concurrency in plain words", async () => {
     const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
       meStats: vi.fn().mockResolvedValue({
         ...memberStats,
         concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 5_400, awaySeconds: 1_800 },
       }),
     }));
 
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
-    const breakdown = stats.getByTestId("breakdown");
-    expect(breakdown).toHaveTextContent("With 3+ agents");
-    expect(breakdown).toHaveTextContent("1h 30m");
-    expect(breakdown).not.toHaveTextContent("With 2 agents");
-    expect(breakdown).not.toHaveTextContent("With 1 agent");
-    expect(breakdown).not.toHaveTextContent("while away");
+    const stats = await openAllStats(person);
+    const split = within(await stats.findByRole("region", { name: "Active time, by agents running" }));
+    expect(split.getByText("With 3+ agents").closest("li")).toHaveTextContent("1h 30m");
+    expect(split.queryByText("With 2 agents")).not.toBeInTheDocument();
+    expect(split.queryByText("With 1 agent")).not.toBeInTheDocument();
+    expect(split.queryByText(/while away/)).not.toBeInTheDocument();
   });
 
   // The Overlord's card, to the minute: 1h56m recorded, 37m active, no agent
@@ -1404,6 +1606,7 @@ describe("dashboard", () => {
   // summing to 1h56m.
   it("explains the gap between recorded and active without inventing agent time", async () => {
     const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
       meStats: vi.fn().mockResolvedValue({
         ...memberStats,
         totalDurationSeconds: 6_960,
@@ -1423,28 +1626,47 @@ describe("dashboard", () => {
       }),
     }));
 
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("region", { name: "Apps" });
 
     // No agent claim on a window whose measured agent time is zero.
-    const total = stats.getByText(/recorded/).closest("p");
-    expect(total).not.toHaveTextContent(/agent/i);
-    expect(total).toHaveTextContent("1h 56m");
-    expect(total).toHaveTextContent("1h 19m of it away from the keyboard");
+    const basis = stats.getByText(/^Recorded: /);
+    expect(basis).not.toHaveTextContent(/agent/i);
+    expect(basis).toHaveTextContent("1h 19m of it away from the keyboard");
+    expect(totalFigure(stats, "Recorded time", "Alex")).toHaveTextContent("1h 56m");
+    expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("37m");
 
     // Both lists now close on the same total: 1h 34m + 22m of projects, and
     // 20m + 12m + 5m of apps with the 1h 19m nobody was in front of anything.
-    const projects = stats.getByTestId("member-project-list");
+    const projects = stats.getByRole("region", { name: "Projects" });
     expect(projects).toHaveTextContent("Atlas Portal1h 34m");
     expect(projects).toHaveTextContent("General22m");
     expect(projects).not.toHaveTextContent("Unattributed");
-    const apps = stats.getByTestId("member-app-list");
+    const apps = stats.getByRole("region", { name: "Apps" });
     expect(apps).toHaveTextContent("Quiet time");
     expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
   });
 
-  it("keeps the breakdown quiet when there is nothing recorded", async () => {
+  it("names a basis for recorded time under a person's totals only, never under the team's", async () => {
+    // Arrange
+    const person = await signIn(clientFor({ meStats: vi.fn().mockImplementation(meStatsPerPerson) }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Assert: the team's recorded time is a sum of project rows, with no basis to name.
+    expect(stats.queryByText(/^Recorded: /)).not.toBeInTheDocument();
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Assert: 2h 30m recorded against 1h 30m active.
+    expect(await stats.findByText(/^Recorded: /)).toHaveTextContent("1h 00m of it away from the keyboard");
+  });
+
+  it("keeps the person's split quiet when there is nothing recorded", async () => {
     const person = await signIn(clientFor({
+      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
       meStats: vi.fn().mockResolvedValue({
         ...memberStats,
         activeSeconds: 0,
@@ -1454,36 +1676,101 @@ describe("dashboard", () => {
       }),
     }));
 
-    await openAllStats(person);
-    const stats = within(await screen.findByRole("region", { name: /^Alex/ }));
-    const breakdown = stats.getByTestId("breakdown");
-    expect(breakdown).toHaveTextContent("Human work");
-    expect(breakdown).not.toHaveTextContent("Total agent time");
-    expect(stats.queryByTestId("agent-sessions")).not.toBeInTheDocument();
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals for Alex");
+
+    expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
+    expect(stats.queryByText("Total agent time")).not.toBeInTheDocument();
   });
 
-  it("follows whichever member gets picked on the board", async () => {
-    const meStats = vi.fn().mockResolvedValue(memberStats);
-    const person = await signIn(clientFor({ meStats }));
+  it("points every card at the person picked on the board", async () => {
+    // Arrange
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const person = await signIn(clientFor({ meStats, agentShifts }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
 
-    const board = await openAllStats(person);
-    await person.click(await board.findByRole("button", { name: /Sam/ }));
+    // Act
+    await pickPerson(person, stats, "Sam");
 
-    expect(await screen.findByRole("region", { name: /^Sam/ })).toBeInTheDocument();
-    const query = new URLSearchParams((meStats.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
-    expect(query.get("userId")).toBe("u1");
-    expect(query.get("fromAt")).not.toBeNull();
+    // Assert: both reads are asked for Sam, over the range on screen.
+    expect(await stats.findByLabelText("Totals for Sam")).toBeInTheDocument();
+    await waitFor(() => expect(queryOf(agentShifts.mock.calls.at(-1)).get("userId")).toBe("u1"));
+    expect(queryOf(meStats.mock.calls.at(-1)).get("userId")).toBe("u1");
+    expect(queryOf(meStats.mock.calls.at(-1)).get("fromAt")).not.toBeNull();
+    expect(queryOf(agentShifts.mock.calls.at(-1)).get("fromAt")).not.toBeNull();
+    // Every total is Sam's own, none of the team's or the viewer's.
+    await waitFor(() => expect(totalFigure(stats, "Tokens", "Sam")).toHaveTextContent("42k"));
+    expect(totalFigure(stats, "Active time", "Sam")).toHaveTextContent("1h 30m");
+    expect(totalFigure(stats, "Agent time", "Sam")).toHaveTextContent("2h 00m");
+    expect(totalFigure(stats, "Recorded time", "Sam")).toHaveTextContent("2h 30m");
+    // And so is every card under them.
+    expect(within(stats.getByRole("region", { name: "Projects" })).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Client2h 30m"]);
+    expect(within(stats.getByRole("region", { name: "Apps" })).getByText("VS Code")).toBeInTheDocument();
+    expect(within(stats.getByRole("region", { name: "Agents" })).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Pi1 shift42k30m"]);
+    expect(stats.getAllByTestId("shift-group")).toHaveLength(1);
+    // The board stays the whole team's, with the picked row marked.
+    expect(within(stats.getByRole("table", { name: "People" })).getAllByRole("row")).toHaveLength(3);
+    expect(stats.getByRole("button", { name: "Show Sam's work" })).toHaveAttribute("aria-pressed", "true");
+    expect(stats.getByRole("button", { name: "Show Alex's work" })).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("offers a way back to your own breakdown after picking a teammate", async () => {
+  it("shows who the page answers for, and returns to the team from the Everyone button", async () => {
+    // Arrange
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const person = await signIn(clientFor({ meStats, agentShifts }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+    expect(stats.getByText("Sam", { selector: ".tv-subject-name" })).toBeInTheDocument();
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "Everyone" }));
+
+    // Assert: the team's numbers are back, and the agents are asked about no one in particular.
+    expect(await stats.findByLabelText("Totals")).toBeInTheDocument();
+    expect(stats.queryByLabelText("Totals for Sam")).not.toBeInTheDocument();
+    expect(stats.queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
+    expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
+    expect(totalFigure(stats, "Agent time")).toHaveTextContent("3h 00m");
+    expect(totalFigure(stats, "Recorded time")).toHaveTextContent("3h 14m");
+    await waitFor(() => expect(queryOf(agentShifts.mock.calls.at(-1)).has("userId")).toBe(false));
+    expect(stats.queryByRole("region", { name: "Apps" })).not.toBeInTheDocument();
+    expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
+  });
+
+  it("toggles back to the team when the picked row is picked again", async () => {
+    // Arrange
+    const person = await signIn(clientFor({ meStats: vi.fn().mockImplementation(meStatsPerPerson) }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+
+    // Assert
+    expect(await stats.findByLabelText("Totals")).toBeInTheDocument();
+    expect(stats.getByRole("button", { name: "Show Sam's work" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("picks the viewer like anyone else, offering no special way back to themselves", async () => {
+    // Arrange
     const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
 
-    const board = await openAllStats(person);
-    await person.click(await board.findByRole("button", { name: /Sam/ }));
-    await screen.findByRole("region", { name: /^Sam/ });
+    // Act
+    await pickPerson(person, stats, "Alex");
 
-    await person.click(screen.getByRole("button", { name: "Show my own" }));
-    expect(await screen.findByRole("region", { name: /^Alex/ })).toBeInTheDocument();
+    // Assert
+    expect(await stats.findByLabelText("Totals for Alex")).toBeInTheDocument();
+    expect(stats.getByText("You", { selector: ".tv-subject .tv-you" })).toBeInTheDocument();
+    expect(stats.queryByRole("button", { name: "Show my own" })).not.toBeInTheDocument();
   });
 
   it("lets a stranded account join a teammate's workspace and reloads", async () => {
@@ -1717,19 +2004,26 @@ describe("project management", () => {
   it("points every surface at one project when the filing header picks one", async () => {
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
     const meStats = vi.fn().mockResolvedValue(memberStats);
+    const agentShifts = vi.fn().mockResolvedValue(agentShiftsResponse);
+    const liveAgentSessions = vi.fn().mockResolvedValue({ people: [] });
     const person = await signIn(clientFor({
       projects: vi.fn().mockResolvedValue({ projects: webProjects, selectedProjectId: null }),
       workspace,
       meStats,
+      agentShifts,
+      liveAgentSessions,
     }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     await person.click(screen.getByTestId("filing-change"));
     await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /Client/ }));
+    await openAllStats(person);
 
     expect(screen.getByTestId("filing-where")).toHaveTextContent("Client");
     await waitFor(() => expect(workspace.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
     await waitFor(() => expect(meStats.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+    await waitFor(() => expect(agentShifts.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
+    await waitFor(() => expect(liveAgentSessions.mock.calls.at(-1)?.[0]).toContain("scope=p2"));
   });
 
   it("renames a project from the settings panel", async () => {
@@ -1895,11 +2189,12 @@ describe("project management", () => {
   });
 });
 
-describe("the agents tab", () => {
-  /// The server's token bars over three hours. Every total is deliberately not
-  /// in + out, and no project's bars add up to the period's, so a client that
-  /// summed anything itself would draw different bars than these.
-  const hours = ["2026-08-15T09:00:00.000Z", "2026-08-15T10:00:00.000Z", "2026-08-15T11:00:00.000Z"];
+describe("the work chart", () => {
+  /// The server's token bars over three hours, the same hours the workspace's
+  /// lines run over. Every total is deliberately not in + out, and no project's
+  /// bars add up to the period's, so a client that summed anything itself
+  /// would draw different bars than these.
+  const hours = ["2026-08-06T13:00:00.000Z", "2026-08-06T14:00:00.000Z", "2026-08-06T15:00:00.000Z"];
   const bars = (figures: readonly ([number, number, number] | null)[]) =>
     figures.map((figure, index) => ({
       start: hours[index]!,
@@ -1915,55 +2210,395 @@ describe("the agents tab", () => {
       { project: { id: "p2", name: "Ledger" }, tokens: 0, buckets: bars([null, null, null]) },
     ],
   };
-  const drawnTokens = (chart: HTMLElement): number[] =>
-    [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("data-tokens")));
-  const openTokenChart = async (): Promise<{ person: Person; chart: HTMLElement }> => {
-    const person = await signIn(clientFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenChart }) }));
+  const withTokens = () => vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenChart });
+
+  const lineSeries = (chart: HTMLElement): (string | null)[] =>
+    [...chart.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"));
+  const drawnBars = (chart: HTMLElement): number[] =>
+    [...chart.querySelectorAll("g[data-bar]")].map((bar) => Number(bar.getAttribute("data-tokens")));
+  const heightOf = (element: Element | null): number => Number(element?.getAttribute("height"));
+
+  /// Opens the page and waits for the lines and, when the agents' read has
+  /// token bars, for the bars too.
+  const openChart = async (options: { agentShifts?: ReturnType<typeof vi.fn>; workspace?: unknown; expectBars?: boolean } = {}) => {
+    const person = await signIn(clientFor({
+      agentShifts: options.agentShifts ?? withTokens(),
+      ...(options.workspace === undefined ? {} : { workspace: vi.fn().mockResolvedValue(options.workspace) }),
+    }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    return { person, chart: within(await screen.findByTestId("agent-shifts")).getByTestId("token-chart") };
+    const chart = await within(await stats.findByRole("region", { name: "Over time" })).findByTestId("work-chart");
+    if (options.expectBars !== false) await waitFor(() => expect(chart.querySelector("g[data-bar]")).not.toBeNull());
+    const legend = within(within(chart).getByRole("group", { name: "What the chart shows" }));
+    return { person, stats, chart, legend };
   };
 
-  it("draws the server's token bars as given, adding nothing up", async () => {
+  it("draws the lines and the token bars on one chart", async () => {
     // Act
-    const { chart } = await openTokenChart();
+    const { stats, chart } = await openChart();
 
-    // Assert: one bar per hour that burned anything, at the server's total.
-    expect(drawnTokens(chart)).toEqual([999, 3_000]);
+    // Assert: one chart, one time axis, everything in the one drawing.
+    expect(stats.getAllByTestId("work-chart")).toHaveLength(1);
+    const drawing = chart.querySelector("svg")!;
+    expect(lineSeries(drawing as unknown as HTMLElement)).toEqual(["agent", "active"]);
+    expect(drawnBars(drawing as unknown as HTMLElement)).toEqual([999, 3_000]);
+    expect(stats.queryByTestId("token-chart")).not.toBeInTheDocument();
+    expect(stats.queryByTestId("hourly-graph")).not.toBeInTheDocument();
+    expect(chart).toHaveTextContent("Bars are tokens, in at the foot and out on top");
   });
 
-  it("switches the chart from tokens to agent time with its one toggle", async () => {
+  it("splits each bar into tokens in at the foot and out above, topped at the server's total", async () => {
+    // Act
+    const { chart } = await openChart();
+
+    // Assert
+    const [small, large] = [...chart.querySelectorAll("g[data-bar]")];
+    const halves = (bar: Element | undefined) => ({
+      input: bar!.querySelector("rect.token-bar.is-in")!,
+      output: bar!.querySelector("rect.token-bar.is-out")!,
+    });
+    const [first, second] = [halves(small), halves(large)];
+    const totalHeight = (bar: ReturnType<typeof halves>) => heightOf(bar.input) + heightOf(bar.output);
+    // In sits on the baseline and out stands on it, so the halves are one column.
+    expect(Number(first.output.getAttribute("y")) + heightOf(first.output)).toBeCloseTo(Number(first.input.getAttribute("y")), 6);
+    expect(Number(first.input.getAttribute("y")) + heightOf(first.input))
+      .toBeCloseTo(Number(second.input.getAttribute("y")) + heightOf(second.input), 6);
+    // The column is as tall as the server's total (999 of 3,000), never in plus out (150 of 20).
+    expect(totalHeight(first) / totalHeight(second)).toBeCloseTo(999 / 3_000, 4);
+    // And in is its own share of that total.
+    expect(heightOf(first.input) / totalHeight(first)).toBeCloseTo(100 / 999, 4);
+    expect(Number(second.output.getAttribute("y"))).toBeLessThan(Number(first.output.getAttribute("y")));
+  });
+
+  it("offers a key for each series, all on, with tokens on by default", async () => {
+    // Act
+    const { legend } = await openChart();
+
+    // Assert
+    const keys = legend.getAllByRole("button");
+    expect(keys.map((key) => key.textContent)).toEqual(["Active time", "Agent time", "Tokens"]);
+    expect(keys.every((key) => key.getAttribute("aria-pressed") === "true")).toBe(true);
+    expect(keys.every((key) => !(key as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it.each([
+    { key: "Tokens", lines: ["agent", "active"], bars: [] as number[], name: "Active time, Agent time over time" },
+    { key: "Active time", lines: ["agent"], bars: [999, 3_000], name: "Agent time, Tokens over time" },
+    { key: "Agent time", lines: ["active"], bars: [999, 3_000], name: "Active time, Tokens over time" },
+  ])("hides $key from the drawing when its key is turned off", async ({ key, lines, bars: expectedBars, name }) => {
     // Arrange
-    const { person } = await openTokenChart();
-    const chart = within(within(screen.getByTestId("agent-shifts")).getByRole("region", { name: "Over time" }));
-    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
-    expect(toggle.getByRole("button", { name: "Tokens" })).toHaveAttribute("aria-pressed", "true");
-    expect(chart.queryByRole("combobox")).not.toBeInTheDocument();
+    const { person, chart, legend } = await openChart();
 
     // Act
-    await person.click(toggle.getByRole("button", { name: "Agent time" }));
+    await person.click(legend.getByRole("button", { name: key }));
 
-    // Assert: agent time alone, in place of the bars.
-    expect(chart.queryByTestId("token-chart")).not.toBeInTheDocument();
-    const graph = chart.getByRole("img", { name: "Hourly agent time" });
-    expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
-    expect(chart.getByText("Each point is one hour.")).toBeInTheDocument();
+    // Assert
+    expect(legend.getByRole("button", { name: key })).toHaveAttribute("aria-pressed", "false");
+    expect(lineSeries(chart)).toEqual(lines);
+    expect(drawnBars(chart)).toEqual(expectedBars);
+    expect(within(chart).getByRole("img", { name })).toBeInTheDocument();
   });
 
-  it("maps every shift under its codebase, with the total recorded on top", async () => {
+  it("never lets the last series be turned off, and frees it again once another is on", async () => {
+    // Arrange
+    const { person, chart, legend } = await openChart();
+    await person.click(legend.getByRole("button", { name: "Tokens" }));
+    await person.click(legend.getByRole("button", { name: "Active time" }));
+    const agentKey = legend.getByRole("button", { name: "Agent time" });
+
+    // Act
+    await person.click(agentKey);
+
+    // Assert: agent time is all that is left, and it stays.
+    expect(agentKey).toBeDisabled();
+    expect(agentKey).toHaveAttribute("aria-pressed", "true");
+    expect(lineSeries(chart)).toEqual(["agent"]);
+
+    // Act
+    await person.click(legend.getByRole("button", { name: "Tokens" }));
+
+    // Assert
+    expect(agentKey).toBeEnabled();
+    expect(drawnBars(chart)).toEqual([999, 3_000]);
+  });
+
+  it("offers no Tokens key, and draws no bar, until the server sends token bars", async () => {
+    // Act
+    const { chart, legend } = await openChart({ agentShifts: vi.fn().mockResolvedValue(agentShiftsResponse), expectBars: false });
+
+    // Assert
+    expect(legend.getAllByRole("button").map((key) => key.textContent)).toEqual(["Active time", "Agent time"]);
+    expect(chart.querySelector("g[data-bar]")).toBeNull();
+  });
+
+  it("draws the bars alone, with their key held on, when the range has no hourly lines", async () => {
+    // Act
+    const { chart, legend } = await openChart({ workspace: { ...workspaceReport, hourly: [] } });
+
+    // Assert
+    const [only, ...rest] = legend.getAllByRole("button");
+    expect(only).toHaveTextContent("Tokens");
+    expect(rest).toEqual([]);
+    expect(only).toBeDisabled();
+    expect(lineSeries(chart)).toEqual([]);
+    expect(drawnBars(chart)).toEqual([999, 3_000]);
+  });
+});
+
+describe("the dashboard's filter", () => {
+  /// Calendar days as the filter writes them, and the instants they mean on the viewer's own clock.
+  const days = { from: "2026-08-03", to: "2026-08-05" };
+  const midnight = (day: string, afterDays = 0): string => {
+    const [year, month, date] = day.split("-").map(Number);
+    return new Date(year!, month! - 1, date! + afterDays).toISOString();
+  };
+  const customBounds = { fromAt: midnight(days.from), toExclusiveAt: midnight(days.to, 1) };
+
+  const setDays = (stats: ReturnType<typeof within>, from: string, to: string) => {
+    fireEvent.change(stats.getByLabelText("From"), { target: { value: from } });
+    fireEvent.change(stats.getByLabelText("To"), { target: { value: to } });
+  };
+  const boundsOf = (call: readonly unknown[] | undefined) => {
+    const query = queryOf(call);
+    return { fromAt: query.get("fromAt"), toExclusiveAt: query.get("toExclusiveAt") };
+  };
+  const pickProject = async (person: Person, stats: ReturnType<typeof within>, name: RegExp) => {
+    await person.click(stats.getByRole("button", { name: /^Project: / }));
+    await person.click(within(stats.getByRole("radiogroup", { name: "Project" })).getByRole("radio", { name }));
+  };
+  const twoProjects = () => vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null });
+
+  it("sends custom days as local midnights to every read, and never saves them as a preference", async () => {
+    // Arrange: a person picked and the history open, so every read is in play.
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const report = vi.fn().mockResolvedValue({ rows: [], totalDurationSeconds: 0, filters: {}, pagination: { page: 1, pageSize: 25, totalRows: 0, totalPages: 0 } });
+    const updatePreferences = vi.fn().mockResolvedValue({ scope: "all", range: "30d" });
+    const person = await signIn(clientFor({ workspace, meStats, agentShifts, report, updatePreferences }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+    await person.click(stats.getByText(/Recent sessions/));
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "Custom" }));
+    setDays(stats, days.from, days.to);
+
+    // Assert: the same two instants, on all four reads, Sam kept on the person's.
+    await waitFor(() => expect(boundsOf(workspace.mock.calls.at(-1))).toEqual(customBounds));
+    await waitFor(() => expect(boundsOf(agentShifts.mock.calls.at(-1))).toEqual(customBounds));
+    await waitFor(() => expect(boundsOf(report.mock.calls.at(-1))).toEqual(customBounds));
+    const personReads = meStats.mock.calls.filter((call) => queryOf(call).has("userId"));
+    await waitFor(() => expect(boundsOf(meStats.mock.calls.filter((call) => queryOf(call).has("userId")).at(-1))).toEqual(customBounds));
+    expect(queryOf(personReads.at(-1)).get("userId")).toBe("u1");
+    expect(queryOf(agentShifts.mock.calls.at(-1)).get("userId")).toBe("u1");
+    expect(stats.getByText(/^Custom · /)).toBeInTheDocument();
+    // The preferences contract has a preset range and nothing else to hold these days.
+    expect(updatePreferences.mock.calls.filter(([preferences]) => preferences.range !== "30d")).toEqual([]);
+  });
+
+  it("goes back to a preset's own bounds from Custom", async () => {
+    // Arrange
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ workspace }));
+    const stats = await openAllStats(person);
+    await person.click(await stats.findByRole("button", { name: "Custom" }));
+    setDays(stats, days.from, days.to);
+    await waitFor(() => expect(boundsOf(workspace.mock.calls.at(-1))).toEqual(customBounds));
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "7d" }));
+
+    // Assert
+    const week = boundsOf([rangeQuery("7d")]);
+    await waitFor(() => expect(boundsOf(workspace.mock.calls.at(-1))).toEqual(week));
+    expect(stats.queryByLabelText("From")).not.toBeInTheDocument();
+    expect(stats.getByText(/^Last 7 days · /)).toBeInTheDocument();
+  });
+
+  it("opens Custom on the last week when no project is picked", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "Custom" }));
+
+    // Assert
+    const today = new Date();
+    expect(stats.getByLabelText("From")).toHaveValue(localDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)));
+    expect(stats.getByLabelText("To")).toHaveValue(localDay(today));
+    expect(stats.queryByRole("button", { name: "Project lifetime" })).not.toBeInTheDocument();
+  });
+
+  it("offers every project with its icon, and the one picked narrows every read to it", async () => {
+    // Arrange: the page's one project scope, so the main screen's picker follows it.
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const liveAgentSessions = vi.fn().mockResolvedValue({ people: [] });
+    const report = vi.fn().mockResolvedValue({ rows: [], totalDurationSeconds: 0, filters: {}, pagination: { page: 1, pageSize: 25, totalRows: 0, totalPages: 0 } });
+    const person = await signIn(clientFor({ projects: twoProjects(), workspace, meStats, agentShifts, liveAgentSessions, report }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+    await person.click(stats.getByText(/Recent sessions/));
+    expect(stats.getByRole("button", { name: "Project: All projects" })).toBeInTheDocument();
+
+    // Act
+    await person.click(stats.getByRole("button", { name: /^Project: / }));
+    const choices = within(stats.getByRole("radiogroup", { name: "Project" })).getAllByRole("radio");
+    await person.click(choices.find((choice) => choice.textContent === "Client")!);
+
+    // Assert
+    expect(choices.map((choice) => choice.textContent)).toEqual(["All projects", "General", "Client"]);
+    expect(choices.slice(1).every((choice) => choice.querySelector(".project-icon") !== null)).toBe(true);
+    expect(choices[0]).toHaveAttribute("aria-checked", "true");
+    expect(stats.getByRole("button", { name: "Project: Client" })).toBeInTheDocument();
+    const scoped = (mock: ReturnType<typeof vi.fn>) => queryOf(mock.mock.calls.at(-1)).get("scope");
+    await waitFor(() => expect(scoped(workspace)).toBe("p2"));
+    await waitFor(() => expect(scoped(agentShifts)).toBe("p2"));
+    await waitFor(() => expect(scoped(report)).toBe("p2"));
+    await waitFor(() => expect(scoped(liveAgentSessions)).toBe("p2"));
+    await waitFor(() => expect(queryOf(meStats.mock.calls.filter((call) => queryOf(call).has("userId")).at(-1)).get("scope")).toBe("p2"));
+    // The same state the main screen's picker sets.
+    expect(screen.getByTestId("filing-where")).toHaveTextContent("Client");
+
+    // Act: and back to everything.
+    await person.click(stats.getByRole("button", { name: /^Project: / }));
+    await person.click(within(stats.getByRole("radiogroup", { name: "Project" })).getByRole("radio", { name: "All projects" }));
+
+    // Assert
+    await waitFor(() => expect(queryOf(workspace.mock.calls.at(-1)).has("scope")).toBe(false));
+    expect(stats.getByRole("button", { name: "Project: All projects" })).toBeInTheDocument();
+  });
+
+  it("opens Custom on the picked project's lifetime, and offers it again when the days move", async () => {
+    // Arrange: Client was created 2026-08-11, so its lifetime runs from that day to today.
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ projects: twoProjects(), workspace }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickProject(person, stats, /^Client$/);
+    const firstDay = localDay(new Date(pickableProjects[1]!.createdAt));
+    const today = localDay(new Date());
+
+    // Act
+    await person.click(stats.getByRole("button", { name: "Custom" }));
+
+    // Assert
+    expect(stats.getByLabelText("From")).toHaveValue(firstDay);
+    expect(stats.getByLabelText("To")).toHaveValue(today);
+    const lifetime = stats.getByRole("button", { name: "Project lifetime" });
+    expect(lifetime).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(boundsOf(workspace.mock.calls.at(-1))).toEqual({ fromAt: midnight(firstDay), toExclusiveAt: midnight(today, 1) }));
+    expect(queryOf(workspace.mock.calls.at(-1)).get("scope")).toBe("p2");
+
+    // Act: the days move off the lifetime.
+    fireEvent.change(stats.getByLabelText("From"), { target: { value: today } });
+
+    // Assert
+    expect(lifetime).toHaveAttribute("aria-pressed", "false");
+
+    // Act
+    await person.click(lifetime);
+
+    // Assert
+    expect(stats.getByLabelText("From")).toHaveValue(firstDay);
+    expect(lifetime).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("cuts a lifetime longer than the reports read to the project's last 366 days, and says so", async () => {
+    // Arrange: Client began 2026-08-11, over a year before this day; the reports read at most 367 days.
+    vi.setSystemTime(new Date(2027, 8, 1, 15));
+    try {
+      const workspace = vi.fn().mockResolvedValue(workspaceReport);
+      const person = await signIn(clientFor({ projects: twoProjects(), workspace }));
+      const stats = await openAllStats(person);
+      await stats.findByLabelText("Totals");
+      await pickProject(person, stats, /^Client$/);
+
+      // Act
+      await person.click(stats.getByRole("button", { name: "Custom" }));
+
+      // Assert
+      expect(stats.getByLabelText("From")).toHaveValue("2026-09-01");
+      expect(stats.getByLabelText("To")).toHaveValue("2027-09-01");
+      await waitFor(() => expect(boundsOf(workspace.mock.calls.at(-1))).toEqual({ fromAt: midnight("2026-09-01"), toExclusiveAt: midnight("2027-09-01", 1) }));
+      expect(stats.getByText(/^Project's last 366 days · /)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the days alone when Custom was already open before a project is picked", async () => {
+    // Arrange
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({ projects: twoProjects(), workspace }));
+    const stats = await openAllStats(person);
+    await person.click(await stats.findByRole("button", { name: "Custom" }));
+    setDays(stats, days.from, days.to);
+
+    // Act
+    await pickProject(person, stats, /^Client$/);
+
+    // Assert: only a preset moving to Custom opens on the lifetime; the days the viewer chose stay.
+    expect(stats.getByLabelText("From")).toHaveValue(days.from);
+    await waitFor(() => expect(queryOf(workspace.mock.calls.at(-1)).get("scope")).toBe("p2"));
+    expect(boundsOf(workspace.mock.calls.at(-1))).toEqual(customBounds);
+  });
+});
+
+describe("the agents' cards on the one page", () => {
+  it("shows a dash, never a zero, for tokens an older API does not send", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findAllByTestId("shift-group");
+
+    // Assert
+    expect(totalFigure(stats, "Tokens")).toHaveTextContent(/^-$/);
+    expect(within(stats.getByLabelText("Totals")).getByText("not reported")).toBeInTheDocument();
+  });
+
+  it("never draws one person's tokens under another's name while theirs are on the way", async () => {
+    // Arrange: Sam's read stays pending until released.
+    let releaseSam = (_shifts: unknown): void => {};
+    const agentShifts = vi.fn().mockImplementation((query = "") =>
+      queryOf([query]).has("userId")
+        ? new Promise((resolve) => { releaseSam = resolve; })
+        : Promise.resolve({ ...agentShiftsResponse, tokenTotals: { tokensIn: 900_000, tokensOut: 300_000, tokens: 1_200_000 } }));
+    const person = await signIn(clientFor({ agentShifts, meStats: vi.fn().mockImplementation(meStatsPerPerson) }));
+    const stats = await openAllStats(person);
+    await waitFor(() => expect(totalFigure(stats, "Tokens")).toHaveTextContent("1.2M"));
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Assert: loading, not the team's figure, and no repos of the team's either.
+    expect(totalFigure(stats, "Tokens", "Sam")).toHaveTextContent("…");
+    expect(stats.queryByTestId("shift-group")).not.toBeInTheDocument();
+    await act(async () => releaseSam(samAgentShifts));
+    await waitFor(() => expect(totalFigure(stats, "Tokens", "Sam")).toHaveTextContent("42k"));
+  });
+
+  it("maps every shift under its codebase, heaviest first", async () => {
+    // Arrange
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
+    // Act
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
+    const groups = await stats.findAllByTestId("shift-group");
 
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    // The totals row leads with the recorded agent time, then the codebases,
-    // heaviest first.
-    await panel.findByLabelText("Totals");
-    expect(teamTotal(panel, "Agent time")).toHaveTextContent(/^2h 00m$/);
-    const groups = panel.getAllByTestId("shift-group");
+    // Assert
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("siqshift");
     expect(groups[0]).toHaveTextContent("50% held");
@@ -1994,9 +2629,8 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
 
-    const groups = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group");
+    const groups = await stats.findAllByTestId("shift-group");
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("No working directory recorded");
     expect(groups[1]).toHaveTextContent("No codebase recorded");
@@ -2012,8 +2646,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const heads = (await within(await screen.findByTestId("agent-shifts")).findAllByTestId("shift-group"))
+    const heads = (await stats.findAllByTestId("shift-group"))
       .map((group) => group.querySelector(".shift-group-head"));
 
     for (const head of heads) {
@@ -2031,30 +2664,62 @@ describe("the agents tab", () => {
     }
   });
 
-  it("opens on a board of the people whose agents ran, heaviest first", async () => {
+  it("draws the board from the workspace report alone, two measures and no shift counts", async () => {
+    // Arrange: the agents' read lists its own people, with shift counts, which
+    // the page no longer draws as a second board.
     const person = await signIn(clientFor());
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
+    // Act
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const board = within(await screen.findByTestId("agent-people"));
+    await stats.findAllByTestId("shift-group");
+    const board = within(stats.getByRole("table", { name: "People" }));
 
+    // Assert: one board, ranked by the workspace's measures.
+    expect(stats.getAllByRole("table", { name: "People" })).toHaveLength(1);
+    expect(board.getAllByRole("columnheader").map((head) => head.textContent)).toEqual(["Person", "Active time", "Agent time"]);
     const rows = board.getAllByRole("button");
-    expect(rows.map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Alex"),
-      expect.stringContaining("Sam"),
-    ]);
-    // Two measures, and the shift count is the one that says a row can be
-    // several agents at once rather than one worker's long day.
-    expect(rows[0]).toHaveTextContent("1h 30m");
-    expect(rows[0]).toHaveTextContent("2 shifts");
-    expect(rows[1]).toHaveTextContent("1 shift");
-    expect(rows.every((row) => row.getAttribute("aria-pressed") === "false")).toBe(true);
-    // No bar, deliberately: the board is computed before the filter, so a
-    // person's seconds over the filtered total would read past 100%. This
-    // asserts the omission, because adding one back would otherwise pass
-    // every suite silently.
-    expect(rows.every((row) => row.querySelector(".meter-bar") === null)).toBe(true);
+    expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining("Sam"), expect.stringContaining("Alex")]);
+    expect(stats.getByRole("table", { name: "People" })).not.toHaveTextContent(/shift/i);
+  });
+
+  it("draws a share bar under each figure on the board, the longest of each column at 100%", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    await screen.findByRole("heading", { name: "Lumen Studio" });
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Assert: Sam 2h 14m and 3h 00m, Alex 1h 00m and nothing; each bar is read against its own column.
+    const rows = within(stats.getByRole("table", { name: "People" })).getAllByRole("row").slice(1);
+    const shares = rows.map((row) => [...row.querySelectorAll<HTMLElement>("td .tv-cell-bar")].map((bar) => bar.style.getPropertyValue("--share")));
+    expect(shares).toEqual([["100%", "100%"], ["45%", "0%"]]);
+    expect(rows.every((row) => [...row.querySelectorAll(".tv-cell-bar")].every((bar) => bar.getAttribute("aria-hidden") === "true"))).toBe(true);
+  });
+
+  it("draws a mark before every app row: the runtime's for the agent, the app's own, the moon for quiet time", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    await pickPerson(person, stats, "Alex");
+    const apps = within(await stats.findByRole("region", { name: "Apps" }));
+
+    // Assert: the mark is the row's first cell, ahead of the name.
+    const rows = apps.getAllByRole("listitem");
+    expect(rows.map((row) => row.querySelector(".meter-name")?.textContent)).toEqual(["Claude Code", "VS Code", "Quiet time"]);
+    for (const row of rows) {
+      expect(row.firstElementChild).toHaveClass(row.querySelector(".agent-mark") === null ? "app-mark" : "agent-mark");
+    }
+    expect(rows[0]!.querySelector('[data-testid="agent-mark-claude_code"]')).not.toBeNull();
+    // A browser has no OS icon to read, so an app wears its initial.
+    expect(rows[1]!.firstElementChild).toHaveClass("app-letter");
+    expect(rows[1]!.firstElementChild).toHaveTextContent("V");
+    expect(rows[2]!.firstElementChild).toHaveClass("quiet-mark");
   });
 
   it("shows who is running an agent right now, with the server's own description", async () => {
@@ -2069,7 +2734,7 @@ describe("the agents tab", () => {
             ],
           },
           {
-            owner: { id: "u3", name: "Sam" },
+            owner: { id: "u1", name: "Sam" },
             sessions: [
               { id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" },
               { id: "00000000-0000-4000-8000-000000000704", source: "codex", repo: "siqshift", description: "Codex in siqshift, running 12m" },
@@ -2081,9 +2746,8 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
 
-    const live = await screen.findByTestId("live-sessions");
+    const live = await stats.findByTestId("live-sessions");
     // The description renders verbatim, never re-derived: every clause is a
     // captured fact, and the codebase label rides beside it.
     expect(live).toHaveTextContent("Claude Code in siqshift, running 12m");
@@ -2094,101 +2758,80 @@ describe("the agents tab", () => {
     expect(live).toHaveTextContent("quartermaster");
     expect(live).toHaveTextContent("Codex in siqshift, running 12m");
     expect(within(live).getAllByText(/Codex in (quartermaster|siqshift)/)).toHaveLength(2);
+    expect(within(stats.getByRole("region", { name: /Live now/ })).getByText("4 running")).toBeInTheDocument();
+    // One avatar per person, not per session: their initial where they have no picture.
+    const avatars = [...live.querySelectorAll(".live-person")].map((entry) => [entry.querySelectorAll(".member-avatar").length, entry.querySelector(".member-avatar")?.textContent]);
+    expect(avatars).toEqual([[1, "A"], [1, "S"]]);
   });
 
   it("narrows the live view to whoever is picked, with an honest empty state", async () => {
+    // Arrange
+    const liveAgentSessions = vi.fn().mockResolvedValue({
+      people: [
+        {
+          owner: { id: "u2", name: "Alex" },
+          sessions: [
+            { id: "00000000-0000-4000-8000-000000000704", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
+          ],
+        },
+      ],
+    });
+    const person = await signIn(clientFor({ liveAgentSessions }));
+    await screen.findByRole("heading", { name: "Lumen Studio" });
+    const stats = await openAllStats(person);
+    await stats.findByTestId("live-sessions");
+    const readsBefore = liveAgentSessions.mock.calls.length;
+
+    // Act: Sam has no live session, so picking him reads as "nobody", never as
+    // Alex's rows filed under the wrong name.
+    await pickPerson(person, stats, "Sam");
+
+    // Assert
+    expect(await stats.findByTestId("live-sessions-empty")).toHaveTextContent("No agent is running right now.");
+    // The read is for everyone and narrowed on the page, so picking never costs a second one.
+    expect(liveAgentSessions.mock.calls.length).toBe(readsBefore);
+
+    // Act
+    await pickPerson(person, stats, "Alex");
+
+    // Assert
+    expect(await stats.findByTestId("live-sessions")).toHaveTextContent("Claude Code in siqshift, running 12m");
+  });
+
+  it("says the live read failed rather than that nobody is running anything", async () => {
+    // Arrange
     const person = await signIn(clientFor({
-      liveAgentSessions: vi.fn().mockResolvedValue({
-        people: [
-          {
-            owner: { id: "u2", name: "Alex" },
-            sessions: [
-              { id: "00000000-0000-4000-8000-000000000704", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
-            ],
-          },
-        ],
-      }),
+      liveAgentSessions: vi.fn().mockRejectedValue(new ClientError("transient", "The server is unavailable. Try again shortly.")),
     }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
+    // Act
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    await screen.findByTestId("live-sessions");
-    // Sam has no live session, so picking him reads as "nobody", never as
-    // Alex's rows filed under the wrong name.
-    await person.click(within(screen.getByTestId("agent-people")).getByRole("button", { name: /Sam/ }));
-    expect(await screen.findByTestId("live-sessions-empty")).toHaveTextContent("No agent is running right now.");
+
+    // Assert
+    expect(await stats.findByText("Could not tell who is running an agent right now.")).toBeInTheDocument();
+    expect(stats.queryByTestId("live-sessions-empty")).not.toBeInTheDocument();
   });
 
-  it("keeps the way out of a filter even when the filtered request fails", async () => {
+  it("keeps the way out of a person even when the agents' read for them fails", async () => {
+    // Arrange
     const agentShifts = vi.fn()
       .mockResolvedValueOnce(agentShiftsResponse)
       .mockRejectedValue(new Error("nope"));
     const person = await signIn(clientFor({ agentShifts }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
-
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    await person.click(within(await screen.findByTestId("agent-people")).getByRole("button", { name: /Sam/ }));
+    await stats.findAllByTestId("shift-group");
 
-    // The failure is reported, but "All people" outlives it: without it a
-    // deterministically failing filter would strand the tab with no control
-    // to clear the filter that is causing the failure.
-    expect(await screen.findByText("Could not load the shifts for this range.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "All people" })).toBeInTheDocument();
-  });
+    // Act
+    await pickPerson(person, stats, "Sam");
 
-  it("narrows the tab to whoever is picked on the board, and offers a way back", async () => {
-    // Echoes the filter the way the API does, so the heading and the numbers
-    // under it are read from the same response rather than from the click.
-    const agentShifts = vi.fn().mockImplementation((query: string = "") => {
-      const userId = new URLSearchParams(query.replace(/^\?/, "")).get("userId");
-      return Promise.resolve(userId === null ? agentShiftsResponse : {
-        ...agentShiftsResponse,
-        filters: { userId },
-        totalAgentSeconds: 1_800,
-        groups: [agentShiftsResponse.groups[1]!],
-      });
-    });
-    const person = await signIn(clientFor({ agentShifts }));
-    await screen.findByRole("heading", { name: "Lumen Studio" });
-
-    const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    await screen.findByTestId("agent-people");
-    const before = agentShifts.mock.calls.length;
-
-    await person.click(within(screen.getByTestId("agent-people")).getByRole("button", { name: /Sam/ }));
-
-    await waitFor(() => expect(agentShifts.mock.calls.length).toBeGreaterThan(before));
-    const query = new URLSearchParams((agentShifts.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
-    expect(query.get("userId")).toBe("u3");
-    // The heading names who the tab is narrowed to, over that person's own
-    // total, and the board that picked them is still there to unpick them with.
-    expect(await screen.findByRole("heading", { level: 4, name: "People · Sam" })).toBeInTheDocument();
-    expect(teamTotal(stats, "Agent time")).toHaveTextContent(/^30m$/);
-    expect(within(screen.getByTestId("agent-people")).getAllByRole("button")).toHaveLength(2);
-
-    await person.click(screen.getByRole("button", { name: "All people" }));
-
-    await waitFor(() => {
-      const latest = new URLSearchParams((agentShifts.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
-      expect(latest.has("userId")).toBe(false);
-    });
-    expect(await screen.findByRole("heading", { level: 4, name: "People" })).toBeInTheDocument();
-  });
-
-  it("shows no board when one person's agents did all the work", async () => {
-    const soloResponse = { ...agentShiftsResponse, people: [agentShiftsResponse.people[0]!] };
-    const person = await signIn(clientFor({ agentShifts: vi.fn().mockResolvedValue(soloResponse) }));
-    await screen.findByRole("heading", { name: "Lumen Studio" });
-
-    const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    await screen.findByTestId("agent-shifts");
-
-    // A board of one ranks nothing and filters nothing.
-    expect(screen.queryByTestId("agent-people")).not.toBeInTheDocument();
+    // Assert: the failure is reported, but "Everyone" outlives it: without it a
+    // deterministically failing read would strand the page on one person with
+    // no control to clear the pick that is causing the failure.
+    expect(await stats.findByRole("alert")).toHaveTextContent("Could not load the agents for this range.");
+    expect(stats.getByRole("button", { name: "Everyone" })).toBeInTheDocument();
+    expect(totalFigure(stats, "Tokens", "Sam")).toHaveTextContent(/^-$/);
   });
 
   it("keeps each codebase's shifts in a drawer that starts closed", async () => {
@@ -2196,8 +2839,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const group = within(await screen.findByTestId("agent-shifts")).getAllByTestId("shift-group")[0]!;
+    const group = (await stats.findAllByTestId("shift-group"))[0]!;
 
     // Never a visibility assertion here: jsdom has no rule hiding a closed
     // `details`, so the rows are in the document either way. The browser
@@ -2219,10 +2861,9 @@ describe("the agents tab", () => {
     const stats = await openAllStats(person);
 
     // Act
-    await person.click(agentsTab(stats));
-    const groups = await within(await screen.findByTestId("agent-shifts")).findAllByTestId("shift-group");
+    const groups = await stats.findAllByTestId("shift-group");
 
-    // Assert: the head reads on the People board's columns, so the two pages
+    // Assert: the head reads on the People board's columns, so the two cards
     // scan alike. An API that sends no tokens gets a dash, never a zero.
     const cells = groups.map((group) => [...group.querySelector("summary.shift-group-head")?.children ?? []].map((cell) => cell.textContent));
     expect(cells).toEqual([
@@ -2250,45 +2891,19 @@ describe("the agents tab", () => {
       }),
     }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
-    const stats = await openAllStats(person);
 
     // Act
-    await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    await panel.findByLabelText("Totals");
+    const stats = await openAllStats(person);
+    await stats.findAllByTestId("shift-group");
 
     // Assert
-    expect(teamTotal(panel, "Tokens")).toHaveTextContent(/^1.2M$/);
-    expect(within(panel.getByLabelText("Totals")).getByText("900k in · 300k out")).toBeInTheDocument();
-    const repos = panel.getAllByTestId("shift-group").map((group) => group.querySelector(".tv-name > span")?.textContent);
+    expect(totalFigure(stats, "Tokens")).toHaveTextContent(/^1.2M$/);
+    expect(within(stats.getByLabelText("Totals")).getByText("900k in · 300k out")).toBeInTheDocument();
+    const repos = stats.getAllByTestId("shift-group").map((group) => group.querySelector(".tv-name > span")?.textContent);
     expect(repos).toEqual(["ledger", "siqshift", "Run worktree, codebase not identified"]);
-    expect(panel.getAllByTestId("shift-group")[0]!.querySelector(".tv-num")).toHaveAttribute("title", "900,000 tokens");
-    const agents = within(panel.getByRole("region", { name: "Agents" })).getAllByRole("listitem");
+    expect(stats.getAllByTestId("shift-group")[0]!.querySelector(".tv-num")).toHaveAttribute("title", "900,000 tokens");
+    const agents = within(stats.getByRole("region", { name: "Agents" })).getAllByRole("listitem");
     expect(agents.map((row) => row.textContent)).toEqual(["Claude Code2 shifts300k1h 30m", "Pi1 shift95030m"]);
-  });
-
-  it("shows no hourly graph on all time, keeping the groups and total", async () => {
-    vi.setSystemTime(new Date("2026-08-06T20:00:00.000Z"));
-    try {
-      const person = await signIn(clientFor());
-      await screen.findByRole("heading", { name: "Lumen Studio" });
-
-      const stats = await openAllStats(person);
-      await person.click(agentsTab(stats));
-      const panel = within(await screen.findByTestId("agent-shifts"));
-      // A bounded range folds an hourly line from the shifts on screen.
-      expect(panel.getByTestId("hourly-graph")).toBeInTheDocument();
-
-      await person.click(stats.getByRole("button", { name: "All time" }));
-
-      // Per-hour resolution over an unbounded range is meaningless, so the graph
-      // goes away - but the codebase map and its total stay put.
-      await waitFor(() => expect(panel.queryByTestId("hourly-graph")).not.toBeInTheDocument());
-      expect(panel.getByText("2h 00m")).toBeInTheDocument();
-      expect(panel.getAllByTestId("shift-group")).toHaveLength(2);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("gives each shift its own line: when, who, what model, what commits", async () => {
@@ -2296,10 +2911,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    const group = panel.getAllByTestId("shift-group")[0]!;
+    const group = (await stats.findAllByTestId("shift-group"))[0]!;
     // The rows are not in the response that drew the head: opening the drawer
     // is what asks for them.
     await person.click(group.querySelector("summary")!);
@@ -2320,16 +2932,15 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
+    const groups = await stats.findAllByTestId("shift-group");
 
-    // The whole point of the change: drawing the heads costs no rows at all.
+    // The whole point of the split: drawing the heads costs no rows at all.
     expect(agentShiftRows).not.toHaveBeenCalled();
 
-    await person.click(panel.getAllByTestId("shift-group")[0]!.querySelector("summary")!);
+    await person.click(groups[0]!.querySelector("summary")!);
 
     await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
-    const asked = new URLSearchParams((agentShiftRows.mock.calls[0]?.[0] as string).replace(/^\?/, ""));
+    const asked = queryOf(agentShiftRows.mock.calls[0]);
     expect(asked.get("groupKey")).toBe("siqshift");
     // The first page names no cursor at all: there is no row to start after.
     expect(asked.has("afterStartedAt")).toBe(false);
@@ -2338,6 +2949,32 @@ describe("the agents tab", () => {
     // own head never counted.
     expect(asked.has("fromAt")).toBe(true);
     expect(asked.has("toExclusiveAt")).toBe(true);
+    // The team is no one in particular, so the page sends no person.
+    expect(asked.has("userId")).toBe(false);
+  });
+
+  it("asks for a drawer's shifts under the person picked, as its head was totalled", async () => {
+    // Arrange
+    const agentShiftRows = vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query)));
+    const person = await signIn(clientFor({
+      agentShiftRows,
+      agentShifts: vi.fn().mockImplementation(agentShiftsPerPerson),
+      meStats: vi.fn().mockImplementation(meStatsPerPerson),
+    }));
+    const stats = await openAllStats(person);
+    await stats.findAllByTestId("shift-group");
+    await pickPerson(person, stats, "Sam");
+    await waitFor(() => expect(stats.getAllByTestId("shift-group")).toHaveLength(1));
+
+    // Act
+    await person.click(stats.getByTestId("shift-group").querySelector("summary")!);
+
+    // Assert: Sam's own head hangs the rows of Sam alone.
+    await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
+    const asked = queryOf(agentShiftRows.mock.calls[0]);
+    expect(asked.get("userId")).toBe("u1");
+    expect(asked.get("groupKey")).toBe("null:unidentified-run-directory");
+    expect(asked.has("fromAt")).toBe(true);
   });
 
   it("pages a long drawer rather than pulling the whole group at once", async () => {
@@ -2346,16 +2983,14 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    const group = panel.getAllByTestId("shift-group")[0]!;
+    const group = (await stats.findAllByTestId("shift-group"))[0]!;
     await person.click(group.querySelector("summary")!);
 
     // One row of two, and the drawer offers the rest.
     await person.click(await within(group).findByRole("button", { name: "Show more" }));
 
     await waitFor(() => expect(within(group).getAllByRole("listitem")).toHaveLength(2));
-    const asked = new URLSearchParams((agentShiftRows.mock.calls.at(-1)?.[0] as string).replace(/^\?/, ""));
+    const asked = queryOf(agentShiftRows.mock.calls.at(-1));
     // The second page starts after the row the first one ended on, named by
     // the pair the rows are ordered by rather than by a position in the list.
     expect(asked.get("afterId")).toBe("00000000-0000-4000-8000-000000000601");
@@ -2401,9 +3036,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    const group = panel.getAllByTestId("shift-group")[0]!;
+    const group = (await stats.findAllByTestId("shift-group"))[0]!;
     await person.click(group.querySelector("summary")!);
 
     await person.click(await within(group).findByRole("button", { name: "Show more" }));
@@ -2430,9 +3063,7 @@ describe("the agents tab", () => {
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
-    const panel = within(await screen.findByTestId("agent-shifts"));
-    const group = panel.getAllByTestId("shift-group")[0]!;
+    const group = (await stats.findAllByTestId("shift-group"))[0]!;
     const head = group.querySelector("summary")!;
     await person.click(head);
 
@@ -2450,18 +3081,101 @@ describe("the agents tab", () => {
 
   it("says nobody worked rather than rendering an empty map", async () => {
     const person = await signIn(clientFor({
-      agentShifts: vi.fn().mockResolvedValue({ filters: {}, totalAgentSeconds: 0, people: [], hourly: [], groups: [] }),
+      agentShifts: vi.fn().mockResolvedValue({ filters: {}, totalAgentSeconds: 0, people: [], hourly: [], groups: [], runtimes: [] }),
     }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
     const stats = await openAllStats(person);
-    await person.click(agentsTab(stats));
 
-    expect(await screen.findByText("No agent worked in this range.")).toBeInTheDocument();
+    expect(await stats.findAllByText("No agent worked in this range.")).toHaveLength(2);
+    expect(stats.queryByTestId("shift-group")).not.toBeInTheDocument();
   });
 });
 
-/// The leading bytes of a JPEG, which is all the picture checks read.
+describe("signing out", () => {
+  it("clears the person picked, so the next sign-in opens on the team", async () => {
+    // Arrange
+    const agentShifts = vi.fn().mockImplementation(agentShiftsPerPerson);
+    const meStats = vi.fn().mockImplementation(meStatsPerPerson);
+    const person = await signIn(clientFor({ agentShifts, meStats }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+    await person.click(screen.getByRole("button", { name: "Close all stats" }));
+
+    // Act
+    const settings = await openSettings(person);
+    await person.click(settings.getByRole("button", { name: "Sign out" }));
+    await signInAgain(person);
+    const reopened = await openAllStats(person);
+
+    // Assert
+    expect(await reopened.findByLabelText("Totals")).toBeInTheDocument();
+    expect(reopened.queryByLabelText("Totals for Sam")).not.toBeInTheDocument();
+    await waitFor(() => expect(queryOf(agentShifts.mock.calls.at(-1)).has("userId")).toBe(false));
+  });
+});
+
+describe("the home page's example", () => {
+  /// The landing page draws a made-up workspace; its figures are fixed.
+  const example = async () => {
+    render(<App client={clientFor()} />);
+    const preview = await screen.findByRole("figure");
+    return within(preview);
+  };
+
+  it("draws the same dashboard as the app: one totals row, no tabs, the board and the cards", async () => {
+    // Act
+    const preview = await example();
+
+    // Assert
+    expect(preview.getAllByLabelText(/^Totals/)).toHaveLength(1);
+    expect(within(preview.getByLabelText("Totals")).getAllByRole("term").map((term) => term.textContent))
+      .toEqual(["Tokens", "Active time", "Agent time", "Recorded time"]);
+    expect(preview.queryByRole("group", { name: "Humans or agents" })).toBeNull();
+    expect(preview.queryByRole("tab")).toBeNull();
+    expect(preview.getByRole("table", { name: "People" })).toBeInTheDocument();
+    for (const card of ["Over time", "Projects", "Agents"]) {
+      expect(preview.getByRole("region", { name: card })).toBeInTheDocument();
+    }
+  });
+
+  it("draws the example's one chart with lines and token bars, and the same legend as the app", async () => {
+    // Act
+    const preview = await example();
+
+    // Assert
+    const chart = preview.getByTestId("work-chart");
+    expect(preview.getAllByTestId("work-chart")).toHaveLength(1);
+    expect(chart.querySelectorAll("path[data-series]")).toHaveLength(2);
+    expect(chart.querySelectorAll("g[data-bar]").length).toBeGreaterThan(0);
+    expect(within(chart).getAllByRole("button").map((key) => key.textContent)).toEqual(["Active time", "Agent time", "Tokens"]);
+  });
+
+  it("points every card at a teammate when the board picks one, and back at the team from Everyone", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    const preview = await example();
+    const teamActive = totalFigure(preview, "Active time")?.textContent;
+
+    // Act
+    await person.click(preview.getByRole("button", { name: "Show Jordan Lee's work" }));
+
+    // Assert
+    expect(preview.getByLabelText("Totals for Jordan Lee")).toBeInTheDocument();
+    expect(totalFigure(preview, "Active time", "Jordan Lee")?.textContent).not.toBe(teamActive);
+    expect(preview.getAllByLabelText(/^Totals/)).toHaveLength(1);
+
+    // Act
+    await person.click(preview.getByRole("button", { name: "Everyone" }));
+
+    // Assert
+    expect(totalFigure(preview, "Active time")?.textContent).toBe(teamActive);
+  });
+});
+
+// The leading bytes of a JPEG, which is all the picture checks read.
 const JPEG_BYTES = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01];
 const JPEG_DATA_URL = `data:image/jpeg;base64,${btoa(String.fromCharCode(...JPEG_BYTES))}`;
 const PICTURE_VERSION = "0123456789abcdef";
@@ -2514,7 +3228,7 @@ describe("profile pictures", () => {
   });
   afterEach(() => restoreDrawing());
 
-  it("shows a teammate's picture on the board and their card, read once, with initials for anyone without one", async () => {
+  it("shows a teammate's picture on the board and under the page's name for them, read once, with initials for anyone without one", async () => {
     // Arrange
     const memberPicture = vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES));
     const person = await signIn(clientFor({ memberPicture, workspace: vi.fn().mockResolvedValue(reportWithSamsPicture) }));
@@ -2522,15 +3236,36 @@ describe("profile pictures", () => {
     // Act
     const stats = await openAllStats(person);
     const [, samRow, ownRow] = within(await stats.findByRole("table", { name: "People" })).getAllByRole("row");
-    await person.click(stats.getByRole("button", { name: /Sam/ }));
+    await pickPerson(person, stats, "Sam");
 
     // Assert
     await waitFor(() => expect(samRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
     expect(ownRow?.querySelector(".member-avatar")).toHaveTextContent(/^A$/);
-    const card = stats.getByTestId("member-stats");
-    await waitFor(() => expect(card.querySelector("h4 img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    const subject = (await stats.findByText("Sam", { selector: ".tv-subject-name" })).closest(".tv-subject")!;
+    await waitFor(() => expect(subject.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
     expect(memberPicture).toHaveBeenCalledTimes(1);
     expect(memberPicture).toHaveBeenCalledWith("u1", PICTURE_VERSION);
+  });
+
+  it("shows a teammate's picture beside their name on Live now", async () => {
+    // Arrange
+    const person = await signIn(clientFor({
+      memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
+      workspace: vi.fn().mockResolvedValue(reportWithSamsPicture),
+      liveAgentSessions: vi.fn().mockResolvedValue({
+        people: [{
+          owner: { id: "u1", name: "Sam" },
+          sessions: [{ id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" }],
+        }],
+      }),
+    }));
+
+    // Act
+    const stats = await openAllStats(person);
+    const live = await stats.findByTestId("live-sessions");
+
+    // Assert
+    await waitFor(() => expect(live.querySelector(".live-person img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
   });
 
   it("keeps a teammate's initials when their picture cannot be read", async () => {

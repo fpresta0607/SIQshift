@@ -44,9 +44,9 @@ use tauri::{
 use tokio::sync::Mutex;
 
 use api::{
-    AgentShiftCursor, AgentShiftRows, AgentShifts, ApiClient, ApiResult, BridgeError, ErrorKind,
-    LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject, TimerUser,
-    ViewPreferences, WorkspaceReport,
+    AgentShiftCursor, AgentShiftRows, AgentShifts, AgentShiftsQuery, ApiClient, ApiResult,
+    BridgeError, ErrorKind, LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject,
+    TimerUser, ViewPreferences, WorkspaceReport,
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
@@ -669,6 +669,7 @@ async fn workspace_report(
     state: State<'_, AppState>,
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
+    scope: Option<String>,
 ) -> ApiResult<WorkspaceReport> {
     let access_token = state.access_token().await?;
     state
@@ -677,33 +678,26 @@ async fn workspace_report(
             &access_token,
             from_at.as_deref(),
             to_exclusive_at.as_deref(),
+            scope.as_deref(),
         )
         .await
 }
 
-/// Every shift in the range grouped by the codebase it worked, for the
-/// Agents tab. Bounds arrive together or not at all; both absent asks for all
-/// time.
+/// Every shift under `query` grouped by the codebase it worked, for the
+/// dashboard's agents cards.
 #[tauri::command]
 async fn agent_shifts(
     state: State<'_, AppState>,
-    from_at: Option<String>,
-    to_exclusive_at: Option<String>,
+    query: AgentShiftsQuery,
 ) -> ApiResult<AgentShifts> {
     let access_token = state.access_token().await?;
-    state
-        .client
-        .agent_shifts(
-            &access_token,
-            from_at.as_deref(),
-            to_exclusive_at.as_deref(),
-        )
-        .await
+    state.client.agent_shifts(&access_token, &query).await
 }
 
-/// One page of one group's shifts, asked for when a drawer opens. The bounds
-/// are the ones the group heads were read with: a drawer that asked under a
-/// different range would list shifts its own head never counted.
+/// One page of one group's shifts, asked for when a drawer opens. The `query`
+/// is the one the group heads were read with: a drawer that asked under a
+/// different range, for someone else or for another project would list shifts
+/// its own head never counted.
 #[tauri::command]
 async fn agent_shift_rows(
     state: State<'_, AppState>,
@@ -711,8 +705,7 @@ async fn agent_shift_rows(
     after_started_at: Option<String>,
     after_id: Option<String>,
     project_tied: Option<bool>,
-    from_at: Option<String>,
-    to_exclusive_at: Option<String>,
+    query: AgentShiftsQuery,
 ) -> ApiResult<AgentShiftRows> {
     let access_token = state.access_token().await?;
     // Half a cursor names no shift, so it asks for the first page rather than
@@ -726,22 +719,23 @@ async fn agent_shift_rows(
         });
     state
         .client
-        .agent_shift_rows(
-            &access_token,
-            &group_key,
-            after.as_ref(),
-            from_at.as_deref(),
-            to_exclusive_at.as_deref(),
-        )
+        .agent_shift_rows(&access_token, &group_key, after.as_ref(), &query)
         .await
 }
 
-/// Who is running an agent right now, grouped by person, for the Agents tab's
-/// Live now card. No bounds: the view reads now.
+/// Who is running an agent right now, grouped by person, for the dashboard's
+/// Live now card. No bounds: the view reads now. A `scope` narrows it to one
+/// project.
 #[tauri::command]
-async fn agent_live_sessions(state: State<'_, AppState>) -> ApiResult<LiveAgentSessions> {
+async fn agent_live_sessions(
+    state: State<'_, AppState>,
+    scope: Option<String>,
+) -> ApiResult<LiveAgentSessions> {
     let access_token = state.access_token().await?;
-    state.client.live_agent_sessions(&access_token).await
+    state
+        .client
+        .live_agent_sessions(&access_token, scope.as_deref())
+        .await
 }
 
 /// How much of each coding agent's plan is left, read from what those CLIs

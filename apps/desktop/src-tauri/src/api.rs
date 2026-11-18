@@ -161,7 +161,8 @@ pub struct TimerProject {
     /// One of the built-in icon names; absent from a server that predates them.
     #[serde(default)]
     pub icon: Option<String>,
-    #[serde(skip_serializing)]
+    /// When the project was created, for the first day the dashboard's filter
+    /// offers as the project's lifetime.
     pub created_at: String,
 }
 
@@ -257,7 +258,7 @@ pub struct WorkspaceMemberUser {
     pub picture_version: Option<String>,
 }
 
-/// The Agents tab's whole story: what ran, where, grouped by codebase. Every
+/// The dashboard's agent story: what ran, where, grouped by codebase. Every
 /// field is tolerant the way every response here is - the API deploys before
 /// any installer can, so absence decodes as empty rather than as an error.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -308,7 +309,7 @@ pub struct AgentShiftsTokenTotals {
     pub tokens: u64,
 }
 
-/// The Agents tab's token bars: the period's buckets, and each project's bars
+/// The dashboard chart's token bars: the period's buckets, and each project's bars
 /// over the same buckets with its total. Every figure is the server's; the
 /// webview draws them as given.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +423,36 @@ pub struct AgentShiftCursor {
     /// from before the tie existed, which reads as the untied partition.
     #[serde(default)]
     pub project_tied: Option<bool>,
+}
+
+/// What the agents reads are narrowed by, shared by the group heads and every
+/// drawer page so a drawer always asks under the bounds, person and project
+/// its head was read with. Bounds travel together or not at all, and none
+/// means all time; a `user_id` names one member and a `scope` one project.
+/// Each is sent only when present, so the team read keeps working against an
+/// API deployed before the parameter existed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsQuery {
+    pub from_at: Option<String>,
+    pub to_exclusive_at: Option<String>,
+    pub user_id: Option<String>,
+    pub scope: Option<String>,
+}
+
+impl AgentShiftsQuery {
+    fn push_pairs<'a>(&'a self, pairs: &mut Vec<(&'a str, &'a str)>) {
+        if let (Some(from_at), Some(to_exclusive_at)) = (&self.from_at, &self.to_exclusive_at) {
+            pairs.push(("fromAt", from_at));
+            pairs.push(("toExclusiveAt", to_exclusive_at));
+        }
+        if let Some(user_id) = &self.user_id {
+            pairs.push(("userId", user_id));
+        }
+        if let Some(scope) = &self.scope {
+            pairs.push(("scope", scope));
+        }
+    }
 }
 
 /// One agent session running at the moment the read answered, as the live
@@ -1058,55 +1089,50 @@ impl ApiClient {
     }
 
     /// The team view for a range. Bounds arrive together or not at all; none
-    /// means all time, exactly as `/reports/workspace` reads it.
+    /// means all time, exactly as `/reports/workspace` reads it. A `scope` (a
+    /// project id) narrows it to that project and is sent only when present.
     pub async fn workspace_report(
         &self,
         access_token: &str,
         from_at: Option<&str>,
         to_exclusive_at: Option<&str>,
+        scope: Option<&str>,
     ) -> ApiResult<WorkspaceReport> {
-        match (from_at, to_exclusive_at) {
-            (Some(from_at), Some(to_exclusive_at)) => {
-                self.get_json_query(
-                    access_token,
-                    "/reports/workspace",
-                    &[("fromAt", from_at), ("toExclusiveAt", to_exclusive_at)],
-                )
-                .await
-            }
-            _ => self.get_json(access_token, "/reports/workspace").await,
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
+            pairs.push(("fromAt", from_at));
+            pairs.push(("toExclusiveAt", to_exclusive_at));
         }
+        if let Some(scope) = scope {
+            pairs.push(("scope", scope));
+        }
+        self.get_json_query(access_token, "/reports/workspace", &pairs)
+            .await
     }
 
-    /// Every shift in the range grouped by the codebase it worked, for the
-    /// Agents tab. Bounds arrive together or not at all; none means all time.
+    /// Every shift under `query` grouped by the codebase it worked, for the
+    /// dashboard's agents cards.
     pub async fn agent_shifts(
         &self,
         access_token: &str,
-        from_at: Option<&str>,
-        to_exclusive_at: Option<&str>,
+        query: &AgentShiftsQuery,
     ) -> ApiResult<AgentShifts> {
-        let query = match (from_at, to_exclusive_at) {
-            (Some(from_at), Some(to_exclusive_at)) => {
-                format!("?fromAt={from_at}&toExclusiveAt={to_exclusive_at}")
-            }
-            _ => String::new(),
-        };
-        self.get_json(access_token, &format!("/reports/agent-shifts{query}"))
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        query.push_pairs(&mut pairs);
+        self.get_json_query(access_token, "/reports/agent-shifts", &pairs)
             .await
     }
 
     /// One page of one group's shifts, from the cursor the page before it
-    /// returned. The bounds are the ones the group heads were read with,
-    /// because a drawer that asked under a different range would list shifts
-    /// its own head never counted.
+    /// returned. The `query` is the one the group heads were read with,
+    /// because a drawer that asked under a different range, person or project
+    /// would list shifts its own head never counted.
     pub async fn agent_shift_rows(
         &self,
         access_token: &str,
         group_key: &str,
         after: Option<&AgentShiftCursor>,
-        from_at: Option<&str>,
-        to_exclusive_at: Option<&str>,
+        query: &AgentShiftsQuery,
     ) -> ApiResult<AgentShiftRows> {
         let mut pairs = vec![("groupKey", group_key)];
         // Both halves of the cursor or neither: the filters schema refuses a
@@ -1121,18 +1147,21 @@ impl ApiClient {
                 pairs.push(("projectTied", if project_tied { "true" } else { "false" }));
             }
         }
-        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
-            pairs.push(("fromAt", from_at));
-            pairs.push(("toExclusiveAt", to_exclusive_at));
-        }
+        query.push_pairs(&mut pairs);
         self.get_json_query(access_token, "/reports/agent-shifts/rows", &pairs)
             .await
     }
 
     /// Who is running an agent right now, grouped by person. No bounds: the
-    /// live view reads now, and the desktop reads it for everyone.
-    pub async fn live_agent_sessions(&self, access_token: &str) -> ApiResult<LiveAgentSessions> {
-        self.get_json(access_token, "/reports/agent-sessions/live")
+    /// live view reads now, and the desktop reads it for everyone. A `scope`
+    /// (a project id) narrows it to that project and is sent only when present.
+    pub async fn live_agent_sessions(
+        &self,
+        access_token: &str,
+        scope: Option<&str>,
+    ) -> ApiResult<LiveAgentSessions> {
+        let pairs: Vec<(&str, &str)> = scope.map(|scope| ("scope", scope)).into_iter().collect();
+        self.get_json_query(access_token, "/reports/agent-sessions/live", &pairs)
             .await
     }
 
@@ -1560,7 +1589,10 @@ impl ApiClient {
     ) -> ApiResult<T> {
         let mut url = Url::parse(&format!("{}{}", self.api_base_url, path))
             .map_err(|_| BridgeError::unknown("The request address could not be built."))?;
-        url.query_pairs_mut().extend_pairs(pairs);
+        // No pairs leaves no query at all, rather than a bare `?`.
+        if !pairs.is_empty() {
+            url.query_pairs_mut().extend_pairs(pairs);
+        }
         self.get_json_url(access_token, url.as_str()).await
     }
 
@@ -2239,6 +2271,7 @@ mod tests {
                 "token",
                 Some("2026-08-06T00:00:00.000Z"),
                 Some("2026-08-07T00:00:00.000Z"),
+                None,
             )
             .await
             .expect("the report reads");
@@ -2274,7 +2307,7 @@ mod tests {
         let (client, served) = scripted_stub(vec![WORKSPACE]).await;
 
         client
-            .workspace_report("token", None, None)
+            .workspace_report("token", None, None, None)
             .await
             .expect("the report reads");
 
@@ -2358,8 +2391,11 @@ mod tests {
                 "token",
                 "retire & 91 #2",
                 Some(&cursor),
-                Some("2026-08-06T00:00:00.000Z"),
-                Some("2026-08-07T00:00:00.000Z"),
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    ..AgentShiftsQuery::default()
+                },
             )
             .await
             .expect("the page reads");
@@ -2402,6 +2438,186 @@ mod tests {
         assert_eq!(page.shifts.len(), 1);
         assert_eq!(page.shifts[0].commit_count, 2);
         assert!(page.next_cursor.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_the_agents_of_one_person_with_their_id_on_the_wire() {
+        const AGENT_SHIFTS: StubAnswer = ("200 OK", "", r#"{"groups": []}"#);
+        let (client, served) = scripted_stub(vec![AGENT_SHIFTS]).await;
+
+        client
+            .agent_shifts(
+                "token",
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    user_id: Some("user & 1".to_string()),
+                    scope: None,
+                },
+            )
+            .await
+            .expect("the shifts read");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(
+            requests[0].0,
+            "GET /reports/agent-shifts?fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z&userId=user+%26+1"
+        );
+    }
+
+    #[test]
+    fn reads_the_agents_query_from_the_bridge_payload_with_absent_keys_as_none() {
+        // Arrange: the bridge names the keys in camelCase and drops undefined ones.
+        let whole = serde_json::json!({
+            "fromAt": "2026-08-06T00:00:00.000Z",
+            "toExclusiveAt": "2026-08-07T00:00:00.000Z",
+            "userId": "user-1",
+            "scope": "p-1",
+        });
+
+        // Act
+        let read: AgentShiftsQuery = serde_json::from_value(whole).expect("the whole query reads");
+        let team: AgentShiftsQuery =
+            serde_json::from_value(serde_json::json!({})).expect("the empty query reads");
+
+        // Assert
+        assert_eq!(
+            read,
+            AgentShiftsQuery {
+                from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                user_id: Some("user-1".to_string()),
+                scope: Some("p-1".to_string()),
+            }
+        );
+        assert_eq!(team, AgentShiftsQuery::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_the_agents_of_the_team_with_no_user_id() {
+        const AGENT_SHIFTS: StubAnswer = ("200 OK", "", r#"{"groups": []}"#);
+        let (client, served) = scripted_stub(vec![AGENT_SHIFTS, AGENT_SHIFTS]).await;
+
+        client
+            .agent_shifts("token", &AgentShiftsQuery::default())
+            .await
+            .expect("the all-time team shifts read");
+        client
+            .agent_shifts(
+                "token",
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    ..AgentShiftsQuery::default()
+                },
+            )
+            .await
+            .expect("the ranged team shifts read");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(requests[0].0, "GET /reports/agent-shifts");
+        assert_eq!(
+            requests[1].0,
+            "GET /reports/agent-shifts?fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_a_page_of_one_persons_shifts_with_their_id_after_the_range() {
+        const PAGE: StubAnswer = ("200 OK", "", r#"{"shifts": [], "nextCursor": null}"#);
+        let (client, served) = scripted_stub(vec![PAGE]).await;
+
+        client
+            .agent_shift_rows(
+                "token",
+                "siqshift",
+                None,
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    user_id: Some("user-1".to_string()),
+                    scope: None,
+                },
+            )
+            .await
+            .expect("the page reads");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(
+            requests[0].0,
+            "GET /reports/agent-shifts/rows?groupKey=siqshift&fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z&userId=user-1"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn narrows_every_dashboard_read_to_a_project_with_its_id_on_the_wire() {
+        const WORKSPACE: StubAnswer = (
+            "200 OK",
+            "",
+            r#"{"activeSeconds": 0, "agentSeconds": 0, "hourly": [], "projects": [], "agents": [], "members": []}"#,
+        );
+        const AGENT_SHIFTS: StubAnswer = ("200 OK", "", r#"{"groups": []}"#);
+        const PAGE: StubAnswer = ("200 OK", "", r#"{"shifts": [], "nextCursor": null}"#);
+        const LIVE: StubAnswer = ("200 OK", "", r#"{"people": []}"#);
+        let (client, served) = scripted_stub(vec![WORKSPACE, AGENT_SHIFTS, PAGE, LIVE]).await;
+        let from_at = Some("2026-08-06T00:00:00.000Z");
+        let to_exclusive_at = Some("2026-08-07T00:00:00.000Z");
+
+        client
+            .workspace_report("token", from_at, to_exclusive_at, Some("p & 1"))
+            .await
+            .expect("the report reads");
+        let query = AgentShiftsQuery {
+            from_at: from_at.map(str::to_string),
+            to_exclusive_at: to_exclusive_at.map(str::to_string),
+            user_id: Some("user-1".to_string()),
+            scope: Some("p-1".to_string()),
+        };
+        client
+            .agent_shifts("token", &query)
+            .await
+            .expect("the shifts read");
+        client
+            .agent_shift_rows("token", "siqshift", None, &query)
+            .await
+            .expect("the page reads");
+        client
+            .live_agent_sessions("token", Some("p-1"))
+            .await
+            .expect("the live read reads");
+
+        let requests = served.await.expect("the stub finishes");
+        let range =
+            "fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z";
+        assert_eq!(
+            requests[0].0,
+            format!("GET /reports/workspace?{range}&scope=p+%26+1")
+        );
+        assert_eq!(
+            requests[1].0,
+            format!("GET /reports/agent-shifts?{range}&userId=user-1&scope=p-1")
+        );
+        assert_eq!(
+            requests[2].0,
+            format!(
+                "GET /reports/agent-shifts/rows?groupKey=siqshift&{range}&userId=user-1&scope=p-1"
+            )
+        );
+        assert_eq!(requests[3].0, "GET /reports/agent-sessions/live?scope=p-1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_who_is_running_with_no_query_when_no_project_is_picked() {
+        const LIVE: StubAnswer = ("200 OK", "", r#"{"people": []}"#);
+        let (client, served) = scripted_stub(vec![LIVE]).await;
+
+        client
+            .live_agent_sessions("token", None)
+            .await
+            .expect("the live read reads");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(requests[0].0, "GET /reports/agent-sessions/live");
     }
 
     #[test]
