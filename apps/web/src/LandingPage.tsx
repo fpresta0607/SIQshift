@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { DashboardView, TeamViewHead, projectMeterRows } from "@siqshift/shared/dashboard-view";
+import { DashboardView, TeamViewHead, projectMeterRows, type BoardSort } from "@siqshift/shared/dashboard-view";
 import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
@@ -54,6 +54,7 @@ function LandingBackground() {
 
 function ProductPreview() {
   const [memberId, setMemberId] = useState<string | null>(null);
+  const [boardSort, setBoardSort] = useState<BoardSort>("active");
   const selectedMember = members.find(member => member.id === memberId);
   const visibleMembers = selectedMember ? [selectedMember] : members;
   const activeSeconds = sum(visibleMembers.map(member => sum(member.projects)));
@@ -98,6 +99,8 @@ function ProductPreview() {
           }}
           agents={{ tokenTotals: { tokensIn: tokens - tokensOut, tokensOut, tokens }, tokenChart: { bucketSeconds: 3600, buckets: tokenBuckets }, runtimes }}
           people={boardMembers}
+          boardSort={boardSort}
+          onBoardSort={setBoardSort}
           onSelectPerson={member => setMemberId(member === undefined || member.id === memberId ? null : member.id)}
           boardNotes={selectedMember === undefined ? ["Select a teammate to explore their work."] : []}
         />

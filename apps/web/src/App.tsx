@@ -53,6 +53,7 @@ import {
   personTokensOf,
   projectMeterRows,
   reportedAppearance,
+  type BoardSort,
   type DashboardDays,
 } from "@siqshift/shared/dashboard-view";
 
@@ -171,6 +172,7 @@ export const App = ({ client }: AppProps) => {
   const [pictureBusy, setPictureBusy] = useState(false);
   const [projects, setProjects] = useState<readonly ProjectListItem[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceReportResponse | undefined>();
+  const [boardSort, setBoardSort] = useState<BoardSort>("active");
   const [agentShifts, setAgentShifts] = useState<AgentShiftsResponse | undefined>();
   const [agentShiftsFailed, setAgentShiftsFailed] = useState(false);
   const [boardTokens, setBoardTokens] = useState<{ query: string; agents: AgentShiftsResponse } | undefined>();
@@ -1206,6 +1208,8 @@ export const App = ({ client }: AppProps) => {
                         repos: { groups: agentShifts.groups, loadShifts: loadShiftRows },
                       }}
                   people={boardMembers}
+                  boardSort={boardSort}
+                  onBoardSort={setBoardSort}
                   onSelectPerson={(picked) => setMember(picked === undefined ? undefined : { id: picked.id, name: picked.name })}
                   boardNotes={[
                     ...boardHasTime

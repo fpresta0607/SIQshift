@@ -64,6 +64,7 @@ import {
   personTokensOf,
   projectMeterRows,
   reportedAppearance,
+  type BoardSort,
   type DashboardDays,
 } from "@siqshift/shared/dashboard-view";
 
@@ -252,6 +253,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [agentShifts, setAgentShifts] = useState<AgentShifts | undefined>();
   const [agentShiftsError, setAgentShiftsError] = useState<string | undefined>();
   const [boardTokens, setBoardTokens] = useState<{ key: string; agents: AgentShifts } | undefined>();
+  const [boardSort, setBoardSort] = useState<BoardSort>("active");
   /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// host has answered; a failed poll keeps the last-good list.
@@ -1826,6 +1828,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${boardScope}` ? boardTokens.agents : undefined, member.user.id),
                   isSelf: member.user.id === ready.user.id,
                 }))}
+                boardSort={boardSort}
+                onBoardSort={setBoardSort}
                 onSelectPerson={(picked) => setBoardMember(picked === undefined ? undefined : { id: picked.id, name: picked.name })}
                 boardNotes={[
                   ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0

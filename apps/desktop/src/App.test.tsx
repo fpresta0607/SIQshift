@@ -1679,6 +1679,21 @@ describe("the team board", () => {
     expect(within(panel).queryByRole("region", { name: "Repos" })).toHaveTextContent("Loading…");
   });
 
+  it("keeps the board's chosen ranking after All stats is closed and opened again", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+    const panel = await openAgentsPage(person);
+    await person.selectOptions(within(panel).getByRole("combobox", { name: /Rank by/ }), "By agent time");
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "Close all stats" }));
+    const reopened = await openAgentsPage(person);
+
+    // Assert
+    expect(within(reopened).getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By agent time");
+  });
+
   it("keeps the board's tokens and ranking while a picked person's read loads, and drops them for a new range", async () => {
     // Arrange: the team's read carries everyone's tokens, the viewer's the most; every later read stays pending.
     const bridge = bridgeFor({

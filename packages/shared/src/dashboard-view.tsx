@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties } from "react";
+import { useId, type CSSProperties } from "react";
 
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { AppMark } from "./app-mark.js";
@@ -92,7 +92,8 @@ export const personTokensOf = (
 ): DashboardTokens | null | undefined =>
   agents?.tokenTotals === undefined ? undefined : agents.people?.find((person) => person.owner.id === personId)?.tokens ?? null;
 
-type BoardSort = "active" | "agent" | "tokens";
+/** How the People board is ranked. */
+export type BoardSort = "active" | "agent" | "tokens";
 
 /** A person who reported no tokens sits below everyone who did, even a reported zero. */
 const tokenRank = (person: DashboardPerson): number => (person.tokens == null ? -1 : person.tokens.tokens);
@@ -155,6 +156,9 @@ export type DashboardViewProps = {
   agents: DashboardAgents | string | undefined;
   /** The whole team's board, ranked by active time, which is also how a person is picked. */
   people: readonly DashboardPerson[];
+  /** The board's chosen ranking, held by the caller so it outlives the view; tokens reads as active time while no person's tokens are shown. */
+  boardSort: BoardSort;
+  onBoardSort: (sort: BoardSort) => void;
   onSelectPerson: (person: DashboardPerson | undefined) => void;
   /** Lines under the board. */
   boardNotes: readonly string[];
@@ -232,6 +236,8 @@ export const DashboardView = ({
   time: timeRead,
   agents,
   people,
+  boardSort: chosenSort,
+  onBoardSort,
   onSelectPerson,
   boardNotes,
   live,
@@ -245,7 +251,6 @@ export const DashboardView = ({
   const runtimesTitleId = useId();
   const reposTitleId = useId();
   const liveTitleId = useId();
-  const [chosenSort, setChosenSort] = useState<BoardSort>("active");
 
   const time = typeof timeRead === "object" ? timeRead : undefined;
   const timeFailure = typeof timeRead === "string" ? timeRead : undefined;
@@ -336,7 +341,7 @@ export const DashboardView = ({
                 <h4 id={boardTitleId}>People</h4>
                 <label className="board-sort">
                   <span className="visually-hidden">Rank by</span>
-                  <select value={boardSort} onChange={(event) => setChosenSort(event.target.value as BoardSort)}>
+                  <select value={boardSort} onChange={(event) => onBoardSort(event.target.value as BoardSort)}>
                     <option value="active">By active time</option>
                     <option value="agent">By agent time</option>
                     {hasPersonTokens && <option value="tokens">By tokens</option>}

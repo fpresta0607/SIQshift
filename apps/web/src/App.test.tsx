@@ -526,6 +526,20 @@ describe("dashboard", () => {
     expect(stats.getByLabelText("Totals for Sam")).toBeInTheDocument();
   });
 
+  it("keeps the board's chosen ranking after All stats is closed and opened again", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    await person.selectOptions(await stats.findByRole("combobox", { name: /Rank by/ }), "By agent time");
+
+    // Act
+    await person.click(screen.getByRole("button", { name: "Close all stats" }));
+    const reopened = await openAllStats(person);
+
+    // Assert
+    expect(await reopened.findByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By agent time");
+  });
+
   it("shows each person's tokens in and out, a dash for someone who reported none, and ranks by them", async () => {
     // Arrange: Alex's agents reported tokens; Sam's ran but reported none.
     const person = await signIn(clientFor({
