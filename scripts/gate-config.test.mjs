@@ -24,7 +24,7 @@ const QUICK_CARGO_SUBCOMMANDS = new Set(["fmt"]);
 const POSIX_ONLY_SYNTAX = ["'", "$", ";", "`"];
 
 function commandSteps(command) {
-  return command.split("&&").map((step) => step.trim().split(/\s+/));
+  return command.split(/&&|\|\||&|\|/).map((step) => step.trim().split(/\s+/));
 }
 
 describe("gate commands", () => {
@@ -49,9 +49,10 @@ describe("gate commands", () => {
     });
   }
 
-  for (const name of ["test", "lint"]) {
+  for (const name of ["prepare", "test", "lint"]) {
     test(`commands.${name} runs quick checks only`, () => {
-      for (const [program, subcommand] of commandSteps(gateConfig.commands[name])) {
+      const steps = commandSteps(gateConfig.commands[name]);
+      for (const [program, subcommand] of name === "prepare" ? steps.slice(1) : steps) {
         if (program === "pnpm") {
           assert.ok(Object.hasOwn(rootScripts, subcommand),`pnpm ${subcommand} is not a root package.json script`);
           assert.ok(!FULL_SUITE_PNPM_SCRIPTS.has(subcommand), `pnpm ${subcommand} is a full suite that CI owns`);
