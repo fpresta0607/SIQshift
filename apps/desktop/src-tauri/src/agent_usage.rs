@@ -56,6 +56,7 @@ use serde::{Deserialize, Serialize};
 use crate::browser::write_if_changed_locked;
 use crate::monitor::{iso8601, parse_iso8601, unix_now, AGENT_ACTIVE_WINDOW_SECONDS};
 use crate::spool::{self, AgentEventKind, AgentSource, SpoolEvent, TokenCounters};
+use crate::uploader::{RegistryRow, UploadVerdicts};
 
 /// Upper bound on what one pass reads from one transcript file. The next pass
 /// resumes at the stored offset, so a fast-growing log is caught up with
@@ -120,6 +121,35 @@ pub struct UsageEntry {
     pub synced: bool,
     #[serde(default)]
     pub rejected: bool,
+    /// How many times the server answered `unknown_session` for the row.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unknown_session_attempts: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
+impl RegistryRow for UsageEntry {
+    fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    fn happened_at(&self) -> Option<u64> {
+        parse_iso8601(&self.bucket_start_at)
+    }
+
+    fn unknown_session_attempts(&self) -> u32 {
+        self.unknown_session_attempts
+    }
+
+    fn verdict_state(&mut self) -> (&mut bool, &mut bool, &mut u32) {
+        (
+            &mut self.synced,
+            &mut self.rejected,
+            &mut self.unknown_session_attempts,
+        )
+    }
 }
 
 /// Resolved token counts. Unlike `TokenCounters` (what a hook reported, each
@@ -901,6 +931,7 @@ fn recompute_entries(registry: &mut UsageRegistry) {
                         cache_read_input_tokens: tokens.cache_read,
                         synced: false,
                         rejected: false,
+                        unknown_session_attempts: 0,
                     });
                 }
             }
@@ -1213,7 +1244,7 @@ fn capture(agent_path: &Path, agent_usage_path: &Path, now: u64) {
 }
 
 /// Every entry the uploader has not yet gotten a permanent verdict for.
-pub fn unsynced(agent_usage_path: &Path) -> Vec<UsageEntry> {
+pub fn unsynced(agent_usage_path: &Path) -> spool::SpoolResult<Vec<UsageEntry>> {
     spool::with_lock(agent_usage_path, || {
         Ok(read_registry(agent_usage_path)
             .entries
@@ -1221,36 +1252,25 @@ pub fn unsynced(agent_usage_path: &Path) -> Vec<UsageEntry> {
             .filter(|entry| !entry.synced && !entry.rejected)
             .collect())
     })
-    .unwrap_or_default()
 }
 
-/// Marks the given client ids accepted by the server (a permanent, terminal
-/// outcome for upload purposes until a later pass restates the total upward).
-pub fn mark_synced(agent_usage_path: &Path, client_ids: &[String]) {
-    let _ = spool::with_lock(agent_usage_path, || {
+/// Records one upload pass's verdicts in one registry write. Returns how many
+/// entries the `unknown_session` bound gave up.
+pub fn record_verdicts(
+    agent_usage_path: &Path,
+    verdicts: &UploadVerdicts<UsageEntry>,
+) -> spool::SpoolResult<usize> {
+    spool::with_lock(agent_usage_path, || {
         let mut registry = read_registry(agent_usage_path);
-        for entry in registry.entries.iter_mut() {
-            if client_ids.iter().any(|id| id == &entry.client_id) {
-                entry.synced = true;
+        let mut given_up = 0;
+        for entry in &mut registry.entries {
+            if verdicts.apply(entry) {
+                given_up += 1;
             }
         }
-        write_registry(agent_usage_path, &registry)
-    });
-}
-
-/// Marks the given client ids permanently rejected by the server - anything
-/// other than the retryable `unknown_session` reason, which the caller keeps
-/// unsynced instead.
-pub fn mark_rejected(agent_usage_path: &Path, client_ids: &[String]) {
-    let _ = spool::with_lock(agent_usage_path, || {
-        let mut registry = read_registry(agent_usage_path);
-        for entry in registry.entries.iter_mut() {
-            if client_ids.iter().any(|id| id == &entry.client_id) {
-                entry.rejected = true;
-            }
-        }
-        write_registry(agent_usage_path, &registry)
-    });
+        write_registry(agent_usage_path, &registry)?;
+        Ok(given_up)
+    })
 }
 
 #[cfg(test)]
@@ -2437,13 +2457,14 @@ mod tests {
         }
     }
 
+    fn mark_synced(usage_path: &Path, entries: &[UsageEntry]) {
+        let mut verdicts = UploadVerdicts::default();
+        verdicts.absorb(entries, &[]);
+        record_verdicts(usage_path, &verdicts).expect("the verdicts record");
+    }
+
     fn mark_every_entry_synced(usage_path: &Path) {
-        let client_ids: Vec<String> = read_registry(usage_path)
-            .entries
-            .iter()
-            .map(|entry| entry.client_id.clone())
-            .collect();
-        mark_synced(usage_path, &client_ids);
+        mark_synced(usage_path, &read_registry(usage_path).entries);
     }
 
     /// What a pass reads once `finished` ended, synced, long-quiet sessions sit
@@ -2566,7 +2587,7 @@ mod tests {
         }
         capture(&first_spool, &usage_path, unix("2026-08-06T10:30:00Z"));
         let original = one_entry(&read_registry(&usage_path)).clone();
-        mark_synced(&usage_path, std::slice::from_ref(&original.client_id));
+        mark_synced(&usage_path, std::slice::from_ref(&original));
         capture(&quiet_spool, &usage_path, unix("2026-08-08T00:00:00Z"));
         let archive = retired_session_path(&retired_dir(&usage_path), "claude_code|session-1");
         let retired = read_registry(&usage_path);
@@ -2830,6 +2851,7 @@ mod tests {
             cache_read_input_tokens: 4,
             synced: false,
             rejected: false,
+            unknown_session_attempts: 0,
         });
 
         let serialized = serde_json::to_value(&registry).expect("the registry serializes");

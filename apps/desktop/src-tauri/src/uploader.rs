@@ -7,8 +7,11 @@
 //! Durability posture, same as the pending-stop queue: any failure — auth or
 //! transport — backs off to the next tick with both spools untouched, so the
 //! retry replays identical, idempotent payloads. Only per-row server
-//! rejections are dropped (a redacted count is logged, never the row).
+//! rejections, and registry rows past the bounds `upload_registry` states,
+//! are dropped (a redacted count is logged, never the row).
 
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,7 +19,9 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use crate::agent_usage;
-use crate::api::{AgentUsageUpload, ApiClient, MappingKind, PathMapping, ShiftCommitUpload};
+use crate::api::{
+    AgentUsageUpload, ApiClient, MappingKind, PathMapping, SegmentRejection, ShiftCommitUpload,
+};
 use crate::monitor::{
     advance_sessions, iso8601, lock, parse_iso8601, unix_now, ActiveAgent, AgentTracking,
     MonitorShared, ObservedSession, SeenAgentEvent, SegmentRecord,
@@ -40,6 +45,29 @@ const AGENT_UPLOAD_BATCH_SIZE: usize = 100;
 /// instead of holding the uploader for minutes.
 const AGENT_BATCHES_PER_PASS: usize = 20;
 
+/// Rows per shift-commit or usage request. Both routes write row by row, as
+/// `/agent-sessions` does, so a batch of `UPLOAD_BATCH_SIZE` outruns the
+/// client's request timeout for the same reason `AGENT_UPLOAD_BATCH_SIZE`
+/// states, and a timed-out request ends the pass.
+const REGISTRY_UPLOAD_BATCH_SIZE: usize = 100;
+
+/// How many shift-commit or usage requests one pass sends. A backlog clears
+/// over a few passes, newest rows first, instead of holding the uploader for
+/// as long as the backlog is deep.
+const REGISTRY_BATCHES_PER_PASS: usize = 10;
+
+/// How many `unknown_session` answers a shift commit or usage row gets before
+/// it is given up. The agent spool drains before either registry uploads, so a
+/// shift that is coming lands within a pass or two; a dozen answers, an hour of
+/// passes at the least, covers one held up by an agent-spool backlog.
+pub(crate) const UNKNOWN_SESSION_ATTEMPT_LIMIT: u32 = 12;
+
+/// The server's retention window, `RETENTION_DAYS` in
+/// `apps/api/src/services/utc-days.ts`: it refuses agent events older than
+/// this and sweeps raw evidence past it, so a row still unsynced at that age
+/// has nothing left to land on that a bounded report would read.
+const SERVER_RETENTION_SECONDS: u64 = 90 * 24 * 60 * 60;
+
 /// Five minutes: frequent enough to keep the server current without making
 /// the monitor noisy. Local agent events are replayed on every monitor poll.
 const UPLOAD_INTERVAL_SECONDS: u64 = 300;
@@ -53,6 +81,111 @@ pub struct UploadPaths {
     pub shift_windows_path: PathBuf,
     pub shift_commits_path: PathBuf,
     pub agent_usage_path: PathBuf,
+}
+
+/// A row of a registry the uploader drains by verdict: a shift commit or a
+/// usage entry.
+pub(crate) trait RegistryRow: Clone + PartialEq {
+    fn client_id(&self) -> &str;
+    /// When the evidence the row carries happened, in unix seconds.
+    fn happened_at(&self) -> Option<u64>;
+    fn unknown_session_attempts(&self) -> u32;
+    /// The row's `synced` and `rejected` flags and `unknown_session` count.
+    fn verdict_state(&mut self) -> (&mut bool, &mut bool, &mut u32);
+}
+
+/// Every verdict one pass received for a registry's rows, recorded in one
+/// registry write.
+#[derive(Debug)]
+pub(crate) struct UploadVerdicts<Row> {
+    /// Accepted rows, as they were sent.
+    accepted: HashMap<String, Row>,
+    unknown_session: HashSet<String>,
+    /// Rejected permanently, or too old for the server to keep.
+    rejected: HashSet<String>,
+}
+
+impl<Row> Default for UploadVerdicts<Row> {
+    fn default() -> Self {
+        Self {
+            accepted: HashMap::new(),
+            unknown_session: HashSet::new(),
+            rejected: HashSet::new(),
+        }
+    }
+}
+
+impl<Row: RegistryRow> UploadVerdicts<Row> {
+    /// Takes the server's answer to one request. Returns how many rows it
+    /// rejected permanently.
+    pub(crate) fn absorb(&mut self, sent: &[Row], rejections: &[SegmentRejection]) -> usize {
+        let reasons: HashMap<&str, &str> = rejections
+            .iter()
+            .map(|rejection| (rejection.client_id.as_str(), rejection.reason.as_str()))
+            .collect();
+        let mut permanent = 0;
+        for row in sent {
+            let client_id = row.client_id().to_string();
+            match reasons.get(row.client_id()) {
+                None => {
+                    self.accepted.insert(client_id, row.clone());
+                }
+                Some(&"unknown_session") => {
+                    self.unknown_session.insert(client_id);
+                }
+                Some(_) => {
+                    self.rejected.insert(client_id);
+                    permanent += 1;
+                }
+            }
+        }
+        permanent
+    }
+
+    fn expire(&mut self, rows: &[Row]) {
+        self.rejected
+            .extend(rows.iter().map(|row| row.client_id().to_string()));
+    }
+
+    fn len(&self) -> usize {
+        self.accepted.len() + self.unknown_session.len() + self.rejected.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Records this pass's verdict on one registry row. An accepted row is
+    /// synced only while it is still what was sent: one that changed since (a
+    /// total restated upward, a commit verified) sends its new state next pass.
+    /// Returns whether this verdict gave the row up.
+    pub(crate) fn apply(&self, row: &mut Row) -> bool {
+        let is_accepted_as_is = self.accepted.get(row.client_id()).map(|sent| sent == row);
+        let is_rejected = self.rejected.contains(row.client_id());
+        let is_unknown_session = self.unknown_session.contains(row.client_id());
+        let (synced, rejected, unknown_session_attempts) = row.verdict_state();
+        match is_accepted_as_is {
+            Some(true) => {
+                *synced = true;
+                *unknown_session_attempts = 0;
+                false
+            }
+            Some(false) => false,
+            None if is_rejected => {
+                *rejected = true;
+                false
+            }
+            None if is_unknown_session => {
+                *unknown_session_attempts = unknown_session_attempts.saturating_add(1);
+                if *unknown_session_attempts >= UNKNOWN_SESSION_ATTEMPT_LIMIT {
+                    *rejected = true;
+                    return true;
+                }
+                false
+            }
+            None => false,
+        }
+    }
 }
 
 pub async fn upload_loop(
@@ -141,8 +274,10 @@ pub(crate) async fn upload_once(
     // session that has not reached the server yet. Usage counters carry the
     // same reference, so they wait on the same gate.
     if agent_spool_drained && browser_spool_drained {
-        complete &= upload_shift_commits_spool(client, &token, &paths.shift_commits_path).await;
-        complete &= upload_agent_usage_spool(client, &token, &paths.agent_usage_path).await;
+        let now = unix_now();
+        complete &=
+            upload_shift_commits_spool(client, &token, &paths.shift_commits_path, now).await;
+        complete &= upload_agent_usage_spool(client, &token, &paths.agent_usage_path, now).await;
     }
 
     if complete {
@@ -244,53 +379,31 @@ async fn upload_agent_spool(client: &ApiClient, token: &str, path: &Path) -> boo
     true
 }
 
-/// Uploads every unsynced shift commit in batches. Accepted rows (including
-/// duplicates the server already had) are marked synced; a permanent
-/// rejection is marked rejected and dropped; `unknown_session` is retryable
-/// and left alone entirely, so it uploads again once the shift itself has
-/// landed. A transport failure marks nothing, so the whole batch replays
-/// identically next pass.
+/// Uploads the shift commits this pass sends, under the rules
+/// `upload_registry` states.
 async fn upload_shift_commits_spool(
     client: &ApiClient,
     token: &str,
     shift_commits_path: &Path,
+    now: u64,
 ) -> bool {
-    let pending = shift_commits::unsynced(shift_commits_path);
-    if pending.is_empty() {
-        return true;
-    }
-    for chunk in pending.chunks(UPLOAD_BATCH_SIZE) {
-        let uploads: Vec<ShiftCommitUpload> = chunk.iter().map(to_shift_commit_upload).collect();
-        let outcome = match client.upload_shift_commits(token, &uploads).await {
-            Ok(outcome) => outcome,
-            Err(_) => return false,
-        };
-        let rejected_ids: std::collections::HashSet<&str> = outcome
-            .rejected
-            .iter()
-            .map(|rejection| rejection.client_id.as_str())
-            .collect();
-        let permanent: Vec<String> = outcome
-            .rejected
-            .iter()
-            .filter(|rejection| rejection.reason != "unknown_session")
-            .map(|rejection| rejection.client_id.clone())
-            .collect();
-        if !permanent.is_empty() {
-            eprintln!(
-                "siqshift: the server rejected {} shift commit(s)",
-                permanent.len()
-            );
-        }
-        let accepted: Vec<String> = chunk
-            .iter()
-            .map(|entry| entry.client_id.clone())
-            .filter(|client_id| !rejected_ids.contains(client_id.as_str()))
-            .collect();
-        shift_commits::mark_synced(shift_commits_path, &accepted);
-        shift_commits::mark_rejected(shift_commits_path, &permanent);
-    }
-    true
+    upload_registry(
+        "shift commit",
+        shift_commits::unsynced(shift_commits_path),
+        now,
+        |chunk: &[shift_commits::CommitEntry]| {
+            let uploads: Vec<ShiftCommitUpload> =
+                chunk.iter().map(to_shift_commit_upload).collect();
+            async move {
+                client
+                    .upload_shift_commits(token, &uploads)
+                    .await
+                    .map(|outcome| outcome.rejected)
+            }
+        },
+        |verdicts| shift_commits::record_verdicts(shift_commits_path, verdicts),
+    )
+    .await
 }
 
 fn to_shift_commit_upload(entry: &crate::shift_commits::CommitEntry) -> ShiftCommitUpload {
@@ -308,52 +421,123 @@ fn to_shift_commit_upload(entry: &crate::shift_commits::CommitEntry) -> ShiftCom
     }
 }
 
-/// Uploads every unsynced usage entry in batches, under the same verdict
-/// rules as shift commits: accepted rows are marked synced, a permanent
-/// rejection is marked rejected and dropped, `unknown_session` is retryable
-/// and left alone entirely, and a transport failure marks nothing so the
-/// whole batch replays identically next pass.
+/// Uploads the usage entries this pass sends, under the rules
+/// `upload_registry` states.
 async fn upload_agent_usage_spool(
     client: &ApiClient,
     token: &str,
     agent_usage_path: &Path,
+    now: u64,
 ) -> bool {
-    let pending = agent_usage::unsynced(agent_usage_path);
+    upload_registry(
+        "agent usage row",
+        agent_usage::unsynced(agent_usage_path),
+        now,
+        |chunk: &[agent_usage::UsageEntry]| {
+            let uploads: Vec<AgentUsageUpload> = chunk.iter().map(to_agent_usage_upload).collect();
+            async move {
+                client
+                    .upload_agent_usage(token, &uploads)
+                    .await
+                    .map(|outcome| outcome.rejected)
+            }
+        },
+        |verdicts| agent_usage::record_verdicts(agent_usage_path, verdicts),
+    )
+    .await
+}
+
+/// One registry's upload for one pass: the shift commits or the usage entries
+/// without a final verdict.
+///
+/// - A row older than the server's retention window is never sent; it is
+///   settled as rejected.
+/// - Rows go out fewest `unknown_session` answers first and newest first within
+///   that, at most `REGISTRY_BATCHES_PER_PASS` requests a pass. A backlog the
+///   server keeps refusing therefore never holds back a new row, and a pass that
+///   ends early on a transport error has already sent the newest ones.
+/// - Accepted rows (replays the server already had included) are synced, other
+///   rejections are permanent, and `unknown_session` is retryable: the shift
+///   may land later. After `UNKNOWN_SESSION_ATTEMPT_LIMIT` such answers the row
+///   is settled as rejected, since a session that has not landed by then lives
+///   where this upload cannot reach, such as the workspace an account switch
+///   left behind.
+/// - Every verdict the pass received, a failed request's predecessors included,
+///   is recorded in one registry write at the end. A write that fails is
+///   logged and leaves the rows unsynced, so the next pass sends them again and
+///   records the server's (idempotent) answer then.
+async fn upload_registry<Row, SendBatch, Sent>(
+    noun: &str,
+    pending: spool::SpoolResult<Vec<Row>>,
+    now: u64,
+    send: SendBatch,
+    record: impl FnOnce(&UploadVerdicts<Row>) -> spool::SpoolResult<usize>,
+) -> bool
+where
+    Row: RegistryRow,
+    SendBatch: Fn(&[Row]) -> Sent,
+    Sent: std::future::Future<Output = crate::api::ApiResult<Vec<SegmentRejection>>>,
+{
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => {
+            eprintln!("siqshift: could not read the unsynced {noun}s: {error}");
+            return false;
+        }
+    };
     if pending.is_empty() {
         return true;
     }
-    for chunk in pending.chunks(UPLOAD_BATCH_SIZE) {
-        let uploads: Vec<AgentUsageUpload> = chunk.iter().map(to_agent_usage_upload).collect();
-        let outcome = match client.upload_agent_usage(token, &uploads).await {
-            Ok(outcome) => outcome,
-            Err(_) => return false,
-        };
-        let rejected_ids: std::collections::HashSet<&str> = outcome
-            .rejected
-            .iter()
-            .map(|rejection| rejection.client_id.as_str())
-            .collect();
-        let permanent: Vec<String> = outcome
-            .rejected
-            .iter()
-            .filter(|rejection| rejection.reason != "unknown_session")
-            .map(|rejection| rejection.client_id.clone())
-            .collect();
-        if !permanent.is_empty() {
-            eprintln!(
-                "siqshift: the server rejected {} agent usage row(s)",
-                permanent.len()
-            );
+
+    let retention_floor = now.saturating_sub(SERVER_RETENTION_SECONDS);
+    let (expired, mut sendable): (Vec<Row>, Vec<Row>) = pending
+        .into_iter()
+        .partition(|row| row.happened_at().is_some_and(|at| at < retention_floor));
+    sendable.sort_by_key(|row| (row.unknown_session_attempts(), Reverse(row.happened_at())));
+
+    let mut verdicts = UploadVerdicts::default();
+    verdicts.expire(&expired);
+    let mut complete = true;
+    let mut permanent = 0;
+    for chunk in sendable
+        .chunks(REGISTRY_UPLOAD_BATCH_SIZE)
+        .take(REGISTRY_BATCHES_PER_PASS)
+    {
+        match send(chunk).await {
+            Ok(rejections) => permanent += verdicts.absorb(chunk, &rejections),
+            Err(_) => {
+                complete = false;
+                break;
+            }
         }
-        let accepted: Vec<String> = chunk
-            .iter()
-            .map(|entry| entry.client_id.clone())
-            .filter(|client_id| !rejected_ids.contains(client_id.as_str()))
-            .collect();
-        agent_usage::mark_synced(agent_usage_path, &accepted);
-        agent_usage::mark_rejected(agent_usage_path, &permanent);
     }
-    true
+
+    if !expired.is_empty() {
+        eprintln!(
+            "siqshift: {} {noun}(s) are older than the server keeps; not sending them",
+            expired.len()
+        );
+    }
+    if permanent > 0 {
+        eprintln!("siqshift: the server rejected {permanent} {noun}(s)");
+    }
+    if verdicts.is_empty() {
+        return complete;
+    }
+    match record(&verdicts) {
+        Ok(0) => {}
+        Ok(given_up) => eprintln!(
+            "siqshift: gave up on {given_up} {noun}(s) whose session the server never held"
+        ),
+        Err(error) => {
+            eprintln!(
+                "siqshift: could not record the server's verdicts on {} {noun}(s); they stay unsynced and are sent again next pass: {error}",
+                verdicts.len()
+            );
+            complete = false;
+        }
+    }
+    complete
 }
 
 fn to_agent_usage_upload(entry: &agent_usage::UsageEntry) -> AgentUsageUpload {
@@ -844,6 +1028,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The moment the fixed-date fixtures upload at, inside the server's
+    /// retention window for every one of them.
+    fn fixture_now() -> u64 {
+        parse_iso8601("2026-08-20T00:00:00Z").expect("the fixture time parses")
+    }
+
     fn source(id: &str) -> spool::AgentSource {
         spool::AgentSource::parse(id).expect("the test names a well-shaped runtime")
     }
@@ -862,6 +1052,7 @@ mod tests {
             verified_at: None,
             synced: false,
             rejected: false,
+            unknown_session_attempts: 0,
         }
     }
 
@@ -887,7 +1078,7 @@ mod tests {
 
         let (port, server) = stub_server(200, r#"{"accepted":1,"rejected":[]}"#).await;
         assert!(
-            upload_shift_commits_spool(&stub_client(port), "token", &path).await,
+            upload_shift_commits_spool(&stub_client(port), "token", &path, fixture_now()).await,
             "an accepted batch reports success"
         );
 
@@ -905,7 +1096,9 @@ mod tests {
         );
 
         assert!(
-            shift_commits::unsynced(&path).is_empty(),
+            shift_commits::unsynced(&path)
+                .expect("the registry reads")
+                .is_empty(),
             "an accepted commit is marked synced"
         );
 
@@ -927,7 +1120,7 @@ mod tests {
         )
         .await;
         assert!(
-            upload_shift_commits_spool(&stub_client(port), "token", &path).await,
+            upload_shift_commits_spool(&stub_client(port), "token", &path, fixture_now()).await,
             "the server responding at all is a completed pass"
         );
         let _ = server.await;
@@ -938,7 +1131,12 @@ mod tests {
             !entries[0].synced && !entries[0].rejected,
             "unknown_session leaves the row retryable"
         );
-        assert_eq!(shift_commits::unsynced(&path).len(), 1);
+        assert_eq!(
+            shift_commits::unsynced(&path)
+                .expect("the registry reads")
+                .len(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -957,12 +1155,16 @@ mod tests {
             r#"{"accepted":0,"rejected":[{"clientId":"client-3","reason":"validation_error"}]}"#,
         )
         .await;
-        assert!(upload_shift_commits_spool(&stub_client(port), "token", &path).await);
+        assert!(
+            upload_shift_commits_spool(&stub_client(port), "token", &path, fixture_now()).await
+        );
         let _ = server.await;
 
         let entries = read_shift_commits(&path);
         assert!(entries[0].rejected && !entries[0].synced);
-        assert!(shift_commits::unsynced(&path).is_empty());
+        assert!(shift_commits::unsynced(&path)
+            .expect("the registry reads")
+            .is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -978,7 +1180,7 @@ mod tests {
 
         let (port, server) = stub_server(500, r#"{"code":"internal_error"}"#).await;
         assert!(
-            !upload_shift_commits_spool(&stub_client(port), "token", &path).await,
+            !upload_shift_commits_spool(&stub_client(port), "token", &path, fixture_now()).await,
             "a server error reports failure"
         );
         let _ = server.await;
@@ -988,7 +1190,12 @@ mod tests {
             !entries[0].synced && !entries[0].rejected,
             "nothing is marked on failure"
         );
-        assert_eq!(shift_commits::unsynced(&path).len(), 1);
+        assert_eq!(
+            shift_commits::unsynced(&path)
+                .expect("the registry reads")
+                .len(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1032,7 +1239,7 @@ mod tests {
         };
         spool::append(&agent_path, &event).expect("the spool accepts a line");
         agent_usage::capture_from_spool(&agent_path, &usage_path);
-        let pending = agent_usage::unsynced(&usage_path);
+        let pending = agent_usage::unsynced(&usage_path).expect("the registry reads");
         assert_eq!(pending.len(), 1, "capture produced one usage entry");
         (usage_path, pending[0].client_id.clone())
     }
@@ -1046,7 +1253,7 @@ mod tests {
 
         let (port, server) = stub_server(200, r#"{"accepted":1,"rejected":[]}"#).await;
         assert!(
-            upload_agent_usage_spool(&stub_client(port), "token", &path).await,
+            upload_agent_usage_spool(&stub_client(port), "token", &path, fixture_now()).await,
             "an accepted batch reports success"
         );
 
@@ -1069,7 +1276,9 @@ mod tests {
         );
 
         assert!(
-            agent_usage::unsynced(&path).is_empty(),
+            agent_usage::unsynced(&path)
+                .expect("the registry reads")
+                .is_empty(),
             "an accepted row is marked synced"
         );
 
@@ -1095,13 +1304,15 @@ mod tests {
         )
         .await;
         assert!(
-            upload_agent_usage_spool(&stub_client(port), "token", &path).await,
+            upload_agent_usage_spool(&stub_client(port), "token", &path, fixture_now()).await,
             "the server responding at all is a completed pass"
         );
         let _ = server.await;
 
         assert_eq!(
-            agent_usage::unsynced(&path).len(),
+            agent_usage::unsynced(&path)
+                .expect("the registry reads")
+                .len(),
             1,
             "unknown_session leaves the row retryable"
         );
@@ -1126,25 +1337,364 @@ mod tests {
             ),
         )
         .await;
-        assert!(upload_agent_usage_spool(&stub_client(port), "token", &path).await);
+        assert!(upload_agent_usage_spool(&stub_client(port), "token", &path, fixture_now()).await);
         let _ = server.await;
 
         assert!(
-            agent_usage::unsynced(&path).is_empty(),
+            agent_usage::unsynced(&path)
+                .expect("the registry reads")
+                .is_empty(),
             "a permanent rejection leaves the unsynced set"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The rows one request carried: the body's one array, whichever route's
+    /// key (`events`, `usage`, `commits`) names it.
+    fn batch_rows(body: &serde_json::Value) -> &Vec<serde_json::Value> {
+        body.as_object()
+            .and_then(|object| object.values().find_map(serde_json::Value::as_array))
+            .expect("the body carries one array of rows")
+    }
+
+    /// The session a backlog's rows name that this workspace does not hold, as
+    /// every row of the workspace an account switch left behind does.
+    const OTHER_WORKSPACE_SESSION: &str = "other-workspace-session";
+
+    /// The server's verdict on one batch: `unknown_session` for each row whose
+    /// session lives in the other workspace, accepted for the rest.
+    fn verdicts_by_session(body: &serde_json::Value) -> Option<(u16, String)> {
+        let rows = batch_rows(body);
+        let rejected: Vec<serde_json::Value> = rows
+            .iter()
+            .filter(|row| row["externalSessionId"] == OTHER_WORKSPACE_SESSION)
+            .map(|row| serde_json::json!({ "clientId": row["clientId"], "reason": "unknown_session" }))
+            .collect();
+        let accepted = rows.len() - rejected.len();
+        Some((
+            200,
+            serde_json::json!({ "accepted": accepted, "rejected": rejected }).to_string(),
+        ))
+    }
+
+    fn usage_entry(client_id: &str, session: &str, at: u64) -> agent_usage::UsageEntry {
+        agent_usage::UsageEntry {
+            client_id: client_id.to_string(),
+            source: source("claude_code"),
+            external_session_id: session.to_string(),
+            bucket_start_at: iso8601(at - at % 3_600),
+            model: Some("claude-opus-4.1".to_string()),
+            sidechain: false,
+            input_tokens: 150,
+            output_tokens: 12,
+            cache_creation_input_tokens: 3,
+            cache_read_input_tokens: 4,
+            synced: false,
+            rejected: false,
+            unknown_session_attempts: 0,
+        }
+    }
+
+    fn write_usage_registry(path: &Path, entries: &[agent_usage::UsageEntry]) {
+        let bytes = serde_json::to_vec(&serde_json::json!({ "entries": entries }))
+            .expect("the registry encodes");
+        std::fs::write(path, bytes).expect("the registry writes");
+    }
+
+    fn read_usage_entries(path: &Path) -> Vec<agent_usage::UsageEntry> {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("the registry reads"))
+                .expect("the registry decodes");
+        serde_json::from_value(registry["entries"].clone()).expect("the entries decode")
+    }
+
+    /// Issue 93: after an account switch, thousands of rows whose sessions live
+    /// in the other workspace are answered `unknown_session` on every pass, and
+    /// sent oldest first they headed every pass, so a pass that ended early on
+    /// a transport error never reached the new rows behind them. A new row goes
+    /// out ahead of that backlog, and what the server answered before the pass
+    /// ended is recorded.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_usage_row_lands_ahead_of_an_unknown_session_backlog() {
+        let dir = temp_dir("usage-unknown-backlog");
+        let path = dir.join("agent-usage.json");
+        let now = fixture_now();
+        let mut entries: Vec<agent_usage::UsageEntry> = (0..600_u64)
+            .map(|index| {
+                usage_entry(
+                    &format!("old-{index}"),
+                    OTHER_WORKSPACE_SESSION,
+                    now - 30 * 86_400 + index * 3_600,
+                )
+            })
+            .collect();
+        entries.push(usage_entry("new", "this-workspace-session", now - 3_600));
+        write_usage_registry(&path, &entries);
+
+        // The first request is answered; the second is dropped, as the field's
+        // 499s were, which ends the pass.
+        let (port, server) = stub_batches(2, |index, body| {
+            (index == 0).then(|| verdicts_by_session(body)).flatten()
+        })
+        .await;
+        assert!(
+            !upload_agent_usage_spool(&stub_client(port), "token", &path, now).await,
+            "a dropped request ends the pass incomplete"
+        );
+        server.await.expect("the stub finishes");
+
+        let new_row = read_usage_entries(&path)
+            .into_iter()
+            .find(|entry| entry.client_id == "new")
+            .expect("the new row is kept");
+        assert!(
+            new_row.synced,
+            "the new row went first and its acceptance was recorded"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn commit_entry(client_id: &str, session: &str, at: u64) -> crate::shift_commits::CommitEntry {
+        crate::shift_commits::CommitEntry {
+            external_session_id: session.to_string(),
+            authored_at: iso8601(at),
+            ..one_commit_entry(client_id, &format!("{:040x}", at))
+        }
+    }
+
+    /// The same backlog for shift commits, which follow the same verdict rules.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_shift_commit_lands_ahead_of_an_unknown_session_backlog() {
+        let dir = temp_dir("commit-unknown-backlog");
+        let path = dir.join("shift-commits.json");
+        let now = fixture_now();
+        let mut entries: Vec<crate::shift_commits::CommitEntry> = (0..600_u64)
+            .map(|index| {
+                commit_entry(
+                    &format!("old-{index}"),
+                    OTHER_WORKSPACE_SESSION,
+                    now - 30 * 86_400 + index * 3_600,
+                )
+            })
+            .collect();
+        entries.push(commit_entry("new", "this-workspace-session", now - 3_600));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&entries).expect("the registry encodes"),
+        )
+        .expect("the registry writes");
+
+        let (port, server) = stub_batches(2, |index, body| {
+            (index == 0).then(|| verdicts_by_session(body)).flatten()
+        })
+        .await;
+        assert!(
+            !upload_shift_commits_spool(&stub_client(port), "token", &path, now).await,
+            "a dropped request ends the pass incomplete"
+        );
+        server.await.expect("the stub finishes");
+
+        let new_commit = read_shift_commits(&path)
+            .into_iter()
+            .find(|entry| entry.client_id == "new")
+            .expect("the new commit is kept");
+        assert!(
+            new_commit.synced,
+            "the new commit went first and its acceptance was recorded"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The client ids one request carried, in the order it sent them.
+    fn sent_client_ids(body: &serde_json::Value) -> Vec<String> {
+        batch_rows(body)
+            .iter()
+            .map(|row| row["clientId"].as_str().expect("a client id").to_string())
+            .collect()
+    }
+
+    /// A row the server keeps answering `unknown_session` is retried a bounded
+    /// number of times, then given up rather than sent on every pass forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unknown_session_row_is_given_up_after_its_attempt_limit() {
+        let dir = temp_dir("usage-unknown-bound");
+        let path = dir.join("agent-usage.json");
+        let now = fixture_now();
+        write_usage_registry(
+            &path,
+            &[usage_entry("orphan", OTHER_WORKSPACE_SESSION, now - 3_600)],
+        );
+
+        for attempt in 1..=UNKNOWN_SESSION_ATTEMPT_LIMIT {
+            let (port, server) = stub_batches(1, |_, body| verdicts_by_session(body)).await;
+            assert!(upload_agent_usage_spool(&stub_client(port), "token", &path, now).await);
+            server.await.expect("the stub finishes");
+            let entry = &read_usage_entries(&path)[0];
+            assert_eq!(entry.unknown_session_attempts, attempt);
+            assert_eq!(
+                entry.rejected,
+                attempt == UNKNOWN_SESSION_ATTEMPT_LIMIT,
+                "given up exactly at the limit"
+            );
+        }
+
+        // Nothing is left to send: the pass ends without a request.
+        assert!(
+            agent_usage::unsynced(&path)
+                .expect("the registry reads")
+                .is_empty(),
+            "a given-up row is never sent again"
+        );
+        assert!(upload_agent_usage_spool(&stub_client(1), "token", &path, now).await);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A row the server has never refused goes out before one it already
+    /// answered `unknown_session`, even when the retried row is newer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_never_refused_row_goes_out_before_a_retried_one() {
+        let dir = temp_dir("usage-retry-order");
+        let path = dir.join("agent-usage.json");
+        let now = fixture_now();
+        let mut retried = usage_entry("retried", OTHER_WORKSPACE_SESSION, now - 3_600);
+        retried.unknown_session_attempts = 3;
+        write_usage_registry(
+            &path,
+            &[
+                retried,
+                usage_entry("fresh", "this-workspace-session", now - 10 * 86_400),
+            ],
+        );
+
+        let (port, server) = stub_batches(1, |_, body| {
+            assert_eq!(sent_client_ids(body), ["fresh", "retried"]);
+            verdicts_by_session(body)
+        })
+        .await;
+        assert!(upload_agent_usage_spool(&stub_client(port), "token", &path, now).await);
+        server.await.expect("the stub finishes");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The server keeps no session older than its retention window, so a row
+    /// that old is never sent: it is settled locally, and only the rest go out.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rows_older_than_the_server_retention_window_are_not_sent() {
+        let dir = temp_dir("usage-retention");
+        let usage_path = dir.join("agent-usage.json");
+        let commits_path = dir.join("shift-commits.json");
+        let now = fixture_now();
+        let expired_at = now - SERVER_RETENTION_SECONDS - 3_600;
+        let kept_at = now - SERVER_RETENTION_SECONDS + 3_600;
+        write_usage_registry(
+            &usage_path,
+            &[
+                usage_entry("expired", "this-workspace-session", expired_at),
+                usage_entry("kept", "this-workspace-session", kept_at),
+            ],
+        );
+        let commits = [
+            commit_entry("expired", "this-workspace-session", expired_at),
+            commit_entry("kept", "this-workspace-session", kept_at),
+        ];
+        std::fs::write(
+            &commits_path,
+            serde_json::to_vec(&commits).expect("the registry encodes"),
+        )
+        .expect("the registry writes");
+
+        let (port, server) = stub_batches(2, |_, body| {
+            assert_eq!(sent_client_ids(body), ["kept"]);
+            verdicts_by_session(body)
+        })
+        .await;
+        let client = stub_client(port);
+        assert!(upload_agent_usage_spool(&client, "token", &usage_path, now).await);
+        assert!(upload_shift_commits_spool(&client, "token", &commits_path, now).await);
+        assert_eq!(server.await.expect("the stub finishes"), [1, 1]);
+
+        let expired = read_usage_entries(&usage_path)
+            .into_iter()
+            .find(|entry| entry.client_id == "expired")
+            .expect("the expired row is kept");
+        assert!(expired.rejected && !expired.synced);
+        assert!(agent_usage::unsynced(&usage_path)
+            .expect("the registry reads")
+            .is_empty());
+        assert!(shift_commits::unsynced(&commits_path)
+            .expect("the registry reads")
+            .is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue 93's silent loss: the server accepted a row, but recording it
+    /// waited on a busy registry lock, failed, and was discarded, so the row
+    /// stayed unsynced with nothing said. The failure now fails the pass, the
+    /// row stays unsynced, and the next pass sends it again and records it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_accepted_row_whose_marking_meets_a_busy_lock_is_recorded_next_pass() {
+        let dir = temp_dir("usage-busy-lock");
+        let path = dir.join("agent-usage.json");
+        let now = fixture_now();
+        write_usage_registry(
+            &path,
+            &[usage_entry(
+                "accepted",
+                "this-workspace-session",
+                now - 3_600,
+            )],
+        );
+
+        // Another writer takes the registry lock while the request is in
+        // flight, after the pass read its rows, and holds it past the wait.
+        let lock_path = dir.join("agent-usage.json.lock");
+        let held_lock: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(None));
+        let holder = Arc::clone(&held_lock);
+        let (port, server) = stub_batches(1, move |_, body| {
+            let lock = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .expect("the lock file opens");
+            lock.try_lock()
+                .expect("the lock is free while the request is in flight");
+            *holder.lock().expect("the holder locks") = Some(lock);
+            verdicts_by_session(body)
+        })
+        .await;
+        assert!(
+            !upload_agent_usage_spool(&stub_client(port), "token", &path, now).await,
+            "a verdict that could not be recorded fails the pass"
+        );
+        server.await.expect("the stub finishes");
+        assert!(!read_usage_entries(&path)[0].synced, "nothing was recorded");
+
+        // The other writer lets go; the next pass sends the row again and
+        // records the server's answer.
+        drop(held_lock.lock().expect("the holder locks").take());
+        let (port, server) = stub_batches(1, |_, body| verdicts_by_session(body)).await;
+        assert!(upload_agent_usage_spool(&stub_client(port), "token", &path, now).await);
+        server.await.expect("the stub finishes");
+        assert!(read_usage_entries(&path)[0].synced);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A loopback stub that answers a fixed number of requests in turn.
-    /// `answer` sees each request's index and how many events it carried, and
-    /// returns the reply, or `None` to drop the connection without answering,
-    /// which is what a request the server cannot finish in time looks like to
-    /// the client. The handle yields the event count of every request served.
+    /// `answer` sees each request's index and its parsed body, and returns the
+    /// reply, or `None` to drop the connection without answering, which is
+    /// what a request the server cannot finish in time looks like to the
+    /// client. The handle yields the row count of every request served.
     async fn stub_batches(
         requests: usize,
-        answer: impl Fn(usize, usize) -> Option<(u16, String)> + Send + 'static,
+        answer: impl Fn(usize, &serde_json::Value) -> Option<(u16, String)> + Send + 'static,
     ) -> (u16, tokio::task::JoinHandle<Vec<usize>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1175,9 +1725,8 @@ mod tests {
                 let head_end = find_head_end(&request).expect("the request has a head");
                 let body: serde_json::Value =
                     serde_json::from_slice(&request[head_end..]).expect("the body parses");
-                let events = body["events"].as_array().expect("an events array").len();
-                sizes.push(events);
-                let Some((status, payload)) = answer(index, events) else {
+                sizes.push(batch_rows(&body).len());
+                let Some((status, payload)) = answer(index, &body) else {
                     drop(stream);
                     continue;
                 };
@@ -1235,8 +1784,8 @@ mod tests {
         let path = dir.join("agent-spool.jsonl");
         spool_agent_events(&path, 250);
 
-        let (port, server) = stub_batches(3, |_, events| {
-            (events <= 150).then(|| (200, r#"{"results":[]}"#.to_string()))
+        let (port, server) = stub_batches(3, |_, body| {
+            (batch_rows(body).len() <= 150).then(|| (200, r#"{"results":[]}"#.to_string()))
         })
         .await;
         assert!(
