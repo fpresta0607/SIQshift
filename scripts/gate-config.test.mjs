@@ -54,7 +54,7 @@ describe("gate commands", () => {
       const steps = commandSteps(gateConfig.commands[name]);
       for (const [program, subcommand] of name === "prepare" ? steps.slice(1) : steps) {
         if (program === "pnpm") {
-          assert.ok(Object.hasOwn(rootScripts, subcommand),`pnpm ${subcommand} is not a root package.json script`);
+          assert.ok(Object.hasOwn(rootScripts, subcommand), `pnpm ${subcommand} is not a root package.json script`);
           assert.ok(!FULL_SUITE_PNPM_SCRIPTS.has(subcommand), `pnpm ${subcommand} is a full suite that CI owns`);
         } else if (program === "cargo") {
           assert.ok(QUICK_CARGO_SUBCOMMANDS.has(subcommand), `cargo ${subcommand} compiles the desktop crate`);
