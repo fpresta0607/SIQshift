@@ -1213,7 +1213,8 @@ export const defaultBridge: TimerBridge = {
   pictureUpload: (bytes) => invokeDecoded("picture_upload", decodeUser, { bytes: Array.from(bytes) }),
   pictureRemove: () => invokeDecoded("picture_remove", decodeUser),
   memberPicture: (userId, version) => invokeDecoded("member_picture", decodeBytes, { userId, version }),
-  agentShifts: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt, userId, scope }),
+  agentShifts: (fromAt, toExclusiveAt, userId, scope) =>
+    invokeDecoded("agent_shifts", decodeAgentShifts, { query: { fromAt, toExclusiveAt, userId, scope } }),
   liveAgentSessions: (scope) => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions, { scope }),
   agentShiftRows: (groupKey, after, fromAt, toExclusiveAt, userId, scope) =>
     invokeDecoded("agent_shift_rows", decodeAgentShiftRows, {
@@ -1221,10 +1222,7 @@ export const defaultBridge: TimerBridge = {
       afterStartedAt: after?.startedAt,
       afterId: after?.id,
       projectTied: after?.projectTied,
-      fromAt,
-      toExclusiveAt,
-      userId,
-      scope,
+      query: { fromAt, toExclusiveAt, userId, scope },
     }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),

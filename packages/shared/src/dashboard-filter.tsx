@@ -46,9 +46,13 @@ const lifetimeDays = (firstDay: string, today: string): DashboardDays =>
 /// A whole date with a four-digit year, as a date input writes one once every part of it is typed.
 const WHOLE_DAY = /^[1-9]\d{3}-\d{2}-\d{2}$/;
 
-/// Days the reports read: both whole, From on or before To, and at most `MAX_SPAN_DAYS` of them.
-const isReadable = (days: DashboardDays): boolean =>
-  WHOLE_DAY.test(days.from) && WHOLE_DAY.test(days.to) && days.from <= days.to && days.from >= shiftedDay(days.to, 1 - MAX_SPAN_DAYS);
+/// Days the reports read: both whole, From on or before To, To no later than today, and at most `MAX_SPAN_DAYS` of them.
+const isReadable = (days: DashboardDays, today: string): boolean =>
+  WHOLE_DAY.test(days.from)
+  && WHOLE_DAY.test(days.to)
+  && days.from <= days.to
+  && days.to <= today
+  && days.from >= shiftedDay(days.to, 1 - MAX_SPAN_DAYS);
 
 /// What the page head calls custom days: "Custom", unless they are a project's lifetime cut to what the reports read.
 export const customRangeName = (days: DashboardDays, firstDay: string | undefined): string => {
@@ -113,7 +117,7 @@ export const DashboardFilter = <Preset extends string>({
   const isLifetime = lifetime !== undefined && range === CUSTOM && draft.from === lifetime.from && draft.to === lifetime.to;
   const choose = (next: DashboardDays): void => {
     setDraft(next);
-    if (isReadable(next)) onDays(next);
+    if (isReadable(next, today)) onDays(next);
   };
 
   return (
@@ -193,8 +197,8 @@ export const DashboardFilter = <Preset extends string>({
               Project lifetime
             </button>
           )}
-          {!isReadable(draft) && (
-            <p className="tv-days-note" role="status">Pick a From day on or before To, at most {MAX_SPAN_DAYS} days in all.</p>
+          {!isReadable(draft, today) && (
+            <p className="tv-days-note" role="status">Pick a From day on or before To, and a To no later than today, at most {MAX_SPAN_DAYS} days in all.</p>
           )}
         </div>
       )}

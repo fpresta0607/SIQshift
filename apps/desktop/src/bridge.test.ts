@@ -270,8 +270,7 @@ describe("defaultBridge", () => {
     // the Rust command Tauri registers: a typo on either side compiles fine
     // and leaves the tab on "Loading…" forever, so it is pinned here.
     expect(invoke).toHaveBeenLastCalledWith("agent_shifts", {
-      fromAt: "2026-08-01T00:00:00.000Z",
-      toExclusiveAt: "2026-08-08T00:00:00.000Z",
+      query: { fromAt: "2026-08-01T00:00:00.000Z", toExclusiveAt: "2026-08-08T00:00:00.000Z" },
     });
 
     // An API older than this build sends no groups at all: an empty map, not
@@ -381,8 +380,7 @@ describe("defaultBridge", () => {
       groupKey: "siqshift",
       afterStartedAt: undefined,
       afterId: undefined,
-      fromAt: "2026-08-01T00:00:00.000Z",
-      toExclusiveAt: "2026-08-08T00:00:00.000Z",
+      query: { fromAt: "2026-08-01T00:00:00.000Z", toExclusiveAt: "2026-08-08T00:00:00.000Z" },
     });
 
     // A cursor travels split across the two arguments the command takes.
@@ -392,8 +390,7 @@ describe("defaultBridge", () => {
       groupKey: "siqshift",
       afterStartedAt: cursor.startedAt,
       afterId: cursor.id,
-      fromAt: undefined,
-      toExclusiveAt: undefined,
+      query: { fromAt: undefined, toExclusiveAt: undefined },
     });
 
     // An API that has no such endpoint answers nothing useful; an empty drawer
@@ -419,10 +416,10 @@ describe("defaultBridge", () => {
     const teamHeads = invoke.mock.lastCall;
 
     // Assert
-    expect(heads).toEqual(["agent_shifts", { fromAt: range[0], toExclusiveAt: range[1], userId: "user-1" }]);
+    expect(heads).toEqual(["agent_shifts", { query: { fromAt: range[0], toExclusiveAt: range[1], userId: "user-1" } }]);
     expect(drawer?.[0]).toBe("agent_shift_rows");
-    expect(drawer?.[1]).toMatchObject({ groupKey: "siqshift", fromAt: range[0], toExclusiveAt: range[1], userId: "user-1" });
-    expect(teamHeads?.[1]).toMatchObject({ userId: undefined });
+    expect(drawer?.[1]).toMatchObject({ groupKey: "siqshift", query: { fromAt: range[0], toExclusiveAt: range[1], userId: "user-1" } });
+    expect(teamHeads?.[1]).toMatchObject({ query: { userId: undefined } });
   });
 
   it("names the project on every dashboard read and drawer page, and sends none for all projects", async () => {
@@ -450,9 +447,9 @@ describe("defaultBridge", () => {
     // Assert
     expect(workspace).toEqual(["workspace_report", { fromAt: range[0], toExclusiveAt: range[1], scope: "p-1" }]);
     expect(heads?.[0]).toBe("agent_shifts");
-    expect(heads?.[1]).toMatchObject({ fromAt: range[0], toExclusiveAt: range[1], scope: "p-1" });
+    expect(heads?.[1]).toMatchObject({ query: { fromAt: range[0], toExclusiveAt: range[1], scope: "p-1" } });
     expect(drawer?.[0]).toBe("agent_shift_rows");
-    expect(drawer?.[1]).toMatchObject({ groupKey: "siqshift", scope: "p-1" });
+    expect(drawer?.[1]).toMatchObject({ groupKey: "siqshift", query: { scope: "p-1" } });
     expect(live).toEqual(["agent_live_sessions", { scope: "p-1" }]);
     expect(everything?.[1]).toMatchObject({ scope: undefined });
   });

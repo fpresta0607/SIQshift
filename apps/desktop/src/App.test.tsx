@@ -2383,6 +2383,7 @@ describe("the dashboard filter", () => {
   it.each([
     { behavior: "a To set before From", field: "To", value: "2026-07-20" },
     { behavior: "a From more than 366 days before To", field: "From", value: "2025-08-05" },
+    { behavior: "a To after today, though the span fits", field: "To", value: "2027-07-31" },
   ])("says what to pick, and keeps reading the last good days, for $behavior", async ({ field, value }) => {
     // Arrange: the reports read at most 367 days of instants, so 366 whole days with a daylight-saving hour to spare.
     const bridge = bridgeFor();

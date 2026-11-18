@@ -425,6 +425,36 @@ pub struct AgentShiftCursor {
     pub project_tied: Option<bool>,
 }
 
+/// What the agents reads are narrowed by, shared by the group heads and every
+/// drawer page so a drawer always asks under the bounds, person and project
+/// its head was read with. Bounds travel together or not at all, and none
+/// means all time; a `user_id` names one member and a `scope` one project.
+/// Each is sent only when present, so the team read keeps working against an
+/// API deployed before the parameter existed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsQuery {
+    pub from_at: Option<String>,
+    pub to_exclusive_at: Option<String>,
+    pub user_id: Option<String>,
+    pub scope: Option<String>,
+}
+
+impl AgentShiftsQuery {
+    fn push_pairs<'a>(&'a self, pairs: &mut Vec<(&'a str, &'a str)>) {
+        if let (Some(from_at), Some(to_exclusive_at)) = (&self.from_at, &self.to_exclusive_at) {
+            pairs.push(("fromAt", from_at));
+            pairs.push(("toExclusiveAt", to_exclusive_at));
+        }
+        if let Some(user_id) = &self.user_id {
+            pairs.push(("userId", user_id));
+        }
+        if let Some(scope) = &self.scope {
+            pairs.push(("scope", scope));
+        }
+    }
+}
+
 /// One agent session running at the moment the read answered, as the live
 /// view renders it. The description is the server's own sentence, composed
 /// once from captured facts; the webview renders it verbatim and never
@@ -1080,37 +1110,21 @@ impl ApiClient {
             .await
     }
 
-    /// Every shift in the range grouped by the codebase it worked, for the
-    /// dashboard's agents cards. Bounds arrive together or not at all; none
-    /// means all time. A `user_id` narrows it to that member's shifts and a
-    /// `scope` (a project id) to that project's; each is sent only when
-    /// present, so the team read keeps working against an API deployed before
-    /// the parameter existed.
+    /// Every shift under `query` grouped by the codebase it worked, for the
+    /// dashboard's agents cards.
     pub async fn agent_shifts(
         &self,
         access_token: &str,
-        from_at: Option<&str>,
-        to_exclusive_at: Option<&str>,
-        user_id: Option<&str>,
-        scope: Option<&str>,
+        query: &AgentShiftsQuery,
     ) -> ApiResult<AgentShifts> {
         let mut pairs: Vec<(&str, &str)> = Vec::new();
-        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
-            pairs.push(("fromAt", from_at));
-            pairs.push(("toExclusiveAt", to_exclusive_at));
-        }
-        if let Some(user_id) = user_id {
-            pairs.push(("userId", user_id));
-        }
-        if let Some(scope) = scope {
-            pairs.push(("scope", scope));
-        }
+        query.push_pairs(&mut pairs);
         self.get_json_query(access_token, "/reports/agent-shifts", &pairs)
             .await
     }
 
     /// One page of one group's shifts, from the cursor the page before it
-    /// returned. The bounds are the ones the group heads were read with,
+    /// returned. The `query` is the one the group heads were read with,
     /// because a drawer that asked under a different range, person or project
     /// would list shifts its own head never counted.
     pub async fn agent_shift_rows(
@@ -1118,10 +1132,7 @@ impl ApiClient {
         access_token: &str,
         group_key: &str,
         after: Option<&AgentShiftCursor>,
-        from_at: Option<&str>,
-        to_exclusive_at: Option<&str>,
-        user_id: Option<&str>,
-        scope: Option<&str>,
+        query: &AgentShiftsQuery,
     ) -> ApiResult<AgentShiftRows> {
         let mut pairs = vec![("groupKey", group_key)];
         // Both halves of the cursor or neither: the filters schema refuses a
@@ -1136,16 +1147,7 @@ impl ApiClient {
                 pairs.push(("projectTied", if project_tied { "true" } else { "false" }));
             }
         }
-        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
-            pairs.push(("fromAt", from_at));
-            pairs.push(("toExclusiveAt", to_exclusive_at));
-        }
-        if let Some(user_id) = user_id {
-            pairs.push(("userId", user_id));
-        }
-        if let Some(scope) = scope {
-            pairs.push(("scope", scope));
-        }
+        query.push_pairs(&mut pairs);
         self.get_json_query(access_token, "/reports/agent-shifts/rows", &pairs)
             .await
     }
@@ -2389,10 +2391,11 @@ mod tests {
                 "token",
                 "retire & 91 #2",
                 Some(&cursor),
-                Some("2026-08-06T00:00:00.000Z"),
-                Some("2026-08-07T00:00:00.000Z"),
-                None,
-                None,
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    ..AgentShiftsQuery::default()
+                },
             )
             .await
             .expect("the page reads");
@@ -2445,10 +2448,12 @@ mod tests {
         client
             .agent_shifts(
                 "token",
-                Some("2026-08-06T00:00:00.000Z"),
-                Some("2026-08-07T00:00:00.000Z"),
-                Some("user & 1"),
-                None,
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    user_id: Some("user & 1".to_string()),
+                    scope: None,
+                },
             )
             .await
             .expect("the shifts read");
@@ -2460,22 +2465,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reads_the_agents_query_from_the_bridge_payload_with_absent_keys_as_none() {
+        // Arrange: the bridge names the keys in camelCase and drops undefined ones.
+        let whole = serde_json::json!({
+            "fromAt": "2026-08-06T00:00:00.000Z",
+            "toExclusiveAt": "2026-08-07T00:00:00.000Z",
+            "userId": "user-1",
+            "scope": "p-1",
+        });
+
+        // Act
+        let read: AgentShiftsQuery = serde_json::from_value(whole).expect("the whole query reads");
+        let team: AgentShiftsQuery =
+            serde_json::from_value(serde_json::json!({})).expect("the empty query reads");
+
+        // Assert
+        assert_eq!(
+            read,
+            AgentShiftsQuery {
+                from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                user_id: Some("user-1".to_string()),
+                scope: Some("p-1".to_string()),
+            }
+        );
+        assert_eq!(team, AgentShiftsQuery::default());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn asks_for_the_agents_of_the_team_with_no_user_id() {
         const AGENT_SHIFTS: StubAnswer = ("200 OK", "", r#"{"groups": []}"#);
         let (client, served) = scripted_stub(vec![AGENT_SHIFTS, AGENT_SHIFTS]).await;
 
         client
-            .agent_shifts("token", None, None, None, None)
+            .agent_shifts("token", &AgentShiftsQuery::default())
             .await
             .expect("the all-time team shifts read");
         client
             .agent_shifts(
                 "token",
-                Some("2026-08-06T00:00:00.000Z"),
-                Some("2026-08-07T00:00:00.000Z"),
-                None,
-                None,
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    ..AgentShiftsQuery::default()
+                },
             )
             .await
             .expect("the ranged team shifts read");
@@ -2498,10 +2532,12 @@ mod tests {
                 "token",
                 "siqshift",
                 None,
-                Some("2026-08-06T00:00:00.000Z"),
-                Some("2026-08-07T00:00:00.000Z"),
-                Some("user-1"),
-                None,
+                &AgentShiftsQuery {
+                    from_at: Some("2026-08-06T00:00:00.000Z".to_string()),
+                    to_exclusive_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+                    user_id: Some("user-1".to_string()),
+                    scope: None,
+                },
             )
             .await
             .expect("the page reads");
@@ -2531,26 +2567,18 @@ mod tests {
             .workspace_report("token", from_at, to_exclusive_at, Some("p & 1"))
             .await
             .expect("the report reads");
+        let query = AgentShiftsQuery {
+            from_at: from_at.map(str::to_string),
+            to_exclusive_at: to_exclusive_at.map(str::to_string),
+            user_id: Some("user-1".to_string()),
+            scope: Some("p-1".to_string()),
+        };
         client
-            .agent_shifts(
-                "token",
-                from_at,
-                to_exclusive_at,
-                Some("user-1"),
-                Some("p-1"),
-            )
+            .agent_shifts("token", &query)
             .await
             .expect("the shifts read");
         client
-            .agent_shift_rows(
-                "token",
-                "siqshift",
-                None,
-                from_at,
-                to_exclusive_at,
-                Some("user-1"),
-                Some("p-1"),
-            )
+            .agent_shift_rows("token", "siqshift", None, &query)
             .await
             .expect("the page reads");
         client

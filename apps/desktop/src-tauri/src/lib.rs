@@ -44,9 +44,9 @@ use tauri::{
 use tokio::sync::Mutex;
 
 use api::{
-    AgentShiftCursor, AgentShiftRows, AgentShifts, ApiClient, ApiResult, BridgeError, ErrorKind,
-    LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject, TimerUser,
-    ViewPreferences, WorkspaceReport,
+    AgentShiftCursor, AgentShiftRows, AgentShifts, AgentShiftsQuery, ApiClient, ApiResult,
+    BridgeError, ErrorKind, LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject,
+    TimerUser, ViewPreferences, WorkspaceReport,
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
@@ -683,35 +683,21 @@ async fn workspace_report(
         .await
 }
 
-/// Every shift in the range grouped by the codebase it worked, for the
-/// dashboard's agents cards. Bounds arrive together or not at all; both absent
-/// asks for all time. A `user_id` narrows it to one member's shifts and a
-/// `scope` to one project's.
+/// Every shift under `query` grouped by the codebase it worked, for the
+/// dashboard's agents cards.
 #[tauri::command]
 async fn agent_shifts(
     state: State<'_, AppState>,
-    from_at: Option<String>,
-    to_exclusive_at: Option<String>,
-    user_id: Option<String>,
-    scope: Option<String>,
+    query: AgentShiftsQuery,
 ) -> ApiResult<AgentShifts> {
     let access_token = state.access_token().await?;
-    state
-        .client
-        .agent_shifts(
-            &access_token,
-            from_at.as_deref(),
-            to_exclusive_at.as_deref(),
-            user_id.as_deref(),
-            scope.as_deref(),
-        )
-        .await
+    state.client.agent_shifts(&access_token, &query).await
 }
 
-/// One page of one group's shifts, asked for when a drawer opens. The bounds
-/// are the ones the group heads were read with, and so are the person and the
-/// project: a drawer that asked under a different range, for someone else or
-/// for another project would list shifts its own head never counted.
+/// One page of one group's shifts, asked for when a drawer opens. The `query`
+/// is the one the group heads were read with: a drawer that asked under a
+/// different range, for someone else or for another project would list shifts
+/// its own head never counted.
 #[tauri::command]
 async fn agent_shift_rows(
     state: State<'_, AppState>,
@@ -719,10 +705,7 @@ async fn agent_shift_rows(
     after_started_at: Option<String>,
     after_id: Option<String>,
     project_tied: Option<bool>,
-    from_at: Option<String>,
-    to_exclusive_at: Option<String>,
-    user_id: Option<String>,
-    scope: Option<String>,
+    query: AgentShiftsQuery,
 ) -> ApiResult<AgentShiftRows> {
     let access_token = state.access_token().await?;
     // Half a cursor names no shift, so it asks for the first page rather than
@@ -736,15 +719,7 @@ async fn agent_shift_rows(
         });
     state
         .client
-        .agent_shift_rows(
-            &access_token,
-            &group_key,
-            after.as_ref(),
-            from_at.as_deref(),
-            to_exclusive_at.as_deref(),
-            user_id.as_deref(),
-            scope.as_deref(),
-        )
+        .agent_shift_rows(&access_token, &group_key, after.as_ref(), &query)
         .await
 }
 
