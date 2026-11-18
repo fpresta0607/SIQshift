@@ -12,3 +12,27 @@ auto_fix:
   lint: 1
   rebase: 1
   ci: 1
+
+# What the gate's own steps run. The gate reads this block from the default
+# branch only and runs each command as `cmd.exe /c <command>`, so they are
+# written in cmd.exe syntax. With no test command, a Test agent ran its own
+# checks outside the machine's shared test queue and outlived its budget on a
+# cold desktop build before any test ran (issue #88).
+#
+# prepare: a run worktree starts with tracked files only, so it has no
+# node_modules until this installs them from the lockfile.
+#
+# test: quick checks only, run behind the shared test queue. The pull
+# request's CI run is the test that judges a change: it runs the whole pnpm
+# workspace (`pnpm test`, `pnpm build`) and the whole desktop crate
+# (`cargo clippy --all-targets -- -D warnings`, `cargo test`), which need a
+# database, a browser and a cold Rust build this machine has no budget for.
+#
+# lint: rustfmt reads the desktop crate without compiling it. Clippy compiles
+# the crate, so it stays with CI.
+#
+# scripts/gate-config.test.mjs holds these commands to that contract.
+commands:
+  prepare: "pnpm install --frozen-lockfile"
+  test: "pnpm typecheck && pnpm test:scripts"
+  lint: "cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml"
