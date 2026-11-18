@@ -36,15 +36,25 @@
 //! the repository the hook probed, so it keys the same identity and project;
 //! the hook's next end closes it. The id derives from an entry's own time, so a
 //! replayed pass names the same shift.
+//!
+//! A pass reads and rewrites the whole registry and stats every transcript in
+//! it, so its cost must follow the sessions still working, not every session
+//! ever seen. A session that is finished (fully synced, no spool line naming it,
+//! no transcript growth, and quiet for `RETIRE_ENDED_AFTER_SECONDS` or
+//! `RETIRE_OPEN_AFTER_SECONDS`) is moved out of the registry into one archive
+//! file of its own, in the `agent-usage.json.retired` directory beside it. A
+//! later spool line that names the session restores it from there exactly as it
+//! was, cursors and client ids included, so a transcript that grows again is
+//! read from where it stopped and nothing is counted twice.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::browser::write_if_changed_locked;
-use crate::monitor::{iso8601, parse_iso8601, AGENT_ACTIVE_WINDOW_SECONDS};
+use crate::monitor::{iso8601, parse_iso8601, unix_now, AGENT_ACTIVE_WINDOW_SECONDS};
 use crate::spool::{self, AgentEventKind, AgentSource, SpoolEvent, TokenCounters};
 
 /// Upper bound on what one pass reads from one transcript file. The next pass
@@ -59,6 +69,18 @@ const ACTIVITY_HEARTBEAT_SECONDS: u64 = 5 * 60;
 
 /// Separates a session id from the start of one of its continuation shifts.
 const CONTINUATION_SEPARATOR: char = '~';
+
+/// How long a session whose shift the hook ended must be quiet before it
+/// retires. The end closed its current shift, so only a resume can make it grow
+/// again, and a resume spools a hook start that restores it. The wait only has
+/// to outlast the lines still in flight around the end.
+const RETIRE_ENDED_AFTER_SECONDS: u64 = 60 * 60;
+
+/// How long a session no end was seen for must be quiet before it retires. It
+/// may be a terminal left open and idle, whose transcript can grow again with
+/// no hook line at all, so it keeps its cursors for a week before a restart of
+/// its work depends on a hook line to bring them back.
+const RETIRE_OPEN_AFTER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 fn session_key(source: &AgentSource, external_session_id: &str) -> String {
     format!("{}|{external_session_id}", source.as_str())
@@ -217,6 +239,11 @@ struct SessionUsage {
     /// stamped with; the next one is due `ACTIVITY_HEARTBEAT_SECONDS` later.
     #[serde(default)]
     activity_heartbeat_at: u64,
+    /// Unix seconds of the latest thing known about the session: the newest
+    /// spool event folded for it or transcript entry read for it. Zero for a
+    /// session an older build registered; `last_seen` covers that.
+    #[serde(default)]
+    last_seen_at: u64,
     /// The repository the hook probed at the session's start, carried onto
     /// every continuation shift so each keys the same identity and project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,6 +281,17 @@ struct SessionUsage {
     files: HashMap<String, FileUsage>,
 }
 
+impl SessionUsage {
+    /// The latest moment anything is known to have happened to the session,
+    /// across the fields an older registry already carries.
+    fn last_seen(&self) -> u64 {
+        self.last_seen_at
+            .max(self.shift_last_event_at)
+            .max(self.activity_heartbeat_at)
+            .max(self.shift_ended_at.unwrap_or(0))
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UsageRegistry {
@@ -261,6 +299,45 @@ struct UsageRegistry {
     sessions: HashMap<String, SessionUsage>,
     #[serde(default)]
     entries: Vec<UsageEntry>,
+}
+
+/// A finished session as its archive file holds it: the registry's own rows
+/// for it, untouched, so restoring it resumes every cursor and client id.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetiredSession {
+    session: SessionUsage,
+    entries: Vec<UsageEntry>,
+}
+
+/// The directory the retired sessions live in, beside the registry.
+fn retired_dir(agent_usage_path: &Path) -> PathBuf {
+    let mut name = agent_usage_path.as_os_str().to_owned();
+    name.push(".retired");
+    PathBuf::from(name)
+}
+
+/// One retired session's file. The name is the hex of the session key's bytes:
+/// distinct keys never share a name, and no key character is unsafe in a file
+/// name or folds together on a case-insensitive filesystem. A key too long for
+/// a file name fails to write, and its session simply stays active.
+fn retired_session_path(retired_dir: &Path, key: &str) -> PathBuf {
+    let hex: String = key.bytes().map(|byte| format!("{byte:02x}")).collect();
+    retired_dir.join(format!("{hex}.json"))
+}
+
+/// The sessions the pending spool lines name, plus the session each
+/// continuation shift's line belongs to: a line that names a session is the
+/// only thing that can bring a retired one back.
+fn pending_session_keys(events: &[SpoolEvent]) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for event in events {
+        keys.insert(session_key(&event.source, &event.external_session_id));
+        if let Some(base) = continuation_base(&event.external_session_id) {
+            keys.insert(session_key(&event.source, base));
+        }
+    }
+    keys
 }
 
 fn read_json_sidecar<T: Default + serde::de::DeserializeOwned>(path: &Path) -> T {
@@ -292,6 +369,7 @@ fn read_registry(path: &Path) -> UsageRegistry {
 #[cfg(test)]
 thread_local! {
     static REGISTRY_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FILE_TAILS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn write_registry(path: &Path, registry: &UsageRegistry) -> spool::SpoolResult<()> {
@@ -395,6 +473,8 @@ fn is_placeholder_model(model: &str) -> bool {
 /// record ceiling is consumed without being parsed (and an unterminated one
 /// forces `resync`, discarding its middle on later passes).
 fn tail_file(path: &Path, cursor: &FileUsage) -> Option<FileTail> {
+    #[cfg(test)]
+    FILE_TAILS.with(|tails| tails.set(tails.get() + 1));
     let metadata = std::fs::metadata(path).ok()?;
     let len = metadata.len();
     let identity_ms = metadata
@@ -636,6 +716,9 @@ fn fold_event(registry: &mut UsageRegistry, event: &SpoolEvent) -> Option<SpoolE
             external_session_id: event.external_session_id.clone(),
             ..SessionUsage::default()
         });
+    if let Some(at) = parse_iso8601(&event.occurred_at) {
+        session.last_seen_at = session.last_seen_at.max(at);
+    }
     if let Some(cwd) = event.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty()) {
         session.cwd = Some(cwd.to_string());
     }
@@ -732,8 +815,24 @@ fn follow_shift(session: &mut SessionUsage, event: &SpoolEvent) -> Option<SpoolE
 /// total the server may already have accepted backwards. Any advance re-arms
 /// the entry for upload; a permanently rejected entry is left alone.
 fn recompute_entries(registry: &mut UsageRegistry) {
-    let mut desired: Vec<(String, BucketTotals)> = Vec::new();
-    for (key, session) in &registry.sessions {
+    let UsageRegistry { sessions, entries } = registry;
+    // An entry is found by its key, not by a scan of every entry per bucket.
+    // The first of any duplicates wins, as the scan it replaces found it.
+    let mut positions: HashMap<(String, String, Option<String>, bool), usize> =
+        HashMap::with_capacity(entries.len());
+    for (position, entry) in entries.iter().enumerate() {
+        positions
+            .entry((
+                session_key(&entry.source, &entry.external_session_id),
+                entry.bucket_start_at.clone(),
+                entry.model.clone(),
+                entry.sidechain,
+            ))
+            .or_insert(position);
+    }
+
+    for session in sessions.values() {
+        let key = session_key(&session.source, &session.external_session_id);
         let mut totals: BTreeMap<(String, Option<String>, bool), TokenTotals> = BTreeMap::new();
         for file in session.files.values() {
             for bucket in &file.buckets {
@@ -761,67 +860,160 @@ fn recompute_entries(registry: &mut UsageRegistry) {
             if tokens.is_zero() {
                 continue;
             }
-            desired.push((
-                key.clone(),
-                BucketTotals {
-                    bucket_start_at,
-                    model,
-                    sidechain,
-                    tokens,
-                },
-            ));
-        }
-    }
-
-    for (key, computed) in desired {
-        let Some(session) = registry.sessions.get(&key) else {
-            continue;
-        };
-        let existing = registry.entries.iter_mut().find(|entry| {
-            entry.source == session.source
-                && entry.external_session_id == session.external_session_id
-                && entry.bucket_start_at == computed.bucket_start_at
-                && entry.model == computed.model
-                && entry.sidechain == computed.sidechain
-        });
-        match existing {
-            Some(entry) if entry.rejected => {}
-            Some(entry) => {
-                let mut restated = TokenTotals {
-                    input: entry.input_tokens,
-                    output: entry.output_tokens,
-                    cache_creation: entry.cache_creation_input_tokens,
-                    cache_read: entry.cache_read_input_tokens,
-                };
-                restated.take_max(&computed.tokens);
-                let changed = entry.input_tokens != restated.input
-                    || entry.output_tokens != restated.output
-                    || entry.cache_creation_input_tokens != restated.cache_creation
-                    || entry.cache_read_input_tokens != restated.cache_read;
-                if changed {
-                    entry.input_tokens = restated.input;
-                    entry.output_tokens = restated.output;
-                    entry.cache_creation_input_tokens = restated.cache_creation;
-                    entry.cache_read_input_tokens = restated.cache_read;
-                    entry.synced = false;
+            let position_key = (key.clone(), bucket_start_at, model, sidechain);
+            match positions.get(&position_key).copied() {
+                Some(position) => {
+                    let entry = &mut entries[position];
+                    if entry.rejected {
+                        continue;
+                    }
+                    let mut restated = TokenTotals {
+                        input: entry.input_tokens,
+                        output: entry.output_tokens,
+                        cache_creation: entry.cache_creation_input_tokens,
+                        cache_read: entry.cache_read_input_tokens,
+                    };
+                    restated.take_max(&tokens);
+                    let changed = entry.input_tokens != restated.input
+                        || entry.output_tokens != restated.output
+                        || entry.cache_creation_input_tokens != restated.cache_creation
+                        || entry.cache_read_input_tokens != restated.cache_read;
+                    if changed {
+                        entry.input_tokens = restated.input;
+                        entry.output_tokens = restated.output;
+                        entry.cache_creation_input_tokens = restated.cache_creation;
+                        entry.cache_read_input_tokens = restated.cache_read;
+                        entry.synced = false;
+                    }
+                }
+                None => {
+                    let (_, bucket_start_at, model, sidechain) = position_key;
+                    entries.push(UsageEntry {
+                        client_id: uuid::Uuid::new_v4().to_string(),
+                        source: session.source.clone(),
+                        external_session_id: session.external_session_id.clone(),
+                        bucket_start_at,
+                        model,
+                        sidechain,
+                        input_tokens: tokens.input,
+                        output_tokens: tokens.output,
+                        cache_creation_input_tokens: tokens.cache_creation,
+                        cache_read_input_tokens: tokens.cache_read,
+                        synced: false,
+                        rejected: false,
+                    });
                 }
             }
-            None => registry.entries.push(UsageEntry {
-                client_id: uuid::Uuid::new_v4().to_string(),
-                source: session.source.clone(),
-                external_session_id: session.external_session_id.clone(),
-                bucket_start_at: computed.bucket_start_at,
-                model: computed.model,
-                sidechain: computed.sidechain,
-                input_tokens: computed.tokens.input,
-                output_tokens: computed.tokens.output,
-                cache_creation_input_tokens: computed.tokens.cache_creation,
-                cache_read_input_tokens: computed.tokens.cache_read,
-                synced: false,
-                rejected: false,
-            }),
         }
     }
+}
+
+/// Whether the session has done nothing for long enough to retire, by the
+/// quiet each kind of session must show. `now` before the session's last
+/// activity (a skewed clock) reads as not quiet.
+fn is_quiet_long_enough(session: &SessionUsage, now: u64) -> bool {
+    let wait = if session.shift_ended_at.is_some() {
+        RETIRE_ENDED_AFTER_SECONDS
+    } else {
+        RETIRE_OPEN_AFTER_SECONDS
+    };
+    now >= session.last_seen().saturating_add(wait)
+}
+
+/// Moves every finished session out of the registry into its archive file. A
+/// session is finished when nothing this pass touched it (`busy_keys`: the
+/// sessions a spool line names or a transcript advanced for), every one of its
+/// entries has a final verdict from the server, and it has been quiet long
+/// enough. The archive is written before the registry, so a crash between the
+/// two leaves a copy in both places, which is harmless: the next retirement
+/// overwrites the archive, and a restore only looks at sessions the registry
+/// does not hold. A session whose archive cannot be written stays where it is.
+fn retire_finished_sessions(
+    registry: &mut UsageRegistry,
+    retired_dir: &Path,
+    busy_keys: &HashSet<String>,
+    now: u64,
+) {
+    let unsettled: HashSet<String> = registry
+        .entries
+        .iter()
+        .filter(|entry| !entry.synced && !entry.rejected)
+        .map(|entry| session_key(&entry.source, &entry.external_session_id))
+        .collect();
+    let finished: HashSet<String> = registry
+        .sessions
+        .iter()
+        .filter(|(key, session)| {
+            !busy_keys.contains(*key)
+                && !unsettled.contains(*key)
+                && is_quiet_long_enough(session, now)
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+    if finished.is_empty() || std::fs::create_dir_all(retired_dir).is_err() {
+        return;
+    }
+
+    let (retiring, kept): (Vec<UsageEntry>, Vec<UsageEntry>) =
+        std::mem::take(&mut registry.entries)
+            .into_iter()
+            .partition(|entry| {
+                finished.contains(&session_key(&entry.source, &entry.external_session_id))
+            });
+    registry.entries = kept;
+    let mut entries_by_session: HashMap<String, Vec<UsageEntry>> = HashMap::new();
+    for entry in retiring {
+        entries_by_session
+            .entry(session_key(&entry.source, &entry.external_session_id))
+            .or_default()
+            .push(entry);
+    }
+
+    for key in finished {
+        let Some(session) = registry.sessions.remove(&key) else {
+            continue;
+        };
+        let retired = RetiredSession {
+            session,
+            entries: entries_by_session.remove(&key).unwrap_or_default(),
+        };
+        let is_archived = serde_json::to_vec(&retired)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| {
+                write_if_changed_locked(&retired_session_path(retired_dir, &key), &bytes)
+            })
+            .is_ok();
+        if !is_archived {
+            registry.sessions.insert(key, retired.session);
+            registry.entries.extend(retired.entries);
+        }
+    }
+}
+
+/// Brings back every retired session a pending spool line names, with the
+/// cursors, counters and client ids it retired with, so a transcript that grew
+/// again is read from where it stopped and its entries restate upward. Returns
+/// the archive files to remove once the registry holding the sessions is
+/// written. A corrupt archive file reads as absent and the session starts over.
+fn restore_retired_sessions(
+    registry: &mut UsageRegistry,
+    retired_dir: &Path,
+    pending_keys: &HashSet<String>,
+) -> Vec<PathBuf> {
+    let mut restored_files = Vec::new();
+    for key in pending_keys {
+        if registry.sessions.contains_key(key) {
+            continue;
+        }
+        let path = retired_session_path(retired_dir, key);
+        let Some(retired) = read_json_sidecar::<Option<RetiredSession>>(&path) else {
+            continue;
+        };
+        registry.sessions.insert(key.clone(), retired.session);
+        registry.entries.extend(retired.entries);
+        restored_files.push(path);
+    }
+    restored_files
 }
 
 /// A model the transcript reader learned, ready to ride one heartbeat.
@@ -847,19 +1039,32 @@ struct PendingHeartbeat {
 /// can coalesce the model onto the open session. Never emitted when the hook
 /// already named a model.
 pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
+    capture(agent_path, agent_usage_path, unix_now());
+}
+
+/// One capture pass at `now`, which decides which sessions have been quiet long
+/// enough to retire.
+fn capture(agent_path: &Path, agent_usage_path: &Path, now: u64) {
     let Ok(pending) = spool::read_pending(agent_path) else {
         return;
     };
+    let retired_dir = retired_dir(agent_usage_path);
+    let pending_keys = pending_session_keys(&pending.events);
 
     if !pending.events.is_empty() {
         let folded = spool::with_lock(agent_usage_path, || {
             let mut registry = read_registry(agent_usage_path);
+            let restored_files =
+                restore_retired_sessions(&mut registry, &retired_dir, &pending_keys);
             let shift_ends: Vec<SpoolEvent> = pending
                 .events
                 .iter()
                 .filter_map(|event| fold_event(&mut registry, event))
                 .collect();
             write_registry(agent_usage_path, &registry)?;
+            for file in restored_files {
+                let _ = std::fs::remove_file(file);
+            }
             Ok(shift_ends)
         });
         let Ok(shift_ends) = folded else {
@@ -900,9 +1105,10 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
             tails.push((key, file_key, tail));
         }
     }
-    if tails.is_empty() && pending.events.is_empty() {
-        return;
-    }
+    // A quiet pass still runs the merge below: it is where finished sessions
+    // retire, and the registry it reads holds only the sessions still active.
+    let mut busy_keys = pending_keys;
+    busy_keys.extend(tails.iter().map(|(key, _, _)| key.clone()));
 
     let mut heartbeats: Vec<PendingHeartbeat> = Vec::new();
     let mut shift_lines: Vec<SpoolEvent> = Vec::new();
@@ -941,12 +1147,16 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
             let Some(session) = registry.sessions.get_mut(&key) else {
                 continue;
             };
+            if let Some(latest) = times.iter().copied().max() {
+                session.last_seen_at = session.last_seen_at.max(latest);
+            }
             let Some(cwd) = session.cwd.clone() else {
                 continue;
             };
             shift_lines.extend(shift_events(session, &cwd, &mut times));
         }
         recompute_entries(&mut registry);
+        retire_finished_sessions(&mut registry, &retired_dir, &busy_keys, now);
         write_registry(agent_usage_path, &registry)
     });
     if merged.is_err() {
@@ -956,11 +1166,11 @@ pub fn capture_from_spool(agent_path: &Path, agent_usage_path: &Path) {
     // Heartbeats append through the same path the hook binary uses, so they
     // drain and upload exactly like a hook's own events. The sent flags are
     // recorded only once the lines are on disk, in one registry write for the
-    // whole pass: the registry holds every session ever seen, so a write per
-    // heartbeat turned a backlog into an hour-long pass that held up the
-    // uploads behind it. A failed append retries next pass, and a crash
-    // between append and flag can only ever emit one duplicate per session,
-    // which the server's model coalesce absorbs.
+    // whole pass: each write rewrites the whole registry, and at the scale it
+    // once reached a write per heartbeat turned a backlog into an hour-long
+    // pass that held up the uploads behind it. A failed append retries next
+    // pass, and a crash between append and flag can only ever emit one
+    // duplicate per session, which the server's model coalesce absorbs.
     let mut sent_keys: Vec<String> = Vec::new();
     for heartbeat in heartbeats {
         let event = SpoolEvent {
@@ -2214,6 +2424,325 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn unix(timestamp: &str) -> u64 {
+        parse_iso8601(timestamp).expect("the instant parses")
+    }
+
+    /// A hook line for the session `id`, whose transcript is `<id>.jsonl`
+    /// beside the registry.
+    fn hook_event_for(id: &str, kind: AgentEventKind, dir: &Path, occurred_at: &str) -> SpoolEvent {
+        SpoolEvent {
+            external_session_id: id.to_string(),
+            ..hook_event(kind, &dir.join(format!("{id}.jsonl")), occurred_at)
+        }
+    }
+
+    fn mark_every_entry_synced(usage_path: &Path) {
+        let client_ids: Vec<String> = read_registry(usage_path)
+            .entries
+            .iter()
+            .map(|entry| entry.client_id.clone())
+            .collect();
+        mark_synced(usage_path, &client_ids);
+    }
+
+    /// What a pass reads once `finished` ended, synced, long-quiet sessions sit
+    /// beside one active session: the sessions and entries the registry holds
+    /// after the pass that retires them, and the transcript tails the next pass
+    /// makes.
+    fn registry_work_beside_finished_sessions(
+        finished: usize,
+    ) -> (Vec<String>, Vec<String>, usize) {
+        let dir = temp_dir(&format!("retire-work-{finished}"));
+        let first_spool = dir.join("agent-spool.jsonl");
+        let quiet_spool = dir.join("agent-spool-quiet.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let finished_ids: Vec<String> =
+            (0..finished).map(|index| format!("done-{index}")).collect();
+        for id in finished_ids.iter().map(String::as_str).chain(["session-1"]) {
+            write_transcript(
+                &dir.join(format!("{id}.jsonl")),
+                &[assistant_line(
+                    "2026-08-06T10:15:00Z",
+                    "claude-opus-5",
+                    false,
+                    100,
+                    20,
+                    0,
+                    0,
+                )],
+            );
+            spool::append(
+                &first_spool,
+                &hook_event_for(id, AgentEventKind::Started, &dir, "2026-08-06T10:00:00Z"),
+            )
+            .expect("append succeeds");
+        }
+        for id in &finished_ids {
+            spool::append(
+                &first_spool,
+                &hook_event_for(id, AgentEventKind::Ended, &dir, "2026-08-06T10:30:00Z"),
+            )
+            .expect("append succeeds");
+        }
+        capture(&first_spool, &usage_path, unix("2026-08-06T10:30:00Z"));
+        mark_every_entry_synced(&usage_path);
+
+        // The uploader has drained the finished sessions' lines; only the
+        // active session's start is still pending.
+        spool::append(
+            &quiet_spool,
+            &hook_event_for(
+                "session-1",
+                AgentEventKind::Started,
+                &dir,
+                "2026-08-06T10:00:00Z",
+            ),
+        )
+        .expect("append succeeds");
+        let later = unix("2026-08-08T00:00:00Z");
+        capture(&quiet_spool, &usage_path, later);
+        FILE_TAILS.with(|tails| tails.set(0));
+
+        capture(&quiet_spool, &usage_path, later);
+
+        let tails = FILE_TAILS.with(std::cell::Cell::get);
+        let registry = read_registry(&usage_path);
+        let mut sessions: Vec<String> = registry.sessions.keys().cloned().collect();
+        sessions.sort();
+        let entries = registry
+            .entries
+            .iter()
+            .map(|entry| entry.external_session_id.clone())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        (sessions, entries, tails)
+    }
+
+    /// Every pass reads and rewrites the registry and stats every transcript in
+    /// it, and finished sessions stayed in it forever: 13,000 sessions and
+    /// 21 MB on a busy machine (issue 86).
+    #[test]
+    fn a_pass_reads_only_the_sessions_still_active_however_many_have_finished() {
+        // Arrange, Act
+        let beside_one = registry_work_beside_finished_sessions(1);
+        let beside_five = registry_work_beside_finished_sessions(5);
+
+        // Assert
+        assert_eq!(beside_five, beside_one);
+        let (sessions, entries, tails) = beside_five;
+        assert_eq!(sessions, vec!["claude_code|session-1".to_string()]);
+        assert_eq!(entries, vec!["session-1".to_string()]);
+        assert_eq!(tails, 1, "only the active session's transcript is tailed");
+    }
+
+    #[test]
+    fn a_retired_session_a_later_hook_line_names_resumes_from_its_cursor_without_recounting() {
+        // Arrange
+        let dir = temp_dir("retire-resume");
+        let first_spool = dir.join("agent-spool.jsonl");
+        let quiet_spool = dir.join("agent-spool-quiet.jsonl");
+        let resumed_spool = dir.join("agent-spool-resumed.jsonl");
+        let usage_path = dir.join("agent-usage.json");
+        let transcript = dir.join("session-1.jsonl");
+        write_transcript(
+            &transcript,
+            &[assistant_line(
+                "2026-08-06T10:15:00Z",
+                "claude-opus-5",
+                false,
+                100,
+                20,
+                0,
+                0,
+            )],
+        );
+        for (kind, at) in [
+            (AgentEventKind::Started, "2026-08-06T10:00:00Z"),
+            (AgentEventKind::Ended, "2026-08-06T10:30:00Z"),
+        ] {
+            spool::append(&first_spool, &hook_event(kind, &transcript, at))
+                .expect("append succeeds");
+        }
+        capture(&first_spool, &usage_path, unix("2026-08-06T10:30:00Z"));
+        let original = one_entry(&read_registry(&usage_path)).clone();
+        mark_synced(&usage_path, std::slice::from_ref(&original.client_id));
+        capture(&quiet_spool, &usage_path, unix("2026-08-08T00:00:00Z"));
+        let archive = retired_session_path(&retired_dir(&usage_path), "claude_code|session-1");
+        let retired = read_registry(&usage_path);
+        assert!(retired.sessions.is_empty() && retired.entries.is_empty());
+        assert!(archive.exists(), "the retired session is archived");
+
+        // The session is resumed: its transcript grows and the hook spools a start.
+        append_to_transcript(
+            &transcript,
+            &(assistant_line("2026-08-06T10:50:00Z", "claude-opus-5", false, 60, 5, 1, 2) + "\n"),
+        );
+        spool::append(
+            &resumed_spool,
+            &hook_event(AgentEventKind::Started, &transcript, "2026-08-08T00:05:00Z"),
+        )
+        .expect("append succeeds");
+
+        // Act
+        capture(&resumed_spool, &usage_path, unix("2026-08-08T00:10:00Z"));
+
+        // Assert
+        let registry = read_registry(&usage_path);
+        let resumed = one_entry(&registry);
+        assert_eq!(resumed.client_id, original.client_id);
+        assert_eq!(resumed.input_tokens, 160, "only the new line adds");
+        assert_eq!(resumed.output_tokens, 25);
+        assert_eq!(resumed.cache_creation_input_tokens, 1);
+        assert_eq!(resumed.cache_read_input_tokens, 2);
+        assert!(!resumed.synced, "the higher total is uploaded again");
+        assert_eq!(
+            one_file_offset(&registry),
+            std::fs::metadata(&transcript).expect("metadata").len()
+        );
+        assert!(!archive.exists(), "the restored session leaves the archive");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct RetirementCase {
+        name: &'static str,
+        is_ended: bool,
+        is_synced: bool,
+        has_pending_line: bool,
+        quiet_seconds: u64,
+        is_retired: bool,
+    }
+
+    #[test]
+    fn a_session_retires_only_once_it_is_synced_unnamed_and_quiet_long_enough() {
+        const HOUR: u64 = 60 * 60;
+        const WEEK: u64 = 7 * 24 * HOUR;
+        let cases = [
+            RetirementCase {
+                name: "an entry the server has not accepted",
+                is_ended: true,
+                is_synced: false,
+                has_pending_line: false,
+                quiet_seconds: WEEK,
+                is_retired: false,
+            },
+            RetirementCase {
+                name: "a pending spool line names the session",
+                is_ended: true,
+                is_synced: true,
+                has_pending_line: true,
+                quiet_seconds: WEEK,
+                is_retired: false,
+            },
+            RetirementCase {
+                name: "an ended session just under an hour quiet",
+                is_ended: true,
+                is_synced: true,
+                has_pending_line: false,
+                quiet_seconds: HOUR - 1,
+                is_retired: false,
+            },
+            RetirementCase {
+                name: "an ended session an hour quiet",
+                is_ended: true,
+                is_synced: true,
+                has_pending_line: false,
+                quiet_seconds: HOUR,
+                is_retired: true,
+            },
+            RetirementCase {
+                name: "an open session more than an hour quiet",
+                is_ended: false,
+                is_synced: true,
+                has_pending_line: false,
+                quiet_seconds: 2 * 24 * HOUR,
+                is_retired: false,
+            },
+            RetirementCase {
+                name: "an open session just under a week quiet",
+                is_ended: false,
+                is_synced: true,
+                has_pending_line: false,
+                quiet_seconds: WEEK - 1,
+                is_retired: false,
+            },
+            RetirementCase {
+                name: "an open session a week quiet",
+                is_ended: false,
+                is_synced: true,
+                has_pending_line: false,
+                quiet_seconds: WEEK,
+                is_retired: true,
+            },
+        ];
+
+        for case in cases {
+            // Arrange
+            let dir = temp_dir("retire-cases");
+            let first_spool = dir.join("agent-spool.jsonl");
+            let next_spool = dir.join("agent-spool-next.jsonl");
+            let usage_path = dir.join("agent-usage.json");
+            let transcript = dir.join("session-1.jsonl");
+            write_transcript(
+                &transcript,
+                &[assistant_line(
+                    "2026-08-06T10:15:00Z",
+                    "claude-opus-5",
+                    false,
+                    100,
+                    20,
+                    0,
+                    0,
+                )],
+            );
+            spool::append(
+                &first_spool,
+                &hook_event(AgentEventKind::Started, &transcript, "2026-08-06T10:00:00Z"),
+            )
+            .expect("append succeeds");
+            if case.is_ended {
+                spool::append(
+                    &first_spool,
+                    &hook_event(AgentEventKind::Ended, &transcript, "2026-08-06T10:30:00Z"),
+                )
+                .expect("append succeeds");
+            }
+            capture(&first_spool, &usage_path, unix("2026-08-06T10:30:00Z"));
+            if case.is_synced {
+                mark_every_entry_synced(&usage_path);
+            }
+            if case.has_pending_line {
+                spool::append(
+                    &next_spool,
+                    &hook_event(
+                        AgentEventKind::Heartbeat,
+                        &transcript,
+                        "2026-08-06T10:20:00Z",
+                    ),
+                )
+                .expect("append succeeds");
+            }
+            let last_seen = unix(if case.is_ended {
+                "2026-08-06T10:30:00Z"
+            } else {
+                "2026-08-06T10:15:00Z"
+            });
+
+            // Act
+            capture(&next_spool, &usage_path, last_seen + case.quiet_seconds);
+
+            // Assert
+            assert_eq!(
+                read_registry(&usage_path).sessions.is_empty(),
+                case.is_retired,
+                "{}",
+                case.name
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// Every key in the persisted registry, walked recursively.
     fn collect_keys(value: &serde_json::Value, keys: &mut Vec<String>) {
         match value {
@@ -2248,6 +2777,7 @@ mod tests {
                 model_from_hook: true,
                 heartbeat_sent: true,
                 activity_heartbeat_at: 1_786_000_000,
+                last_seen_at: 1_786_000_700,
                 repo_root: Some("C:/dev/siqshift".to_string()),
                 repo_remote: Some("https://github.com/acme/siqshift.git".to_string()),
                 model: Some("claude-opus-4.1".to_string()),
