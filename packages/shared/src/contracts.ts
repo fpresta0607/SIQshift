@@ -1021,6 +1021,22 @@ export const agentShiftsResponseSchema = z
         owner: z.object({ id: idSchema, name: z.string().min(1) }).strict(),
         agentSeconds: z.number().int().nonnegative().safe(),
         shiftCount: z.number().int().nonnegative().safe(),
+        /**
+         * The tokens this person's shifts on the board reported, summed the
+         * way `tokenTotals` sums them and, like the board, for everyone
+         * whoever `userId` picked. Null when none of their shifts reported
+         * any - no report is not a zero. Absent when the API reads no token
+         * usage, or from a server that predates it.
+         */
+        tokens: z
+          .object({
+            tokensIn: z.number().int().nonnegative().safe(),
+            tokensOut: z.number().int().nonnegative().safe(),
+            tokens: z.number().int().nonnegative().safe(),
+          })
+          .strict()
+          .nullable()
+          .optional(),
       })
       .strict()),
     /**

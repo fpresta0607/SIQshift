@@ -42,11 +42,14 @@ product made. A group's held share renders only once a commit is decided, never 
 roster (`agents` table, `/agents` routes) remains the identity model and the deployed desktop
 builds still read the old report routes, so the API keeps serving them; only the surfaces moved.
 
-**`/reports/agent-shifts` still serves a `people` board** that no surface draws since the one page
-replaced the Agents tab. Two rules about it outlive the tab: `people` is computed *before*
-`userId` narrows anything (`agentShifts` authorizes `userId` and then reads without it, because
-`normalizedQuery` would otherwise push it into the SQL), and the person filter is server-side,
-because `heldRate` is derived from commit verification states the client never receives.
+**`/reports/agent-shifts` serves a `people` board, and the dashboard's People board draws each
+person's tokens from it** (issue 165): `tokens` is null for someone whose shifts reported none, and
+absent when the API reads no usage, which hides the column. `people` is computed *before* `userId`
+narrows anything (`agentShifts` authorizes `userId` and then reads without it, because
+`normalizedQuery` would otherwise push it into the SQL), and so is the per-session usage read that
+sums each person's tokens; the picked person's groups and totals still sum only their own shifts.
+The person filter is server-side, because `heldRate` is derived from commit verification states
+the client never receives.
 
 **The dashboard's Live now card answers "who is running an agent right now", from `GET
 /reports/agent-sessions/live`.** The live view is one group per person with at least one running

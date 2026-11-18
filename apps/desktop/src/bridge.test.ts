@@ -276,7 +276,7 @@ describe("defaultBridge", () => {
     // An API older than this build sends no groups at all: an empty map, not
     // an error, is what keeps the tab alive across the deploy window.
     invoke.mockResolvedValueOnce({});
-    await expect(defaultBridge.agentShifts()).resolves.toEqual({ totalAgentSeconds: 0, hourly: [], groups: [] });
+    await expect(defaultBridge.agentShifts()).resolves.toEqual({ totalAgentSeconds: 0, hourly: [], groups: [], people: [] });
 
     // A group with a label-less repo and no decided commit keeps both nulls.
     invoke.mockResolvedValueOnce({ groups: [{ repo: null, shifts: [] }] });
@@ -397,6 +397,33 @@ describe("defaultBridge", () => {
     // beats a tab that dies decoding one.
     invoke.mockResolvedValueOnce({});
     await expect(defaultBridge.agentShiftRows("siqshift", null)).resolves.toEqual({ shifts: [], nextCursor: null });
+  });
+
+  it("decodes each person's tokens, and reads a person with none, or an API that predates them, as null", async () => {
+    // Arrange
+    const tokens = { tokensIn: 1_000, tokensOut: 200, tokens: 1_200 };
+    invoke
+      .mockResolvedValueOnce({
+        groups: [],
+        people: [
+          { owner: { id: "u-1", name: "Alex" }, agentSeconds: 60, shiftCount: 1, tokens },
+          { owner: { id: "u-2", name: "Riley" }, agentSeconds: 30, shiftCount: 1, tokens: null },
+          { owner: { id: "u-3", name: "Sam" }, agentSeconds: 30, shiftCount: 1 },
+        ],
+      })
+      .mockResolvedValueOnce({ groups: [], people: [{ owner: { id: "u-1" }, tokens: { ...tokens, tokensIn: -1 } }] });
+
+    // Act
+    const read = await defaultBridge.agentShifts();
+    const broken = defaultBridge.agentShifts();
+
+    // Assert
+    expect(read.people).toEqual([
+      { owner: { id: "u-1" }, tokens },
+      { owner: { id: "u-2" }, tokens: null },
+      { owner: { id: "u-3" }, tokens: null },
+    ]);
+    await expect(broken).rejects.toMatchObject({ kind: "unknown" });
   });
 
   it("names the person on the agents read and on every drawer page, and sends nobody for the team", async () => {

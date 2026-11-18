@@ -61,6 +61,7 @@ import {
   customRangeName,
   dayBounds,
   localDay,
+  personTokensOf,
   projectMeterRows,
   reportedAppearance,
   type DashboardDays,
@@ -1818,9 +1819,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     : { name: member.project.name, appearance: appearanceOf(member.project.id) },
                   activeSeconds: member.activeSeconds,
                   agentSeconds: member.agentSeconds,
+                  tokens: personTokensOf(agentShifts, member.user.id),
                   isSelf: member.user.id === ready.user.id,
                 }))}
-                boardTool={<span className="tv-card-note">Ranked by active time</span>}
                 onSelectPerson={(picked) => setBoardMember(picked === undefined ? undefined : { id: picked.id, name: picked.name })}
                 boardNotes={[
                   ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0

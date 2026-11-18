@@ -386,6 +386,15 @@ export type AgentShifts = {
   /// The tokens the groups' shifts reported; absent when the server reads no
   /// token usage.
   tokenTotals?: { tokensIn: number; tokensOut: number; tokens: number } | undefined;
+  /// Everyone whose agents the range recorded, with the tokens their shifts
+  /// reported: null for someone whose shifts reported none, and from an API
+  /// that predates per-person tokens. Empty from an API older still.
+  people: readonly AgentShiftsPerson[];
+};
+
+export type AgentShiftsPerson = {
+  owner: { id: string };
+  tokens: { tokensIn: number; tokensOut: number; tokens: number } | null;
 };
 
 /// One token bar. `tokens` is the server's own total of in and out; all three
@@ -1098,14 +1107,24 @@ export const decodeAgentShifts = (value: unknown): AgentShifts => {
       }),
     tokenTotals: candidate.tokenTotals === undefined || candidate.tokenTotals === null
       ? undefined
-      : (() => {
-        const totals = record(candidate.tokenTotals);
-        return {
-          tokensIn: nonnegativeInteger(totals.tokensIn),
-          tokensOut: nonnegativeInteger(totals.tokensOut),
-          tokens: nonnegativeInteger(totals.tokens),
-        };
-      })(),
+      : decodeTokenTriple(candidate.tokenTotals),
+    people: (Array.isArray(candidate.people) ? candidate.people : []).map((entry) => {
+      const person = record(entry);
+      return {
+        owner: { id: string(record(person.owner).id) },
+        tokens: person.tokens === undefined || person.tokens === null ? null : decodeTokenTriple(person.tokens),
+      };
+    }),
+  };
+};
+
+/// Tokens in, out and their sum, each a whole count.
+const decodeTokenTriple = (value: unknown): { tokensIn: number; tokensOut: number; tokens: number } => {
+  const totals = record(value);
+  return {
+    tokensIn: nonnegativeInteger(totals.tokensIn),
+    tokensOut: nonnegativeInteger(totals.tokensOut),
+    tokens: nonnegativeInteger(totals.tokens),
   };
 };
 

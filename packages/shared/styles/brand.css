@@ -305,6 +305,12 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-cell-bar { display: block; height: 3px; margin-top: 4px; border-radius: 999px; background: rgba(163, 179, 194, .14); }
 .tv-cell-bar::before { display: block; width: var(--share, 0%); height: 100%; margin-left: auto; border-radius: inherit; background: var(--chart-human); content: ""; }
 .tv-people td.is-agent .tv-cell-bar::before { background: var(--accent-green); opacity: .8; }
+.tv-people td.is-tokens { color: var(--chart-token-in); }
+.tv-people td.is-tokens .tv-cell-bar::before { background: var(--chart-token-in); opacity: .8; }
+.tv-cell-sub { display: block; color: var(--text-secondary); font-size: .66rem; }
+/* The People board's ranking, as quiet as the card notes beside it. */
+.board-sort select { border: 0; padding: 2px 0; background: transparent; background-image: none; color: var(--text-secondary); font-size: .8rem; cursor: pointer; }
+.board-sort select:hover { color: #ffffff; }
 .tv-people tr.is-selected > * { background: color-mix(in srgb, var(--accent-green) 9%, transparent); }
 .tv-people th button { display: grid; grid-template-columns: 16px 32px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; min-height: 50px; padding: 7px 6px; border: 0; border-radius: 0; background: transparent; color: #ffffff; font-size: inherit; font-weight: 400; text-align: left; }
 .tv-people th button:hover .tv-name > span:first-child { color: var(--mint); }

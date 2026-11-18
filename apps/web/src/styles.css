@@ -187,10 +187,6 @@ a.primary { display: inline-block; text-decoration: none; }
 .shift-facts { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .shift-duration { flex: none; font-variant-numeric: tabular-nums; }
 
-/* The People board's sort, as quiet as the card notes beside it. */
-.board-sort select { border: 0; padding: 2px 0; background: transparent; background-image: none; color: var(--text-secondary); font-size: .8rem; cursor: pointer; }
-.board-sort select:hover { color: #ffffff; }
-
 /* The way back out of a picked person, at the head of their card. */
 .member-self { flex: none; border: 0; padding: 0; background: transparent; color: var(--mint); font-size: .78rem; letter-spacing: .04em; cursor: pointer; }
 .member-self:hover, .member-self:focus-visible { color: #ffffff; }

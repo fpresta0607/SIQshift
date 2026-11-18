@@ -14,7 +14,6 @@ import {
   type ProjectUsageResponse,
   type ReportRow,
   type ViewPreferences,
-  type WorkspaceMember,
   type WorkspaceReportResponse,
 } from "@siqshift/shared";
 import {
@@ -51,6 +50,7 @@ import {
   customRangeName,
   dayBounds,
   localDay,
+  personTokensOf,
   projectMeterRows,
   reportedAppearance,
   type DashboardDays,
@@ -120,13 +120,6 @@ const withParams = (base: string, params: Record<string, string>): string => {
   return text === "" ? "" : `?${text}`;
 };
 
-type BoardSort = "active" | "agent";
-
-const boardSorters: Record<BoardSort, (a: WorkspaceMember, b: WorkspaceMember) => number> = {
-  active: (a, b) => b.activeSeconds - a.activeSeconds,
-  agent: (a, b) => b.agentSeconds - a.agentSeconds,
-};
-
 const messageFor = (error: unknown): string =>
   error instanceof ClientError ? error.message : "Something went wrong. Try again.";
 
@@ -178,7 +171,6 @@ export const App = ({ client }: AppProps) => {
   const [pictureBusy, setPictureBusy] = useState(false);
   const [projects, setProjects] = useState<readonly ProjectListItem[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceReportResponse | undefined>();
-  const [boardSort, setBoardSort] = useState<BoardSort>("active");
   const [agentShifts, setAgentShifts] = useState<AgentShiftsResponse | undefined>();
   const [agentShiftsFailed, setAgentShiftsFailed] = useState(false);
   /// Who is running an agent right now, for the Live now card. Undefined until
@@ -882,13 +874,10 @@ export const App = ({ client }: AppProps) => {
 
   const boardHasTime = workspace !== undefined
     && (workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0);
-  // Rank follows the column being sorted by; showing the server's active-time
-  // rank under an agent-time sort reads as 1, 4, 2, 3.
-  const boardMembers = [...workspace?.members ?? []]
-    .sort(boardSorters[boardSort])
-    .map((entry, index) => ({
+  const boardMembers = (workspace?.members ?? [])
+    .map((entry) => ({
       id: entry.user.id,
-      rank: boardSort === "active" ? entry.rank : index + 1,
+      rank: entry.rank,
       name: entry.user.name,
       picture: pictureOf(entry.user),
       project: entry.project === null
@@ -896,6 +885,7 @@ export const App = ({ client }: AppProps) => {
         : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], projects, entry.project.id) },
       activeSeconds: entry.activeSeconds,
       agentSeconds: entry.agentSeconds,
+      tokens: personTokensOf(agentShifts, entry.user.id),
       isSelf: entry.user.id === selfId,
     }));
   const appearanceOf = (projectId: string) => reportedAppearance(workspace?.projects ?? [], projects, projectId);
@@ -1210,15 +1200,6 @@ export const App = ({ client }: AppProps) => {
                         repos: { groups: agentShifts.groups, loadShifts: loadShiftRows },
                       }}
                   people={boardMembers}
-                  boardTool={(
-                    <label className="board-sort">
-                      <span className="visually-hidden">Sort by</span>
-                      <select value={boardSort} onChange={(event) => setBoardSort(event.target.value as BoardSort)}>
-                        <option value="active">By active time</option>
-                        <option value="agent">By agent time</option>
-                      </select>
-                    </label>
-                  )}
                   onSelectPerson={(picked) => setMember(picked === undefined ? undefined : { id: picked.id, name: picked.name })}
                   boardNotes={[
                     ...boardHasTime

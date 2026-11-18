@@ -285,6 +285,26 @@ pub struct AgentShifts {
     /// Absent when the server reads no token usage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_totals: Option<AgentShiftsTokenTotals>,
+    /// Everyone whose agents the range recorded, for the tokens the People
+    /// board shows beside each person. Empty from an API that predates it.
+    #[serde(default)]
+    pub people: Vec<AgentShiftsPerson>,
+}
+
+/// One person on the agents read: who they are, and the tokens their shifts
+/// reported. No tokens when they reported none, and from an API that
+/// predates per-person tokens.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentShiftsPerson {
+    pub owner: AgentShiftsOwner,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<AgentShiftsTokenTotals>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentShiftsOwner {
+    pub id: String,
 }
 
 /// One agent runtime's share of the groups' shifts.
@@ -1766,6 +1786,33 @@ mod tests {
         assert!(wire["groups"][0].get("tokens").is_none());
         assert!(wire.get("runtimes").is_none());
         assert!(wire.get("tokenTotals").is_none());
+    }
+
+    /// Each person's tokens reach the webview as the server sent them; a person
+    /// who reported none, and an API that predates per-person tokens or the
+    /// people list, leave them absent rather than zero.
+    #[test]
+    fn carries_each_persons_tokens_through_and_leaves_absence_absent() {
+        let shifts: AgentShifts = serde_json::from_str(
+            r#"{
+                "people": [
+                    {"owner": {"id": "u-1", "name": "Alex"}, "agentSeconds": 60, "shiftCount": 1, "tokens": {"tokensIn": 1000, "tokensOut": 200, "tokens": 1200}},
+                    {"owner": {"id": "u-2", "name": "Riley"}, "agentSeconds": 30, "shiftCount": 1, "tokens": null},
+                    {"owner": {"id": "u-3", "name": "Sam"}, "agentSeconds": 30, "shiftCount": 1}
+                ]
+            }"#,
+        )
+        .expect("the people decode");
+        let echoed = serde_json::to_value(&shifts).expect("serializes");
+        assert_eq!(echoed["people"][0]["owner"]["id"], "u-1");
+        assert_eq!(echoed["people"][0]["tokens"]["tokensIn"], 1_000);
+        assert_eq!(echoed["people"][0]["tokens"]["tokensOut"], 200);
+        assert!(echoed["people"][1].get("tokens").is_none());
+        assert!(echoed["people"][2].get("tokens").is_none());
+
+        let older: AgentShifts =
+            serde_json::from_str(r#"{"groups": []}"#).expect("an older shape decodes");
+        assert!(older.people.is_empty());
     }
 
     /// One group's page decodes the same tolerant way, and an endpoint that is

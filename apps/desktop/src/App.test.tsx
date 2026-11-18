@@ -1364,6 +1364,8 @@ describe("the team board", () => {
         ...agentShifts,
         tokenTotals: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 },
         runtimes: [{ source: "claude_code", agentSeconds: 5_400, shiftCount: 3, tokens: 1_500_000 }],
+        // Sam's shifts reported every token; the viewer's agents reported none.
+        people: [{ owner: { id: sam.id }, tokens: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 } }],
       }),
     });
     const person = userEvent.setup();
@@ -1385,8 +1387,9 @@ describe("the team board", () => {
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m$/);
-    expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m$/);
+    expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m1.5M1.2M in · 300k out$/);
+    expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m-$/);
+    expect(view.getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By active time");
     // Every list at once, with no switch between them.
     const projects = within(view.getByRole("region", { name: "Projects" }));
     expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);

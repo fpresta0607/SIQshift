@@ -377,7 +377,7 @@ describe("report routes", () => {
     });
   });
 
-  it("carries each group's tokens, the runtimes and the token totals through the strict response schema", async () => {
+  it("carries each group's, runtime's and person's tokens and the token totals through the strict response schema", async () => {
     const sessionId = "11c7e513-b094-4d4c-ae55-21790ae019a4";
     const reports = new Reports();
     reports.agentIntervals = [{
@@ -423,6 +423,7 @@ describe("report routes", () => {
       groups: [{ repo: "siqshift", agentSeconds: 3_600, shiftCount: 1, tokens: 3_520 }],
       runtimes: [{ source: "claude_code", agentSeconds: 3_600, shiftCount: 1, tokens: 3_520 }],
       tokenTotals: { tokensIn: 3_120, tokensOut: 400, tokens: 3_520 },
+      people: [{ owner: { id: ids.user }, tokens: { tokensIn: 3_120, tokensOut: 400, tokens: 3_520 } }],
     });
   });
 

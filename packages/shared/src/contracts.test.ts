@@ -1392,6 +1392,11 @@ describe("agent shifts contracts", () => {
     const withTokens = {
       ...shiftsResponse,
       groups: [{ ...shiftsResponse.groups[0], tokens: 3_523 }],
+      people: [
+        { owner: { id: ids.user, name: "Alex" }, agentSeconds: 3_600, shiftCount: 2, tokens: { tokensIn: 3_120, tokensOut: 400, tokens: 3_520 } },
+        // Ran agents, none of which reported usage: no report, not a zero.
+        { owner: { id: ids.client, name: "Riley" }, agentSeconds: 1_800, shiftCount: 1, tokens: null },
+      ],
       runtimes: [
         { source: "claude_code", agentSeconds: 3_600, shiftCount: 2, tokens: 3_520 },
         { source: "codex", agentSeconds: 1_800, shiftCount: 1, tokens: 3 },
@@ -1415,6 +1420,8 @@ describe("agent shifts contracts", () => {
     { field: "the tokens in", patch: { tokenTotals: { tokensIn: -1, tokensOut: 0, tokens: 0 } } },
     { field: "the tokens out", patch: { tokenTotals: { tokensIn: 0, tokensOut: -1, tokens: 0 } } },
     { field: "the token total", patch: { tokenTotals: { tokensIn: 0, tokensOut: 0, tokens: -1 } } },
+    { field: "a person's tokens in", patch: { people: [{ owner: { id: ids.user, name: "Alex" }, agentSeconds: 60, shiftCount: 1, tokens: { tokensIn: -1, tokensOut: 0, tokens: 0 } }] } },
+    { field: "a person's tokens out", patch: { people: [{ owner: { id: ids.user, name: "Alex" }, agentSeconds: 60, shiftCount: 1, tokens: { tokensIn: 0, tokensOut: -1, tokens: 0 } }] } },
   ])("refuses a negative count in $field", ({ patch }) => {
     expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, ...patch })).toThrow();
   });

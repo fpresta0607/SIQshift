@@ -1,4 +1,4 @@
-import { useId, type CSSProperties, type ReactNode } from "react";
+import { useId, useState, type CSSProperties } from "react";
 
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { AppMark } from "./app-mark.js";
@@ -66,11 +66,42 @@ export type DashboardPerson = {
   project: { name: string; appearance: ProjectAppearance } | null;
   activeSeconds: number;
   agentSeconds: number;
+  /**
+   * The tokens their agents reported over the range: null when none did, and
+   * absent where the agents read carries no tokens, which leaves the board
+   * without a Tokens column.
+   */
+  tokens?: DashboardTokens | null | undefined;
   isSelf: boolean;
 };
 
 /** Tokens over the range, as the server totals them. */
 export type DashboardTokens = { tokensIn: number; tokensOut: number; tokens: number };
+
+/**
+ * One person's tokens from the agents read: what its row states, null for
+ * someone it holds no tokens for, and absent while the read carries no
+ * tokens at all - the same condition as its token totals.
+ */
+export const personTokensOf = (
+  agents: {
+    tokenTotals?: DashboardTokens | undefined;
+    people?: readonly { owner: { id: string }; tokens?: DashboardTokens | null | undefined }[] | undefined;
+  } | undefined,
+  personId: string,
+): DashboardTokens | null | undefined =>
+  agents?.tokenTotals === undefined ? undefined : agents.people?.find((person) => person.owner.id === personId)?.tokens ?? null;
+
+type BoardSort = "active" | "agent" | "tokens";
+
+/** A person who reported no tokens sits below everyone who did, even a reported zero. */
+const tokenRank = (person: DashboardPerson): number => (person.tokens == null ? -1 : person.tokens.tokens);
+
+const BOARD_SORTERS: Record<BoardSort, (a: DashboardPerson, b: DashboardPerson) => number> = {
+  active: (a, b) => b.activeSeconds - a.activeSeconds,
+  agent: (a, b) => b.agentSeconds - a.agentSeconds,
+  tokens: (a, b) => tokenRank(b) - tokenRank(a),
+};
 
 /** One agent runtime's share of the range. */
 export type DashboardRuntime = {
@@ -122,10 +153,8 @@ export type DashboardViewProps = {
   } | string | undefined;
   /** The agents' read for the same subject and range: undefined while it loads, a sentence when it failed. */
   agents: DashboardAgents | string | undefined;
-  /** The whole team's board, which is also how a person is picked. */
+  /** The whole team's board, ranked by active time, which is also how a person is picked. */
   people: readonly DashboardPerson[];
-  /** Beside the board's title: how it is ordered, or the control that orders it. */
-  boardTool: ReactNode;
   onSelectPerson: (person: DashboardPerson | undefined) => void;
   /** Lines under the board. */
   boardNotes: readonly string[];
@@ -203,7 +232,6 @@ export const DashboardView = ({
   time: timeRead,
   agents,
   people,
-  boardTool,
   onSelectPerson,
   boardNotes,
   live,
@@ -217,6 +245,7 @@ export const DashboardView = ({
   const runtimesTitleId = useId();
   const reposTitleId = useId();
   const liveTitleId = useId();
+  const [chosenSort, setChosenSort] = useState<BoardSort>("active");
 
   const time = typeof timeRead === "object" ? timeRead : undefined;
   const timeFailure = typeof timeRead === "string" ? timeRead : undefined;
@@ -245,6 +274,15 @@ export const DashboardView = ({
   const isBoardShown = people.length > 1;
   const longestActive = people.reduce((most, person) => Math.max(most, person.activeSeconds), 0);
   const longestAgent = people.reduce((most, person) => Math.max(most, person.agentSeconds), 0);
+  const hasPersonTokens = people.some((person) => person.tokens !== undefined);
+  const mostTokens = people.reduce((most, person) => Math.max(most, person.tokens?.tokens ?? 0), 0);
+  // A tokens ranking outlives its column only as active time.
+  const boardSort = chosenSort === "tokens" && !hasPersonTokens ? "active" : chosenSort;
+  // Rank follows the column being sorted by; the server's active-time rank
+  // under an agent-time sort would read as 1, 4, 2, 3.
+  const rankedPeople = [...people]
+    .sort(BOARD_SORTERS[boardSort])
+    .map((person, index) => ({ person, rank: boardSort === "active" ? person.rank : index + 1 }));
   const appRows = time?.appRows ?? [];
   const longestApp = appRows.reduce((most, row) => Math.max(most, row.durationSeconds), 0);
   const ranked = hasTokens ? "Ranked by tokens" : "Ranked by agent time";
@@ -296,7 +334,14 @@ export const DashboardView = ({
             <section className="tv-card tv-people" aria-labelledby={boardTitleId}>
               <div className="tv-card-head">
                 <h4 id={boardTitleId}>People</h4>
-                {boardTool}
+                <label className="board-sort">
+                  <span className="visually-hidden">Rank by</span>
+                  <select value={boardSort} onChange={(event) => setChosenSort(event.target.value as BoardSort)}>
+                    <option value="active">By active time</option>
+                    <option value="agent">By agent time</option>
+                    {hasPersonTokens && <option value="tokens">By tokens</option>}
+                  </select>
+                </label>
               </div>
               <table aria-labelledby={boardTitleId}>
                 <thead>
@@ -304,10 +349,11 @@ export const DashboardView = ({
                     <th scope="col">Person</th>
                     <th scope="col">Active time</th>
                     <th scope="col">Agent time</th>
+                    {hasPersonTokens && <th scope="col">Tokens</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {people.map((person) => {
+                  {rankedPeople.map(({ person, rank }) => {
                     const isPicked = person.id === subject?.id;
                     return (
                       <tr key={person.id} className={isPicked ? "is-selected" : undefined}>
@@ -318,7 +364,7 @@ export const DashboardView = ({
                             aria-pressed={isPicked}
                             onClick={() => onSelectPerson(isPicked ? undefined : person)}
                           >
-                            <span className="tv-rank">{person.rank}</span>
+                            <span className="tv-rank">{rank}</span>
                             <MemberAvatar id={person.id} name={person.name} picture={person.picture} />
                             <span className="tv-name">
                               <span>{person.name}{person.isSelf && <span className="tv-you">You</span>}</span>
@@ -339,6 +385,18 @@ export const DashboardView = ({
                           {formatHumanDuration(person.agentSeconds)}
                           <span className="tv-cell-bar" aria-hidden="true" style={share(person.agentSeconds, longestAgent)} />
                         </td>
+                        {hasPersonTokens && (person.tokens == null
+                          ? <td className="is-tokens" title="No tokens reported">-</td>
+                          : (
+                            <td
+                              className="is-tokens"
+                              title={`${formatCount(person.tokens.tokens)} tokens: ${formatCount(person.tokens.tokensIn)} in, ${formatCount(person.tokens.tokensOut)} out`}
+                            >
+                              {formatTokens(person.tokens.tokens)}
+                              <span className="tv-cell-sub">{formatTokens(person.tokens.tokensIn)} in · {formatTokens(person.tokens.tokensOut)} out</span>
+                              <span className="tv-cell-bar" aria-hidden="true" style={share(person.tokens.tokens, mostTokens)} />
+                            </td>
+                          ))}
                       </tr>
                     );
                   })}

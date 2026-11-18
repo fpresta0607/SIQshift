@@ -49,6 +49,7 @@ import type {
   AgentUsageBucketTotalRecord,
   AgentUsageProjectBucketTotalRecord,
   AgentUsageRepository,
+  AgentUsageSessionTotalsRecord,
   AgentUsageTotalsRecord,
   AppTotalRecord,
   LeaderboardRowRecord,
@@ -389,6 +390,16 @@ function agentTokenTotals(record: AgentUsageTotalsRecord | undefined): { tokens:
       cacheReadInputTokens: safeInteger(record.cacheReadInputTokens, "agent cache read tokens"),
     },
     tokensReported: safeInteger(record.rowCount, "agent usage row count") > 0,
+  };
+}
+
+/** `totals` with one session's summed counters added in. */
+function addSessionTokens(totals: TokenTotals, row: AgentUsageSessionTotalsRecord): TokenTotals {
+  return {
+    inputTokens: totals.inputTokens + safeInteger(row.inputTokens, "session input tokens"),
+    outputTokens: totals.outputTokens + safeInteger(row.outputTokens, "session output tokens"),
+    cacheCreationInputTokens: totals.cacheCreationInputTokens + safeInteger(row.cacheCreationInputTokens, "session cache creation tokens"),
+    cacheReadInputTokens: totals.cacheReadInputTokens + safeInteger(row.cacheReadInputTokens, "session cache read tokens"),
   };
 }
 
@@ -1184,6 +1195,10 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       // chart's usage is never read for one; the per-session sums still are,
       // because a total over all time is still a number.
       const usageQuery: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
+      // The per-session sums are read for everyone, the way the board itself
+      // is: the people rows state everyone's tokens whoever is picked, and the
+      // picked person's groups and totals still sum only their own shifts.
+      const { userId: _picked, ...everyoneQuery } = usageQuery;
       const [chart, sessionUsage] = await Promise.all([
         agentUsage === undefined || start === undefined || end === undefined
           ? undefined
@@ -1196,7 +1211,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
             defaultProject,
             { start, end },
           )),
-        agentUsage?.sumBySession(subject, usageQuery),
+        agentUsage?.sumBySession(subject, everyoneQuery),
       ]);
       // A session's tokens land on the group and the runtime of its shift on
       // the board, so the groups, the runtimes and the totals all sum the
@@ -1206,17 +1221,17 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
       const shifts = board.groups.flatMap((group) => group.shifts);
       const shiftIds = new Set(shifts.map((shift) => shift.id));
       const tokensByShift = new Map<string, TokenTotals>();
+      const tokensByPerson = new Map<string, TokenTotals>();
       for (const row of sessionUsage ?? []) {
+        if (board.everyonesSessions.has(row.agentSessionId)
+          || board.everyonesSessions.has(agentSessionKey(row.userId, row.source, row.externalSessionId))) {
+          tokensByPerson.set(row.userId, addSessionTokens(tokensByPerson.get(row.userId) ?? { ...ZERO_TOKENS }, row));
+        }
         const shiftId = shiftIds.has(row.agentSessionId)
           ? row.agentSessionId
           : board.continuations.get(agentSessionKey(row.userId, row.source, row.externalSessionId))?.id;
         if (shiftId === undefined) continue;
-        const totals = tokensByShift.get(shiftId) ?? { ...ZERO_TOKENS };
-        totals.inputTokens += safeInteger(row.inputTokens, "session input tokens");
-        totals.outputTokens += safeInteger(row.outputTokens, "session output tokens");
-        totals.cacheCreationInputTokens += safeInteger(row.cacheCreationInputTokens, "session cache creation tokens");
-        totals.cacheReadInputTokens += safeInteger(row.cacheReadInputTokens, "session cache read tokens");
-        tokensByShift.set(shiftId, totals);
+        tokensByShift.set(shiftId, addSessionTokens(tokensByShift.get(shiftId) ?? { ...ZERO_TOKENS }, row));
       }
       const tokenSum = (list: readonly AgentShiftRow[], figure: "tokensIn" | "tokensOut" | "tokens"): number =>
         list.reduce((total, shift) => total + (tokenFigures(tokensByShift.get(shift.id) ?? null)[figure] ?? 0), 0);
@@ -1232,7 +1247,12 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
         // Heaviest first, with the id breaking ties so an equal pair keeps
         // one order between two reads of the same range.
         people: [...board.people.values()]
-          .sort((a, b) => b.agentSeconds - a.agentSeconds || a.owner.id.localeCompare(b.owner.id)),
+          .sort((a, b) => b.agentSeconds - a.agentSeconds || a.owner.id.localeCompare(b.owner.id))
+          .map((person) => {
+            if (sessionUsage === undefined) return person;
+            const totals = tokensByPerson.get(person.owner.id);
+            return { ...person, tokens: totals === undefined ? null : tokenFigures(totals) };
+          }),
         hourly: shiftHourlySeries(board.groups, board.range),
         // The heads alone. The shifts behind them are a paged read against
         // `groupKey`, made when a reader opens a drawer: a busy month runs to
@@ -1410,6 +1430,12 @@ async function readShiftBoard(
    * reads of one range pick the same shift.
    */
   continuations: Map<string, AgentShiftRow>;
+  /**
+   * Every person's shifts on the board, selected or not: their session ids,
+   * and the `agentSessionKey` of each session a continuation shift continues.
+   * A session's tokens are a person's on the board when either names it.
+   */
+  everyonesSessions: Set<string>;
 }> {
   const query: ReportQuery = { ...normalizedQuery(filters), ...scopeQuery(filters.scope) };
   await authorizeFilters(dependencies.reports, subject, query);
@@ -1438,6 +1464,7 @@ async function readShiftBoard(
   const groups = new Map<string, ShiftBoardGroup>();
   const people = new Map<string, AgentShiftsResponse["people"][number]>();
   const continuations = new Map<string, AgentShiftRow>();
+  const everyonesSessions = new Set<string>();
   for (const interval of intervals) {
     // Browser spans are attention, not shifts, the roster's own rule.
     if (!rosterEligibleSource(interval.source)) continue;
@@ -1456,6 +1483,9 @@ async function readShiftBoard(
     person.agentSeconds += shiftSeconds;
     person.shiftCount += 1;
     people.set(interval.user.id, person);
+    everyonesSessions.add(interval.sessionId);
+    const continued = continuedSessionId(interval.externalSessionId);
+    if (continued !== undefined) everyonesSessions.add(agentSessionKey(interval.user.id, interval.source, continued));
     if (selectedUserId !== undefined && interval.user.id !== selectedUserId) continue;
     const shiftCommitList = commitsBySession.get(interval.sessionId) ?? [];
     const commitRoot = shiftCommitList[0]?.repoRoot ?? null;
@@ -1488,7 +1518,6 @@ async function readShiftBoard(
     group.commits.push(...shiftCommitList);
     group.shifts.push(shift);
     groups.set(key, group);
-    const continued = continuedSessionId(interval.externalSessionId);
     if (continued !== undefined) {
       const sessionKey = agentSessionKey(interval.user.id, interval.source, continued);
       const earliest = continuations.get(sessionKey);
@@ -1515,6 +1544,7 @@ async function readShiftBoard(
     people,
     range,
     continuations,
+    everyonesSessions,
   };
 }
 
@@ -1583,6 +1613,8 @@ function tokenChart(
 }
 
 /** A bar's figures from summed counters: in is fresh input plus both cache sides, and the bar is in plus out. */
+function tokenFigures(totals: TokenTotals): { tokensIn: number; tokensOut: number; tokens: number };
+function tokenFigures(totals: TokenTotals | null): Omit<TokenBucket, "start">;
 function tokenFigures(totals: TokenTotals | null): Omit<TokenBucket, "start"> {
   if (totals === null) return { tokensIn: null, tokensOut: null, tokens: null };
   const tokensIn = totals.inputTokens + totals.cacheCreationInputTokens + totals.cacheReadInputTokens;

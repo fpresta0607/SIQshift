@@ -181,7 +181,8 @@ In a workspace of one there is no board to pick from, and the page answers for t
 Every card follows the subject: the four totals (**Tokens**, **Active time**, **Agent time**, **Recorded time**), the one chart, the projects, the agents, the repos and who is running an agent right now.
 The team's recorded time is its projects' recorded time added up, since every session is filed under exactly one project.
 A person also gets the two cards only a person has: their active time split by agents running, and the apps it went to.
-The board itself stays the whole team's, ranked by active or agent time, because it is the picker.
+The board itself stays the whole team's, because it is the picker, and ranks by active time, agent time or tokens.
+Its Tokens column states each person's tokens in and out, from the `people` rows of `/reports/agent-shifts`, and a dash for someone whose agents reported none.
 
 Everything the agents themselves did is read for the same subject: the tokens, then the shifts grouped by the codebase they worked, one group per repo ranked by the tokens its shifts reported and then by agent time, with its shifts underneath - each shift naming its runtime, its operator, the model it drove, and the commits it recorded.
 Beside the repos, the agent runtimes that ran are ranked the same way, with who is running an agent right now beneath them.
