@@ -798,7 +798,7 @@ export type LiveSessionRow = {
   source: string;
 };
 
-/** One person's running sessions, as both Agents tabs render them. */
+/** One person's running sessions, as both apps' Live now cards render them. */
 export type LivePersonGroup = {
   owner: { id: string; name: string };
   sessions: readonly LiveSessionRow[];

@@ -81,7 +81,7 @@ from a path key, and the directory itself only when there is no key at all.
 That is one definition, read by the roster view, by the default name the API mints and by
 scripts/repair-agent-identity-by-remote.mjs, so a row whose root is one worktree still renders the
 whole repository's name and a repaired roster reads exactly like a freshly minted one.
-A shift names its codebase through `shiftCodebase`, the one rule every Agents-tab surface reads (the shifts map, the live view and its description, the paystub's repos): its first commit's repository, else the repository its identity is keyed on, else its working directory.
+A shift names its codebase through `shiftCodebase`, the one rule every agent surface reads (the shifts map, the live view and its description, the paystub's repos): its first commit's repository, else the repository its identity is keyed on, else its working directory.
 The identity outranks the working directory because a worktree's folder is named for its task: a goblin's `.worktrees/gb-ra-ci-speed` is not opaque enough to read as a run, so reading the folder first split one repository into a group per task.
 Groups are keyed case-insensitively, and a label matching the identity's in all but case takes the identity's spelling, so a checkout's capitalisation never splits a repository in two.
 A home folder or the temp tree names no codebase (`isHomeOrTempDirectory`), unless a remote does: a session opened in `~` works on whatever it is asked to, and test harnesses make throwaway repositories in temp by the dozen.

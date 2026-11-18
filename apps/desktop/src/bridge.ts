@@ -250,7 +250,7 @@ export type MeStatsConcurrency = {
 
 /// One (runtime, model) pair's share of a member's agent time. The session
 /// facts the API also sends stay behind: the desktop reads this split only to
-/// name the models a runtime has driven, and the Agents tab measures shifts
+/// name the models a runtime has driven, and the dashboard measures shifts
 /// from the shifts-by-codebase map instead.
 export type MeStatsAgentSplit = {
   source: string;
@@ -301,7 +301,7 @@ export type MeStatsProject = {
   sessionCount: number;
 };
 
-/// One shift as the Agents tab reads it: a terminal session with the facts
+/// One shift as the dashboard reads it: a terminal session with the facts
 /// it attested itself. `endedAt` is the last event while the shift still
 /// runs, never "still open".
 export type AgentShiftRow = {
@@ -397,7 +397,7 @@ export type TokenChartBucket = {
   tokens: number | null;
 };
 
-/// The Agents tab's token bars: the period's buckets, and each project's bars
+/// The dashboard chart's token bars: the period's buckets, and each project's bars
 /// over the same buckets with its total for the period.
 export type TokenChart = {
   bucketSeconds: number;
@@ -1053,7 +1053,7 @@ const decodeTokenChart = (value: unknown): TokenChart | undefined => {
 };
 
 /// An absent group list decodes to none, never a crash: the deployed API can
-/// be older than this build, and an Agents tab with nothing to say beats one
+/// be older than this build, and a dashboard with no agents to show beats one
 /// that dies decoding.
 export const decodeAgentShifts = (value: unknown): AgentShifts => {
   const candidate = record(value);

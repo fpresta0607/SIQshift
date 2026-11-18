@@ -332,7 +332,7 @@ a reason naming the retention window, so the rest of the batch still lands.
 **What is given up past the window**, stated plainly because deletion does not
 come back:
 active time, agent time and the concurrency split are answered by the fold at
-any age, on the leaderboard and on a member's own card alike - the fold holds one
+any age, on the People board and on the dashboard for a picked person alike - the fold holds one
 row per member per day, so a person's totals are exactly the rows carrying their
 id, and the two surfaces cannot disagree about the same person's hours.
 What goes is presence-derived detail, because presence is what `activity_segments`
@@ -344,9 +344,9 @@ Both report zero for the expired part of a range.
 The **hourly chart** is the split case: its agent line is drawn from agent
 sessions and survives, while its person line is presence and flattens past the
 window.
-Everything drawn from `agent_sessions` is untouched at any age - the **per-agent
-breakdown** on a member's card still lists every shift with its real durations,
-and so do `Recorded`, the dashboard's agent cards and the CSV export, because sessions, agent
+Everything drawn from `agent_sessions` is untouched at any age - the dashboard's
+agent cards still list every shift with its real durations, and so do `Recorded`
+and the CSV export, because sessions, agent
 sessions and shift commits are not swept.
 That is the trade the window is: summary forever, presence detail for ninety days.
 
@@ -376,11 +376,13 @@ The web dashboard's project scope — **All Projects** or one project — filter
 the leaderboard, member stats, the dashboard's agent shifts, the session list, and the CSV export
 at the query layer. The **Unassigned** scope is retired from the picker, so a stored one reads
 as **All Projects**.
-The scope is picked from the **Change** link in the web dashboard's filing header, and it
-narrows that page's own Today card as well as everything in All stats.
+The scope is picked from the **Change** link in the web dashboard's filing header or from the
+project in the All-stats dashboard's filter, and it narrows that page's own Today card as well
+as everything in All stats.
 The scope and the time range live per member in `user_view_preferences`, read and written
-through `GET/PUT /me/preferences` by the web dashboard alone; the desktop All stats overlay
-is always unscoped, and its filing header pins which project *recording* files under, which is
+through `GET/PUT /me/preferences` by the web dashboard alone; the desktop All stats overlay's
+project filter is not saved and opens on **All projects** each time the app starts, and its
+filing header pins which project *recording* files under, which is
 a machine-local setting the browser has no equivalent of. Each surface keeps its own time range, because the desktop's calendar "this
 week" and the web's rolling "7d" are different questions.
 

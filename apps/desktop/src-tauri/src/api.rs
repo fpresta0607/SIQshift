@@ -258,7 +258,7 @@ pub struct WorkspaceMemberUser {
     pub picture_version: Option<String>,
 }
 
-/// The Agents tab's whole story: what ran, where, grouped by codebase. Every
+/// The dashboard's agent story: what ran, where, grouped by codebase. Every
 /// field is tolerant the way every response here is - the API deploys before
 /// any installer can, so absence decodes as empty rather than as an error.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -309,7 +309,7 @@ pub struct AgentShiftsTokenTotals {
     pub tokens: u64,
 }
 
-/// The Agents tab's token bars: the period's buckets, and each project's bars
+/// The dashboard chart's token bars: the period's buckets, and each project's bars
 /// over the same buckets with its total. Every figure is the server's; the
 /// webview draws them as given.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
