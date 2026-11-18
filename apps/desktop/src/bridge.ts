@@ -481,14 +481,16 @@ export interface TimerBridge {
   /// A member's picture bytes under the version their board row named.
   memberPicture(userId: string, version: string): Promise<Uint8Array>;
   /// Every shift in the range grouped by the codebase it worked, for the
-  /// Agents tab - the group heads alone. Both bounds absent asks for all time.
-  agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
+  /// dashboard's agents cards - the group heads alone. Both bounds absent asks
+  /// for all time; a `userId` narrows it to that member, and absent is the team.
+  agentShifts(fromAt?: string, toExclusiveAt?: string, userId?: string): Promise<AgentShifts>;
   /// Who is running an agent right now, grouped by person. No range: the live
   /// view reads now, and the desktop reads it for everyone.
   liveAgentSessions(): Promise<LiveAgentSessions>;
-  /// One page of one group's shifts. The bounds must be the ones the heads
-  /// were read with, or the drawer lists shifts its own head never counted.
-  agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
+  /// One page of one group's shifts. The bounds and the `userId` must be the
+  /// ones the heads were read with, or the drawer lists shifts its own head
+  /// never counted.
+  agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string, userId?: string): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
   projectUpdate(id: string, input: { name?: string; isArchived?: boolean } | ProjectAppearance): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
@@ -1195,9 +1197,9 @@ export const defaultBridge: TimerBridge = {
   pictureUpload: (bytes) => invokeDecoded("picture_upload", decodeUser, { bytes: Array.from(bytes) }),
   pictureRemove: () => invokeDecoded("picture_remove", decodeUser),
   memberPicture: (userId, version) => invokeDecoded("member_picture", decodeBytes, { userId, version }),
-  agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
+  agentShifts: (fromAt, toExclusiveAt, userId) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt, userId }),
   liveAgentSessions: () => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions),
-  agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>
+  agentShiftRows: (groupKey, after, fromAt, toExclusiveAt, userId) =>
     invokeDecoded("agent_shift_rows", decodeAgentShiftRows, {
       groupKey,
       afterStartedAt: after?.startedAt,
@@ -1205,6 +1207,7 @@ export const defaultBridge: TimerBridge = {
       projectTied: after?.projectTied,
       fromAt,
       toExclusiveAt,
+      userId,
     }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),

@@ -18,7 +18,6 @@ export { ProjectIconPicker } from "./project-icon-picker.js";
 export { ProjectIconTile } from "./project-icon-tile.js";
 export { QuietMark } from "./quiet-mark.js";
 export { SegmentedControl, type SegmentedOption } from "./segmented-control.js";
-export { TokenBarChart, type ChartTokenBucket, type ChartTokens } from "./token-bar-chart.js";
 export { usePictures } from "./use-pictures.js";
 
 /**

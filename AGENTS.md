@@ -26,42 +26,29 @@ share of it only from `concurrency.awaySeconds`. A session is still attributed w
 or not at all by `time_sessions.attribution`. The README's "How session tracking works"
 section is the authoritative prose; keep it true when you change the model.
 
-**Agent numbers belong to the agent.** The All-stats/board Humans tab answers for the person -
-their active time and how many agents ran through it - and everything the agents themselves did
-lives on the Agents tab as a map of shifts grouped by codebase (`/reports/agent-shifts`): the
-recorded total, an hourly series, then one collapsible group per repo label. **That response is
-aggregates only.** A group states its totals and a `groupKey`; the shifts behind it are a separate
-paged read, `GET /reports/agent-shifts/rows`, made when a reader actually opens a drawer, under the
-same range, scope and person the heads were totalled with. Sending every shift to draw four numbers
-per group was this endpoint's whole payload, and on an all-time range it was the largest single
-response the product made. A group's held share renders only once a commit is decided, never as
-"pending". The roster (`agents` table, `/agents` routes) remains the identity
-model and the deployed desktop builds still read the old report routes, so the API keeps serving
-them; only the surfaces moved.
+**All stats is one page, and every stat on it is shown once.** `DashboardView`
+(`@siqshift/shared/dashboard-view`) replaced the Humans and Agents tabs and the person card, which
+repeated agent time, the agent list, the chart and, in a workspace of one, the whole team. The page
+answers for one subject - the team, or the person picked on its People board - and every card
+follows it; the board stays the team's because it is the picker, and a workspace of one draws no
+board and answers for its one member. Do not bring back a tab, a count tile that restates how many
+rows a card holds, or a second chart: issue 161 removed each as a repeat. The agents' cards read
+`/reports/agent-shifts` (`userId` names the person picked) and **that response is aggregates
+only.** A group states its totals and a `groupKey`; the shifts behind it are a separate paged read,
+`GET /reports/agent-shifts/rows`, made when a reader actually opens a drawer, under the same range,
+scope and person the heads were totalled with. Sending every shift to draw four numbers per group
+was this endpoint's whole payload, and on an all-time range it was the largest single response the
+product made. A group's held share renders only once a commit is decided, never as "pending". The
+roster (`agents` table, `/agents` routes) remains the identity model and the deployed desktop
+builds still read the old report routes, so the API keeps serving them; only the surfaces moved.
 
-**The web Agents tab opens on a board of people, and that board is the tab's filter.** This
-reverses the earlier rule that there was "no roster to pick from and no ranking". The reason the
-ranking was retired was that the tab had become unreadable, not that a person is the wrong way in;
-once a workspace runs hundreds of shifts a week, the codebase map alone cannot answer "whose
-agents did this". So `people` ranks by recorded agent time, `userId` narrows the tab to one of
-them, and the drawers keep the map readable underneath. Three rules keep the old objection
-answered rather than forgotten:
+**`/reports/agent-shifts` still serves a `people` board** that no surface draws since the one page
+replaced the Agents tab. Two rules about it outlive the tab: `people` is computed *before*
+`userId` narrows anything (`agentShifts` authorizes `userId` and then reads without it, because
+`normalizedQuery` would otherwise push it into the SQL), and the person filter is server-side,
+because `heldRate` is derived from commit verification states the client never receives.
 
-- **A person row is a sum over shifts, not an agent.** It carries `shiftCount` beside its seconds,
-  because one row can be four agents in a ten-hour day rather than one worker's long one. Do not
-  add a bar to it: `people` is computed *before* `userId` narrows anything, so a pre-filter
-  numerator over the post-filter total would read past 100%.
-- **`people` is deliberately pre-filter.** `agentShifts` authorizes `userId` and then reads
-  without it, because `normalizedQuery` would otherwise push it into the SQL and collapse the
-  board to the one person who was picked, leaving nothing to clear the selection with.
-- **The filter is server-side, and not for tidiness.** `heldRate` is derived from commit
-  verification states the client never receives, so a client-side filter would leave every
-  group's held tag silently stale.
-
-The desktop gets the drawers, not the board: its Humans tab
-already lists every member with their agent time one click away.
-
-**The Agents tab also answers "who is running an agent right now", from `GET
+**The dashboard's Live now card answers "who is running an agent right now", from `GET
 /reports/agent-sessions/live`.** The live view is one group per person with at least one running
 session; a person with none is absent, never a stale row, and browser spans are excluded by the
 same `rosterEligibleSource` rule as everywhere else. Each row's `description` is composed once,
@@ -69,15 +56,15 @@ server-side, from captured facts alone (runtime, attested model, the project or 
 directory resolved to, how long the session has been up): there is no summary field behind it, and
 none may be invented on the client. The read lists only running rows heard from inside the
 30-minute staleness window, so a session silent for longer never appears live, though no write has
-ended it. In the All Stats agents view the ordering is project-tie first: group heads keep the
+ended it. In the dashboard's repos the ordering is project-tie first: group heads keep the
 label-less group last, and within a drawer the project-tied shifts read above the untied ones
 (which stay visible below, sorted not hidden);
 the drawer cursor therefore carries `projectTied` beside its `startedAt`/`id` pair, and a cursor
 sent without it reads as untied.
 
 **The web page is the desktop app's screen, not a second design.** It opens on the same filing
-header, clock card and Today card, and files the board, the breakdowns, the Agents map and the
-session history behind the same **All stats** button; projects, the invite code and signing out
+header, clock card and Today card, and files the dashboard and the session history behind the
+same **All stats** button; projects, the invite code and signing out
 live in a settings panel with the desktop's groups. Three things the desktop draws have no
 synced data behind them and so are absent rather than faked on the web: the plan quota dial
 (`quota.rs` shells out to the local CLI and uploads nothing), this machine's live recording
@@ -251,7 +238,7 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   app's `verification` and `verified_at` as given and nothing corroborates them
   server-side (GitHub App/webhook corroboration was considered and rejected as a dead
   model). It is evidence about the work from the machine that did the work, so every surface saying "held"
-  labels it that way - the Agents tab's per-codebase held share and README's roster section. Do
+  labels it that way - the dashboard's per-codebase held share and README's roster section. Do
   not let it quietly become an input to pay without revisiting that decision.
 - A repo root is a working directory, so `shiftCommitViewSchema.repoRoot` and the roster
   row's `agentSchema.repoRoot` go only to the agent's owner and workspace admins and are
@@ -395,16 +382,15 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
 - Both frontends share `packages/shared`. `styles/brand.css` is a single dark theme
   with no light one to match, so use the tokens rather than literals; it also holds
   `.meter-row`, the four-column scan line (mark, name with a `·` subtitle, share bar
-  or quota dial, duration) that the Today card and the team view's Projects and
-  Agents lists read a breakdown in, and `.tv-row`, the team view's board line (a
+  or quota dial, duration) that the Today card and the dashboard's Projects, Apps
+  and split lists read a breakdown in, and `.tv-row`, the dashboard's board line (a
   mark, a name over a short subtitle, then measures under column heads) that the
-  Agents tab's repo heads (six cells, `.tv-repos .tv-row`, with no share bar) and
-  runtime rows are drawn in. Shared React lives behind three entries and
+  repo heads (six cells, `.tv-repos .tv-row`, with no share bar) and runtime rows
+  are drawn in. Shared React lives behind three entries and
   **never** `src/index.ts`: `./webgl-shader` (the background) and `./ui` (the
-  hourly chart, the member breakdown, `MeterRowItem` and the row builders, the
-  runtime marks, the Agents-tab drawers). The third,
-  `@siqshift/shared/workspace-view` (the team view both apps and
-  the home page's example draw), stands alone because it imports from `./ui`, so
+  hourly chart, `MeterRowItem` and the row builders, the runtime marks, the repo
+  drawers). The third, `@siqshift/shared/dashboard-view` (the one-page dashboard
+  both apps and the home page's example draw), stands alone because it imports from `./ui`, so
   re-exporting it from there would make the two modules import each other.
   React and three are those entries' optional peers, so re-exporting any
   from `src/index.ts` would start pulling them into the API; `tsconfig.browser.json`

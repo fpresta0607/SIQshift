@@ -682,13 +682,14 @@ async fn workspace_report(
 }
 
 /// Every shift in the range grouped by the codebase it worked, for the
-/// Agents tab. Bounds arrive together or not at all; both absent asks for all
-/// time.
+/// dashboard's agents cards. Bounds arrive together or not at all; both absent
+/// asks for all time. A `user_id` narrows it to one member's shifts.
 #[tauri::command]
 async fn agent_shifts(
     state: State<'_, AppState>,
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
+    user_id: Option<String>,
 ) -> ApiResult<AgentShifts> {
     let access_token = state.access_token().await?;
     state
@@ -697,13 +698,15 @@ async fn agent_shifts(
             &access_token,
             from_at.as_deref(),
             to_exclusive_at.as_deref(),
+            user_id.as_deref(),
         )
         .await
 }
 
 /// One page of one group's shifts, asked for when a drawer opens. The bounds
-/// are the ones the group heads were read with: a drawer that asked under a
-/// different range would list shifts its own head never counted.
+/// are the ones the group heads were read with, and so is the person: a drawer
+/// that asked under a different range or for someone else would list shifts
+/// its own head never counted.
 #[tauri::command]
 async fn agent_shift_rows(
     state: State<'_, AppState>,
@@ -713,6 +716,7 @@ async fn agent_shift_rows(
     project_tied: Option<bool>,
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
+    user_id: Option<String>,
 ) -> ApiResult<AgentShiftRows> {
     let access_token = state.access_token().await?;
     // Half a cursor names no shift, so it asks for the first page rather than
@@ -732,6 +736,7 @@ async fn agent_shift_rows(
             after.as_ref(),
             from_at.as_deref(),
             to_exclusive_at.as_deref(),
+            user_id.as_deref(),
         )
         .await
 }

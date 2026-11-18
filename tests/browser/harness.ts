@@ -194,7 +194,7 @@ const repoGroup = (rank: number, name: string, sub: string, tokens: string, agen
     <ul class="shift-list">${shift}</ul>
   </details>`;
 
-/** One agent row on the Agents page, in the markup `AgentsView` draws. */
+/** One agent row on the dashboard's Agents card, in the markup `DashboardView` draws. */
 const runtimeRow = (name: string, shifts: string, share: number, tokens: string, agentTime: string): string => `
   <li class="tv-row">
     <span class="agent-mark is-generic" aria-hidden="true">${name.charAt(0)}</span>
@@ -258,45 +258,67 @@ export async function openAgentsGroup(page: Page, app: "desktop" | "web"): Promi
 }
 
 /**
- * The All-stats card for one person, in the markup both apps draw: the
- * recorded total with the sentence that says what it is made of, then the
- * project list and the app list that both close on that total.
+ * The dashboard answering for one person, in the markup `DashboardView` draws:
+ * whom it answers for, the four totals with the sentence that says what
+ * recorded time is made of, then the person's projects and apps, which both
+ * close on that recorded total.
  *
- * The sentence is the longest line the card draws and it lives in the
+ * The sentence is the longest line the page draws and it lives in the
  * narrowest container the apps have - the overlay - so a phone is where it
- * runs out of room first. Each app's overlay is its own, so the card is
+ * runs out of room first. Each app's overlay is its own, so the page is
  * rendered under each app's sheet.
  */
-export async function openMemberStats(page: Page, app: "desktop" | "web"): Promise<void> {
+export async function openPersonDashboard(page: Page, app: "desktop" | "web"): Promise<void> {
   const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
-  const appRow = (label: string, duration: string): string =>
-    `<li class="app-row"><span class="app-name">${label}</span><span class="app-duration">${duration}</span></li>`;
+  const total = (label: string, value: string, note: string): string =>
+    `<div class="tv-total"><dt>${label}</dt><dd><b>${value}</b><small>${note}</small></dd></div>`;
+  const projectRow = (label: string, share: number, duration: string): string => `
+    <li class="meter-row">
+      <span class="project-icon" aria-hidden="true"></span>
+      <span class="meter-name">${label}</span>
+      <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
+      <span class="meter-duration">${duration}</span>
+    </li>`;
+  const appRow = (label: string, share: number, duration: string): string => `
+    <li class="meter-row">
+      <span class="meter-name">${label}</span>
+      <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
+      <span class="meter-duration">${duration}</span>
+    </li>`;
   await page.setContent(`
     ${shell}<div class="modal-overlay"><section class="today-card card modal"><div class="tv">
-      <div class="tv-page">
-        <section class="tv-card tv-person" data-testid="member-stats">
-          <div class="tv-card-head tv-person-head">
-            <h4><span class="member-avatar mint" aria-hidden="true">AM</span>Alex Morgan<span class="tv-you">You</span></h4>
-          </div>
-          <p class="tv-person-total">
-            <strong>2h 47m</strong> recorded
-            <span class="metric-hint"> · 1h 28m of it away from the keyboard, 43m of that with an agent running</span>
-          </p>
-          <div></div>
-          <div>
-            <p class="group-label">Projects, apps and agents</p>
-            <ul class="app-list" data-testid="member-project-list">
-              ${appRow("Atlas Portal", "2h 25m")}
-              ${appRow("General", "22m")}
+      <div class="tv-subject">
+        <span class="member-avatar" aria-hidden="true">AM</span>
+        <span class="tv-subject-name">Alex Morgan<span class="tv-you">You</span></span>
+        <button type="button" class="ghost">Everyone</button>
+      </div>
+      <dl class="tv-totals" aria-label="Totals for Alex Morgan">
+        ${total("Tokens", "1.3M", "1.2M in · 82k out")}
+        ${total("Active time", "1h 19m", "at the computer")}
+        ${total("Agent time", "2h 10m", "agents running")}
+        ${total("Recorded time", "2h 47m", "whole sessions")}
+      </dl>
+      <p class="tv-totals-note">Recorded: 1h 28m of it away from the keyboard, 43m of that with an agent running.</p>
+      <div class="tv-grid">
+        <div class="tv-stack"></div>
+        <div class="tv-stack">
+          <section class="tv-card tv-list">
+            <div class="tv-card-head"><h4>Projects</h4><span class="tv-card-note">Recorded time</span></div>
+            <ul class="tv-meter-list">
+              ${projectRow("Atlas Portal", 100, "2h 25m")}
+              ${projectRow("General", 15, "22m")}
             </ul>
-            <ul class="app-list" data-testid="member-app-list">
-              ${appRow("Windows Terminal", "41m")}
-              ${appRow("Google Chrome", "33m")}
-              ${appRow("Quiet time", "1h 33m")}
+          </section>
+          <section class="tv-card tv-list tv-apps">
+            <div class="tv-card-head"><h4>Apps</h4><span class="tv-card-note">Time in front</span></div>
+            <ul class="tv-meter-list">
+              ${appRow("Windows Terminal", 44, "41m")}
+              ${appRow("Google Chrome", 35, "33m")}
+              ${appRow("Quiet time", 100, "1h 33m")}
             </ul>
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
     </div></section></div></main>`);
-  await applyStylesheet(page, app, ".modal-overlay", ".tv");
+  await applyStylesheet(page, app, ".modal-overlay", ".tv", ".tv-totals", ".tv-grid");
 }

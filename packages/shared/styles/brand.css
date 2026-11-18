@@ -22,6 +22,8 @@
   --chart-axis: #a3b3c2;
   --chart-human: #8b98a8;
   --chart-agent: #00e59b;
+  /* A token bar's output share, stacked on the green input share. */
+  --chart-token-out: #7ff2c8;
   --chart-point: #ffffff;
   --chart-tooltip-surface: rgba(3, 5, 10, 0.92);
 
@@ -182,13 +184,24 @@ button:disabled { opacity: .55; cursor: default; }
 /* Quiet time is no app, so it gets no OS icon: a drawn moon stands in. */
 .quiet-mark { color: var(--text-secondary); }
 
-/* The Agents tab's token bars, all green. Layout and the tooltip ride on `.graph`. */
-.token-bar { fill: var(--chart-agent); }
+/* The dashboard chart's token bars: tokens in at the foot in green, tokens out
+   stacked on top in a lighter mint. Layout and the tooltip ride on `.graph`. */
+.token-bar.is-in { fill: var(--chart-agent); fill-opacity: .55; }
+.token-bar.is-out { fill: var(--chart-token-out); fill-opacity: .8; }
 .token-band { fill: var(--chart-grid-soft); }
+/* Its legend is its filter: each key a toggle, swatched as its series draws. */
+.work-chart-filter { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.work-chart-key { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; border: 1px solid var(--glass-border); border-radius: 999px; padding: 3px 11px; background: transparent; color: var(--text-secondary); font-size: .76rem; font-weight: 600; }
+.work-chart-key[aria-pressed="true"] { border-color: var(--glass-border-hover); color: #ffffff; }
+.work-chart-key[aria-pressed="false"] .work-chart-swatch { opacity: .3; }
+.work-chart-key:disabled { cursor: default; }
+.work-chart-swatch { width: 14px; height: 2px; border-radius: 1px; background: var(--chart-human); }
+.work-chart-swatch[data-series-swatch="agent"] { background: var(--chart-agent); }
+.work-chart-swatch.is-bar { width: 10px; height: 10px; border-radius: 2px; background: linear-gradient(var(--chart-token-out) 45%, color-mix(in srgb, var(--chart-agent) 55%, transparent) 45%); }
 
-/* The team view (`@siqshift/shared/workspace-view`): the All stats page both
-   apps open, a Humans page and an Agents page drawn on one layout, and the
-   home page's example of it. It lays out by its own width rather than the
+/* The dashboard (`@siqshift/shared/dashboard-view`): the one All stats page
+   both apps open, and the home page's example of it. It lays out by its own
+   width rather than the
    window's, because the one view sits in a landing section, a full-window
    dialog and a desktop window: below 860px the two columns become one, and
    below 640px the totals go two by two. */
@@ -216,6 +229,21 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-close { display: grid; width: 36px; height: 36px; flex: none; place-items: center; border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 0; background: rgba(3, 5, 10, .5); color: var(--text-secondary); font-size: .9rem; }
 .tv-close:hover { border-color: var(--glass-border-hover); color: #ffffff; }
 .tv-head .ghost { padding: 6px 14px; font-size: .8rem; }
+/* The page's one filter: the range, the project, and custom days when picked. */
+.tv-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.tv-project-filter { position: relative; }
+.tv-project-button, .tv-project-menu button { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; border: 1px solid var(--glass-border); border-radius: 10px; padding: 4px 12px 4px 6px; background: rgba(3, 5, 10, .55); color: #ffffff; font-size: .8rem; font-weight: 600; white-space: nowrap; }
+.tv-project-button:hover { border-color: var(--glass-border-hover); }
+.tv-project-filter .project-icon, .tv-all-projects { width: 24px; height: 24px; }
+.tv-all-projects { flex: none; border: 1px dashed var(--glass-border-hover); border-radius: 7px; }
+.tv-project-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; display: grid; gap: 2px; min-width: 220px; max-height: 320px; overflow-y: auto; border: 1px solid var(--glass-border-hover); border-radius: 12px; padding: 6px; background: var(--chart-tooltip-surface); box-shadow: var(--glass-shadow); }
+.tv-project-menu button { width: 100%; border-color: transparent; background: transparent; }
+.tv-project-menu button:hover, .tv-project-menu button[aria-checked="true"] { background: color-mix(in srgb, var(--accent-green) 13%, transparent); color: var(--mint); }
+.tv-days { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tv-days label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .76rem; }
+.tv-days input { min-height: 34px; border: 1px solid var(--glass-border); border-radius: 8px; padding: 3px 8px; background: rgba(3, 5, 10, .55); color: #ffffff; color-scheme: dark; font: inherit; font-size: .8rem; }
+.tv-days .ghost { padding: 6px 12px; font-size: .78rem; }
+.tv-days .ghost[aria-pressed="true"] { border-color: var(--glass-border-hover); color: var(--mint); }
 
 .tv-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .tv-total { min-width: 0; border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 10px 14px 11px; background: rgba(3, 5, 10, .5); }
@@ -266,6 +294,10 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-people tbody th { padding: 0; color: inherit; font-size: inherit; font-weight: 400; letter-spacing: normal; text-transform: none; }
 .tv-people td { width: 5.4rem; padding: 0 6px; text-align: right; white-space: nowrap; }
 .tv-people td.is-agent { color: var(--mint); }
+/* Each board figure sits over a bar of its share of the column's largest. */
+.tv-cell-bar { display: block; height: 3px; margin-top: 4px; border-radius: 999px; background: rgba(163, 179, 194, .14); }
+.tv-cell-bar::before { display: block; width: var(--share, 0%); height: 100%; margin-left: auto; border-radius: inherit; background: var(--chart-human); content: ""; }
+.tv-people td.is-agent .tv-cell-bar::before { background: var(--accent-green); opacity: .8; }
 .tv-people tr.is-selected > * { background: color-mix(in srgb, var(--accent-green) 9%, transparent); }
 .tv-people th button { display: grid; grid-template-columns: 16px 32px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; min-height: 50px; padding: 7px 6px; border: 0; border-radius: 0; background: transparent; color: #ffffff; font-size: inherit; font-weight: 400; text-align: left; }
 .tv-people th button:hover .tv-name > span:first-child { color: var(--mint); }
@@ -300,24 +332,33 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-live .live-sessions { margin: 0; }
 .tv-live .live-sessions-empty { margin: 4px 0 0; }
 
-.tv-person { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 28px; }
-.tv-person > .tv-card-head, .tv-person > p, .tv-person > .tv-chart { grid-column: 1 / -1; }
-.tv-person-head h4 .member-avatar { width: 26px; height: 26px; font-size: .58rem; }
-.tv .tv-person-total { margin-bottom: 6px; color: var(--text-secondary); font-size: .8rem; }
-.tv-person-total strong { color: #ffffff; font-size: .95rem; font-variant-numeric: tabular-nums; }
-.tv-person .group-label { margin: 10px 0 4px; }
-.tv-person > .tv-chart { margin-top: 10px; border-top: 1px solid rgba(163, 179, 194, .1); padding-top: 12px; }
+/* What recorded time holds beyond active time, under the totals it explains. */
+.tv .tv-totals-note { margin-top: -6px; color: var(--text-secondary); font-size: .76rem; line-height: 1.5; }
+/* Whom the page answers for once a person is picked, and the way back to everyone. */
+.tv-subject { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tv-subject .member-avatar { width: 28px; height: 28px; font-size: .6rem; }
+.tv-subject-name { min-width: 0; margin-right: auto; overflow: hidden; font-size: 1rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.tv-subject .ghost { padding: 5px 13px; font-size: .78rem; }
+.tv-apps .meter-row { grid-template-columns: minmax(0, 1fr) minmax(40px, 110px) 5rem; }
+/* A person's active time, from no agent running to three or more: the human
+   grey, then the agent green growing stronger with each agent. */
+.tv-swatch { width: 10px; height: 10px; margin: 0 auto; border-radius: 3px; background: var(--chart-human); }
+.tv-swatch[data-level="1"] { background: color-mix(in srgb, var(--chart-agent) 45%, transparent); }
+.tv-swatch[data-level="2"] { background: color-mix(in srgb, var(--chart-agent) 72%, transparent); }
+.tv-swatch[data-level="3"] { background: var(--chart-agent); }
+.tv-meter-list .meter-row.is-agent .meter-name, .tv-meter-list .meter-row.is-agent .meter-duration { color: var(--mint); }
 .tv-foot { color: var(--text-secondary); font-size: .74rem; line-height: 1.5; }
 
 @container tv (max-width: 860px) {
-  .tv-grid, .tv-person { grid-template-columns: minmax(0, 1fr); }
+  .tv-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @container tv (max-width: 640px) {
   .tv-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tv-total b { font-size: 1.35rem; }
   .tv-title { flex: 1 1 calc(100% - 60px); }
   .tv-close { order: 1; }
-  .tv-head .seg { order: 2; }
+  .tv-head .seg, .tv-head .tv-filter { order: 2; }
+  .tv-project-menu { right: auto; left: 0; }
   .seg.is-primary button { min-height: 32px; padding: 4px 12px; font-size: .82rem; }
   .seg button { padding: 4px 9px; font-size: .76rem; }
   .tv-card { padding: 12px 12px 13px; }
@@ -328,6 +369,11 @@ button:disabled { opacity: .55; cursor: default; }
   .tv-repos .shift-list { padding-left: 14px; }
   .tv-runtimes .tv-cols, .tv-runtimes .tv-row { grid-template-columns: 26px minmax(0, 1fr) 3.8rem 4.6rem; }
   .tv-runtimes .tv-bar, .tv-runtimes .tv-cols > :nth-child(3) { display: none; }
+  /* A phone spends a breakdown's width on its names: the duration already
+     says what the bar drew. */
+  .tv-meter-list .meter-row { grid-template-columns: 28px minmax(0, 1fr) 5rem; }
+  .tv-apps .meter-row { grid-template-columns: minmax(0, 1fr) 5rem; }
+  .tv-meter-list .meter-bar { display: none; }
 }
 
 /* The box the WebGL background paints into, shipped with the component that

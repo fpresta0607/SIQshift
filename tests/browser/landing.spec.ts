@@ -17,6 +17,9 @@ for (const width of [390, 1440]) {
     await expect(agents).toContainText("Claude Code");
     await expect(projects).toContainText("Atlas Portal");
     await expect(page.getByRole("group", { name: "Projects or agents" })).toHaveCount(0);
+    // The example is the app's one dashboard page: no tabs, and the four kept totals once each.
+    await expect(page.getByRole("group", { name: "Humans or agents" })).toHaveCount(0);
+    await expect(page.locator(".tv-total dt")).toHaveText(["Tokens", "Active time", "Agent time", "Recorded time"]);
     const board = page.getByRole("table", { name: "People" });
     await expect(board).toContainText("Alex Morgan");
     await expect(board).toContainText("Jordan Lee");
@@ -32,7 +35,7 @@ for (const width of [390, 1440]) {
     await expect(page.locator(".tv-totals")).toContainText("6h 00m");
     await expect(page.locator(".tv-totals")).toContainText("14h 00m");
     await expect(projects).not.toContainText("Relay App");
-    await page.getByRole("button", { name: "All members" }).click();
+    await page.getByRole("button", { name: "Everyone" }).click();
     await expect(projects).toContainText("Relay App");
     // The footer that sat under the example is gone.
     await expect(page.getByText("Local agents, shared visibility")).toHaveCount(0);

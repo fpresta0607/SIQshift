@@ -311,7 +311,6 @@ select:disabled { opacity: .55; }
 /* The way back out of a picked person, at the head of their card. */
 .member-self { flex: none; border: 0; padding: 0; background: transparent; color: var(--mint); font-size: .74rem; letter-spacing: .04em; cursor: pointer; }
 .member-self:hover, .member-self:focus-visible { color: #ffffff; }
-.tv-person .app-list + .app-list { margin-top: 10px; border-top: 1px solid rgba(163, 179, 194, 0.08); padding-top: 8px; }
 
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .board-head h2 { margin: 0; font-size: .92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

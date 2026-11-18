@@ -402,6 +402,29 @@ describe("defaultBridge", () => {
     await expect(defaultBridge.agentShiftRows("siqshift", null)).resolves.toEqual({ shifts: [], nextCursor: null });
   });
 
+  it("names the person on the agents read and on every drawer page, and sends nobody for the team", async () => {
+    // Arrange
+    invoke
+      .mockResolvedValueOnce({ groups: [] })
+      .mockResolvedValueOnce({ shifts: [], nextCursor: null })
+      .mockResolvedValueOnce({ groups: [] });
+    const range = ["2026-08-01T00:00:00.000Z", "2026-08-08T00:00:00.000Z"] as const;
+
+    // Act
+    await defaultBridge.agentShifts(...range, "user-1");
+    const heads = invoke.mock.lastCall;
+    await defaultBridge.agentShiftRows("siqshift", null, ...range, "user-1");
+    const drawer = invoke.mock.lastCall;
+    await defaultBridge.agentShifts(...range);
+    const teamHeads = invoke.mock.lastCall;
+
+    // Assert
+    expect(heads).toEqual(["agent_shifts", { fromAt: range[0], toExclusiveAt: range[1], userId: "user-1" }]);
+    expect(drawer?.[0]).toBe("agent_shift_rows");
+    expect(drawer?.[1]).toMatchObject({ groupKey: "siqshift", fromAt: range[0], toExclusiveAt: range[1], userId: "user-1" });
+    expect(teamHeads?.[1]).toMatchObject({ userId: undefined });
+  });
+
   it("round-trips the project tie on a shift row and its cursor, and reads absence as untied", async () => {
     const cursor = {
       startedAt: "2026-08-06T15:00:00.000Z",

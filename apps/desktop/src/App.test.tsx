@@ -302,19 +302,20 @@ const openAllStats = async (person: ReturnType<typeof userEvent.setup>): Promise
   return screen.getByRole("dialog", { name: /Lumen Studio|All stats/ });
 };
 
-/// The dialog's Humans or Agents switch.
-const agentsTab = (panel: HTMLElement): HTMLElement =>
-  within(within(panel).getByRole("group", { name: "Humans or agents" })).getByRole("button", { name: "Agents" });
-
-/// One figure on the totals row that opens each team view page.
+/// One figure on the totals row at the head of the page. The row is labelled
+/// "Totals" for the team and "Totals for <name>" for one person.
 const teamTotal = (panel: HTMLElement, label: string) =>
-  within(within(panel).getByLabelText("Totals")).getByText(label).nextElementSibling?.querySelector("b");
+  within(within(panel).getByLabelText(/^Totals/)).getByText(label).nextElementSibling?.querySelector("b");
 
-/// Opens All stats and switches to the Agents tab, returning the dialog.
-const openAgentsTab = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
+/// Picks a person on the People board: the whole page then answers for them.
+const pickPerson = async (person: ReturnType<typeof userEvent.setup>, panel: HTMLElement, name: string): Promise<void> => {
+  await person.click(within(panel).getByRole("button", { name: `Show ${name}'s work` }));
+};
+
+/// Opens All stats and waits for the agents' read to land, returning the dialog.
+const openAgentsPage = async (person: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> => {
   const panel = await openAllStats(person);
-  await person.click(agentsTab(panel));
-  await within(panel).findByTestId("agent-shifts");
+  await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
   return panel;
 };
 
@@ -474,9 +475,10 @@ describe("recording", () => {
 
     // And the historical one behind "All stats", which is where the
     // contradiction used to be printed.
-    const empty = within(await openAllStats(person)).getByTestId("today-empty");
-    expect(empty).not.toHaveTextContent(/turn (on )?recording/i);
-    expect(empty).toHaveTextContent("Nothing has been added up yet.");
+    const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+    expect(panel).not.toHaveTextContent(/turn (on )?recording/i);
   });
 
   // A poll task that dies leaves `running` true. Reading "on" from that alone
@@ -725,26 +727,29 @@ describe("today", () => {
 
     // Act
     const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
 
-    // Assert: the card renders before the stats land, so wait for the figure
-    // itself. The project row underneath repeats the number, so pin the headline.
-    expect(await within(panel).findByText("2h 00m", { selector: "strong" })).toBeInTheDocument();
-    const projects = within(within(panel).getByTestId("member-project-list")).getAllByRole("listitem");
+    // Assert: the recorded total and the project row under it are the same two hours.
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 00m");
+    const projects = within(within(panel).getByRole("region", { name: "Projects" })).getAllByRole("listitem");
     expect(projects.map((row) => row.textContent)).toEqual([`${project.name}2h 00m`]);
     expect(within(panel).queryByTestId("unattributed-foot")).not.toBeInTheDocument();
   });
 
-  it("switches range and refetches from the week's start", async () => {
+  it("switches range and refetches the picked person from the week's start", async () => {
     const bridge = bridgeFor();
     const person = userEvent.setup();
     render(<App bridge={bridge} />);
 
     const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
     // Opening costs nothing: your own "today" reuses the main screen's read.
     expect(bridge.meStats).toHaveBeenCalledTimes(1);
     await person.click(await within(panel).findByRole("button", { name: "This week" }));
 
     await waitFor(() => expect(bridge.meStats).toHaveBeenCalledTimes(2));
+    expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), user.id);
     expect(await within(panel).findByText(/^This week · /)).toBeInTheDocument();
   });
 
@@ -760,20 +765,30 @@ describe("today", () => {
       }),
     })} />);
 
-    const apps = await within(await openAllStats(person)).findByTestId("member-app-list");
-    expect(await within(apps).findByText("Claude Code")).toBeInTheDocument();
-    expect(within(apps).getByText("VS Code")).toBeInTheDocument();
+    const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
+    const apps = within(await within(panel).findByRole("region", { name: "Apps" }));
+    expect(await apps.findByText("Claude Code")).toBeInTheDocument();
+    expect(apps.getByText("VS Code")).toBeInTheDocument();
   });
 
-  it("keeps the agent session stats off the Humans tab - they belong to the agent", async () => {
+  it("keeps the agent session stats off the person's split - they belong to the agent", async () => {
     const person = userEvent.setup();
-    render(<App bridge={bridgeFor()} />);
+    render(<App bridge={bridgeFor({
+      meStats: vi.fn().mockResolvedValue({
+        ...meStats,
+        activeSeconds: 3_600,
+        concurrency: { t0Seconds: 3_600, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
+      }),
+    })} />);
 
     const panel = await openAllStats(person);
-    const stats = await within(panel).findByTestId("member-stats");
-    expect(within(stats).queryByTestId("agent-sessions")).not.toBeInTheDocument();
-    expect(within(stats).queryByTestId("agent-breakdown")).not.toBeInTheDocument();
-    expect(within(stats).getByTestId("breakdown")).not.toHaveTextContent("Total agent time");
+    await pickPerson(person, panel, user.name);
+    const split = within(await within(panel).findByRole("region", { name: "Active time, by agents running" }));
+    expect(split.getByText("No agent running")).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("Total agent time");
+    expect(within(panel).queryByTestId("agent-sessions")).not.toBeInTheDocument();
+    expect(within(panel).queryByTestId("agent-breakdown")).not.toBeInTheDocument();
   });
 });
 
@@ -1321,41 +1336,81 @@ describe("the all-stats overlay scope", () => {
 describe("the team board", () => {
   it("lays the team out as the home page's example workspace", async () => {
     // Arrange
-    const bridge = bridgeFor();
+    const bridge = bridgeFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShifts,
+        tokenTotals: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 },
+        runtimes: [{ source: "claude_code", agentSeconds: 5_400, shiftCount: 3, tokens: 1_500_000 }],
+      }),
+    });
     const person = userEvent.setup();
     render(<App bridge={bridge} />);
 
-    // Act: the board is history, so it sits behind "All stats".
-    const panel = await openAllStats(person);
+    // Act: the page is history, so it sits behind "All stats".
+    const panel = await openAgentsPage(person);
     const view = within(panel);
-    await view.findByLabelText("Totals");
 
     // Assert
     expect(view.getByRole("heading", { name: "Lumen Studio" })).toBeInTheDocument();
     expect(view.getByText(/^Today · /)).toBeInTheDocument();
+    expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M");
     expect(teamTotal(panel, "Active time")).toHaveTextContent("2h 56m");
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
-    expect(teamTotal(panel, "People")).toHaveTextContent(/^2$/);
-    expect(teamTotal(panel, "Projects")).toHaveTextContent(/^2$/);
+    // The team's recorded time is its projects' added up.
+    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
     const graph = within(view.getByRole("region", { name: "Over time" })).getByTestId("hourly-graph");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m$/);
     expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m$/);
-    // Both lists at once, with no switch between them.
+    // Every list at once, with no switch between them.
     const projects = within(view.getByRole("region", { name: "Projects" }));
     expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);
     expect(projects.getByText("Recorded time")).toBeInTheDocument();
     const agents = within(view.getByRole("region", { name: "Agents" }));
-    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code1h 30m"]);
-    expect(agents.getByText("Agent time")).toBeInTheDocument();
+    expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3 shifts1.5M1h 30m"]);
+    expect(view.getByRole("region", { name: "Repos" })).toBeInTheDocument();
+    expect(view.getByRole("region", { name: "Live now" })).toBeInTheDocument();
     expect(view.queryByRole("group", { name: "Projects or agents" })).toBeNull();
     expect(view.queryByText("Local agents, shared visibility")).toBeNull();
     expect(bridge.workspaceReport).toHaveBeenCalled();
   });
 
-  it("wears each project's own icon and color on the board, the Projects list and the person card", async () => {
+  it("has no Humans or Agents switch: one page answers for the team", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+
+    // Act
+    const panel = await openAgentsPage(person);
+
+    // Assert
+    expect(within(panel).queryByRole("group", { name: "Humans or agents" })).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Humans" })).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Agents" })).not.toBeInTheDocument();
+  });
+
+  it.each(["Tokens", "Active time", "Agent time", "Recorded time"])(
+    "draws %s once in the totals, for the team and for a person",
+    async (label) => {
+      // Arrange
+      const person = userEvent.setup();
+      render(<App bridge={bridgeFor()} />);
+      const panel = await openAgentsPage(person);
+
+      // Act
+      const teamTotals = within(within(panel).getByLabelText("Totals"));
+      await pickPerson(person, panel, "Sam");
+      const samTotals = within(await within(panel).findByLabelText("Totals for Sam"));
+
+      // Assert
+      expect(teamTotals.getAllByText(label)).toHaveLength(1);
+      expect(samTotals.getAllByText(label)).toHaveLength(1);
+    },
+  );
+
+  it("wears each project's own icon and color on the board and the Projects list, for the team and for a person", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
@@ -1363,18 +1418,23 @@ describe("the team board", () => {
       .map((tile) => [tile.getAttribute("data-icon"), tile.querySelector("rect")?.getAttribute("fill")]);
 
     // Act
-    const view = within(await openAllStats(person));
-    await view.findByLabelText("Totals");
-    const ownProjects = await view.findByTestId("member-project-list");
+    const panel = await openAgentsPage(person);
+    const view = within(panel);
 
     // Assert: the pair the server sent, not one made up from the id.
     expect(tiles(view.getByRole("table", { name: "People" }))).toEqual([["flask", "#f5c26b"], ["rocket", "#ff9d8a"]]);
     expect(tiles(view.getByRole("region", { name: "Projects" }))).toEqual([["flask", "#f5c26b"], ["rocket", "#ff9d8a"]]);
-    expect(tiles(ownProjects)).toEqual([["flask", "#f5c26b"]]);
+
+    // Act
+    await pickPerson(person, panel, user.name);
+    await view.findByLabelText(`Totals for ${user.name}`);
+
+    // Assert
+    expect(tiles(view.getByRole("region", { name: "Projects" }))).toEqual([["flask", "#f5c26b"]]);
   });
 
-  it("wears the account's own pair on the person card for a project the team report has not listed yet", async () => {
-    // Arrange: the report is still on its way, so only the account's own list,
+  it("wears the account's own pair on a person's project row for a project the team report has not listed", async () => {
+    // Arrange: the report lists no project, so only the account's own list,
     // which the server resolved, can draw the default project the day is in.
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({
@@ -1382,14 +1442,20 @@ describe("the team board", () => {
         ...account,
         projects: [{ ...project, icon: "grid", color: "#a3b3c2" }, { ...otherProject, icon: "rocket", color: "#ff9d8a" }],
       }),
-      workspaceReport: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      workspaceReport: vi.fn().mockResolvedValue({ ...workspaceReport, projects: [] }),
     })} />);
 
     // Act
-    const ownProjects = await within(await openAllStats(person)).findByTestId("member-project-list");
+    const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
 
     // Assert
-    const tile = ownProjects.querySelector(".project-icon");
+    const ownProjects = await within(panel).findByRole("region", { name: "Projects" });
+    const tile = await waitFor(() => {
+      const found = ownProjects.querySelector(".project-icon");
+      expect(found).not.toBeNull();
+      return found;
+    });
     expect(tile).toHaveAttribute("data-icon", "grid");
     expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
   });
@@ -1424,11 +1490,16 @@ describe("the team board", () => {
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("5h 33m");
   });
 
-  it("shows a workspace of one as a single row, the viewer's own", async () => {
+  it("answers for the one member of a workspace of one, with no board to pick from", async () => {
     // Arrange
     const ownProject = { id: otherProject.id, name: otherProject.name };
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({
+      meStats: vi.fn().mockResolvedValue({
+        ...meStats,
+        activeSeconds: 3_600,
+        concurrency: { t0Seconds: 1_800, t1Seconds: 1_800, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
+      }),
       workspaceReport: vi.fn().mockResolvedValue({
         activeSeconds: 3_600,
         agentSeconds: 0,
@@ -1441,18 +1512,17 @@ describe("the team board", () => {
 
     // Act
     const panel = await openAllStats(person);
-    await within(panel).findByLabelText("Totals");
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
 
-    // Assert
-    expect(teamTotal(panel, "People")).toHaveTextContent(/^1$/);
-    expect(teamTotal(panel, "Projects")).toHaveTextContent(/^1$/);
-    expect(teamTotal(panel, "Active time")).toHaveTextContent("1h 00m");
-    const [, only, ...rest] = within(within(panel).getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(rest).toEqual([]);
-    expect(only).toHaveTextContent(/^1TUTimer UserYouClient work1h 00m0s$/);
-    expect(within(only!).getByRole("button", { name: "Show Timer User's work" })).toHaveAttribute("aria-pressed", "true");
-    // Nobody else to pick, so the board does not offer to.
+    // Assert: the person is the team, so there is no board and nobody to go back from.
+    expect(within(panel).queryByRole("table", { name: "People" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Everyone" })).toBeNull();
     expect(within(panel).queryByText("Select a teammate to explore their work.")).toBeNull();
+    expect(teamTotal(panel, "Active time")).toHaveTextContent("1h 00m");
+    const split = within(await within(panel).findByRole("region", { name: "Active time, by agents running" }));
+    expect(split.getByText("With 1 agent")).toBeInTheDocument();
+    const apps = within(within(panel).getByRole("region", { name: "Apps" }));
+    expect(apps.getByText("VS Code")).toBeInTheDocument();
   });
 
   it("says so when the workspace read fails, instead of loading forever", async () => {
@@ -1515,54 +1585,116 @@ describe("the team board", () => {
     expect(within(panel).queryByLabelText("Totals")).not.toBeInTheDocument();
   });
 
-  it("opens on your own breakdown and follows whichever member gets picked", async () => {
+  it("opens on the whole team and narrows the totals and the tokens to whichever member gets picked", async () => {
+    // Arrange
     const samStats = {
       ...meStats,
       totalDurationSeconds: 5_400,
+      activeSeconds: 3_000,
+      agentSeconds: 1_200,
+      concurrency: { t0Seconds: 3_000, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
       apps: [{ processName: "blender.exe", durationSeconds: 5_400 }],
     };
     const bridge = bridgeFor({
       meStats: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, userId?: string) =>
-        Promise.resolve(userId === undefined ? meStats : samStats)),
+        Promise.resolve(userId === sam.id ? samStats : meStats)),
+      agentShifts: vi.fn().mockImplementation(async (_fromAt?: string, _toExclusiveAt?: string, userId?: string) => ({
+        ...agentShifts,
+        tokenTotals: userId === sam.id
+          ? { tokensIn: 2_000, tokensOut: 500, tokens: 2_500 }
+          : { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 },
+      })),
     });
     const person = userEvent.setup();
     render(<App bridge={bridge} />);
 
-    const panel = await openAllStats(person);
-    // You are highlighted and shown by default.
-    const stats = within(panel).getByTestId("member-stats");
-    expect(within(stats).getByRole("heading", { name: /^Timer User/ })).toBeInTheDocument();
+    // Assert: it opens on the team - nobody is picked, and no person's hours are read.
+    const panel = await openAgentsPage(person);
+    expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M");
+    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
+    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined);
+    expect(bridge.meStats).toHaveBeenCalledTimes(1);
 
-    // Picking Sam swaps the breakdown to Sam, fetched by their id.
-    await person.click(within(panel).getByRole("button", { name: /Sam/ }));
-    expect(await within(stats).findByRole("heading", { name: /^Sam/ })).toBeInTheDocument();
-    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(
-      expect.any(String),
-      expect.any(String),
-      "b1c7e513-b094-4d4c-ae55-21790ae019a4",
-    ));
-    expect(await within(stats).findByText("Blender")).toBeInTheDocument();
+    // Act: picking Sam
+    await pickPerson(person, panel, "Sam");
+
+    // Assert: his id travels with both reads and the page answers for him alone.
+    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id));
+    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id));
+    await within(panel).findByLabelText("Totals for Sam");
+    await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("2.5k"));
+    expect(teamTotal(panel, "Active time")).toHaveTextContent("50m");
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent("20m");
+    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("1h 30m");
+    expect(await within(panel).findByText("Blender")).toBeInTheDocument();
   });
 
-  it("states the agent time limit word for word under both the Humans and the Agents page", async () => {
+  it("never draws one person's tokens under another's name while the next read is on its way", async () => {
+    // Arrange: Sam's agents read never lands.
+    const bridge = bridgeFor({
+      agentShifts: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, userId?: string) => (
+        userId === sam.id
+          ? new Promise(() => undefined)
+          : Promise.resolve({ ...agentShifts, tokenTotals: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 } })
+      )),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M");
+
+    // Act
+    await pickPerson(person, panel, "Sam");
+
+    // Assert: the team's figure is gone, not left under Sam's name.
+    await within(panel).findByLabelText("Totals for Sam");
+    expect(teamTotal(panel, "Tokens")).not.toHaveTextContent("1.5M");
+    expect(within(panel).queryByRole("region", { name: "Repos" })).toHaveTextContent("Loading…");
+  });
+
+  it("returns to the whole team when Everyone is pressed after picking a teammate", async () => {
+    // Arrange
+    const bridge = bridgeFor({
+      agentShifts: vi.fn().mockImplementation(async (_fromAt?: string, _toExclusiveAt?: string, userId?: string) => ({
+        ...agentShifts,
+        tokenTotals: userId === sam.id
+          ? { tokensIn: 2_000, tokensOut: 500, tokens: 2_500 }
+          : { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 },
+      })),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    await pickPerson(person, panel, "Sam");
+    await within(panel).findByLabelText("Totals for Sam");
+    await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("2.5k"));
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "Everyone" }));
+
+    // Assert
+    await within(panel).findByLabelText("Totals");
+    await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M"));
+    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined);
+    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
+    expect(within(panel).queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
+  });
+
+  it("states the agent time limit word for word, once, on the one page", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
-    const panel = await openAllStats(person);
-    await within(panel).findByLabelText("Totals");
 
     // Act
-    const onHumans = within(panel).getByTestId("agent-time-limit").textContent;
-    await person.click(agentsTab(panel));
-    await within(panel).findByTestId("agent-shifts");
+    const panel = await openAgentsPage(person);
 
     // Assert
     const note = "A shift that goes 30 minutes without activity stops counting and cannot resume; later work in that session is not included.";
-    expect(onHumans).toBe(note);
-    expect(within(panel).getByTestId("agent-time-limit")).toHaveTextContent(note);
+    expect(within(panel).getAllByTestId("agent-time-limit")).toHaveLength(1);
+    expect(within(panel).getByTestId("agent-time-limit").textContent).toBe(note);
   });
 
-  it("writes the breakdown in plain words and drops empty agent buckets", async () => {
+  it("writes the split in plain words and drops empty agent buckets", async () => {
     const bridge = bridgeFor({
       meStats: vi.fn().mockResolvedValue({
         ...meStats,
@@ -1575,20 +1707,21 @@ describe("the team board", () => {
     render(<App bridge={bridge} />);
 
     const panel = await openAllStats(person);
-    const stats = within(panel).getByTestId("member-stats");
-    const breakdown = within(stats).getByTestId("breakdown");
-    expect(breakdown).toHaveTextContent("Human work");
-    expect(breakdown).toHaveTextContent("With 1 agent");
-    expect(breakdown).toHaveTextContent("With 3+ agents");
-    expect(breakdown).toHaveTextContent("1h 30m");
-    expect(breakdown).not.toHaveTextContent("With 2 agents");
+    await pickPerson(person, panel, user.name);
+    const split = within(await within(panel).findByRole("region", { name: "Active time, by agents running" }));
+    expect(split.getByText("No agent running")).toBeInTheDocument();
+    expect(split.getByText("With 1 agent")).toBeInTheDocument();
+    expect(split.getByText("With 3+ agents")).toBeInTheDocument();
+    expect(split.getByText("1h 30m")).toBeInTheDocument();
+    expect(split.queryByText("With 2 agents")).not.toBeInTheDocument();
     // What the agents themselves added up to is the agent's number, not the
-    // person's; it lives on the Agents tab now.
-    expect(breakdown).not.toHaveTextContent("while away");
-    expect(breakdown).not.toHaveTextContent("Total agent time");
+    // person's; it is the Agent time total's.
+    expect(split.queryByText(/while away/)).not.toBeInTheDocument();
+    expect(split.queryByText(/Total agent time/)).not.toBeInTheDocument();
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent("6h 00m");
   });
 
-  // The same card as the web's, and the same report: 1h56m recorded against
+  // The same page as the web's, and the same report: 1h56m recorded against
   // 37m active with no agent time measured anywhere in the window. The header
   // called the difference "unattended agent time" from `recorded > active`
   // alone, and the app list under it summed to presence while the project list
@@ -1615,61 +1748,51 @@ describe("the team board", () => {
     };
     const bridge = bridgeFor({
       meStats: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, userId?: string) =>
-        Promise.resolve(userId === undefined ? meStats : samStats)),
+        Promise.resolve(userId === sam.id ? samStats : meStats)),
     });
     const person = userEvent.setup();
     render(<App bridge={bridge} />);
 
-    // A teammate's card, so the numbers are the server's rather than this
+    // A teammate's page, so the numbers are the server's rather than this
     // machine's live day.
     const panel = await openAllStats(person);
-    await person.click(within(panel).getByRole("button", { name: /Sam/ }));
-    const stats = within(panel).getByTestId("member-stats");
-    await within(stats).findByRole("heading", { name: /^Sam/ });
+    await pickPerson(person, panel, "Sam");
+    await within(panel).findByLabelText("Totals for Sam");
+    await waitFor(() => expect(teamTotal(panel, "Recorded time")).toHaveTextContent("1h 56m"));
 
-    const total = within(stats).getByText(/recorded/).closest("p");
-    expect(total).not.toHaveTextContent(/agent/i);
-    expect(total).toHaveTextContent("1h 56m");
-    expect(total).toHaveTextContent("1h 19m of it away from the keyboard");
+    const note = await within(panel).findByText(/^Recorded: /);
+    expect(note).not.toHaveTextContent(/agent/i);
+    expect(note).toHaveTextContent("1h 19m of it away from the keyboard");
 
     // The app list closes on the same total the project list does.
-    const apps = within(stats).getByTestId("member-app-list");
-    expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
-    expect(within(stats).getByTestId("member-project-list")).toHaveTextContent("1h 56m");
+    const apps = within(within(panel).getByRole("region", { name: "Apps" }));
+    expect(apps.getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
+    expect(within(within(panel).getByRole("region", { name: "Projects" })).getAllByRole("listitem")[0]).toHaveTextContent("1h 56m");
   });
 
-  it("keeps the breakdown quiet when there is nothing recorded", async () => {
+  it("draws no split when no active time was recorded", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
 
     const panel = await openAllStats(person);
-    const stats = within(panel).getByTestId("member-stats");
-    const breakdown = within(stats).getByTestId("breakdown");
-    expect(breakdown).toHaveTextContent("Human work");
-    expect(breakdown).not.toHaveTextContent("Total agent time");
-    expect(within(stats).queryByTestId("agent-sessions")).not.toBeInTheDocument();
+    await pickPerson(person, panel, user.name);
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+
+    expect(within(panel).queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("Total agent time");
+    expect(within(panel).queryByTestId("agent-sessions")).not.toBeInTheDocument();
   });
 
-  it("offers a way back to your own breakdown after picking a teammate", async () => {
-    const samStats = {
-      ...meStats,
-      totalDurationSeconds: 5_400,
-      apps: [{ processName: "blender.exe", durationSeconds: 5_400 }],
-    };
-    const bridge = bridgeFor({
-      meStats: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, userId?: string) =>
-        Promise.resolve(userId === undefined ? meStats : samStats)),
-    });
+  it("offers Everyone, not a way back to yourself, after picking a teammate", async () => {
     const person = userEvent.setup();
-    render(<App bridge={bridge} />);
+    render(<App bridge={bridgeFor()} />);
 
     const panel = await openAllStats(person);
-    const stats = within(panel).getByTestId("member-stats");
-    await person.click(within(panel).getByRole("button", { name: /Sam/ }));
-    expect(await within(stats).findByRole("heading", { name: /^Sam/ })).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
+    await pickPerson(person, panel, "Sam");
 
-    await person.click(within(stats).getByRole("button", { name: "Show my own" }));
-    expect(await within(stats).findByRole("heading", { name: /^Timer User/ })).toBeInTheDocument();
+    expect(await within(panel).findByRole("button", { name: "Everyone" })).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Show my own" })).not.toBeInTheDocument();
   });
 
   it("surfaces a failed self/today read instead of a blank or endless state", async () => {
@@ -1683,9 +1806,9 @@ describe("the team board", () => {
     expect(screen.queryByTestId("today-panel-empty")).not.toBeInTheDocument();
 
     const panel = await openAllStats(person);
-    const stats = within(panel).getByTestId("member-stats");
-    expect(within(stats).getByRole("alert")).toHaveTextContent("The stats service is unavailable.");
-    expect(within(stats).queryByText("Loading…")).not.toBeInTheDocument();
+    await pickPerson(person, panel, user.name);
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("The stats service is unavailable.");
+    await waitFor(() => expect(within(panel).queryByText("Loading…")).not.toBeInTheDocument());
   });
 
   it("rides out fewer than three failed refreshes on last-good data", async () => {
@@ -1995,7 +2118,7 @@ describe("the team board", () => {
   });
 });
 
-describe("the agents tab", () => {
+describe("the agents and repos on the one page", () => {
   /// The server's token bars over three hours. Every total is deliberately not
   /// in + out, and no project's bars add up to the period's, so a client that
   /// summed anything itself would draw different bars than these.
@@ -2024,7 +2147,9 @@ describe("the agents tab", () => {
     render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
 
     // Act
-    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+    const panel = await openAgentsPage(person);
+    await person.click(within(within(panel).getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Tokens" }));
+    const chart = within(panel).getByTestId("token-chart");
 
     // Assert: one bar per hour that burned anything, at the server's total.
     expect(drawnTokens(chart)).toEqual([999, 3_000]);
@@ -2036,9 +2161,11 @@ describe("the agents tab", () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
-    const chart = within(within(await openAgentsTab(person)).getByRole("region", { name: "Over time" }));
+    const chart = within(within(await openAgentsPage(person)).getByRole("region", { name: "Over time" }));
     const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
     expect(chart.queryByRole("combobox")).not.toBeInTheDocument();
+    await person.click(toggle.getByRole("button", { name: "Tokens" }));
+    expect(chart.getByTestId("token-chart")).toBeInTheDocument();
 
     // Act
     await person.click(toggle.getByRole("button", { name: "Agent time" }));
@@ -2062,7 +2189,9 @@ describe("the agents tab", () => {
     };
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart: dailyChart }) })} />);
-    const chart = within(await openAgentsTab(person)).getByTestId("token-chart");
+    const panel = await openAgentsPage(person);
+    await person.click(within(within(panel).getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Tokens" }));
+    const chart = within(panel).getByTestId("token-chart");
 
     // Act: read every bar out from the keyboard.
     act(() => within(chart).getByRole("img", { name: "Tokens burned per day" }).focus());
@@ -2085,23 +2214,22 @@ describe("the agents tab", () => {
     render(<App bridge={bridgeFor()} />);
 
     // Act
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
 
-    // Assert: agent time alone, with no toggle to a measure it cannot draw.
+    // Assert: time alone, with no toggle to a measure it cannot draw.
     expect(within(panel).getByTestId("hourly-graph")).toBeInTheDocument();
     expect(within(panel).queryByTestId("token-chart")).not.toBeInTheDocument();
-    expect(within(panel).queryByRole("group", { name: "What the chart shows" })).not.toBeInTheDocument();
+    expect(within(within(panel).getByRole("group", { name: "What the chart shows" })).queryByRole("button", { name: "Tokens" })).not.toBeInTheDocument();
   });
 
-  it("maps every shift under its codebase, with the total recorded on top", async () => {
+  it("maps every shift under its codebase, beside the team's totals", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
 
-    // The totals row leads with the recorded agent time, as on the Humans
-    // page, then the codebases, heaviest first.
-    expect(teamTotal(panel, "Agent time")).toHaveTextContent(/^2h 00m$/);
+    // The totals row is the team's, then the codebases, heaviest first.
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent(/^1h 30m$/);
     const groups = within(panel).getAllByTestId("shift-group");
     expect(groups).toHaveLength(2);
     expect(groups[0]).toHaveTextContent("siqshift");
@@ -2114,8 +2242,6 @@ describe("the agents tab", () => {
     expect(groups[1]).toHaveTextContent("Run worktree, codebase not identified");
     expect(groups[1]).not.toHaveTextContent("No codebase recorded");
     expect(groups[1]!.textContent).not.toMatch(/held|pending/);
-    // There is no people board here: nothing on the page picks a person.
-    expect(within(panel).queryByTestId("agent-roster-list")).not.toBeInTheDocument();
   });
 
   it("shows who is running an agent right now, above the range's map", async () => {
@@ -2133,7 +2259,7 @@ describe("the agents tab", () => {
     });
     render(<App bridge={bridge} />);
 
-    const panel = await openAgentsTab(userEvent.setup());
+    const panel = await openAgentsPage(userEvent.setup());
 
     // The description renders verbatim, never re-derived: every clause is a
     // captured fact, and the codebase label rides beside it.
@@ -2145,10 +2271,36 @@ describe("the agents tab", () => {
     expect(within(live).getAllByText(/Codex in (siqshift|quartermaster)/)).toHaveLength(2);
   });
 
+  it("narrows who is running an agent to the person picked, without asking again", async () => {
+    // Arrange: Sam and the signed-in member each have an agent running.
+    const bridge = bridgeFor({
+      liveAgentSessions: vi.fn().mockResolvedValue({
+        people: [
+          { owner: { id: sam.id, name: sam.name }, sessions: [{ id: "00000000-0000-4000-8000-000000000711", source: "codex", repo: "siqshift", description: "Codex in siqshift, running 12m" }] },
+          { owner: { id: user.id, name: user.name }, sessions: [{ id: "00000000-0000-4000-8000-000000000712", source: "pi", repo: null, description: "Pi in no codebase recorded, running 3m" }] },
+        ],
+      }),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    const liveReads = vi.mocked(bridge.liveAgentSessions).mock.calls.length;
+    expect(await within(panel).findByText("Codex in siqshift, running 12m")).toBeInTheDocument();
+    expect(within(panel).getByText("Pi in no codebase recorded, running 3m")).toBeInTheDocument();
+
+    // Act
+    await pickPerson(person, panel, user.name);
+
+    // Assert
+    await waitFor(() => expect(within(panel).queryByText("Codex in siqshift, running 12m")).not.toBeInTheDocument());
+    expect(within(panel).getByText("Pi in no codebase recorded, running 3m")).toBeInTheDocument();
+    expect(bridge.liveAgentSessions).toHaveBeenCalledTimes(liveReads);
+  });
+
   it("says nobody is running rather than drawing an empty live board", async () => {
     render(<App bridge={bridgeFor()} />);
 
-    const panel = await openAgentsTab(userEvent.setup());
+    const panel = await openAgentsPage(userEvent.setup());
 
     expect(await within(panel).findByTestId("live-sessions-empty")).toHaveTextContent("No agent is running right now.");
   });
@@ -2181,7 +2333,7 @@ describe("the agents tab", () => {
     render(<App bridge={bridgeFor()} />);
 
     // Act
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
     const groups = within(panel).getAllByTestId("shift-group");
 
     // Assert: the head reads on the same columns as the web's, so the two apps
@@ -2197,7 +2349,7 @@ describe("the agents tab", () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
     const group = within(panel).getAllByTestId("shift-group")[0]!;
     const head = group.querySelector("summary");
 
@@ -2223,27 +2375,31 @@ describe("the agents tab", () => {
     // bound them and the folded line has something to draw.
     vi.setSystemTime(new Date("2026-08-06T20:00:00.000Z"));
     const person = userEvent.setup();
-    render(<App bridge={bridgeFor()} />);
+    render(<App bridge={bridgeFor({
+      // An unbounded range gets no hourly series, as the server answers.
+      workspaceReport: vi.fn().mockImplementation(async (fromAt?: string) => (
+        fromAt === undefined ? { ...workspaceReport, hourly: [] } : workspaceReport
+      )),
+    })} />);
 
-    const panel = await openAgentsTab(person);
-    const shifts = within(panel).getByTestId("agent-shifts");
-    // A bounded range folds an hourly line from the shifts on screen.
-    expect(within(shifts).getByTestId("hourly-graph")).toBeInTheDocument();
+    const panel = await openAgentsPage(person);
+    // A bounded range draws an hourly line.
+    expect(within(panel).getByTestId("hourly-graph")).toBeInTheDocument();
 
     await person.click(within(panel).getByRole("button", { name: "All time" }));
 
     // Per-hour resolution over an unbounded range is meaningless, so the graph
-    // goes away - but the codebase map and its total stay put.
-    await waitFor(() => expect(within(shifts).queryByTestId("hourly-graph")).not.toBeInTheDocument());
-    expect(within(shifts).getByText("2h 00m")).toBeInTheDocument();
-    expect(within(shifts).getAllByTestId("shift-group")).toHaveLength(2);
+    // goes away - but the codebase map and its totals stay put.
+    await waitFor(() => expect(within(panel).queryByTestId("hourly-graph")).not.toBeInTheDocument());
+    expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
+    expect(within(panel).getAllByTestId("shift-group")).toHaveLength(2);
   });
 
   it("gives each shift its own line: when, who, what model, what commits", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
     const group = within(panel).getAllByTestId("shift-group")[0]!;
     // The rows are not in the response that drew the head: opening the drawer
     // is what asks for them.
@@ -2268,7 +2424,7 @@ describe("the agents tab", () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShiftRows })} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
 
     // The whole point of the change: drawing the heads costs no rows at all.
     expect(agentShiftRows).not.toHaveBeenCalled();
@@ -2282,6 +2438,29 @@ describe("the agents tab", () => {
     expect(agentShiftRows.mock.calls[0]?.slice(0, 2)).toEqual(["siqshift", null]);
     expect(agentShiftRows.mock.calls[0]?.[2]).toEqual(expect.any(String));
     expect(agentShiftRows.mock.calls[0]?.[3]).toEqual(expect.any(String));
+    // The team page names nobody, as its heads did not.
+    expect(agentShiftRows.mock.calls[0]?.[4]).toBeUndefined();
+  });
+
+  it("asks for a picked person's shifts under the same person the heads were read with", async () => {
+    // Arrange
+    const agentShiftRows = vi.fn().mockImplementation(
+      async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after),
+    );
+    const bridge = bridgeFor({ agentShiftRows });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    await pickPerson(person, panel, "Sam");
+    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id));
+    await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
+
+    // Act
+    await person.click(within(panel).getAllByTestId("shift-group")[0]!.querySelector("summary")!);
+
+    // Assert
+    await waitFor(() => expect(agentShiftRows).toHaveBeenCalledTimes(1));
+    expect(agentShiftRows.mock.calls[0]?.[4]).toBe(sam.id);
   });
 
   it("pages a long drawer rather than pulling the whole group at once", async () => {
@@ -2291,7 +2470,7 @@ describe("the agents tab", () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShiftRows })} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
     const group = within(panel).getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
 
@@ -2313,7 +2492,7 @@ describe("the agents tab", () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShiftRows: vi.fn().mockRejectedValue(new Error("nope")) })} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
     const group = within(panel).getAllByTestId("shift-group")[0]!;
     await person.click(group.querySelector("summary")!);
 
@@ -2329,7 +2508,7 @@ describe("the agents tab", () => {
       agentShifts: vi.fn().mockResolvedValue({ totalAgentSeconds: 0, hourly: [], groups: [] }),
     })} />);
 
-    const panel = await openAgentsTab(person);
+    const panel = await openAgentsPage(person);
 
     expect(within(panel).getByText("No agent worked in this range.")).toBeInTheDocument();
   });
@@ -2564,13 +2743,13 @@ describe("profile pictures", () => {
     // Act
     const panel = await openAllStats(person);
     const [, samRow, ownRow] = within(await within(panel).findByRole("table", { name: "People" })).getAllByRole("row");
-    await person.click(within(panel).getByRole("button", { name: /Sam/ }));
+    await pickPerson(person, panel, "Sam");
 
     // Assert
     await waitFor(() => expect(samRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
     expect(ownRow?.querySelector(".member-avatar")).toHaveTextContent("TU");
-    const card = within(panel).getByTestId("member-stats");
-    await waitFor(() => expect(card.querySelector("h4 img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    const subject = panel.querySelector(".tv-subject");
+    await waitFor(() => expect(subject?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
     expect(memberPicture).toHaveBeenCalledTimes(1);
     expect(memberPicture).toHaveBeenCalledWith(sam.id, PICTURE_VERSION);
   });
@@ -2626,7 +2805,8 @@ describe("profile pictures", () => {
     const panel = await openAllStats(person);
     const [, , ownRow] = within(await within(panel).findByRole("table", { name: "People" })).getAllByRole("row");
     await waitFor(() => expect(ownRow?.querySelector("img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
-    const cardPicture = within(panel).getByTestId("member-stats").querySelector("h4 img.member-avatar")?.getAttribute("src");
+    await pickPerson(person, panel, user.name);
+    const cardPicture = panel.querySelector(".tv-subject img.member-avatar")?.getAttribute("src");
     await person.click(within(panel).getByRole("button", { name: "Close all stats" }));
     const group = await openPictureGroup(person);
 

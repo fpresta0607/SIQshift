@@ -1079,27 +1079,33 @@ impl ApiClient {
     }
 
     /// Every shift in the range grouped by the codebase it worked, for the
-    /// Agents tab. Bounds arrive together or not at all; none means all time.
+    /// dashboard's agents cards. Bounds arrive together or not at all; none
+    /// means all time. A `user_id` narrows it to that member's shifts and is
+    /// sent only when present, so the team read keeps working against an API
+    /// deployed before the parameter existed.
     pub async fn agent_shifts(
         &self,
         access_token: &str,
         from_at: Option<&str>,
         to_exclusive_at: Option<&str>,
+        user_id: Option<&str>,
     ) -> ApiResult<AgentShifts> {
-        let query = match (from_at, to_exclusive_at) {
-            (Some(from_at), Some(to_exclusive_at)) => {
-                format!("?fromAt={from_at}&toExclusiveAt={to_exclusive_at}")
-            }
-            _ => String::new(),
-        };
-        self.get_json(access_token, &format!("/reports/agent-shifts{query}"))
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
+            pairs.push(("fromAt", from_at));
+            pairs.push(("toExclusiveAt", to_exclusive_at));
+        }
+        if let Some(user_id) = user_id {
+            pairs.push(("userId", user_id));
+        }
+        self.get_json_query(access_token, "/reports/agent-shifts", &pairs)
             .await
     }
 
     /// One page of one group's shifts, from the cursor the page before it
     /// returned. The bounds are the ones the group heads were read with,
-    /// because a drawer that asked under a different range would list shifts
-    /// its own head never counted.
+    /// because a drawer that asked under a different range, or for a different
+    /// person, would list shifts its own head never counted.
     pub async fn agent_shift_rows(
         &self,
         access_token: &str,
@@ -1107,6 +1113,7 @@ impl ApiClient {
         after: Option<&AgentShiftCursor>,
         from_at: Option<&str>,
         to_exclusive_at: Option<&str>,
+        user_id: Option<&str>,
     ) -> ApiResult<AgentShiftRows> {
         let mut pairs = vec![("groupKey", group_key)];
         // Both halves of the cursor or neither: the filters schema refuses a
@@ -1124,6 +1131,9 @@ impl ApiClient {
         if let (Some(from_at), Some(to_exclusive_at)) = (from_at, to_exclusive_at) {
             pairs.push(("fromAt", from_at));
             pairs.push(("toExclusiveAt", to_exclusive_at));
+        }
+        if let Some(user_id) = user_id {
+            pairs.push(("userId", user_id));
         }
         self.get_json_query(access_token, "/reports/agent-shifts/rows", &pairs)
             .await
@@ -2360,6 +2370,7 @@ mod tests {
                 Some(&cursor),
                 Some("2026-08-06T00:00:00.000Z"),
                 Some("2026-08-07T00:00:00.000Z"),
+                None,
             )
             .await
             .expect("the page reads");
@@ -2402,6 +2413,79 @@ mod tests {
         assert_eq!(page.shifts.len(), 1);
         assert_eq!(page.shifts[0].commit_count, 2);
         assert!(page.next_cursor.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_the_agents_of_one_person_with_their_id_on_the_wire() {
+        const AGENT_SHIFTS: StubAnswer = ("200 OK", "", r#"{"groups": []}"#);
+        let (client, served) = scripted_stub(vec![AGENT_SHIFTS]).await;
+
+        client
+            .agent_shifts(
+                "token",
+                Some("2026-08-06T00:00:00.000Z"),
+                Some("2026-08-07T00:00:00.000Z"),
+                Some("user & 1"),
+            )
+            .await
+            .expect("the shifts read");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(
+            requests[0].0,
+            "GET /reports/agent-shifts?fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z&userId=user+%26+1"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_the_agents_of_the_team_with_no_user_id() {
+        const AGENT_SHIFTS: StubAnswer = ("200 OK", "", r#"{"groups": []}"#);
+        let (client, served) = scripted_stub(vec![AGENT_SHIFTS, AGENT_SHIFTS]).await;
+
+        client
+            .agent_shifts("token", None, None, None)
+            .await
+            .expect("the all-time team shifts read");
+        client
+            .agent_shifts(
+                "token",
+                Some("2026-08-06T00:00:00.000Z"),
+                Some("2026-08-07T00:00:00.000Z"),
+                None,
+            )
+            .await
+            .expect("the ranged team shifts read");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(requests[0].0, "GET /reports/agent-shifts");
+        assert_eq!(
+            requests[1].0,
+            "GET /reports/agent-shifts?fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_a_page_of_one_persons_shifts_with_their_id_after_the_range() {
+        const PAGE: StubAnswer = ("200 OK", "", r#"{"shifts": [], "nextCursor": null}"#);
+        let (client, served) = scripted_stub(vec![PAGE]).await;
+
+        client
+            .agent_shift_rows(
+                "token",
+                "siqshift",
+                None,
+                Some("2026-08-06T00:00:00.000Z"),
+                Some("2026-08-07T00:00:00.000Z"),
+                Some("user-1"),
+            )
+            .await
+            .expect("the page reads");
+
+        let requests = served.await.expect("the stub finishes");
+        assert_eq!(
+            requests[0].0,
+            "GET /reports/agent-shifts/rows?groupKey=siqshift&fromAt=2026-08-06T00%3A00%3A00.000Z&toExclusiveAt=2026-08-07T00%3A00%3A00.000Z&userId=user-1"
+        );
     }
 
     #[test]

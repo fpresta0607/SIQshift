@@ -19,9 +19,9 @@
       "types": "./dist/ui.d.ts",
       "import": "./dist/ui.js"
     },
-    "./workspace-view": {
-      "types": "./dist/workspace-view.d.ts",
-      "import": "./dist/workspace-view.js"
+    "./dashboard-view": {
+      "types": "./dist/dashboard-view.d.ts",
+      "import": "./dist/dashboard-view.js"
     }
   },
   "files": [
