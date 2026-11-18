@@ -26,7 +26,6 @@ import {
   ProjectIconPicker,
   ProjectIconTile,
   QuietMark,
-  SegmentedControl,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -46,10 +45,14 @@ import { LandingPage } from "./LandingPage.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
 import {
+  DashboardFilter,
   DashboardView,
   TeamViewHead,
+  dayBounds,
+  localDay,
   projectMeterRows,
   reportedAppearance,
+  type DashboardDays,
 } from "@siqshift/shared/dashboard-view";
 
 type AppProps = { client: Client };
@@ -82,7 +85,9 @@ const rangeDays: Record<Range, number | null> = { today: 1, "7d": 7, "30d": 30, 
  * midnight. Calendar-date params would be read as UTC days, which roll over
  * mid-afternoon west of Greenwich. "All time" carries no bounds.
  */
-const rangeBounds = (range: Range, now = new Date()): { fromAt: string; toExclusiveAt: string } | undefined => {
+type Bounds = { fromAt: string; toExclusiveAt: string };
+
+const rangeBounds = (range: Range, now = new Date()): Bounds | undefined => {
   const days = rangeDays[range];
   if (days === null) return undefined;
   const toExclusive = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -94,10 +99,17 @@ const rangeBounds = (range: Range, now = new Date()): { fromAt: string; toExclus
 /// The range as a query string; "All time" sends no bounds at all, which is
 /// how the server reads "everything".
 export function rangeQuery(range: Range, now = new Date()): string {
-  const bounds = rangeBounds(range, now);
-  if (bounds === undefined) return "";
-  return `?fromAt=${encodeURIComponent(bounds.fromAt)}&toExclusiveAt=${encodeURIComponent(bounds.toExclusiveAt)}`;
+  return boundsQuery(rangeBounds(range, now));
 }
+
+const boundsQuery = (bounds: Bounds | undefined): string =>
+  bounds === undefined ? "" : `?fromAt=${encodeURIComponent(bounds.fromAt)}&toExclusiveAt=${encodeURIComponent(bounds.toExclusiveAt)}`;
+
+/// Custom days open on the last week, today included.
+const lastWeek = (): DashboardDays => {
+  const today = new Date();
+  return { from: localDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)), to: localDay(today) };
+};
 
 /** Appends extra query parameters onto a possibly-empty range query. */
 const withParams = (base: string, params: Record<string, string>): string => {
@@ -152,6 +164,10 @@ export const App = ({ client }: AppProps) => {
 
   const [scope, setScope] = useState<ProjectScope>("all");
   const [range, setRange] = useState<Range>("30d");
+  // Custom days are this visit's own question: the saved preference keeps the
+  // last preset, because the preferences contract has no custom range.
+  const [isCustomRange, setCustomRange] = useState(false);
+  const [customDays, setCustomDays] = useState<DashboardDays>(lastWeek);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [organization, setOrganization] = useState<Organization | undefined>();
   const [selfId, setSelfId] = useState<string | undefined>();
@@ -212,6 +228,8 @@ export const App = ({ client }: AppProps) => {
     (base: string): string => (scope === "all" ? base : withParams(base, { scope })),
     [scope],
   );
+  /// The dashboard's range as a query: a preset, or the custom days.
+  const statsQuery = isCustomRange ? boundsQuery(dayBounds(customDays)) : rangeQuery(range);
 
   // The agents' read for the person picked, as a query shared by the group
   // heads and by the rows behind them so a drawer can never ask under a
@@ -221,9 +239,9 @@ export const App = ({ client }: AppProps) => {
   // unknown key is a 400 that empties the agents' cards.
   const shiftsQuery = useCallback(
     (): string => scopeParams(
-      member === undefined ? rangeQuery(range) : withParams(rangeQuery(range), { userId: member.id }),
+      member === undefined ? statsQuery : withParams(statsQuery, { userId: member.id }),
     ),
-    [scopeParams, range, member],
+    [scopeParams, statsQuery, member],
   );
 
   // One page of one group's shifts, asked for when a drawer opens. Its
@@ -313,7 +331,7 @@ export const App = ({ client }: AppProps) => {
     const request = boardRequest.current;
     setBoardFailed(false);
     try {
-      const report = await client.workspace(scopeParams(rangeQuery(range)));
+      const report = await client.workspace(scopeParams(statsQuery));
       if (request !== boardRequest.current) return undefined;
       setWorkspace(report);
       setDataError(undefined);
@@ -330,11 +348,11 @@ export const App = ({ client }: AppProps) => {
       setDataError(message);
       return message;
     }
-  }, [client, range, scopeParams, expireSession]);
+  }, [client, statsQuery, scopeParams, expireSession]);
 
   useEffect(() => {
     setWorkspace(undefined);
-  }, [range, scope]);
+  }, [statsQuery, scope]);
 
   useEffect(() => {
     if (!signedIn || !preferencesReady) return;
@@ -417,7 +435,7 @@ export const App = ({ client }: AppProps) => {
     let cancelled = false;
     setMemberStats(undefined);
     setMemberFailed(false);
-    client.meStats(scopeParams(withParams(rangeQuery(range), { userId: subjectId }))).then(
+    client.meStats(scopeParams(withParams(statsQuery, { userId: subjectId }))).then(
       (result) => {
         if (!cancelled) setMemberStats(result);
       },
@@ -433,7 +451,7 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, allStatsOpen, range, subjectId, scopeParams, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, statsQuery, subjectId, scopeParams, expireSession]);
 
   // The agents' read - tokens, the token chart, the agents and the repos -
   // for the same person and range. It is blanked when the question changes,
@@ -493,7 +511,7 @@ export const App = ({ client }: AppProps) => {
   useEffect(() => {
     if (!signedIn || !preferencesReady || !sessionsOpen) return undefined;
     let cancelled = false;
-    client.report(withParams(scopeParams(rangeQuery(range)), { page: String(sessionPage), pageSize: "25" })).then(
+    client.report(withParams(scopeParams(statsQuery), { page: String(sessionPage), pageSize: "25" })).then(
       (result) => {
         if (cancelled) return;
         setSessionRows((current) => (sessionPage === 1 ? result.rows : [...current, ...result.rows]));
@@ -504,14 +522,14 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, sessionsOpen, range, sessionPage, scopeParams]);
+  }, [client, signedIn, preferencesReady, sessionsOpen, statsQuery, sessionPage, scopeParams]);
 
   // Reset on scope, range, or a fresh open: reopening the drawer with a page
   // counter still at 2 would append page 2's rows on top of themselves.
   useEffect(() => {
     setSessionPage(1);
     setSessionRows([]);
-  }, [scope, range, sessionsOpen]);
+  }, [scope, statsQuery, sessionsOpen]);
 
   // Settings draws the viewer's picture from what /me last said, so opening it
   // asks again: a picture put up or taken down from the desktop since then
@@ -919,10 +937,11 @@ export const App = ({ client }: AppProps) => {
         recordedNote: recordedBasis(memberStats.totalDurationSeconds, memberStats.activeSeconds, memberStats.concurrency.awaySeconds),
         appRows: buildAppRows(memberStats.apps, memberStats.totalDurationSeconds),
       };
-  const statsBounds = rangeBounds(range);
+  const statsBounds = isCustomRange ? dayBounds(customDays) : rangeBounds(range);
+  const rangeName = isCustomRange ? "Custom" : rangeSentence[range];
   const rangeSubtitle = statsBounds === undefined
-    ? rangeSentence[range]
-    : `${rangeSentence[range]} · ${formatRangeDays(statsBounds.fromAt, statsBounds.toExclusiveAt)}`;
+    ? rangeName
+    : `${rangeName} · ${formatRangeDays(statsBounds.fromAt, statsBounds.toExclusiveAt)}`;
 
   // Where the dashboard is pointed. The desktop's header names the project its
   // recording files under; a browser records nothing, so the same line names
@@ -1145,7 +1164,24 @@ export const App = ({ client }: AppProps) => {
             <div className="tv">
               <h2 id="all-stats-title" className="visually-hidden">All stats</h2>
               <TeamViewHead title={organization?.name ?? "Your workspace"} subtitle={rangeSubtitle}>
-                <SegmentedControl label="Date range" options={RANGE_OPTIONS} value={range} onChange={setRange} />
+                <DashboardFilter
+                  presets={RANGE_OPTIONS}
+                  range={isCustomRange ? "custom" : range}
+                  onRange={(next) => {
+                    setCustomRange(next === "custom");
+                    if (next !== "custom") setRange(next);
+                  }}
+                  days={customDays}
+                  onDays={setCustomDays}
+                  projects={projects.map((project) => ({
+                    id: project.id,
+                    name: project.name,
+                    appearance: appearanceOf(project.id),
+                    firstDay: localDay(new Date(project.createdAt)),
+                  }))}
+                  project={scope}
+                  onProject={setScope}
+                />
                 <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
               </TeamViewHead>
 

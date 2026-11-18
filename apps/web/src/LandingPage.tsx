@@ -65,8 +65,14 @@ function ProductPreview() {
     const runtimeSeconds = sum(visibleMembers.map(member => member.agents[index] ?? 0));
     return { source, agentSeconds: runtimeSeconds, shiftCount: Math.round(runtimeSeconds / 5400), tokens: runtimeSeconds * TOKENS_PER_AGENT_SECOND };
   });
-  const tokens = sum(runtimes.map(runtime => runtime.tokens));
-  const tokensOut = Math.round(tokens * 0.06);
+  // Each hour burns tokens in step with its agent time, so the bars add up to the Tokens total.
+  const tokenBuckets = exampleDay.map(bucket => {
+    const hourTokens = Math.round(bucket.agentSeconds * TOKENS_PER_AGENT_SECOND);
+    const hourOut = Math.round(hourTokens * 0.06);
+    return { start: bucket.hourStart, tokensIn: hourTokens - hourOut, tokensOut: hourOut, tokens: hourTokens };
+  });
+  const tokens = sum(tokenBuckets.map(bucket => bucket.tokens));
+  const tokensOut = sum(tokenBuckets.map(bucket => bucket.tokensOut));
   return (
     <figure className="landing-preview" aria-labelledby="preview-caption">
       <div className="tv tv-frame">
@@ -88,7 +94,7 @@ function ProductPreview() {
               return { icon: project.icon, color: project.color };
             }),
           }}
-          agents={{ tokenTotals: { tokensIn: tokens - tokensOut, tokensOut, tokens }, tokenChart: undefined, runtimes }}
+          agents={{ tokenTotals: { tokensIn: tokens - tokensOut, tokensOut, tokens }, tokenChart: { bucketSeconds: 3600, buckets: tokenBuckets }, runtimes }}
           people={boardMembers}
           boardTool={<span className="tv-card-note">Ranked by active time</span>}
           onSelectPerson={member => setMemberId(member === undefined || member.id === memberId ? null : member.id)}

@@ -669,6 +669,7 @@ async fn workspace_report(
     state: State<'_, AppState>,
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
+    scope: Option<String>,
 ) -> ApiResult<WorkspaceReport> {
     let access_token = state.access_token().await?;
     state
@@ -677,19 +678,22 @@ async fn workspace_report(
             &access_token,
             from_at.as_deref(),
             to_exclusive_at.as_deref(),
+            scope.as_deref(),
         )
         .await
 }
 
 /// Every shift in the range grouped by the codebase it worked, for the
 /// dashboard's agents cards. Bounds arrive together or not at all; both absent
-/// asks for all time. A `user_id` narrows it to one member's shifts.
+/// asks for all time. A `user_id` narrows it to one member's shifts and a
+/// `scope` to one project's.
 #[tauri::command]
 async fn agent_shifts(
     state: State<'_, AppState>,
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
     user_id: Option<String>,
+    scope: Option<String>,
 ) -> ApiResult<AgentShifts> {
     let access_token = state.access_token().await?;
     state
@@ -699,14 +703,15 @@ async fn agent_shifts(
             from_at.as_deref(),
             to_exclusive_at.as_deref(),
             user_id.as_deref(),
+            scope.as_deref(),
         )
         .await
 }
 
 /// One page of one group's shifts, asked for when a drawer opens. The bounds
-/// are the ones the group heads were read with, and so is the person: a drawer
-/// that asked under a different range or for someone else would list shifts
-/// its own head never counted.
+/// are the ones the group heads were read with, and so are the person and the
+/// project: a drawer that asked under a different range, for someone else or
+/// for another project would list shifts its own head never counted.
 #[tauri::command]
 async fn agent_shift_rows(
     state: State<'_, AppState>,
@@ -717,6 +722,7 @@ async fn agent_shift_rows(
     from_at: Option<String>,
     to_exclusive_at: Option<String>,
     user_id: Option<String>,
+    scope: Option<String>,
 ) -> ApiResult<AgentShiftRows> {
     let access_token = state.access_token().await?;
     // Half a cursor names no shift, so it asks for the first page rather than
@@ -737,16 +743,24 @@ async fn agent_shift_rows(
             from_at.as_deref(),
             to_exclusive_at.as_deref(),
             user_id.as_deref(),
+            scope.as_deref(),
         )
         .await
 }
 
-/// Who is running an agent right now, grouped by person, for the Agents tab's
-/// Live now card. No bounds: the view reads now.
+/// Who is running an agent right now, grouped by person, for the dashboard's
+/// Live now card. No bounds: the view reads now. A `scope` narrows it to one
+/// project.
 #[tauri::command]
-async fn agent_live_sessions(state: State<'_, AppState>) -> ApiResult<LiveAgentSessions> {
+async fn agent_live_sessions(
+    state: State<'_, AppState>,
+    scope: Option<String>,
+) -> ApiResult<LiveAgentSessions> {
     let access_token = state.access_token().await?;
-    state.client.live_agent_sessions(&access_token).await
+    state
+        .client
+        .live_agent_sessions(&access_token, scope.as_deref())
+        .await
 }
 
 /// How much of each coding agent's plan is left, read from what those CLIs

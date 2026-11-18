@@ -22,8 +22,10 @@
   --chart-axis: #a3b3c2;
   --chart-human: #8b98a8;
   --chart-agent: #00e59b;
-  /* A token bar's output share, stacked on the green input share. */
-  --chart-token-out: #7ff2c8;
+  /* Tokens are cost, not time, so their bars take their own hues: input at
+     the foot, output stacked on top. */
+  --chart-token-in: #85c6ff;
+  --chart-token-out: #c6a1f4;
   --chart-point: #ffffff;
   --chart-tooltip-surface: rgba(3, 5, 10, 0.92);
 
@@ -184,10 +186,11 @@ button:disabled { opacity: .55; cursor: default; }
 /* Quiet time is no app, so it gets no OS icon: a drawn moon stands in. */
 .quiet-mark { color: var(--text-secondary); }
 
-/* The dashboard chart's token bars: tokens in at the foot in green, tokens out
-   stacked on top in a lighter mint. Layout and the tooltip ride on `.graph`. */
-.token-bar.is-in { fill: var(--chart-agent); fill-opacity: .55; }
-.token-bar.is-out { fill: var(--chart-token-out); fill-opacity: .8; }
+/* The dashboard chart's token bars: tokens in at the foot in blue, tokens out
+   stacked on top in purple, under the time lines. Layout and the tooltip ride
+   on `.graph`. */
+.token-bar.is-in { fill: var(--chart-token-in); fill-opacity: .32; }
+.token-bar.is-out { fill: var(--chart-token-out); fill-opacity: .75; }
 .token-band { fill: var(--chart-grid-soft); }
 /* Its legend is its filter: each key a toggle, swatched as its series draws. */
 .work-chart-filter { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -197,7 +200,7 @@ button:disabled { opacity: .55; cursor: default; }
 .work-chart-key:disabled { cursor: default; }
 .work-chart-swatch { width: 14px; height: 2px; border-radius: 1px; background: var(--chart-human); }
 .work-chart-swatch[data-series-swatch="agent"] { background: var(--chart-agent); }
-.work-chart-swatch.is-bar { width: 10px; height: 10px; border-radius: 2px; background: linear-gradient(var(--chart-token-out) 45%, color-mix(in srgb, var(--chart-agent) 55%, transparent) 45%); }
+.work-chart-swatch.is-bar { width: 10px; height: 10px; border-radius: 2px; background: linear-gradient(var(--chart-token-out) 40%, color-mix(in srgb, var(--chart-token-in) 55%, transparent) 40%); }
 
 /* The dashboard (`@siqshift/shared/dashboard-view`): the one All stats page
    both apps open, and the home page's example of it. It lays out by its own
@@ -231,16 +234,17 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-head .ghost { padding: 6px 14px; font-size: .8rem; }
 /* The page's one filter: the range, the project, and custom days when picked. */
 .tv-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.tv-filter .seg { flex-wrap: wrap; max-width: 100%; }
 .tv-project-filter { position: relative; }
 .tv-project-button, .tv-project-menu button { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; border: 1px solid var(--glass-border); border-radius: 10px; padding: 4px 12px 4px 6px; background: rgba(3, 5, 10, .55); color: #ffffff; font-size: .8rem; font-weight: 600; white-space: nowrap; }
 .tv-project-button:hover { border-color: var(--glass-border-hover); }
 .tv-project-filter .project-icon, .tv-all-projects { width: 24px; height: 24px; }
-.tv-all-projects { flex: none; border: 1px dashed var(--glass-border-hover); border-radius: 7px; }
+.tv-all-projects { flex: none; color: var(--text-secondary); }
 .tv-project-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; display: grid; gap: 2px; min-width: 220px; max-height: 320px; overflow-y: auto; border: 1px solid var(--glass-border-hover); border-radius: 12px; padding: 6px; background: var(--chart-tooltip-surface); box-shadow: var(--glass-shadow); }
 .tv-project-menu button { width: 100%; border-color: transparent; background: transparent; }
 .tv-project-menu button:hover, .tv-project-menu button[aria-checked="true"] { background: color-mix(in srgb, var(--accent-green) 13%, transparent); color: var(--mint); }
 .tv-days { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.tv-days label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .76rem; }
+.tv-days label { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--text-secondary); font-size: .76rem; font-weight: 500; letter-spacing: normal; text-transform: none; }
 .tv-days input { min-height: 34px; border: 1px solid var(--glass-border); border-radius: 8px; padding: 3px 8px; background: rgba(3, 5, 10, .55); color: #ffffff; color-scheme: dark; font: inherit; font-size: .8rem; }
 .tv-days .ghost { padding: 6px 12px; font-size: .78rem; }
 .tv-days .ghost[aria-pressed="true"] { border-color: var(--glass-border-hover); color: var(--mint); }
@@ -285,6 +289,8 @@ button:disabled { opacity: .55; cursor: default; }
 .member-avatar { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--mint) 14%, transparent); color: var(--mint); font-size: .66rem; font-weight: 650; object-fit: cover; }
 .member-avatar.blue { background: #85c6ff20; color: #85c6ff; }
 .member-avatar.purple { background: #c6a1f420; color: #c6a1f4; }
+.tv-live .live-person { align-items: center; }
+.tv-live .live-person .member-avatar { width: 24px; height: 24px; font-size: .56rem; }
 
 /* The People board is a table, so its columns are the table's own. */
 .tv-people table { width: 100%; border-collapse: collapse; font-size: .86rem; font-variant-numeric: tabular-nums; }
@@ -339,7 +345,12 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-subject .member-avatar { width: 28px; height: 28px; font-size: .6rem; }
 .tv-subject-name { min-width: 0; margin-right: auto; overflow: hidden; font-size: 1rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .tv-subject .ghost { padding: 5px 13px; font-size: .78rem; }
-.tv-apps .meter-row { grid-template-columns: minmax(0, 1fr) minmax(40px, 110px) 5rem; }
+/* An app without an OS icon wears its initial on an outlined square: people
+   are round and projects are solid tiles, so the three never read alike. */
+.app-mark.app-letter { display: grid; place-items: center; box-sizing: border-box; border: 1.5px solid currentColor; border-radius: 7px; background: color-mix(in srgb, currentColor 10%, transparent); color: #a3b3c2; font-size: .78rem; font-weight: 700; line-height: 1; }
+.app-mark.app-letter[data-tone="sky"] { color: #85c6ff; }
+.app-mark.app-letter[data-tone="amber"] { color: #f2c26b; }
+.app-mark.app-letter[data-tone="rose"] { color: #f29bb0; }
 /* A person's active time, from no agent running to three or more: the human
    grey, then the agent green growing stronger with each agent. */
 .tv-swatch { width: 10px; height: 10px; margin: 0 auto; border-radius: 3px; background: var(--chart-human); }
@@ -372,7 +383,6 @@ button:disabled { opacity: .55; cursor: default; }
   /* A phone spends a breakdown's width on its names: the duration already
      says what the bar drew. */
   .tv-meter-list .meter-row { grid-template-columns: 28px minmax(0, 1fr) 5rem; }
-  .tv-apps .meter-row { grid-template-columns: minmax(0, 1fr) 5rem; }
   .tv-meter-list .meter-bar { display: none; }
 }
 

@@ -21,7 +21,7 @@ describe("defaultBridge", () => {
     invoke.mockResolvedValueOnce({
       kind: "ready",
       user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" },
-      projects: [{ id: ids.project, name: "Field work", color: 42, icon: null }],
+      projects: [{ id: ids.project, name: "Field work", color: 42, icon: null, createdAt: "2026-08-01T09:00:00.000Z" }],
       defaultProjectId: ids.project,
       selectedProjectId: null,
     });
@@ -33,7 +33,7 @@ describe("defaultBridge", () => {
     invoke.mockResolvedValueOnce({
       kind: "ready",
       user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" },
-      projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass" }],
+      projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass", createdAt: "2026-08-01T09:00:00.000Z" }],
       defaultProjectId: ids.project,
       selectedProjectId: ids.other,
     });
@@ -41,7 +41,7 @@ describe("defaultBridge", () => {
     await expect(defaultBridge.bootstrap()).resolves.toEqual({
       kind: "ready",
       user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: "0123456789abcdef" },
-      projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass" }],
+      projects: [{ id: ids.project, name: "Field work", color: "#62e4ba", icon: "compass", createdAt: "2026-08-01T09:00:00.000Z" }],
       defaultProjectId: ids.project,
       selectedProjectId: ids.other,
     });
@@ -425,6 +425,59 @@ describe("defaultBridge", () => {
     expect(teamHeads?.[1]).toMatchObject({ userId: undefined });
   });
 
+  it("names the project on every dashboard read and drawer page, and sends none for all projects", async () => {
+    // Arrange
+    invoke
+      .mockResolvedValueOnce({ activeSeconds: 0, agentSeconds: 0, hourly: [], projects: [], agents: [], members: [] })
+      .mockResolvedValueOnce({ groups: [] })
+      .mockResolvedValueOnce({ shifts: [], nextCursor: null })
+      .mockResolvedValueOnce({ people: [] })
+      .mockResolvedValueOnce({ people: [] });
+    const range = ["2026-08-01T00:00:00.000Z", "2026-08-08T00:00:00.000Z"] as const;
+
+    // Act
+    await defaultBridge.workspaceReport(...range, "p-1");
+    const workspace = invoke.mock.lastCall;
+    await defaultBridge.agentShifts(...range, undefined, "p-1");
+    const heads = invoke.mock.lastCall;
+    await defaultBridge.agentShiftRows("siqshift", null, ...range, undefined, "p-1");
+    const drawer = invoke.mock.lastCall;
+    await defaultBridge.liveAgentSessions("p-1");
+    const live = invoke.mock.lastCall;
+    await defaultBridge.liveAgentSessions();
+    const everything = invoke.mock.lastCall;
+
+    // Assert
+    expect(workspace).toEqual(["workspace_report", { fromAt: range[0], toExclusiveAt: range[1], scope: "p-1" }]);
+    expect(heads?.[0]).toBe("agent_shifts");
+    expect(heads?.[1]).toMatchObject({ fromAt: range[0], toExclusiveAt: range[1], scope: "p-1" });
+    expect(drawer?.[0]).toBe("agent_shift_rows");
+    expect(drawer?.[1]).toMatchObject({ groupKey: "siqshift", scope: "p-1" });
+    expect(live).toEqual(["agent_live_sessions", { scope: "p-1" }]);
+    expect(everything?.[1]).toMatchObject({ scope: undefined });
+  });
+
+  it("reads when a project was created from the account, and refuses a project that names none", async () => {
+    // Arrange
+    const account = (project: Record<string, unknown>) => ({
+      kind: "ready",
+      user: { id: ids.user, email: "timer@example.com", name: "Timer", pictureVersion: null },
+      projects: [project],
+      defaultProjectId: ids.project,
+      selectedProjectId: null,
+    });
+    invoke.mockResolvedValueOnce(account({ id: ids.project, name: "Field work", color: null, icon: null, createdAt: "2026-08-01T09:00:00.000Z" }));
+    invoke.mockResolvedValueOnce(account({ id: ids.project, name: "Field work", color: null, icon: null }));
+
+    // Act
+    const read = await defaultBridge.bootstrap();
+    const unread = defaultBridge.bootstrap();
+
+    // Assert
+    expect(read).toMatchObject({ projects: [{ createdAt: "2026-08-01T09:00:00.000Z" }] });
+    await expect(unread).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("round-trips the project tie on a shift row and its cursor, and reads absence as untied", async () => {
     const cursor = {
       startedAt: "2026-08-06T15:00:00.000Z",
@@ -499,7 +552,7 @@ describe("defaultBridge", () => {
     });
     // The command name and argument keys are the same seam the other polls
     // pin: a typo on either side compiles fine and leaves the live view dark.
-    expect(invoke).toHaveBeenLastCalledWith("agent_live_sessions", undefined);
+    expect(invoke).toHaveBeenLastCalledWith("agent_live_sessions", { scope: undefined });
 
     // An API older than this build sends no people at all: nobody running, an
     // honest empty state, not an error.
@@ -522,13 +575,13 @@ describe("defaultBridge", () => {
 
   it("sends a picked icon and color under the command name and input the host reads", async () => {
     // Arrange
-    invoke.mockResolvedValueOnce({ id: ids.project, name: "Field work", color: "#c6a1f4", icon: "bolt" });
+    invoke.mockResolvedValueOnce({ id: ids.project, name: "Field work", color: "#c6a1f4", icon: "bolt", createdAt: "2026-08-01T09:00:00.000Z" });
 
     // Act
     const updated = await defaultBridge.projectUpdate(ids.project, { icon: "bolt", color: "#c6a1f4" });
 
     // Assert
-    expect(updated).toEqual({ id: ids.project, name: "Field work", color: "#c6a1f4", icon: "bolt" });
+    expect(updated).toEqual({ id: ids.project, name: "Field work", color: "#c6a1f4", icon: "bolt", createdAt: "2026-08-01T09:00:00.000Z" });
     expect(invoke).toHaveBeenLastCalledWith("project_update", { id: ids.project, input: { icon: "bolt", color: "#c6a1f4" } });
   });
 

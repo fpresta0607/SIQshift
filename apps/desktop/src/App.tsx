@@ -40,7 +40,6 @@ import {
   ProjectIconPicker,
   ProjectIconTile,
   QuietMark,
-  SegmentedControl,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -56,10 +55,14 @@ import { RecordingPanel, recordingState, type RecordingState } from "./Recording
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
 import {
+  DashboardFilter,
   DashboardView,
   TeamViewHead,
+  dayBounds,
+  localDay,
   projectMeterRows,
   reportedAppearance,
+  type DashboardDays,
 } from "@siqshift/shared/dashboard-view";
 
 type AppProps = {
@@ -169,6 +172,12 @@ const rangeBounds = (range: StatsRange): { fromAt: string; toExclusiveAt: string
   return { fromAt: start.toISOString(), toExclusiveAt: end.toISOString() };
 };
 
+/// Custom days open on the last week, today included.
+const lastWeek = (): DashboardDays => {
+  const today = new Date();
+  return { from: localDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)), to: localDay(today) };
+};
+
 type TitlebarProps = {
   onOpenSettings?: (() => void) | undefined;
 };
@@ -223,6 +232,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   /// The All stats overlay keeps its own range and its own reading, so opening
   /// someone's week there never rewrites the day the main screen is showing.
   const [boardRange, setBoardRange] = useState<StatsRange>("today");
+  /// Custom days are the overlay's own and are not kept anywhere: closing the
+  /// app forgets them, as it forgets whom the board had picked.
+  const [isCustomRange, setCustomRange] = useState(false);
+  const [customDays, setCustomDays] = useState<DashboardDays>(lastWeek);
+  /// The project the dashboard reads: "all", or a project id. Local to the
+  /// overlay - the main screen's filing bar answers a different question.
+  const [boardScope, setBoardScope] = useState("all");
   /// The person the dashboard answers for, picked on its People board.
   /// Undefined is the whole team.
   const [boardMember, setBoardMember] = useState<{ id: string; name: string } | undefined>();
@@ -312,6 +328,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     setStats(undefined);
     setStatsError(undefined);
     setBoardMember(undefined);
+    setCustomRange(false);
+    setBoardScope("all");
     setBoardStats(undefined);
     setBoardStatsError(undefined);
     setWorkspace(undefined);
@@ -459,10 +477,16 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // refresh tick replaces the numbers in place instead of flashing "Loading…".
   const soleMemberId = workspace?.members.length === 1 ? workspace.members[0]?.user.id : undefined;
   const subjectId = boardMember?.id ?? soleMemberId;
+  // What the overlay reads over: a preset, or custom days. Custom days name
+  // their own bounds and never take the main screen's live day.
+  const overlayBounds = isCustomRange ? dayBounds(customDays) : rangeBounds(boardRange);
+  const boardRangeKey = isCustomRange ? `${customDays.from}..${customDays.to}` : boardRange;
+  const scopeParam = boardScope === "all" ? undefined : boardScope;
+  const isLiveDayRange = !isCustomRange && boardRange === "today" && boardScope === "all";
   const lastBoardKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const boardKey = `${boardRange}|${subjectId ?? ""}`;
+    const boardKey = `${boardRangeKey}|${boardScope}|${subjectId ?? ""}`;
     // Blanked means who or what changed: there is no last-good reading to
     // keep, so a failure surfaces immediately rather than after three.
     const blanked = lastBoardKey.current !== boardKey;
@@ -472,15 +496,16 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       setBoardStats(undefined);
       setBoardStatsError(undefined);
     }
-    if (subjectId === undefined || (subjectId === signedIn.user.id && boardRange === "today")) return undefined;
+    if (subjectId === undefined || (subjectId === signedIn.user.id && isLiveDayRange)) return undefined;
     let active = true;
     const service = bridge;
     const generation = bridgeGeneration.current;
-    const bounds = rangeBounds(boardRange);
+    const bounds = overlayBounds;
     void service.meStats(
       bounds?.fromAt,
       bounds?.toExclusiveAt,
       subjectId,
+      scopeParam,
     ).then(
       (result) => {
         if (active && isCurrent(service, generation)) {
@@ -501,17 +526,18 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `boardStats` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRange, subjectId, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, boardScope, subjectId, signedIn?.user.id, statsTick]);
 
-  // The team view follows the overlay's range too: hours beside a name and
-  // the breakdown under it must answer for the same days. All time sends no
-  // bounds.
-  const lastWorkspaceRange = useRef<StatsRange | undefined>(undefined);
+  // The team view follows the overlay's range and project too: hours beside a
+  // name and the breakdown under it must answer for the same days. All time
+  // sends no bounds.
+  const lastWorkspaceKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const blanked = lastWorkspaceRange.current !== boardRange;
+    const workspaceKey = `${boardRangeKey}|${boardScope}`;
+    const blanked = lastWorkspaceKey.current !== workspaceKey;
     if (blanked) {
-      lastWorkspaceRange.current = boardRange;
+      lastWorkspaceKey.current = workspaceKey;
       workspaceFailures.current = 0;
       setWorkspace(undefined);
       setWorkspaceError(undefined);
@@ -519,8 +545,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     let active = true;
     const service = bridge;
     const generation = bridgeGeneration.current;
-    const bounds = rangeBounds(boardRange);
-    void service.workspaceReport(bounds?.fromAt, bounds?.toExclusiveAt).then(
+    const bounds = overlayBounds;
+    void service.workspaceReport(bounds?.fromAt, bounds?.toExclusiveAt, scopeParam).then(
       (result) => {
         if (active && isCurrent(service, generation)) {
           workspaceFailures.current = 0;
@@ -541,7 +567,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `workspace` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRange, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, boardScope, signedIn?.user.id, statsTick]);
 
   // The agents' read - tokens, the token chart, the agents and the repos - for
   // the person picked (the team when nobody is) over the overlay's own range.
@@ -551,7 +577,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastAgentsKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const agentsKey = `${boardRange}|${boardMember?.id ?? ""}`;
+    const agentsKey = `${boardRangeKey}|${boardScope}|${boardMember?.id ?? ""}`;
     const blanked = lastAgentsKey.current !== agentsKey;
     if (blanked) {
       lastAgentsKey.current = agentsKey;
@@ -562,11 +588,12 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     let active = true;
     const service = bridge;
     const generation = bridgeGeneration.current;
-    const bounds = rangeBounds(boardRange);
+    const bounds = overlayBounds;
     void service.agentShifts(
       bounds?.fromAt,
       bounds?.toExclusiveAt,
       boardMember?.id,
+      scopeParam,
     ).then(
       (result) => {
         if (active && isCurrent(service, generation)) {
@@ -587,7 +614,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `agentShifts` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRange, boardMember?.id, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, boardScope, boardMember?.id, signedIn?.user.id, statsTick]);
 
   // The live view reads "now", not the range: who is running an agent at this
   // instant. It rides the same minute tick the other polls do, because a live
@@ -596,12 +623,20 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // a second read. Like every background poll, a
   // failed read keeps the last-good list; the failure line waits for three in
   // a row, and only shows when there is nothing good to keep showing.
+  const lastLiveScope = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
+    // Another project's sessions are not this one's last-good list.
+    if (lastLiveScope.current !== boardScope) {
+      lastLiveScope.current = boardScope;
+      liveSessionsFailures.current = 0;
+      setLiveSessions(undefined);
+      setLiveSessionsError(undefined);
+    }
     let active = true;
     const service = bridge;
     const generation = bridgeGeneration.current;
-    void service.liveAgentSessions().then(
+    void service.liveAgentSessions(scopeParam).then(
       (result) => {
         if (active && isCurrent(service, generation)) {
           liveSessionsFailures.current = 0;
@@ -623,20 +658,23 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `liveSessions` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardScope, signedIn?.user.id, statsTick]);
 
   // One page of one group's shifts, asked for when a drawer opens. Its
-  // identity tracks the bridge, the range and the person picked and nothing
-  // else - deliberately not `statsTick`, since a drawer that threw its rows
-  // away every minute would undo the whole point of keeping them off the group
-  // heads. The person is the one the heads were read with.
+  // identity tracks the bridge, the range, the project and the person picked
+  // and nothing else - deliberately not `statsTick`, since a drawer that threw
+  // its rows away every minute would undo the whole point of keeping them off
+  // the group heads. All three are the ones the heads were read with.
   const loadShiftRows = useCallback(
     async (groupKey: string, after: ShiftCursor | null): Promise<ShiftPage> => {
-      const bounds = rangeBounds(boardRange);
-      const result = await bridge.agentShiftRows(groupKey, after, bounds?.fromAt, bounds?.toExclusiveAt, boardMember?.id);
+      const bounds = overlayBounds;
+      const result = await bridge.agentShiftRows(groupKey, after, bounds?.fromAt, bounds?.toExclusiveAt, boardMember?.id, scopeParam);
       return { shifts: result.shifts, nextCursor: result.nextCursor };
     },
-    [bridge, boardRange, boardMember?.id],
+    // `overlayBounds` is rebuilt each render; the key it is built from is the
+    // identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bridge, boardRangeKey, boardScope, boardMember?.id],
   );
 
   // Agent plan quota, read from this machine. Advisory and never on the
@@ -731,12 +769,12 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     return () => window.clearTimeout(timer);
   }, [refreshStats, monitorStatus?.currentSession?.since]);
 
-  // OS icons for the app rows on screen. Missing answers stay null so each
-  // executable is looked up once per launch.
+  // OS icons for the app rows on screen, the main screen's and the overlay
+  // person's. Missing answers stay null so each executable is looked up once
+  // per launch.
   useEffect(() => {
-    if (signedIn === undefined || stats === undefined) return undefined;
-    const wanted = stats.apps
-      .map((app) => app.processName)
+    if (signedIn === undefined) return undefined;
+    const wanted = [...new Set([...stats?.apps ?? [], ...boardStats?.apps ?? []].map((app) => app.processName))]
       .filter((name) => agentRuntimeForBinary(name) === undefined && !(name in appIcons));
     if (wanted.length === 0) return undefined;
     let active = true;
@@ -753,7 +791,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     return () => { active = false; };
     // appIcons is read for the dedupe only; re-running on its change would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, stats, signedIn?.user.id]);
+  }, [bridge, stats, boardStats, signedIn?.user.id]);
 
   // Status poll. Failures — signed out, unsupported, offline — leave the
   // surfaces hidden rather than noisy; there is no state where recording
@@ -1456,7 +1494,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // Your own "today" in the overlay is the very day the clock above is
   // counting, live stretch and all: it reuses those rows rather than
   // re-deriving them, because two numbers for one day is the whole confusion.
-  const showingLiveDay = viewingSelf && boardRange === "today";
+  const showingLiveDay = viewingSelf && isLiveDayRange;
   const boardError = showingLiveDay ? statsError : boardStatsError;
   const boardTotalSeconds = showingLiveDay ? todayTotalSeconds : boardStats?.totalDurationSeconds ?? 0;
   const boardMeasurement = showingLiveDay ? stats : boardStats;
@@ -1506,10 +1544,10 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           recordedNote: recordedBasis(boardTotalSeconds, boardMeasurement.activeSeconds, boardMeasurement.concurrency.awaySeconds),
           appRows: boardAppRows,
         };
-  const boardBounds = rangeBounds(boardRange);
-  const boardSubtitle = boardBounds === undefined
-    ? RANGE_LABEL[boardRange]
-    : `${RANGE_LABEL[boardRange]} · ${formatRangeDays(boardBounds.fromAt, boardBounds.toExclusiveAt)}`;
+  const boardRangeLabel = isCustomRange ? "Custom" : RANGE_LABEL[boardRange];
+  const boardSubtitle = overlayBounds === undefined
+    ? boardRangeLabel
+    : `${boardRangeLabel} · ${formatRangeDays(overlayBounds.fromAt, overlayBounds.toExclusiveAt)}`;
 
   return (
     <main className="app-shell">
@@ -1723,7 +1761,24 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           <div className="tv">
             <h2 id="today-title" className="visually-hidden">All stats</h2>
             <TeamViewHead title={overview?.organization.name ?? "Your workspace"} subtitle={boardSubtitle}>
-              <SegmentedControl label="Date range" options={RANGE_OPTIONS} value={boardRange} onChange={setBoardRange} />
+              <DashboardFilter
+                presets={RANGE_OPTIONS}
+                range={isCustomRange ? "custom" : boardRange}
+                onRange={(next) => {
+                  setCustomRange(next === "custom");
+                  if (next !== "custom") setBoardRange(next);
+                }}
+                days={customDays}
+                onDays={setCustomDays}
+                projects={ready.projects.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  appearance: appearanceOf(item.id),
+                  firstDay: localDay(new Date(item.createdAt)),
+                }))}
+                project={boardScope}
+                onProject={setBoardScope}
+              />
               <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
             </TeamViewHead>
 
@@ -1734,6 +1789,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
               !workspaceError && <p className="subtle">Loading…</p>
             ) : (
               <DashboardView
+                appIconOf={(names) => names.map((name) => appIcons[name]).find((url) => url != null) ?? undefined}
                 subject={subject}
                 time={dashboardTime}
                 agents={agentShiftsError !== undefined

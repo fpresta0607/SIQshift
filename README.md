@@ -197,14 +197,15 @@ agent split sums to agent time; one shared module, `packages/shared/src/interval
 all of it so the invariants (`active = t0+t1+t2+t3+`, `agent = Σ n·tn + away`) hold everywhere.
 
 Both surfaces also chart each hour as lightweight SVG with no chart library.
-The dashboard has one chart, and its one toggle picks what it shows: active and agent time - agents in green, the person in gray - as both lines or either one alone, each on a scale that fits the lines drawn, or the tokens burned, in and out together, as one bar per hour (per day across a range longer than a day).
-**Tokens** is offered only when the range has token bars to draw.
+The dashboard has one chart, and time and tokens share its time axis: active and agent time as lines - agents in green, the person in gray - on the left scale, and the tokens burned as bars on the right scale, one per hour (per day across a range longer than a day), each split into tokens in at its foot and tokens out on top.
+A bar's height is the server's own total, so the chart never adds the halves up.
+Its legend is its filter: each series is a toggle, the last one on stays on, and a series the range has nothing to draw for is not offered.
 A bucket with no token data draws no bar and reads as a dash rather than a zero that never happened.
-Hours are bucketed to the viewer's local midnight-to-midnight calendar,
-never UTC. The web dashboard reuses its existing today/7d/30d/90d range filter for the graph;
-**All time** is unbounded and has no graph in either app — its full history
-lives in the CSV export. Both apps chart the course of the day on their main screen, and both
-All-stats overlays chart the range on the dashboard.
+Hours are bucketed to the viewer's local midnight-to-midnight calendar, never UTC.
+The dashboard's head holds its one filter, which every card, the chart and the board read under: the range (a preset, or **Custom** days) and the project.
+With a project picked, **Custom** opens on the project's lifetime, from the day it was created to today.
+**All time** is unbounded and has no chart in either app - its full history lives in the CSV export.
+Both apps chart the course of the day on their main screen, and both All-stats overlays chart the range on the dashboard.
 
 The board lists every member of the workspace, not just the people with recorded time: a
 teammate whose range has no evidence reads as `0s`, never as missing.
@@ -560,7 +561,7 @@ A pnpm workspace. Contracts flow down; nothing flows back up.
 
 | Package | What lives there |
 |---|---|
-| **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the three React entries the frontends share: `./webgl-shader` (the WebGL background), `./ui` (the hourly chart, the member breakdown, the Today meter rows, the runtime marks, the Agents-tab drawers) and `./dashboard-view` (the one-page dashboard both apps and the home page draw). React and three are those entries' optional peers, so the API pulls neither. |
+| **`packages/shared`** | Zod contracts shared by every client and the API, the interval/time model (`intervals.ts`), invite-code and duration helpers, the SIQstack brand stylesheet both frontends import, and the three React entries the frontends share: `./webgl-shader` (the WebGL background), `./ui` (the hourly chart, the Today meter rows, the runtime marks, the repo drawers) and `./dashboard-view` (the one-page dashboard both apps and the home page draw). React and three are those entries' optional peers, so the API pulls neither. |
 | **`packages/database`** | Drizzle schema, SQL migrations, the connection factory, the migration runner, and the journal comparison `/health` answers from. |
 | **`apps/api`** | Hono API: env validation, Neon Auth JWT verification, services (sessions, activity, agent sessions, attribution, reports), Drizzle repositories, CSV export. |
 | **`apps/desktop`** | The tray app. React UI over a Tauri 2 Rust host: `monitor.rs` (activity), `spool.rs` (shared with the helper binaries), `uploader.rs`, `recovery.rs`, the All stats overlay, and the `siqshift-hook` and `siqshift-browser-host` bin targets. |

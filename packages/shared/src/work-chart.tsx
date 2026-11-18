@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ChartTooltip } from "./chart-tooltip.js";
 import { formatTokens } from "./format.js";
@@ -66,6 +66,20 @@ export const WorkChart = ({
   const [hidden, setHidden] = useState<ReadonlySet<WorkSeries>>(new Set());
   const [readoutAt, setReadoutAt] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  // The chart draws at its own pixel width, so its labels read the same size
+  // on a phone as on a wide window instead of scaling with a fixed viewBox.
+  const [width, setWidth] = useState(640);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (box === null || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      const measured = Math.round(entry?.contentRect.width ?? 0);
+      if (measured > 0) setWidth(measured);
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
 
   const tokenBuckets = tokens?.buckets ?? [];
   const tokenMs = (tokens?.bucketSeconds ?? DAY_SECONDS) * 1_000;
@@ -98,8 +112,7 @@ export const WorkChart = ({
   const span = Math.max(HOUR_MS, domainEnd - domainStart);
   const isLong = span > 2 * DAY_SECONDS * 1_000;
 
-  const width = 640;
-  const height = 200;
+  const height = width < 480 ? 180 : 220;
   const margin = { left: 44, right: isShown("tokens") ? 40 : 12, top: 14, bottom: 24 };
   const plotW = width - margin.left - margin.right;
   const plotH = height - margin.top - margin.bottom;
@@ -124,17 +137,27 @@ export const WorkChart = ({
     + values.map((value, index) => `L${x(lineAt(hourly[index]!)).toFixed(1)},${yTime(value).toFixed(1)}`).join("")
     + `L${x(lineAt(hourly[values.length - 1]!)).toFixed(1)},${yTime(0).toFixed(1)}Z`;
 
-  const tickCount = 7;
-  const xTicks = Array.from({ length: tickCount }, (_, tick) => {
-    const at = domainStart + (tick / (tickCount - 1)) * span;
+  // Ticks land on whole hours, or on local midnights over a longer range,
+  // spaced so a narrow chart draws fewer of them.
+  const tickCount = width < 480 ? 4 : 7;
+  const tickUnit = isLong ? DAY_SECONDS * 1_000 : HOUR_MS;
+  const tickStep = Math.max(1, Math.ceil(span / tickUnit / (tickCount - 1))) * tickUnit;
+  const firstTick = new Date(domainStart);
+  if (isLong) {
+    if (firstTick.getHours() !== 0 || firstTick.getMinutes() !== 0) firstTick.setHours(24, 0, 0, 0);
+  } else if (firstTick.getMinutes() !== 0 || firstTick.getSeconds() !== 0) {
+    firstTick.setMinutes(60, 0, 0);
+  }
+  const xTicks: { at: number; label: string }[] = [];
+  for (let at = firstTick.getTime(); at <= domainEnd && xTicks.length < 12; at += tickStep) {
     const date = new Date(at);
-    return {
+    xTicks.push({
       at,
       label: isLong
         ? date.toLocaleDateString([], { month: "short", day: "numeric" })
         : String(date.getHours()).padStart(2, "0"),
-    };
-  });
+    });
+  }
 
   const hourIndexAt = (at: number): number | null => {
     if (hourly.length === 0) return null;
@@ -189,7 +212,7 @@ export const WorkChart = ({
     })),
     ...(isShown("tokens")
       ? [
-        { color: "var(--chart-agent)", label: "Tokens in", value: tokenFigure(readoutBucket?.tokensIn ?? null) },
+        { color: "var(--chart-token-in)", label: "Tokens in", value: tokenFigure(readoutBucket?.tokensIn ?? null) },
         { color: "var(--chart-token-out)", label: "Tokens out", value: tokenFigure(readoutBucket?.tokensOut ?? null) },
       ]
       : []),
@@ -202,7 +225,7 @@ export const WorkChart = ({
   const tokenNote = tokenMs >= DAY_SECONDS * 1_000 ? "day" : "hour";
 
   return (
-    <div className="graph work-chart" data-testid="work-chart">
+    <div ref={boxRef} className="graph work-chart" data-testid="work-chart">
       <div className="work-chart-filter" role="group" aria-label="What the chart shows">
         {offered.map((series) => (
           <button
@@ -252,25 +275,25 @@ export const WorkChart = ({
               stroke={third === 0 ? "var(--chart-grid)" : "var(--chart-grid-soft)"}
             />
             {lines.length > 0 && (
-              <text x={margin.left - 6} y={yTime((timeMax / 3) * third) + 3} fill="var(--chart-axis)" fontSize="9" textAnchor="end">
+              <text x={margin.left - 6} y={yTime((timeMax / 3) * third) + 3} fill="var(--chart-axis)" fontSize="10" textAnchor="end">
                 {formatHumanDuration((timeMax / 3) * third)}
               </text>
             )}
             {isShown("tokens") && (
-              <text x={width - margin.right + 6} y={yTokens((tokenMax / 3) * third) + 3} fill="var(--chart-axis)" fontSize="9" textAnchor="start">
+              <text x={width - margin.right + 6} y={yTokens((tokenMax / 3) * third) + 3} fill="var(--chart-axis)" fontSize="10" textAnchor="start">
                 {formatTokens((tokenMax / 3) * third)}
               </text>
             )}
           </g>
         ))}
-        {xTicks.map(({ at, label }, index) => (
+        {xTicks.map(({ at, label }) => (
           <text
             key={at}
             x={x(at)}
             y={height - 6}
             fill="var(--chart-axis)"
-            fontSize="9"
-            textAnchor={index === 0 ? "start" : index === xTicks.length - 1 ? "end" : "middle"}
+            fontSize="10"
+            textAnchor={x(at) - margin.left < 16 ? "start" : width - margin.right - x(at) < 16 ? "end" : "middle"}
           >
             {label}
           </text>

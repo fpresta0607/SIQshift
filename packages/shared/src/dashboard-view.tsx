@@ -1,11 +1,13 @@
 import { useId, type CSSProperties, type ReactNode } from "react";
 
 import { AgentRuntimeIcon } from "./agent-marks.js";
+import { AppMark } from "./app-mark.js";
 import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount, formatTokens } from "./format.js";
 import { MemberAvatar } from "./member-avatar.js";
 import { projectAppearance, type ProjectAppearance } from "./project-appearance.js";
 import { ProjectIconTile } from "./project-icon-tile.js";
+import { QuietMark } from "./quiet-mark.js";
 import { TeamTotals } from "./team-totals.js";
 import { formatHumanDuration } from "./time.js";
 import {
@@ -129,6 +131,8 @@ export type DashboardViewProps = {
   boardNotes: readonly string[];
   /** Who is running an agent now, already narrowed to the subject; absent where nothing reads it. */
   live?: { people: readonly LivePersonGroup[] | undefined; isFailed: boolean } | undefined;
+  /** The OS icon for an app by any of its recorded names; absent where the host has no icons, as in a browser. */
+  appIconOf?: ((processNames: readonly string[]) => string | undefined) | undefined;
 };
 
 /** Why a project can hold more time than the Active time total above it. */
@@ -203,6 +207,7 @@ export const DashboardView = ({
   onSelectPerson,
   boardNotes,
   live,
+  appIconOf,
 }: DashboardViewProps) => {
   const chartTitleId = useId();
   const boardTitleId = useId();
@@ -425,6 +430,13 @@ export const DashboardView = ({
               <ul className="tv-meter-list">
                 {appRows.map((row) => (
                   <li key={row.key} className={row.agent ? "meter-row is-agent" : "meter-row"}>
+                    {row.agent
+                      ? <AgentRuntimeIcon source={row.source ?? "agent"} />
+                      : row.key === "quiet-time"
+                        ? <QuietMark />
+                        : row.processNames.length === 0
+                          ? <span className="app-mark is-plain" aria-hidden="true" />
+                          : <AppMark label={row.label} iconUrl={appIconOf?.(row.processNames)} />}
                     <span className="meter-name">{row.label}</span>
                     <span className="meter-bar" aria-hidden="true" style={share(row.durationSeconds, longestApp)} />
                     <span className="meter-duration">{formatHumanDuration(row.durationSeconds)}</span>
@@ -490,7 +502,7 @@ export const DashboardView = ({
               ) : live.people === undefined ? (
                 <p className="subtle" role="status">Checking what is running…</p>
               ) : (
-                <LiveSessions people={live.people} />
+                <LiveSessions people={live.people} pictureOf={(id) => people.find((person) => person.id === id)?.picture ?? (subject?.id === id ? subject.picture : undefined)} />
               )}
             </section>
           )}

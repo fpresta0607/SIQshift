@@ -279,8 +279,10 @@ export async function openPersonDashboard(page: Page, app: "desktop" | "web"): P
       <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
       <span class="meter-duration">${duration}</span>
     </li>`;
+  const quietMark = `<svg class="app-mark quiet-mark" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><path d="M12 4.3A6 6 0 1 0 14.64 11.55A4.5 4.5 0 0 1 12 4.3Z" fill="currentColor" /></svg>`;
   const appRow = (label: string, share: number, duration: string): string => `
     <li class="meter-row">
+      ${label === "Quiet time" ? quietMark : `<span class="app-mark app-letter" data-tone="slate" aria-hidden="true">${label.charAt(0)}</span>`}
       <span class="meter-name">${label}</span>
       <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
       <span class="meter-duration">${duration}</span>

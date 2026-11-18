@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -46,9 +46,9 @@ const user = {
   pictureVersion: null,
 };
 
-const project = { id: "00000000-0000-4000-8000-000000000010", name: "Field work", color: "#d89a34" };
-const otherProject = { id: "00000000-0000-4000-8000-000000000011", name: "Client work", color: null };
-const newProject = { id: "00000000-0000-4000-8000-000000000012", name: "Fresh", color: null };
+const project = { id: "00000000-0000-4000-8000-000000000010", name: "Field work", color: "#d89a34", createdAt: "2026-07-20T12:00:00.000Z" };
+const otherProject = { id: "00000000-0000-4000-8000-000000000011", name: "Client work", color: null, createdAt: "2026-07-25T12:00:00.000Z" };
+const newProject = { id: "00000000-0000-4000-8000-000000000012", name: "Fresh", color: null, createdAt: "2026-08-06T12:00:00.000Z" };
 
 const account = {
   kind: "ready" as const,
@@ -749,7 +749,7 @@ describe("today", () => {
     await person.click(await within(panel).findByRole("button", { name: "This week" }));
 
     await waitFor(() => expect(bridge.meStats).toHaveBeenCalledTimes(2));
-    expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), user.id);
+    expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), user.id, undefined);
     expect(await within(panel).findByText(/^This week · /)).toBeInTheDocument();
   });
 
@@ -1349,6 +1349,7 @@ describe("the all-stats overlay scope", () => {
     await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
       expect.any(String),
       expect.any(String),
+      undefined,
     ));
     expect(bridge.preferencesGet).not.toHaveBeenCalled();
     expect(bridge.preferencesSet).not.toHaveBeenCalled();
@@ -1380,9 +1381,9 @@ describe("the team board", () => {
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
     // The team's recorded time is its projects' added up.
     expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
-    const graph = within(view.getByRole("region", { name: "Over time" })).getByTestId("hourly-graph");
+    const graph = within(view.getByRole("region", { name: "Over time" })).getByTestId("work-chart");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
-    expect(graph.querySelector('[data-series="human"]')).not.toBeNull();
+    expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
     expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m$/);
     expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m$/);
@@ -1482,17 +1483,17 @@ describe("the team board", () => {
     expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
   });
 
-  it("draws only agent time once the team chart's one toggle picks it", async () => {
+  it("draws only agent time once the team chart's legend turns active time off", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
     const chart = within(await within(await openAllStats(person)).findByRole("region", { name: "Over time" }));
 
     // Act
-    await person.click(within(chart.getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Agent time" }));
+    await person.click(within(chart.getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Active time" }));
 
     // Assert
-    const graph = chart.getByRole("img", { name: "Hourly agent time" });
+    const graph = chart.getByRole("img", { name: "Agent time over time" });
     expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
   });
 
@@ -1577,13 +1578,14 @@ describe("the team board", () => {
     await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
       new Date(2026, 7, 3).toISOString(),
       new Date(2026, 7, 10).toISOString(),
+      undefined,
     ));
 
     // Act
     await person.click(within(panel).getByRole("button", { name: "All time" }));
 
     // Assert: all time sends no bounds.
-    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(undefined, undefined));
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(undefined, undefined, undefined));
   });
 
   it("takes today's team view down when the week's read fails, rather than calling it this week", async () => {
@@ -1634,15 +1636,15 @@ describe("the team board", () => {
     const panel = await openAgentsPage(person);
     expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M");
     expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
-    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined);
+    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined, undefined);
     expect(bridge.meStats).toHaveBeenCalledTimes(1);
 
     // Act: picking Sam
     await pickPerson(person, panel, "Sam");
 
     // Assert: his id travels with both reads and the page answers for him alone.
-    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id));
-    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id));
+    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id, undefined));
+    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id, undefined));
     await within(panel).findByLabelText("Totals for Sam");
     await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("2.5k"));
     expect(teamTotal(panel, "Active time")).toHaveTextContent("50m");
@@ -1697,7 +1699,7 @@ describe("the team board", () => {
     // Assert
     await within(panel).findByLabelText("Totals");
     await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M"));
-    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined);
+    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined, undefined);
     expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
     expect(within(panel).queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
   });
@@ -2140,6 +2142,225 @@ describe("the team board", () => {
   });
 });
 
+describe("the dashboard filter", () => {
+  /// A Thursday afternoon: custom days open on the last seven, today included.
+  const pinToday = (): void => {
+    vi.setSystemTime(new Date(2026, 7, 6, 15));
+  };
+  const lastWeek = { fromAt: new Date(2026, 6, 31).toISOString(), toExclusiveAt: new Date(2026, 7, 7).toISOString() };
+  const pickCustom = (panel: HTMLElement) => within(panel).getByRole("button", { name: "Custom" });
+  const pickProject = async (person: ReturnType<typeof userEvent.setup>, panel: HTMLElement, name: string): Promise<void> => {
+    await person.click(within(panel).getByRole("button", { name: /^Project: / }));
+    await person.click(within(within(panel).getByRole("radiogroup", { name: "Project" })).getByRole("radio", { name }));
+  };
+
+  it("reads the custom days on every overlay read and says Custom in the subtitle", async () => {
+    // Arrange
+    pinToday();
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    await pickPerson(person, panel, "Sam");
+    await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
+
+    // Act
+    await person.click(pickCustom(panel));
+
+    // Assert: the team read, the person read, the agents read and the drawers all share the days.
+    const { fromAt, toExclusiveAt } = lastWeek;
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(fromAt, toExclusiveAt, undefined));
+    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(fromAt, toExclusiveAt, sam.id, undefined));
+    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(fromAt, toExclusiveAt, sam.id, undefined));
+    await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
+    await person.click(within(panel).getAllByTestId("shift-group")[0]!.querySelector("summary")!);
+    await waitFor(() => expect(bridge.agentShiftRows).toHaveBeenCalled());
+    expect(vi.mocked(bridge.agentShiftRows).mock.calls.at(-1)).toEqual(["siqshift", null, fromAt, toExclusiveAt, sam.id, undefined]);
+    expect(await within(panel).findByText(/^Custom · /)).toBeInTheDocument();
+  });
+
+  it("follows the From and To dates as they are edited", async () => {
+    // Arrange
+    pinToday();
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+    await person.click(pickCustom(panel));
+
+    // Act
+    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "2026-08-01" } });
+    fireEvent.change(within(panel).getByLabelText("To"), { target: { value: "2026-08-05" } });
+
+    // Assert
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(
+      new Date(2026, 7, 1).toISOString(),
+      new Date(2026, 7, 6).toISOString(),
+      undefined,
+    ));
+  });
+
+  it("never serves custom days from the main screen's live day, even for your own page", async () => {
+    // Arrange
+    pinToday();
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+    expect(bridge.meStats).toHaveBeenCalledTimes(1);
+
+    // Act
+    await person.click(pickCustom(panel));
+
+    // Assert: your own custom days are read, not borrowed from today.
+    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(lastWeek.fromAt, lastWeek.toExclusiveAt, user.id, undefined));
+  });
+
+  it("reads the project picked on every overlay read, and everything again when All projects is picked", async () => {
+    // Arrange
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    await pickPerson(person, panel, "Sam");
+    await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
+
+    // Act
+    await pickProject(person, panel, otherProject.name);
+
+    // Assert
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), otherProject.id));
+    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id, otherProject.id));
+    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id, otherProject.id));
+    await waitFor(() => expect(bridge.liveAgentSessions).toHaveBeenLastCalledWith(otherProject.id));
+    await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
+    await person.click(within(panel).getAllByTestId("shift-group")[0]!.querySelector("summary")!);
+    await waitFor(() => expect(bridge.agentShiftRows).toHaveBeenCalled());
+    expect(vi.mocked(bridge.agentShiftRows).mock.calls.at(-1)?.slice(4)).toEqual([sam.id, otherProject.id]);
+
+    // Act: back to every project
+    await pickProject(person, panel, "All projects");
+
+    // Assert
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined));
+    await waitFor(() => expect(bridge.liveAgentSessions).toHaveBeenLastCalledWith(undefined));
+  });
+
+  it("never serves a project's own page from the main screen's live day", async () => {
+    // Arrange
+    const bridge = bridgeFor();
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+    expect(bridge.meStats).toHaveBeenCalledTimes(1);
+
+    // Act
+    await pickProject(person, panel, project.name);
+
+    // Assert: the main screen's day is every project's, so it cannot stand for one's.
+    await waitFor(() => expect(bridge.meStats).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), user.id, project.id));
+  });
+
+  it("blanks the team's figures while another project's read is on its way", async () => {
+    // Arrange: the project's team read never lands.
+    const bridge = bridgeFor({
+      workspaceReport: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, scope?: string) => (
+        scope === undefined ? Promise.resolve(workspaceReport) : new Promise(() => undefined)
+      )),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    expect(teamTotal(panel, "Active time")).toHaveTextContent("2h 56m");
+
+    // Act
+    await pickProject(person, panel, project.name);
+
+    // Assert: the all-projects figure is gone rather than left under the project's name.
+    await waitFor(() => expect(within(panel).queryByLabelText("Totals")).not.toBeInTheDocument());
+    expect(within(panel).getByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("opens Custom on the picked project's whole lifetime, and offers it again after an edit", async () => {
+    // Arrange: Field work was created on the 20th of July.
+    pinToday();
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+    const panel = await openAllStats(person);
+    await pickProject(person, panel, project.name);
+
+    // Act
+    await person.click(pickCustom(panel));
+
+    // Assert
+    expect(within(panel).getByLabelText("From")).toHaveValue("2026-07-20");
+    expect(within(panel).getByLabelText("To")).toHaveValue("2026-08-06");
+    const lifetime = within(panel).getByRole("button", { name: "Project lifetime" });
+    expect(lifetime).toHaveAttribute("aria-pressed", "true");
+
+    // Act: narrow it, then ask for the lifetime back.
+    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "2026-08-01" } });
+    expect(lifetime).toHaveAttribute("aria-pressed", "false");
+    await person.click(lifetime);
+
+    // Assert
+    expect(within(panel).getByLabelText("From")).toHaveValue("2026-07-20");
+  });
+
+  it("draws an app's OS icon from whichever of its names the host has one for, on the person picked", async () => {
+    // Arrange: Sam's Mac recorded the Chrome time under its own name, which this host has no icon for.
+    const appIcons = vi.fn().mockImplementation(async (names: readonly string[]) => (
+      Object.fromEntries(names.map((name) => [name, name === "chrome.exe" ? "data:image/png;base64,AAAA" : null]))
+    ));
+    const bridge = bridgeFor({
+      appIcons,
+      meStats: vi.fn().mockImplementation((_fromAt?: string, _toExclusiveAt?: string, userId?: string) => Promise.resolve(
+        userId === sam.id
+          ? {
+            ...meStats,
+            apps: [
+              { processName: "Google Chrome", durationSeconds: 1_800 },
+              { processName: "chrome.exe", durationSeconds: 600 },
+            ],
+          }
+          : meStats,
+      )),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAllStats(person);
+
+    // Act
+    await pickPerson(person, panel, "Sam");
+
+    // Assert: the names of the overlay person's apps are asked for, and the joined row wears the icon found.
+    const apps = await within(panel).findByRole("region", { name: "Apps" });
+    await waitFor(() => expect(apps.querySelector("img.app-mark")).toHaveAttribute("src", "data:image/png;base64,AAAA"));
+    expect(appIcons.mock.calls.flat(2)).toContain("Google Chrome");
+    expect(apps.querySelector(".app-letter")).toBeNull();
+  });
+
+  it("draws an initial tile for an app the host has no icon for", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({
+      meStats: vi.fn().mockResolvedValue({ ...meStats, apps: [{ processName: "blender.exe", durationSeconds: 1_800 }] }),
+    })} />);
+    const panel = await openAllStats(person);
+
+    // Act
+    await pickPerson(person, panel, user.name);
+
+    // Assert
+    const apps = await within(panel).findByRole("region", { name: "Apps" });
+    expect(apps.querySelector(".app-mark.app-letter")).toHaveTextContent("B");
+  });
+});
+
 describe("the agents and repos on the one page", () => {
   /// The server's token bars over three hours. Every total is deliberately not
   /// in + out, and no project's bars add up to the period's, so a client that
@@ -2161,47 +2382,54 @@ describe("the agents and repos on the one page", () => {
     ],
   };
   const drawnTokens = (chart: HTMLElement): number[] =>
-    [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("data-tokens")));
+    [...chart.querySelectorAll("g[data-bar]")].map((bar) => Number(bar.getAttribute("data-tokens")));
+  const barHeight = (bar: Element): number =>
+    [...bar.querySelectorAll("rect.token-bar")].reduce((sum, half) => sum + Number(half.getAttribute("height")), 0);
 
   it("draws the server's token bars as given, adding nothing up", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
 
-    // Act
+    // Act: tokens are on by default when the range burned any.
     const panel = await openAgentsPage(person);
-    await person.click(within(within(panel).getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Tokens" }));
-    const chart = within(panel).getByTestId("token-chart");
+    const chart = within(panel).getByTestId("work-chart");
 
     // Assert: one bar per hour that burned anything, at the server's total.
     expect(drawnTokens(chart)).toEqual([999, 3_000]);
-    const heights = [...chart.querySelectorAll("rect[data-tokens]")].map((bar) => Number(bar.getAttribute("height")));
-    expect(heights[1]!).toBeGreaterThan(heights[0]!);
+    const [small, large] = [...chart.querySelectorAll("g[data-bar]")];
+    expect(barHeight(large!)).toBeGreaterThan(barHeight(small!));
+    expect(small!.querySelector("rect.token-bar.is-in")).not.toBeNull();
+    expect(small!.querySelector("rect.token-bar.is-out")).not.toBeNull();
   });
 
-  it("switches the chart from tokens to agent time with its one toggle", async () => {
+  it("turns the chart's series on and off with its legend keys, keeping the last one on", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart }) })} />);
     const chart = within(within(await openAgentsPage(person)).getByRole("region", { name: "Over time" }));
-    const toggle = within(chart.getByRole("group", { name: "What the chart shows" }));
+    const legend = within(chart.getByRole("group", { name: "What the chart shows" }));
     expect(chart.queryByRole("combobox")).not.toBeInTheDocument();
-    await person.click(toggle.getByRole("button", { name: "Tokens" }));
-    expect(chart.getByTestId("token-chart")).toBeInTheDocument();
+    expect(legend.getByRole("button", { name: "Tokens" })).toHaveAttribute("aria-pressed", "true");
+    expect(chart.getByTestId("work-chart").querySelector("g[data-bar]")).not.toBeNull();
 
-    // Act
-    await person.click(toggle.getByRole("button", { name: "Agent time" }));
+    // Act: tokens off leaves the lines, then active time off leaves agent time alone.
+    await person.click(legend.getByRole("button", { name: "Tokens" }));
+    const withoutBars = chart.getByTestId("work-chart").querySelector("g[data-bar]");
+    await person.click(legend.getByRole("button", { name: "Active time" }));
 
-    // Assert: agent time alone, in place of the bars.
-    expect(toggle.getByRole("button", { name: "Agent time" })).toHaveAttribute("aria-pressed", "true");
-    expect(chart.queryByTestId("token-chart")).not.toBeInTheDocument();
-    const graph = chart.getByRole("img", { name: "Hourly agent time" });
+    // Assert
+    expect(withoutBars).toBeNull();
+    expect(legend.getByRole("button", { name: "Tokens" })).toHaveAttribute("aria-pressed", "false");
+    const graph = chart.getByRole("img", { name: "Agent time over time" });
     expect([...graph.querySelectorAll("path[data-series]")].map((line) => line.getAttribute("data-series"))).toEqual(["agent"]);
+    expect(legend.getByRole("button", { name: "Agent time" })).toBeDisabled();
   });
 
   it("names a daily bar that starts at 23:00 after a daylight-saving change by the day it covers", async () => {
     // Arrange: once the clocks fall back, the server's 24-hour bars start at
-    // 23:00 the evening before the day each one covers.
+    // 23:00 the evening before the day each one covers. No hours are sent, so
+    // the chart is bars alone and the arrow keys walk them a bar at a time.
     const starts = [new Date(2026, 9, 31), new Date(2026, 10, 1), new Date(2026, 10, 1, 23), new Date(2026, 10, 2, 23)];
     const covered = [new Date(2026, 9, 31, 12), new Date(2026, 10, 1, 12), new Date(2026, 10, 2, 12), new Date(2026, 10, 3, 12)];
     const dailyChart = {
@@ -2210,24 +2438,24 @@ describe("the agents and repos on the one page", () => {
       projects: [],
     };
     const person = userEvent.setup();
-    render(<App bridge={bridgeFor({ agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart: dailyChart }) })} />);
+    render(<App bridge={bridgeFor({
+      agentShifts: vi.fn().mockResolvedValue({ ...agentShifts, tokenChart: dailyChart }),
+      workspaceReport: vi.fn().mockResolvedValue({ ...workspaceReport, hourly: [] }),
+    })} />);
     const panel = await openAgentsPage(person);
-    await person.click(within(within(panel).getByRole("group", { name: "What the chart shows" })).getByRole("button", { name: "Tokens" }));
-    const chart = within(panel).getByTestId("token-chart");
+    const chart = within(within(panel).getByTestId("work-chart"));
 
     // Act: read every bar out from the keyboard.
-    act(() => within(chart).getByRole("img", { name: "Tokens burned per day" }).focus());
+    act(() => chart.getByRole("img", { name: "Tokens over time" }).focus());
     const readouts: string[] = [];
     for (const key of ["{Home}", "{ArrowRight}", "{ArrowRight}", "{ArrowRight}"]) {
       await person.keyboard(key);
-      readouts.push(chart.querySelector(".graph-tooltip-title")?.textContent ?? "");
+      readouts.push(panel.querySelector(".graph-tooltip-title")?.textContent ?? "");
     }
 
-    // Assert: each bar's readout and axis tick name its own day, none twice.
+    // Assert: each bar's readout names its own day, none twice.
     expect(readouts).toEqual(covered.map((day) => day.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })));
-    expect([...chart.querySelectorAll("text[text-anchor='middle']")].map((tick) => tick.textContent))
-      .toEqual(covered.map((day) => day.toLocaleDateString([], { month: "short", day: "numeric" })));
-    expect(within(chart).getByRole("status")).toHaveTextContent(`${readouts[3]}: 999 tokens, 100 in, 50 out`);
+    expect(chart.getByRole("status")).toHaveTextContent(`${readouts[3]}: Tokens in 100, Tokens out 50`);
   });
 
   it("draws no token bars from an API that predates them", async () => {
@@ -2238,9 +2466,10 @@ describe("the agents and repos on the one page", () => {
     // Act
     const panel = await openAgentsPage(person);
 
-    // Assert: time alone, with no toggle to a measure it cannot draw.
-    expect(within(panel).getByTestId("hourly-graph")).toBeInTheDocument();
-    expect(within(panel).queryByTestId("token-chart")).not.toBeInTheDocument();
+    // Assert: time alone, with no key for a measure it cannot draw.
+    const chart = within(panel).getByTestId("work-chart");
+    expect(chart.querySelector("path[data-series]")).not.toBeNull();
+    expect(chart.querySelector("g[data-bar]")).toBeNull();
     expect(within(within(panel).getByRole("group", { name: "What the chart shows" })).queryByRole("button", { name: "Tokens" })).not.toBeInTheDocument();
   });
 
@@ -2406,13 +2635,13 @@ describe("the agents and repos on the one page", () => {
 
     const panel = await openAgentsPage(person);
     // A bounded range draws an hourly line.
-    expect(within(panel).getByTestId("hourly-graph")).toBeInTheDocument();
+    expect(within(panel).getByTestId("work-chart")).toBeInTheDocument();
 
     await person.click(within(panel).getByRole("button", { name: "All time" }));
 
     // Per-hour resolution over an unbounded range is meaningless, so the graph
     // goes away - but the codebase map and its totals stay put.
-    await waitFor(() => expect(within(panel).queryByTestId("hourly-graph")).not.toBeInTheDocument());
+    await waitFor(() => expect(within(panel).queryByTestId("work-chart")).not.toBeInTheDocument());
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
     expect(within(panel).getAllByTestId("shift-group")).toHaveLength(2);
   });
@@ -2474,7 +2703,7 @@ describe("the agents and repos on the one page", () => {
     render(<App bridge={bridge} />);
     const panel = await openAgentsPage(person);
     await pickPerson(person, panel, "Sam");
-    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id));
+    await waitFor(() => expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id, undefined));
     await waitFor(() => expect(within(panel).queryAllByText("Loading…")).toHaveLength(0));
 
     // Act

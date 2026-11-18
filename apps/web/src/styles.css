@@ -171,7 +171,7 @@ a.primary { display: inline-block; text-decoration: none; }
    when · facts · duration; the facts shrink and ellipsize before the duration
    ever wraps. */
 .held-tag { color: var(--mint); font-size: .78rem; font-weight: 400; }
-/* A single shrinkable track, for the same reason `.breakdown` needs one: an
+/* A single shrinkable track: an
    `auto` grid track floors at its widest item's min-content, and a shift row's
    is its runtime, owner, model and commit count laid end to end. Without
    `minmax(0, ...)` that floor drags every row past the overlay's right edge on
@@ -352,28 +352,6 @@ a.download-secondary:hover { color: #ffffff; }
 .record-list.is-never li::before { position: absolute; left: 2px; color: var(--red); content: "✕"; }
 .help-foot { margin: 22px 0 0; border-top: 1px solid rgba(163, 179, 194, .12); padding-top: 12px; color: var(--text-secondary); font-size: .84rem; line-height: 1.55; }
 .help-foot strong { color: #ffffff; font-weight: 650; }
-
-/* The human/agent metric breakdown: labeled rows, not one cramped sentence. */
-/* A single shrinkable track: without minmax(0, ...) the grid sizes to its
-   widest min-content - an owner's long name in the uppercase group label -
-   and drags every metric row past the panel's edge. */
-.breakdown { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
-.group-label { margin: 14px 0 5px; color: var(--text-secondary); font-size: .72rem; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; overflow-wrap: anywhere; }
-.group-label:first-child { margin-top: 0; }
-.metric-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 2px; border-bottom: 1px solid rgba(163, 179, 194, .08); font-size: .85rem; }
-.metric-row:last-child { border-bottom: 0; }
-.metric-row.is-headline { font-size: .95rem; padding: 7px 2px; }
-.metric-row.is-headline .metric-value { color: var(--mint); font-weight: 700; }
-.metric-row.is-subtotal { border-top: 1px solid rgba(163, 179, 194, .12); }
-.metric-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.metric-hint { color: var(--text-secondary); font-size: .74rem; }
-.metric-value { flex: none; font-variant-numeric: tabular-nums; }
-.metric-swatch { flex: none; width: 9px; height: 9px; border-radius: 2px; align-self: center; }
-.swatch-human { background: #8b98a8; }
-.swatch-agent1 { background: #00e59b; }
-.swatch-agent2 { background: #00c97f; }
-.swatch-agent3 { background: #00a868; }
-.swatch-away { background: var(--accent-blue); }
 
 /* SVG charts: the hourly line graph. Colors come from the brand.css chart
    tokens; only layout lives here. */

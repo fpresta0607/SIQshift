@@ -12,6 +12,18 @@ export type DashboardFilterProject = { id: string; name: string; appearance: Pro
 
 const CUSTOM = "custom";
 
+/// "All projects" wears four tiles where a project wears its one.
+const ALL_PROJECTS_MARK = (
+  <svg className="tv-all-projects" viewBox="0 0 24 24" aria-hidden="true">
+    <g fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="3" y="3" width="7.5" height="7.5" rx="2" />
+      <rect x="13.5" y="3" width="7.5" height="7.5" rx="2" />
+      <rect x="3" y="13.5" width="7.5" height="7.5" rx="2" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2" />
+    </g>
+  </svg>
+);
+
 /// A date input's value for a local calendar day.
 export const localDay = (date: Date): string =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -88,7 +100,7 @@ export const DashboardFilter = <Preset extends string>({
             aria-expanded={isPickerOpen}
             onClick={() => setPickerOpen((open) => !open)}
           >
-            {picked === undefined ? <span className="tv-all-projects" aria-hidden="true" /> : <ProjectIconTile appearance={picked.appearance} />}
+            {picked === undefined ? ALL_PROJECTS_MARK : <ProjectIconTile appearance={picked.appearance} />}
             <span>{picked?.name ?? "All projects"}</span>
           </button>
           {isPickerOpen && (
@@ -104,7 +116,7 @@ export const DashboardFilter = <Preset extends string>({
                     setPickerOpen(false);
                   }}
                 >
-                  {entry === undefined ? <span className="tv-all-projects" aria-hidden="true" /> : <ProjectIconTile appearance={entry.appearance} />}
+                  {entry === undefined ? ALL_PROJECTS_MARK : <ProjectIconTile appearance={entry.appearance} />}
                   <span>{entry?.name ?? "All projects"}</span>
                 </button>
               ))}
