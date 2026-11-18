@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { TeamViewHead, WorkspaceView, workspaceBreakdownRows } from "@siqshift/shared/workspace-view";
+import { DashboardView, TeamViewHead, projectMeterRows } from "@siqshift/shared/dashboard-view";
 import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
@@ -25,6 +25,8 @@ const members = [
   { id: "taylor", name: "Taylor Chen", project: nova, projects: [0, 7200, 7200], agents: [14400, 14400] },
 ];
 const agentSources = ["claude_code", "codex"];
+// About as many tokens an hour of agent runtime burns in the example.
+const TOKENS_PER_AGENT_SECOND = 600;
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 const boardMembers = members.map((member, index) => ({
   id: member.id, rank: index + 1, name: member.name,
@@ -55,13 +57,22 @@ function ProductPreview() {
     activeSeconds: active * activeSeconds / 18000,
     agentSeconds: agent * agentSeconds / 38400,
   }));
-  const { projectRows, agentRows } = workspaceBreakdownRows({
-    projects: exampleProjects
-      .map((project, index) => ({ project, durationSeconds: sum(visibleMembers.map(member => member.projects[index] ?? 0)) }))
-      .filter(entry => entry.durationSeconds > 0)
-      .sort((a, b) => b.durationSeconds - a.durationSeconds),
-    agents: agentSources.map((source, index) => ({ source, durationSeconds: sum(visibleMembers.map(member => member.agents[index] ?? 0)) })),
+  const projects = exampleProjects
+    .map((project, index) => ({ project, durationSeconds: sum(visibleMembers.map(member => member.projects[index] ?? 0)) }))
+    .filter(entry => entry.durationSeconds > 0)
+    .sort((a, b) => b.durationSeconds - a.durationSeconds);
+  const runtimes = agentSources.map((source, index) => {
+    const runtimeSeconds = sum(visibleMembers.map(member => member.agents[index] ?? 0));
+    return { source, agentSeconds: runtimeSeconds, shiftCount: Math.round(runtimeSeconds / 5400), tokens: runtimeSeconds * TOKENS_PER_AGENT_SECOND };
   });
+  // Each hour burns tokens in step with its agent time, so the bars add up to the Tokens total.
+  const tokenBuckets = exampleDay.map(bucket => {
+    const hourTokens = Math.round(bucket.agentSeconds * TOKENS_PER_AGENT_SECOND);
+    const hourOut = Math.round(hourTokens * 0.06);
+    return { start: bucket.hourStart, tokensIn: hourTokens - hourOut, tokensOut: hourOut, tokens: hourTokens };
+  });
+  const tokens = sum(tokenBuckets.map(bucket => bucket.tokens));
+  const tokensOut = sum(tokenBuckets.map(bucket => bucket.tokensOut));
   return (
     <figure className="landing-preview" aria-labelledby="preview-caption">
       <div className="tv tv-frame">
@@ -69,21 +80,25 @@ function ProductPreview() {
           title={selectedMember?.name ?? "Atlas Studio"}
           subtitle={selectedMember === undefined ? "Today" : `${selectedMember.project.name} · Today`}
         >
-          {selectedMember === undefined
-            ? <span className="tv-badge">Example data</span>
-            : <button type="button" className="ghost" onClick={() => setMemberId(null)}>All members</button>}
+          <span className="tv-badge">Example data</span>
         </TeamViewHead>
-        <WorkspaceView
-          activeSeconds={activeSeconds}
-          agentSeconds={agentSeconds}
-          hourly={exampleDay}
-          members={boardMembers}
+        <DashboardView
+          subject={selectedMember === undefined ? undefined : { id: selectedMember.id, name: selectedMember.name, isSelf: false }}
+          time={{
+            activeSeconds,
+            agentSeconds,
+            recordedSeconds: sum(projects.map(entry => entry.durationSeconds)),
+            hourly: exampleDay,
+            projectRows: projectMeterRows(projects, projectId => {
+              const project = exampleProjects.find(entry => entry.id === projectId) ?? atlas;
+              return { icon: project.icon, color: project.color };
+            }),
+          }}
+          agents={{ tokenTotals: { tokensIn: tokens - tokensOut, tokensOut, tokens }, tokenChart: { bucketSeconds: 3600, buckets: tokenBuckets }, runtimes }}
+          people={boardMembers}
           boardTool={<span className="tv-card-note">Ranked by active time</span>}
-          selectedMemberId={memberId ?? undefined}
-          onSelectMember={member => setMemberId(member.id === memberId ? null : member.id)}
-          boardNotes={["Select a teammate to explore their work."]}
-          projectRows={projectRows}
-          agentRows={agentRows}
+          onSelectPerson={member => setMemberId(member === undefined || member.id === memberId ? null : member.id)}
+          boardNotes={selectedMember === undefined ? ["Select a teammate to explore their work."] : []}
         />
       </div>
       <figcaption id="preview-caption">An example team workspace. Active hours and agent runtime are measured separately, including agents running in parallel.</figcaption>

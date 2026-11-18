@@ -16,6 +16,8 @@ export type TimerProject = {
   color: string | null;
   /// One of the built-in icon names, null from a server that predates them.
   icon: string | null;
+  /// When the project was created: the first day it can have work on.
+  createdAt: string;
 };
 
 export type AccountSnapshot =

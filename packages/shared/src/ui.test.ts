@@ -18,10 +18,10 @@ describe("app rows across operating systems", () => {
     const rows = buildAppRows(CROSS_PLATFORM_APPS, 5_000);
 
     expect(rows).toEqual([
-      { key: "chrome.exe", label: "Google Chrome", durationSeconds: 3_000, agent: false },
-      { key: "Code.exe", label: "VS Code", durationSeconds: 900, agent: false },
-      { key: "agent-clis", label: "Claude Code", durationSeconds: 420, agent: true },
-      { key: "quiet-time", label: "Quiet time", durationSeconds: 680, agent: false },
+      { key: "chrome.exe", label: "Google Chrome", durationSeconds: 3_000, agent: false, processNames: ["chrome.exe", "Google Chrome"], source: undefined },
+      { key: "Code.exe", label: "VS Code", durationSeconds: 900, agent: false, processNames: ["Code.exe"], source: undefined },
+      { key: "agent-clis", label: "Claude Code", durationSeconds: 420, agent: true, processNames: [], source: "claude_code" },
+      { key: "quiet-time", label: "Quiet time", durationSeconds: 680, agent: false, processNames: [], source: undefined },
     ]);
     expect(rows.reduce((sum, row) => sum + row.durationSeconds, 0)).toBe(5_000);
   });

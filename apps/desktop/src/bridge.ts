@@ -250,7 +250,7 @@ export type MeStatsConcurrency = {
 
 /// One (runtime, model) pair's share of a member's agent time. The session
 /// facts the API also sends stay behind: the desktop reads this split only to
-/// name the models a runtime has driven, and the Agents tab measures shifts
+/// name the models a runtime has driven, and the dashboard measures shifts
 /// from the shifts-by-codebase map instead.
 export type MeStatsAgentSplit = {
   source: string;
@@ -301,7 +301,7 @@ export type MeStatsProject = {
   sessionCount: number;
 };
 
-/// One shift as the Agents tab reads it: a terminal session with the facts
+/// One shift as the dashboard reads it: a terminal session with the facts
 /// it attested itself. `endedAt` is the last event while the shift still
 /// runs, never "still open".
 export type AgentShiftRow = {
@@ -397,7 +397,7 @@ export type TokenChartBucket = {
   tokens: number | null;
 };
 
-/// The Agents tab's token bars: the period's buckets, and each project's bars
+/// The dashboard chart's token bars: the period's buckets, and each project's bars
 /// over the same buckets with its total for the period.
 export type TokenChart = {
   bucketSeconds: number;
@@ -472,8 +472,9 @@ export interface TimerBridge {
   /// member's breakdown; absent means the caller.
   meStats(fromAt?: string, toExclusiveAt?: string, userId?: string, scope?: string): Promise<MeStats>;
   /// The team view All stats opens on, over instant bounds. Both absent asks
-  /// for all time.
-  workspaceReport(fromAt?: string, toExclusiveAt?: string): Promise<WorkspaceReport>;
+  /// for all time. A `scope` (a project id) narrows it to that project; absent
+  /// is every project.
+  workspaceReport(fromAt?: string, toExclusiveAt?: string, scope?: string): Promise<WorkspaceReport>;
   /// Puts up the signed-in member's own picture, already drawn small, and
   /// resolves to their account under its new version.
   pictureUpload(bytes: Uint8Array): Promise<TimerUser>;
@@ -481,14 +482,25 @@ export interface TimerBridge {
   /// A member's picture bytes under the version their board row named.
   memberPicture(userId: string, version: string): Promise<Uint8Array>;
   /// Every shift in the range grouped by the codebase it worked, for the
-  /// Agents tab - the group heads alone. Both bounds absent asks for all time.
-  agentShifts(fromAt?: string, toExclusiveAt?: string): Promise<AgentShifts>;
+  /// dashboard's agents cards - the group heads alone. Both bounds absent asks
+  /// for all time; a `userId` narrows it to that member, and absent is the team;
+  /// a `scope` (a project id) narrows it to that project.
+  agentShifts(fromAt?: string, toExclusiveAt?: string, userId?: string, scope?: string): Promise<AgentShifts>;
   /// Who is running an agent right now, grouped by person. No range: the live
-  /// view reads now, and the desktop reads it for everyone.
-  liveAgentSessions(): Promise<LiveAgentSessions>;
-  /// One page of one group's shifts. The bounds must be the ones the heads
-  /// were read with, or the drawer lists shifts its own head never counted.
-  agentShiftRows(groupKey: string, after: AgentShiftCursor | null, fromAt?: string, toExclusiveAt?: string): Promise<AgentShiftRows>;
+  /// view reads now, and the desktop reads it for everyone. A `scope` (a
+  /// project id) narrows it to that project.
+  liveAgentSessions(scope?: string): Promise<LiveAgentSessions>;
+  /// One page of one group's shifts. The bounds, the `userId` and the `scope`
+  /// must be the ones the heads were read with, or the drawer lists shifts its
+  /// own head never counted.
+  agentShiftRows(
+    groupKey: string,
+    after: AgentShiftCursor | null,
+    fromAt?: string,
+    toExclusiveAt?: string,
+    userId?: string,
+    scope?: string,
+  ): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
   projectUpdate(id: string, input: { name?: string; isArchived?: boolean } | ProjectAppearance): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
@@ -581,7 +593,13 @@ const decodeBytes = (value: unknown): Uint8Array => {
 const decodeProject = (value: unknown): TimerProject => {
   const candidate = record(value);
   if (candidate.color !== null && typeof candidate.color !== "string") invalidResponse();
-  return { id: uuid(candidate.id), name: string(candidate.name), color: candidate.color as string | null, icon: stringOrNull(candidate.icon) };
+  return {
+    id: uuid(candidate.id),
+    name: string(candidate.name),
+    color: candidate.color as string | null,
+    icon: stringOrNull(candidate.icon),
+    createdAt: string(candidate.createdAt),
+  };
 };
 
 const uuidOrNull = (value: unknown): string | null => (value === null || value === undefined ? null : uuid(value));
@@ -1035,7 +1053,7 @@ const decodeTokenChart = (value: unknown): TokenChart | undefined => {
 };
 
 /// An absent group list decodes to none, never a crash: the deployed API can
-/// be older than this build, and an Agents tab with nothing to say beats one
+/// be older than this build, and a dashboard with no agents to show beats one
 /// that dies decoding.
 export const decodeAgentShifts = (value: unknown): AgentShifts => {
   const candidate = record(value);
@@ -1191,20 +1209,20 @@ export const defaultBridge: TimerBridge = {
   settingsGet: () => invokeDecoded("settings_get", decodeMonitorSettings),
   settingsUpdate: (input) => invokeDecoded("settings_update", decodeMonitorSettings, { input }),
   meStats: (fromAt, toExclusiveAt, userId, scope) => invokeDecoded("me_stats", decodeMeStats, { fromAt, toExclusiveAt, userId, scope }),
-  workspaceReport: (fromAt, toExclusiveAt) => invokeDecoded("workspace_report", decodeWorkspaceReport, { fromAt, toExclusiveAt }),
+  workspaceReport: (fromAt, toExclusiveAt, scope) => invokeDecoded("workspace_report", decodeWorkspaceReport, { fromAt, toExclusiveAt, scope }),
   pictureUpload: (bytes) => invokeDecoded("picture_upload", decodeUser, { bytes: Array.from(bytes) }),
   pictureRemove: () => invokeDecoded("picture_remove", decodeUser),
   memberPicture: (userId, version) => invokeDecoded("member_picture", decodeBytes, { userId, version }),
-  agentShifts: (fromAt, toExclusiveAt) => invokeDecoded("agent_shifts", decodeAgentShifts, { fromAt, toExclusiveAt }),
-  liveAgentSessions: () => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions),
-  agentShiftRows: (groupKey, after, fromAt, toExclusiveAt) =>
+  agentShifts: (fromAt, toExclusiveAt, userId, scope) =>
+    invokeDecoded("agent_shifts", decodeAgentShifts, { query: { fromAt, toExclusiveAt, userId, scope } }),
+  liveAgentSessions: (scope) => invokeDecoded("agent_live_sessions", decodeLiveAgentSessions, { scope }),
+  agentShiftRows: (groupKey, after, fromAt, toExclusiveAt, userId, scope) =>
     invokeDecoded("agent_shift_rows", decodeAgentShiftRows, {
       groupKey,
       afterStartedAt: after?.startedAt,
       afterId: after?.id,
       projectTied: after?.projectTied,
-      fromAt,
-      toExclusiveAt,
+      query: { fromAt, toExclusiveAt, userId, scope },
     }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),
