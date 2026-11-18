@@ -29,11 +29,22 @@ describe("app rows across operating systems", () => {
   it("joins one app's names from Windows and macOS into one Today row", () => {
     const rows = buildMeterRows(CROSS_PLATFORM_APPS);
 
-    expect(rows.map((row) => [row.label, row.processName, row.durationSeconds, row.share])).toEqual([
-      ["Google Chrome", "chrome.exe", 3_000, 100],
-      ["VS Code", "Code.exe", 900, 30],
-      ["Claude Code", "claude.exe", 420, 14],
+    expect(rows.map((row) => [row.label, row.processNames, row.durationSeconds, row.share])).toEqual([
+      ["Google Chrome", ["chrome.exe", "Google Chrome"], 3_000, 100],
+      ["VS Code", ["Code.exe"], 900, 30],
+      ["Claude Code", ["claude.exe", "claude"], 420, 14],
     ]);
+  });
+
+  // Issue 157: the joined row kept only its heaviest name, so a host whose own
+  // name for the app was the lighter one could not look up its icon.
+  it("keeps every joined name on a Today row, heaviest first", () => {
+    const rows = buildMeterRows([
+      { processName: "chrome.exe", durationSeconds: 600 },
+      { processName: "Google Chrome", durationSeconds: 1_800 },
+    ]);
+
+    expect(rows.map((row) => row.processNames)).toEqual([["Google Chrome", "chrome.exe"]]);
   });
 
   it("ranks an app by its whole time before the tail folds into Everything else", () => {

@@ -107,7 +107,7 @@ export const workspaceBreakdownRows = (report: {
     key: entry.project.id,
     label: entry.project.name,
     source: undefined,
-    processName: undefined,
+    processNames: [],
     appearance: projectAppearance({ id: entry.project.id, isDefault: false, icon: entry.project.icon, color: entry.project.color }),
     durationSeconds: entry.durationSeconds,
   }))),
@@ -115,7 +115,7 @@ export const workspaceBreakdownRows = (report: {
     key: entry.source,
     label: agentRuntimeLabel(entry.source),
     source: entry.source,
-    processName: undefined,
+    processNames: [],
     durationSeconds: entry.durationSeconds,
   }))),
 });
