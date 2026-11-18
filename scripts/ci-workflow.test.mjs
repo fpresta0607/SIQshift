@@ -15,9 +15,15 @@ const workflow = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", i
 const MAX_JOB_TIMEOUT_MINUTES = 60;
 
 // The command word, so a line that only mentions apt in a string (the apt.conf
-// `printf`, the `::error` message) is not an invocation.
-const MIRROR_COMMAND = /(?:^|[\s;&|(])(?:apt-get|playwright install-deps)(?:\s|$)/;
-const TIMED_MIRROR_COMMAND = /(?:^|[\s;&|(])(?:sudo\s+)?timeout\s+(\d+)\s+(?:apt-get|pnpm exec playwright install-deps)(?:\s|$)/;
+// `printf`, the `::error` message) is not an invocation. Playwright's
+// `install-deps` runs apt-get as root however its CLI is reached.
+const MIRROR_COMMAND = /(?:^|[\s;&|(])apt-get\s|\sinstall-deps(?:\s|$)/;
+// `timeout` can only signal processes of its own user, so a command that reaches
+// root apt needs `sudo timeout N`: `timeout N sudo ...` and `timeout N` around a
+// command that elevates itself both leave the stalled root apt-get running. Only
+// `apt-get update` into the step's own lists runs as the runner user.
+const TIMED_MIRROR_COMMAND =
+  /(?:^|[\s;&|(])(?<elevation>sudo\s+)?timeout\s+(?<seconds>\d+)\s+(?:apt-get\s+(?<subcommand>\S+)|[^;&|]*\sinstall-deps(?:\s|$))/;
 
 const mirrorSteps = [];
 for (const [jobName, job] of Object.entries(workflow.jobs)) {
@@ -44,16 +50,20 @@ describe("mirror steps", () => {
   });
 
   for (const { jobName, job, script, invocations } of mirrorSteps) {
-    test(`${jobName} runs every mirror command under timeout`, () => {
+    test(`${jobName} runs every mirror command under a timeout that can end it`, () => {
       for (const line of invocations) {
-        assert.match(line, TIMED_MIRROR_COMMAND, `not run under timeout: ${line.trim()}`);
+        const timed = line.match(TIMED_MIRROR_COMMAND);
+        assert.ok(timed, `not run directly under timeout: ${line.trim()}`);
+        if (timed.groups.subcommand !== "update") {
+          assert.ok(timed.groups.elevation, `reaches root apt under a timeout that cannot signal it: ${line.trim()}`);
+        }
       }
     });
 
     test(`${jobName} retries inside its job timeout`, () => {
       const attempts = script.match(/for attempt in ((?:\d+\s?)+); do/)[1].trim().split(/\s+/).length;
       const retryPauseSeconds = Number(script.match(/sleep (\d+)/)[1]);
-      const tryTotalSeconds = invocations.reduce((total, line) => total + Number(line.match(TIMED_MIRROR_COMMAND)?.[1] ?? Infinity), 0);
+      const tryTotalSeconds = invocations.reduce((total, line) => total + Number(line.match(TIMED_MIRROR_COMMAND)?.groups.seconds ?? Infinity), 0);
       const worstCaseSeconds = attempts * tryTotalSeconds + (attempts - 1) * retryPauseSeconds;
       assert.ok(
         worstCaseSeconds < job["timeout-minutes"] * 60,

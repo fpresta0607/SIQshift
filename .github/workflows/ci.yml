@@ -78,7 +78,7 @@ jobs:
           # Each try has a time limit: a stalled mirror never makes apt exit, so
           # without it the loop never retries.
           for attempt in 1 2 3; do
-            if timeout 300 pnpm exec playwright install-deps chromium; then
+            if sudo timeout 300 "$(command -v node)" node_modules/@playwright/test/cli.js install-deps chromium; then
               sudo rm /etc/apt/apt.conf.d/99siqshift-chromium-debs
               exit 0
             fi
