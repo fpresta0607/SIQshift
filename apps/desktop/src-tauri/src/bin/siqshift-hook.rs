@@ -52,6 +52,8 @@ fn run() -> Result<(), String> {
         // remote - and the root rides along as evidence. Each collapses any
         // failure to `None` on its own, so a machine without git records none
         // of them and nothing else changes.
+        #[cfg(windows)]
+        end_git_children_with_this_process();
         let cwd = event.cwd.clone();
         if let Some(cwd) = cwd.as_deref().map(Path::new) {
             event.start_head = git_evidence::head_sha(cwd);
@@ -62,6 +64,47 @@ fn run() -> Result<(), String> {
     }
     let path = spool::agent_spool_path();
     spool::append(&path, &event).map_err(|error| format!("could not write the spool: {error}"))
+}
+
+/// Puts this process in a job object that kills its members when the last
+/// handle closes, so a git (and the real git its `cmd\git.exe` shim spawns)
+/// still running when the agent CLI kills this hook dies with it instead of
+/// outliving the session. The handle is never closed: the OS closes it when
+/// this process ends, however it ends. Assigning this process rather than git
+/// after the spawn is what covers the shim, which can start its real git before
+/// a late assignment. A failure (a parent job that forbids nesting, for one) is
+/// ignored: the git timeout still bounds the work.
+#[cfg(windows)]
+fn end_git_children_with_this_process() {
+    use std::mem::size_of;
+    use std::ptr::null;
+
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    // SAFETY: plain Win32 calls on a handle created here, with a zeroed
+    // all-integer limit struct whose size is passed alongside it.
+    unsafe {
+        let job = CreateJobObjectW(null(), null());
+        if job.is_null() {
+            return;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let is_configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of!(limits).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) != 0;
+        if is_configured {
+            AssignProcessToJobObject(job, GetCurrentProcess());
+        }
+    }
 }
 
 /// How the command line says the event arrives.

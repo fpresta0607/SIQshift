@@ -3,7 +3,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use siqshift_desktop_lib::spool::{self, MAX_SPOOL_RECORD_BYTES};
 
@@ -680,5 +681,239 @@ fn a_non_numeric_token_flag_exits_non_zero_and_writes_nothing() {
     assert!(!output.status.success());
     assert!(!spool.exists());
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The hook probes git on a `Started` event with `rev-parse HEAD` first. A copy
+/// of this test binary named `git` answers every probe as libtest: `rev-parse`
+/// and `HEAD` read as name filters, so the test below runs, while the later
+/// probes pass flags libtest rejects and fail fast.
+#[allow(non_snake_case)]
+#[test]
+fn fake_git_HEAD_probe_holds_until_killed() {
+    const FAKE_GIT_HOLD_CAP: Duration = Duration::from_secs(60);
+    let Some(pid_file) = std::env::var_os(PID_FILE_ENV) else {
+        return;
+    };
+    std::fs::write(pid_file, std::process::id().to_string()).expect("the pid file writes");
+    std::thread::sleep(FAKE_GIT_HOLD_CAP);
+}
+
+const PID_FILE_ENV: &str = "SIQSHIFT_TEST_FAKE_GIT_PID_FILE";
+
+struct FakeGit {
+    bin_dir: PathBuf,
+    pid_file: PathBuf,
+}
+
+fn install_fake_git(dir: &Path) -> FakeGit {
+    let bin_dir = dir.join("fake-git-bin");
+    std::fs::create_dir_all(&bin_dir).expect("fake git dir creates");
+    let name = if cfg!(windows) { "git.exe" } else { "git" };
+    std::fs::copy(
+        std::env::current_exe().expect("the test binary has a path"),
+        bin_dir.join(name),
+    )
+    .expect("the test binary copies as git");
+    FakeGit {
+        bin_dir,
+        pid_file: dir.join("fake-git.pid"),
+    }
+}
+
+fn spawn_hook_with_fake_git(dir: &Path, fake_git: &FakeGit, hook_event_name: &str) -> Child {
+    let cwd = dir.join("not-a-repo");
+    std::fs::create_dir_all(&cwd).expect("cwd creates");
+    let path = std::env::join_paths(std::iter::once(fake_git.bin_dir.clone()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("PATH joins");
+    let payload = serde_json::json!({
+        "session_id": "fake-git-1",
+        "cwd": cwd,
+        "hook_event_name": hook_event_name,
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_siqshift-hook"))
+        .env("SIQSHIFT_SPOOL", dir.join("agent-spool.jsonl"))
+        .env("PATH", path)
+        .env(PID_FILE_ENV, &fake_git.pid_file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("hook binary spawns");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(payload.to_string().as_bytes())
+        .expect("stdin writes");
+    child
+}
+
+/// Polls until `condition` holds or `cap` passes; true when it held.
+fn wait_until(cap: Duration, mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + cap;
+    loop {
+        if condition() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn read_pid(pid_file: &Path) -> Option<u32> {
+    std::fs::read_to_string(pid_file).ok()?.trim().parse().ok()
+}
+
+#[cfg(windows)]
+fn is_process_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+    // SAFETY: the handle is opened, waited on without blocking, and closed here.
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let is_running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        CloseHandle(handle);
+        is_running
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: the handle is opened, used once, and closed here.
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn is_process_running(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(windows))]
+fn terminate_process(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Kills a fake git the test is about to report as leaked, so a failing run
+/// never leaves a sleeping process behind.
+fn clean_up_fake_git(fake_git: &FakeGit) {
+    if let Some(pid) = read_pid(&fake_git.pid_file) {
+        if is_process_running(pid) {
+            terminate_process(pid);
+        }
+    }
+}
+
+const PID_FILE_WAIT_CAP: Duration = Duration::from_secs(30);
+const HOOK_EXIT_CAP: Duration = Duration::from_secs(30);
+const GIT_GONE_CAP: Duration = Duration::from_secs(5);
+
+/// Claude Code cancels a hook that runs long by killing it. git must not
+/// outlive that: the kill leaves the hook no chance to clean up after itself,
+/// so it binds its children to its own lifetime.
+#[cfg(windows)]
+#[test]
+fn a_cancelled_session_start_hook_leaves_no_git_running() {
+    // Arrange
+    let dir = temp_dir("cancelled-hook");
+    let fake_git = install_fake_git(&dir);
+    let mut hook = spawn_hook_with_fake_git(&dir, &fake_git, "SessionStart");
+    let has_git_started = wait_until(PID_FILE_WAIT_CAP, || read_pid(&fake_git.pid_file).is_some());
+    assert!(has_git_started, "the hook never started git");
+    let git_pid = read_pid(&fake_git.pid_file).expect("the pid reads");
+
+    // Act
+    hook.kill().expect("the hook is killed");
+    hook.wait().expect("the hook is reaped");
+    let is_git_gone = wait_until(GIT_GONE_CAP, || !is_process_running(git_pid));
+
+    // Assert
+    clean_up_fake_git(&fake_git);
+    assert!(is_git_gone, "git {git_pid} outlived the killed hook");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_session_start_hook_returns_within_its_git_budget_and_leaves_no_git() {
+    // Arrange
+    let dir = temp_dir("git-budget");
+    let spool = dir.join("agent-spool.jsonl");
+    let fake_git = install_fake_git(&dir);
+
+    // Act
+    let mut hook = spawn_hook_with_fake_git(&dir, &fake_git, "SessionStart");
+    let is_hook_done = wait_until(HOOK_EXIT_CAP, || {
+        hook.try_wait().expect("hook status reads").is_some()
+    });
+    if !is_hook_done {
+        let _ = hook.kill();
+    }
+    let status = hook.wait().expect("hook is reaped");
+
+    // Assert
+    let git_pid = read_pid(&fake_git.pid_file);
+    let is_git_gone =
+        git_pid.is_none_or(|pid| wait_until(GIT_GONE_CAP, || !is_process_running(pid)));
+    clean_up_fake_git(&fake_git);
+    assert!(is_hook_done, "the hook blocked on a git that never answers");
+    assert!(status.success());
+    assert!(git_pid.is_some(), "the hook never started git");
+    assert!(is_git_gone, "git outlived the hook");
+    let content = std::fs::read_to_string(&spool).expect("the started line spools");
+    let value: serde_json::Value =
+        serde_json::from_str(content.lines().next().expect("one line")).expect("line parses");
+    assert_eq!(value["event"], "started");
+    assert!(value.get("startHead").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_session_end_hook_never_starts_git() {
+    // Arrange
+    let dir = temp_dir("end-no-git");
+    let spool = dir.join("agent-spool.jsonl");
+    let fake_git = install_fake_git(&dir);
+
+    // Act
+    let mut hook = spawn_hook_with_fake_git(&dir, &fake_git, "SessionEnd");
+    let is_hook_done = wait_until(HOOK_EXIT_CAP, || {
+        hook.try_wait().expect("hook status reads").is_some()
+    });
+    if !is_hook_done {
+        let _ = hook.kill();
+    }
+    let status = hook.wait().expect("hook is reaped");
+
+    // Assert
+    clean_up_fake_git(&fake_git);
+    assert!(is_hook_done, "the hook did not exit");
+    assert!(status.success());
+    assert!(!fake_git.pid_file.exists(), "the hook started git");
+    let content = std::fs::read_to_string(&spool).expect("the ended line spools");
+    assert!(content.contains("\"ended\""));
     let _ = std::fs::remove_dir_all(&dir);
 }

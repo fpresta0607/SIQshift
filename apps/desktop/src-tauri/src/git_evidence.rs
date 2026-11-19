@@ -7,9 +7,11 @@
 //! read-only tool must never mutate the repo it is reporting on.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 
@@ -22,6 +24,13 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// git can hang on a slow filesystem or a huge pack; a shift's capture must
 /// never block the uploader indefinitely over it.
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The hook runs git on the agent CLI's critical path, and the CLI kills a hook
+/// that runs long; a probe that outlasts this is abandoned (git killed) and
+/// reads as "unknown".
+const SYNC_GIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+const SYNC_GIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The probe both `discover_repo` and `repo_root` resolve the main repository
 /// root with; see `main_root_of_common_dir` for why the common directory and
@@ -99,25 +108,13 @@ pub async fn discover_repo(cwd: &Path) -> Option<RepoLocation> {
 /// bounded to what appeared afterward instead of reading HEAD minutes later.
 ///
 /// Synchronous (`std::process::Command`) on purpose: the hook is a synchronous
-/// binary, and `git rev-parse HEAD` takes no locks and reads two files, so it
-/// cannot slow down or block the agent CLI that invoked the hook.
+/// binary, and `git rev-parse HEAD` takes no locks and reads two files. It is
+/// bounded by `SYNC_GIT_TIMEOUT` all the same, so it cannot block the agent CLI
+/// that invoked the hook.
 pub fn head_sha(cwd: &Path) -> Option<String> {
     let mut command = std::process::Command::new("git");
-    command
-        .args(["rev-parse", "HEAD"])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|text| text.trim().to_string())
+    command.args(["rev-parse", "HEAD"]).current_dir(cwd);
+    run_bounded_git(command)
 }
 
 /// The repository a shift's working directory belongs to: the **main**
@@ -136,28 +133,58 @@ pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
     probe_repo_root("git", cwd)
 }
 
-/// Runs one read-only git command synchronously, collapsing every failure —
-/// git absent, not a repo, a refused flag — to `None`, so the caller always
-/// has an honest "unknown" to fall back to. Synchronous because the hook is a
-/// synchronous binary with no runtime, which is also why there is no
-/// `GIT_TIMEOUT` here: a hang blocks the caller rather than collapsing, so
-/// this stays reserved for the `rev-parse` probes, which take no locks and
-/// read what git has already opened.
+/// Runs one read-only git command synchronously, collapsing every failure -
+/// git absent, not a repo, a refused flag, a timeout - to `None`, so the caller
+/// always has an honest "unknown" to fall back to. Synchronous because the hook
+/// is a synchronous binary with no runtime.
 fn run_git_sync(git: &str, cwd: &Path, args: &[&str]) -> Option<String> {
     let mut command = std::process::Command::new(git);
+    command.args(args).current_dir(cwd);
+    run_bounded_git(command)
+}
+
+/// The one synchronous git spawn: runs a prepared command with stdin and
+/// stderr discarded and stdout captured, and returns trimmed stdout when it
+/// exits successfully within `SYNC_GIT_TIMEOUT`.
+///
+/// A git still running at the deadline is killed and reaped, so a slow
+/// filesystem can neither hold up the caller nor leave a git behind. Stdout is
+/// drained on its own thread so a large answer cannot fill the pipe and stall
+/// git, and that thread is waited on for a bounded time only: a descendant that
+/// outlives git and holds the pipe open cannot hold the caller either.
+fn run_bounded_git(mut command: std::process::Command) -> Option<String> {
     command
-        .args(args)
-        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().ok()?;
-    if !output.status.success() {
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = stdout.read_to_end(&mut bytes);
+        let _ = sender.send(read.map(|_| bytes));
+    });
+
+    let deadline = Instant::now() + SYNC_GIT_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(SYNC_GIT_POLL_INTERVAL),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
         return None;
     }
-    String::from_utf8(output.stdout)
+    let bytes = receiver.recv_timeout(SYNC_GIT_TIMEOUT).ok()?.ok()?;
+    String::from_utf8(bytes)
         .ok()
         .map(|text| text.trim().to_string())
 }
@@ -279,17 +306,8 @@ fn probe_repo_remote(git: &str, cwd: &Path, env: &[(&str, &OsStr)]) -> Option<St
     command
         .args(["config", "--local", "--get", "remote.origin.url"])
         .current_dir(cwd)
-        .envs(env.iter().copied())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let configured = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        .envs(env.iter().copied());
+    let configured = run_bounded_git(command)?;
     let remote = without_embedded_credentials(&configured);
     // The contract caps it at 1000 characters and rejects an empty string, so
     // an absurd value is dropped here rather than 400ing the whole batch.
