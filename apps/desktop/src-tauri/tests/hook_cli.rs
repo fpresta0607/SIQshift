@@ -828,7 +828,6 @@ fn clean_up_fake_git(fake_git: &FakeGit) {
     }
 }
 
-const PID_FILE_WAIT_CAP: Duration = Duration::from_secs(30);
 const HOOK_EXIT_CAP: Duration = Duration::from_secs(30);
 const GIT_GONE_CAP: Duration = Duration::from_secs(5);
 
@@ -838,6 +837,8 @@ const GIT_GONE_CAP: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 #[test]
 fn a_cancelled_session_start_hook_leaves_no_git_running() {
+    const PID_FILE_WAIT_CAP: Duration = Duration::from_secs(30);
+
     // Arrange
     let dir = temp_dir("cancelled-hook");
     let fake_git = install_fake_git(&dir);
