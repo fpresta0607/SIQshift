@@ -358,12 +358,6 @@ button:disabled { opacity: .55; cursor: default; }
 .app-mark.app-letter[data-tone="sky"] { color: #85c6ff; }
 .app-mark.app-letter[data-tone="amber"] { color: #f2c26b; }
 .app-mark.app-letter[data-tone="rose"] { color: #f29bb0; }
-/* A person's active time, from no agent running to three or more: the human
-   grey, then the agent green growing stronger with each agent. */
-.tv-swatch { width: 10px; height: 10px; margin: 0 auto; border-radius: 3px; background: var(--chart-human); }
-.tv-swatch[data-level="1"] { background: color-mix(in srgb, var(--chart-agent) 45%, transparent); }
-.tv-swatch[data-level="2"] { background: color-mix(in srgb, var(--chart-agent) 72%, transparent); }
-.tv-swatch[data-level="3"] { background: var(--chart-agent); }
 .tv-meter-list .meter-row.is-agent .meter-name, .tv-meter-list .meter-row.is-agent .meter-duration { color: var(--mint); }
 .tv-foot { color: var(--text-secondary); font-size: .74rem; line-height: 1.5; }
 

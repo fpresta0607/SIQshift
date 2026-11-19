@@ -35,14 +35,6 @@ export { usePictures } from "./use-pictures.js";
  * nothing below hardcodes a color.
  */
 
-/** The part of a concurrency split the breakdown reads. */
-export type ConcurrencySplit = {
-  t0Seconds: number;
-  t1Seconds: number;
-  t2Seconds: number;
-  t3PlusSeconds: number;
-};
-
 /// What "recorded" is made of, in one sentence, from numbers this payload
 /// actually carries.
 ///

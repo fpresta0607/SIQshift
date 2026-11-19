@@ -772,7 +772,7 @@ describe("today", () => {
     expect(apps.getByText("VS Code")).toBeInTheDocument();
   });
 
-  it("keeps the agent session stats off the person's split - they belong to the agent", async () => {
+  it("draws no agents-running split for a person and keeps the agent session stats off their page", async () => {
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({
       meStats: vi.fn().mockResolvedValue({
@@ -784,8 +784,10 @@ describe("today", () => {
 
     const panel = await openAllStats(person);
     await pickPerson(person, panel, user.name);
-    const split = within(await within(panel).findByRole("region", { name: "Active time, by agents running" }));
-    expect(split.getByText("No agent running")).toBeInTheDocument();
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+    await waitFor(() => expect(teamTotal(panel, "Active time")).toHaveTextContent("1h 00m"));
+    expect(within(panel).queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("No agent running");
     expect(panel).not.toHaveTextContent("Total agent time");
     expect(within(panel).queryByTestId("agent-sessions")).not.toBeInTheDocument();
     expect(within(panel).queryByTestId("agent-breakdown")).not.toBeInTheDocument();
@@ -1545,8 +1547,7 @@ describe("the team board", () => {
     expect(within(panel).queryByRole("button", { name: "Everyone" })).toBeNull();
     expect(within(panel).queryByText("Select a teammate to explore their work.")).toBeNull();
     expect(teamTotal(panel, "Active time")).toHaveTextContent("1h 00m");
-    const split = within(await within(panel).findByRole("region", { name: "Active time, by agents running" }));
-    expect(split.getByText("With 1 agent")).toBeInTheDocument();
+    expect(within(panel).queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
     const apps = within(within(panel).getByRole("region", { name: "Apps" }));
     expect(apps.getByText("VS Code")).toBeInTheDocument();
   });
@@ -1778,33 +1779,6 @@ describe("the team board", () => {
     expect(within(panel).getByTestId("agent-time-limit").textContent).toBe(note);
   });
 
-  it("writes the split in plain words and drops empty agent buckets", async () => {
-    const bridge = bridgeFor({
-      meStats: vi.fn().mockResolvedValue({
-        ...meStats,
-        activeSeconds: 14_400,
-        agentSeconds: 21_600,
-        concurrency: { t0Seconds: 3_600, t1Seconds: 3_600, t2Seconds: 0, t3PlusSeconds: 5_400, awaySeconds: 1_800 },
-      }),
-    });
-    const person = userEvent.setup();
-    render(<App bridge={bridge} />);
-
-    const panel = await openAllStats(person);
-    await pickPerson(person, panel, user.name);
-    const split = within(await within(panel).findByRole("region", { name: "Active time, by agents running" }));
-    expect(split.getByText("No agent running")).toBeInTheDocument();
-    expect(split.getByText("With 1 agent")).toBeInTheDocument();
-    expect(split.getByText("With 3+ agents")).toBeInTheDocument();
-    expect(split.getByText("1h 30m")).toBeInTheDocument();
-    expect(split.queryByText("With 2 agents")).not.toBeInTheDocument();
-    // What the agents themselves added up to is the agent's number, not the
-    // person's; it is the Agent time total's.
-    expect(split.queryByText(/while away/)).not.toBeInTheDocument();
-    expect(split.queryByText(/Total agent time/)).not.toBeInTheDocument();
-    expect(teamTotal(panel, "Agent time")).toHaveTextContent("6h 00m");
-  });
-
   // The same page as the web's, and the same report: 1h56m recorded against
   // 37m active with no agent time measured anywhere in the window. The header
   // called the difference "unattended agent time" from `recorded > active`
@@ -1852,19 +1826,6 @@ describe("the team board", () => {
     const apps = within(within(panel).getByRole("region", { name: "Apps" }));
     expect(apps.getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
     expect(within(within(panel).getByRole("region", { name: "Projects" })).getAllByRole("listitem")[0]).toHaveTextContent("1h 56m");
-  });
-
-  it("draws no split when no active time was recorded", async () => {
-    const person = userEvent.setup();
-    render(<App bridge={bridgeFor()} />);
-
-    const panel = await openAllStats(person);
-    await pickPerson(person, panel, user.name);
-    await within(panel).findByLabelText(`Totals for ${user.name}`);
-
-    expect(within(panel).queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
-    expect(panel).not.toHaveTextContent("Total agent time");
-    expect(within(panel).queryByTestId("agent-sessions")).not.toBeInTheDocument();
   });
 
   it("offers Everyone, not a way back to yourself, after picking a teammate", async () => {

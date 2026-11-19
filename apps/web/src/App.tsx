@@ -932,7 +932,6 @@ export const App = ({ client }: AppProps) => {
           buildProjectRows(memberStats.projects).map((row) => ({ project: { id: row.projectId, name: row.name }, durationSeconds: row.durationSeconds })),
           appearanceOf,
         ),
-        split: memberStats.concurrency,
         recordedNote: recordedBasis(memberStats.totalDurationSeconds, memberStats.activeSeconds, memberStats.concurrency.awaySeconds),
         appRows: buildAppRows(memberStats.apps, memberStats.totalDurationSeconds),
       };
