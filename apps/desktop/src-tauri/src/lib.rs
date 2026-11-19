@@ -15,6 +15,10 @@ mod codex_sessions;
 // Shared with the `siqshift-hook` binary; it reads the shift's starting HEAD
 // when a `Started` line is written.
 pub mod git_evidence;
+// Shared with the `siqshift-hook` binary, which ends its git with its own life;
+// the git probes put each probe's whole process tree in one.
+#[cfg(windows)]
+pub mod kill_on_close_job;
 mod monitor;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
