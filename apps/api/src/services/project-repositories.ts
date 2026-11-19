@@ -3,7 +3,7 @@ import type { RepositoryChoice } from "@siqshift/shared";
 import type { AuthenticatedSubject } from "../auth.js";
 import { AppError } from "../errors.js";
 import type { AgentRepository, PathMappingRepository } from "../repositories.js";
-import { repoKeyPath, resolveProjectForCwd, resolveProjectForRemote, shiftCodebaseLabel } from "./attribution.js";
+import { isHomeOrTempDirectory, repoKeyPath, resolveProjectForCwd, resolveProjectForRemote, shiftCodebaseLabel } from "./attribution.js";
 
 export interface RepositoryChoiceSources {
   agents: Pick<AgentRepository, "listForOrganization">;
@@ -49,8 +49,8 @@ function compareChoices(left: RepositoryChoice, right: RepositoryChoice): number
  * uploader's own, so a teammate's link never claims this person's work.
  *
  * A repository needs a root to be offered, because a folder link needs a
- * prefix, and a local-only one in the home folder or the temp tree names no
- * codebase (`shiftCodebaseLabel`), so it is not offered either.
+ * prefix. A root in the home folder or the temp tree is not offered whatever
+ * the key, because a link there would claim every unmapped folder below it.
  */
 async function ownRepositories(sources: RepositoryChoiceSources, subject: AuthenticatedSubject): Promise<OwnRepository[]> {
   const [agents, mappings] = await Promise.all([
@@ -72,7 +72,7 @@ async function ownRepositories(sources: RepositoryChoiceSources, subject: Authen
     // that recorded a root names it, so the choice is stable between reads.
     const repoRoot = localRoot ?? oldestFirst.find((candidate) => candidate.repoKey === repoKey && candidate.repoRoot !== null)?.repoRoot ?? null;
     // A folder link's prefix holds 500 characters and a root up to 1000.
-    if (name === null || repoRoot === null || repoRoot.length > 500) continue;
+    if (name === null || repoRoot === null || repoRoot.length > 500 || isHomeOrTempDirectory(repoRoot)) continue;
     const isClaimed = folderLinks.some((link) =>
       resolveProjectForCwd(repoRoot, [link]) !== null
       || (remote !== null && resolveProjectForRemote(remoteUrl(remote), [link]) !== null));

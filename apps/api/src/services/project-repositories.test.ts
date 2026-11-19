@@ -85,6 +85,8 @@ describe("repository choices for a new project", () => {
     ["a remote with no recorded root", member, agent({ repoRoot: null })],
     ["a local repository in the home folder", member, agent({ repoKey: "path:C:/Users/alex", repoRoot: "C:/Users/alex" })],
     ["a local repository in the temp tree", member, agent({ repoKey: "path:/tmp/fixture-repo", repoRoot: "/tmp/fixture-repo" })],
+    ["a remote whose root is the home folder", member, agent({ repoKey: "github.com/alex/dotfiles", repoRoot: "C:/Users/alex" })],
+    ["a remote whose root is in the temp tree", member, agent({ repoRoot: "/tmp/fixture-repo" })],
     ["a root longer than a folder link holds", member, agent({ repoRoot: `C:/dev/${"a".repeat(500)}` })],
   ])("does not offer %s", async (_case, subject, record) => {
     await expect(listRepositoryChoices(sources([record]), subject)).resolves.toEqual([]);
@@ -137,6 +139,12 @@ describe("the folder link a picked repository creates", () => {
   it("refuses a repository only a teammate's agents worked in", async () => {
     const theirs = agent({ owner: { id: TEAMMATE, name: "Sam" } });
     const error = await refusal(repositoryFolderLink(sources([theirs]), admin, "github.com/acme/clock-in"));
+    expect(error.code).toBe("not_found");
+  });
+
+  it("refuses a remote whose root is the home folder", async () => {
+    const dotfiles = agent({ repoKey: "github.com/alex/dotfiles", repoRoot: "/home/alex" });
+    const error = await refusal(repositoryFolderLink(sources([dotfiles]), member, "github.com/alex/dotfiles"));
     expect(error.code).toBe("not_found");
   });
 
