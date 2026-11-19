@@ -19,6 +19,12 @@ use tokio::process::Command;
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
+use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+#[cfg(windows)]
+use crate::kill_on_close_job::KillOnCloseJob;
+
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// git can hang on a slow filesystem or a huge pack; a shift's capture must
@@ -148,21 +154,31 @@ fn run_git_sync(git: &str, cwd: &Path, args: &[&str]) -> Option<String> {
 /// exits successfully within `SYNC_GIT_TIMEOUT`.
 ///
 /// A git still running at the deadline is killed and reaped, so a slow
-/// filesystem cannot hold up the caller. The kill reaches only the direct
-/// child: behind Git for Windows' `cmd\git.exe` shim the real git is a
-/// grandchild that runs on until it finishes, unless the caller ends its
-/// descendants itself, as the hook's kill-on-close job object does. Stdout is
-/// drained on its own thread so a large answer cannot fill the pipe and stall
-/// git, and that thread is waited on for a bounded time only: a descendant that
-/// outlives git and holds the pipe open cannot hold the caller either.
+/// filesystem cannot hold up the caller. On Windows the kill reaches every
+/// process the probe started: behind Git for Windows' `cmd\git.exe` shim the
+/// real git is a grandchild, and the probe's own kill-on-close job ends it
+/// with the shim when this returns. Stdout is drained on its own thread so a
+/// large answer cannot fill the pipe and stall git, and that thread is waited
+/// on for a bounded time only: a descendant that outlives git and holds the
+/// pipe open cannot hold the caller either.
 fn run_bounded_git(mut command: std::process::Command) -> Option<String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     let mut child = command.spawn().ok()?;
+    // Dropped when this returns, which ends whatever the probe left running.
+    #[cfg(windows)]
+    let _probe_tree = match start_in_kill_on_close_job(&child) {
+        Some(job) => job,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -190,6 +206,60 @@ fn run_bounded_git(mut command: std::process::Command) -> Option<String> {
     String::from_utf8(bytes)
         .ok()
         .map(|text| text.trim().to_string())
+}
+
+/// Puts a probe spawned suspended into its own kill-on-close job and only then
+/// lets it run, so every process it starts, the real git behind the
+/// `cmd\git.exe` shim included, is born inside the job and ends with it. A job
+/// assigned after a running spawn would miss a grandchild the shim had already
+/// started. `None` when the job cannot be made or the probe cannot be resumed.
+#[cfg(windows)]
+fn start_in_kill_on_close_job(child: &std::process::Child) -> Option<KillOnCloseJob> {
+    let job = KillOnCloseJob::create()?;
+    if !job.assign_child(child) || !resume_suspended_process(child.id()) {
+        return None;
+    }
+    Some(job)
+}
+
+/// Resumes every thread of a process created with `CREATE_SUSPENDED`, which
+/// until then has only the one it was created with. std's `Child` keeps no
+/// handle to that thread, so it is found by the process id the open process
+/// handle keeps from being reused. True when a thread was resumed.
+#[cfg(windows)]
+fn resume_suspended_process(process_id: u32) -> bool {
+    use std::mem::size_of;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    // SAFETY: plain Win32 calls on handles opened and closed here, with a
+    // zeroed all-integer entry whose size field is set before the first read.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = size_of::<THREADENTRY32>() as u32;
+        let mut is_resumed = false;
+        let mut has_entry = Thread32First(snapshot, &mut entry) != 0;
+        while has_entry {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    is_resumed |= ResumeThread(thread) != u32::MAX;
+                    CloseHandle(thread);
+                }
+            }
+            has_entry = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        is_resumed
+    }
 }
 
 fn probe_repo_root(git: &str, cwd: &Path) -> Option<PathBuf> {
@@ -815,6 +885,116 @@ mod tests {
         // a shift with no root must not arrive carrying a remote.
         assert_eq!(repo_root(&dir), None);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    const FAKE_SHIM_TEST: &str = "fake_git_shim_starts_a_real_git_that_holds";
+
+    #[cfg(windows)]
+    const REAL_GIT_PID_FILE_ENV: &str = "SIQSHIFT_TEST_REAL_GIT_PID_FILE";
+
+    #[cfg(windows)]
+    const IS_REAL_GIT_ENV: &str = "SIQSHIFT_TEST_IS_REAL_GIT";
+
+    /// Run as a probe's program, this test binary stands in for Git for
+    /// Windows' `cmd\git.exe` shim: it starts itself again as the real git,
+    /// which records its pid and holds, and waits on it, so the real git is
+    /// the probe's grandchild. Without the variable it is an ordinary no-op.
+    #[cfg(windows)]
+    #[test]
+    fn fake_git_shim_starts_a_real_git_that_holds() {
+        const REAL_GIT_HOLD_CAP: Duration = Duration::from_secs(60);
+        let Some(pid_file) = std::env::var_os(REAL_GIT_PID_FILE_ENV) else {
+            return;
+        };
+        if std::env::var_os(IS_REAL_GIT_ENV).is_some() {
+            std::fs::write(pid_file, std::process::id().to_string()).expect("the pid file writes");
+            std::thread::sleep(REAL_GIT_HOLD_CAP);
+            return;
+        }
+        let _ = std::process::Command::new(std::env::current_exe().expect("a test binary path"))
+            .arg(FAKE_SHIM_TEST)
+            .env(IS_REAL_GIT_ENV, "1")
+            .status();
+    }
+
+    #[cfg(windows)]
+    fn is_process_running(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+        // SAFETY: the handle is opened, waited on without blocking, and closed here.
+        unsafe {
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let is_running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+            CloseHandle(handle);
+            is_running
+        }
+    }
+
+    #[cfg(windows)]
+    fn terminate_process(pid: u32) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        // SAFETY: the handle is opened, used once, and closed here.
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !handle.is_null() {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
+        }
+    }
+
+    /// The desktop app runs the same probes as the hook but has no job of its
+    /// own around them, so killing the shim at the deadline once left the real
+    /// git running until it finished on its own.
+    #[cfg(windows)]
+    #[test]
+    fn a_probe_abandoned_at_its_deadline_leaves_no_descendant_running() {
+        const REAL_GIT_GONE_CAP: Duration = Duration::from_secs(5);
+        // Arrange
+        let dir = temp_dir("abandoned-probe");
+        let pid_file = dir.join("real-git.pid");
+        let mut shim =
+            std::process::Command::new(std::env::current_exe().expect("a test binary path"));
+        shim.arg(FAKE_SHIM_TEST)
+            .env(REAL_GIT_PID_FILE_ENV, &pid_file);
+
+        // Act
+        let answer = run_bounded_git(shim);
+
+        // Assert
+        let real_git_pid = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok());
+        let deadline = Instant::now() + REAL_GIT_GONE_CAP;
+        let is_real_git_gone = real_git_pid.is_some_and(|pid| loop {
+            if !is_process_running(pid) {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                terminate_process(pid);
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        });
+        assert_eq!(answer, None);
+        assert!(
+            real_git_pid.is_some(),
+            "the shim never started its real git"
+        );
+        assert!(
+            is_real_git_gone,
+            "the real git outlived the abandoned probe"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

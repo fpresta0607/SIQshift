@@ -76,34 +76,11 @@ fn run() -> Result<(), String> {
 /// ignored: the git timeout still bounds the work.
 #[cfg(windows)]
 fn end_git_children_with_this_process() {
-    use std::mem::size_of;
-    use std::ptr::null;
+    use siqshift_desktop_lib::kill_on_close_job::KillOnCloseJob;
 
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-
-    // SAFETY: plain Win32 calls on a handle created here, with a zeroed
-    // all-integer limit struct whose size is passed alongside it.
-    unsafe {
-        let job = CreateJobObjectW(null(), null());
-        if job.is_null() {
-            return;
-        }
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let is_configured = SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            std::ptr::addr_of!(limits).cast(),
-            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        ) != 0;
-        if is_configured {
-            AssignProcessToJobObject(job, GetCurrentProcess());
-        }
+    if let Some(job) = KillOnCloseJob::create() {
+        job.assign_current_process();
+        std::mem::forget(job);
     }
 }
 
