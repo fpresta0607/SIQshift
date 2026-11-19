@@ -192,18 +192,39 @@ export class DrizzleProjectRepository implements ProjectRepository {
     return rows[0] ?? null;
   }
 
-  public async createForMember(subject: AuthenticatedSubject, name: string): Promise<ProjectRecord> {
-    return this.db.transaction(async (tx) => {
-      const [project] = await tx
-        .insert(projects)
-        .values({ organizationId: subject.organizationId, name })
-        .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt });
-      if (project === undefined) throw new Error("Failed to create the project.");
-      await tx
-        .insert(projectMemberships)
-        .values({ organizationId: subject.organizationId, projectId: project.id, userId: subject.userId });
-      return project;
-    });
+  public async createForMember(
+    subject: AuthenticatedSubject,
+    name: string,
+    folderLink?: { pathPrefix: string; repoUrl: string | null },
+  ): Promise<ProjectRecord> {
+    try {
+      return await this.db.transaction(async (tx) => {
+        const [project] = await tx
+          .insert(projects)
+          .values({ organizationId: subject.organizationId, name })
+          .returning({ id: projects.id, organizationId: projects.organizationId, name: projects.name, archived: projects.archived, isDefault: projects.isDefault, icon: projects.icon, color: projects.color, createdAt: projects.createdAt });
+        if (project === undefined) throw new Error("Failed to create the project.");
+        await tx
+          .insert(projectMemberships)
+          .values({ organizationId: subject.organizationId, projectId: project.id, userId: subject.userId });
+        if (folderLink !== undefined) {
+          await tx.insert(projectPathMappings).values({
+            organizationId: subject.organizationId,
+            userId: subject.userId,
+            kind: "path_prefix",
+            pathPrefix: folderLink.pathPrefix,
+            repoUrl: folderLink.repoUrl,
+            projectId: project.id,
+          });
+        }
+        return project;
+      });
+    } catch (error) {
+      if (uniqueConstraint(error) === "project_path_mappings_organization_user_prefix_unique") {
+        throw new PathMappingRepositoryError("path_prefix");
+      }
+      throw error;
+    }
   }
 
   public async defaultIdForOrganization(subject: AuthenticatedSubject): Promise<string | null> {

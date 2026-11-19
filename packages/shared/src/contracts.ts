@@ -331,11 +331,35 @@ export const projectListResponseSchema = z.object({
   selectedProjectId: idSchema.nullable().default(null),
 }).strict();
 
-/** Desktop "New project…" affordance; the response reuses the list-item shape. */
+/**
+ * The "New project…" box in both apps; the response reuses the list-item
+ * shape. `repoKey` names one of `/projects/repositories`' entries, and the
+ * project is then created with a folder link for that repository.
+ */
 export const projectCreateRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(80),
+    repoKey: z.string().min(1).max(1005).optional(),
   })
+  .strict();
+
+/**
+ * A repository the caller's own agents worked in that none of the caller's
+ * folder links claims yet. Only the caller's own agents are read, whatever
+ * their role, so `repoRoot` is always a path its reader already owns.
+ */
+export const repositoryChoiceSchema = z
+  .object({
+    repoKey: z.string().min(1).max(1005),
+    name: z.string().min(1).max(200),
+    /** The normalized remote (`github.com/owner/repo`); null for a repository with none. */
+    remote: z.string().min(1).nullable(),
+    repoRoot: z.string().min(1).max(500),
+  })
+  .strict();
+
+export const repositoryChoiceListResponseSchema = z
+  .object({ repositories: z.array(repositoryChoiceSchema) })
   .strict();
 
 export const projectUpdateRequestSchema = z
@@ -1572,6 +1596,8 @@ export type PathMappingKind = z.infer<typeof pathMappingKindSchema>;
 export type PathMappingListResponse = z.infer<typeof pathMappingListResponseSchema>;
 export type PathMappingUpdateRequest = z.infer<typeof pathMappingUpdateRequestSchema>;
 export type ProjectCreateRequest = z.infer<typeof projectCreateRequestSchema>;
+export type RepositoryChoice = z.infer<typeof repositoryChoiceSchema>;
+export type RepositoryChoiceListResponse = z.infer<typeof repositoryChoiceListResponseSchema>;
 export type ProjectListItem = z.infer<typeof projectListItemSchema>;
 export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
 export type ProjectUpdateRequest = z.infer<typeof projectUpdateRequestSchema>;

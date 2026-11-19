@@ -30,6 +30,7 @@ import {
   formatHumanDuration as formatHuman,
   projectAppearance,
   type AgentRuntimeReportsModel,
+  type RepositoryChoice,
 } from "@siqshift/shared";
 import {
   AGENT_TIME_LIMIT_NOTE,
@@ -40,6 +41,7 @@ import {
   ProjectIconPicker,
   ProjectIconTile,
   QuietMark,
+  RepositoryPicker,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -277,6 +279,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectBusy, setNewProjectBusy] = useState(false);
   const [newProjectError, setNewProjectError] = useState<string | undefined>();
+  const [newProjectRepositories, setNewProjectRepositories] = useState<readonly RepositoryChoice[]>([]);
+  const [newProjectRepository, setNewProjectRepository] = useState<RepositoryChoice | null>(null);
   /// Manual hook-setup snippets returned by `hookRegister`, keyed by CLI source.
   const [hookSnippets, setHookSnippets] = useState<Readonly<Record<string, string>>>({});
   /// The models each runtime has named, from the caller's all-time agent
@@ -1034,24 +1038,53 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     }
   };
 
+  /// Opens the New project box with the member's unclaimed repositories. The
+  /// list is a suggestion: an API that cannot answer it leaves the plain box.
+  const openNewProject = (): void => {
+    const service = bridge;
+    const generation = bridgeGeneration.current;
+    setNewProjectOpen(true);
+    service.projectRepositories().then(
+      (repositories) => { if (isCurrent(service, generation)) setNewProjectRepositories(repositories); },
+      () => { if (isCurrent(service, generation)) setNewProjectRepositories([]); },
+    );
+  };
+
+  const closeNewProject = (): void => {
+    setNewProjectOpen(false);
+    setNewProjectName("");
+    setNewProjectError(undefined);
+    setNewProjectRepositories([]);
+    setNewProjectRepository(null);
+  };
+
+  /// Picking a repository names the project after it, and the name stays editable.
+  const pickRepository = (repository: RepositoryChoice | null): void => {
+    setNewProjectRepository(repository);
+    if (repository !== null) setNewProjectName(repository.name.slice(0, 80));
+  };
+
   /// Creates a project and pins recording to it, which is the only reason to
-  /// make one from this screen.
+  /// make a plain one from this screen. A project made from a repository is
+  /// not pinned: its folder link files that repository's agent time, and a
+  /// pin would file every other hour there too.
   const createProject = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const trimmed = newProjectName.trim();
     if (newProjectBusy || trimmed === "") return;
     const service = bridge;
     const generation = bridgeGeneration.current;
+    const repository = newProjectRepository;
     setNewProjectBusy(true);
     setNewProjectError(undefined);
     try {
-      const created = await service.projectCreate({ name: trimmed });
+      const created = await service.projectCreate(repository === null ? { name: trimmed } : { name: trimmed, repoKey: repository.repoKey });
+      // The snapshot rereads the folder links, so the new one files work at once.
       const snapshot = await service.bootstrap();
       if (!isCurrent(service, generation)) return;
       setAccount(snapshot);
-      setNewProjectName("");
-      setNewProjectOpen(false);
-      await selectProject(created.id);
+      closeNewProject();
+      if (repository === null) await selectProject(created.id);
     } catch (error: unknown) {
       if (isCurrent(service, generation)) setNewProjectError(bridgeError(error).message);
     } finally {
@@ -1651,14 +1684,21 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
               {newProjectOpen ? (
                 <form className="new-project-form" onSubmit={createProject}>
                   <label>New project name<input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} maxLength={80} placeholder="e.g. Client work" autoComplete="off" required /></label>
+                  <RepositoryPicker
+                    repositories={newProjectRepositories}
+                    query={newProjectName}
+                    picked={newProjectRepository}
+                    isBusy={newProjectBusy}
+                    onPick={pickRepository}
+                  />
                   {newProjectError && <p className="form-error" role="alert">{newProjectError}</p>}
                   <div className="new-project-actions">
                     <button className="signal-button" type="submit" disabled={newProjectBusy || newProjectName.trim() === ""}>{newProjectBusy ? "Creating…" : "Create project"}</button>
-                    <button className="outline-button" type="button" disabled={newProjectBusy} onClick={() => { setNewProjectOpen(false); setNewProjectName(""); setNewProjectError(undefined); }}>Cancel</button>
+                    <button className="outline-button" type="button" disabled={newProjectBusy} onClick={closeNewProject}>Cancel</button>
                   </div>
                 </form>
               ) : (
-                <button className="new-project-trigger" type="button" onClick={() => setNewProjectOpen(true)}>New project…</button>
+                <button className="new-project-trigger" type="button" onClick={openNewProject}>New project…</button>
               )}
             </div>
           )}

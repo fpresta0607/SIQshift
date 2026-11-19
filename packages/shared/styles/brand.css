@@ -172,6 +172,21 @@ button:disabled { opacity: .55; cursor: default; }
 .color-choice[aria-pressed="true"] { border-color: #ffffff; }
 .icon-picker-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
+/* The repository list under both apps' New project name field: the caller's
+   own repositories no folder link claims, filtered by the name typed. */
+.repo-pick { display: grid; gap: 6px; min-width: 0; }
+.repo-pick-label { margin: 0; color: var(--text-secondary); font-size: .72rem; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+.repo-pick-list { display: grid; gap: 2px; max-height: 13rem; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.repo-pick-choice { display: grid; width: 100%; gap: 1px; border: 1px solid transparent; border-radius: 8px; padding: 6px 9px; background: transparent; color: #ffffff; font: inherit; letter-spacing: normal; text-align: left; cursor: pointer; }
+.repo-pick-choice:hover, .repo-pick-choice:focus-visible { border-color: var(--glass-border-hover); background: rgba(163, 179, 194, .08); }
+.repo-pick-name { font-size: .84rem; font-weight: 600; }
+.repo-pick-where { overflow: hidden; color: var(--text-secondary); font-family: var(--brand-mono); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+.repo-pick.is-picked { border: 1px solid var(--glass-border-hover); border-radius: 10px; padding: 9px 11px; background: color-mix(in srgb, var(--accent-green) 8%, transparent); }
+.repo-pick-linked { display: grid; gap: 2px; margin: 0; font-size: .84rem; }
+.repo-pick-note { margin: 0; color: var(--text-secondary); font-size: .74rem; }
+.repo-pick-clear { justify-self: start; border: 0; padding: 0; background: transparent; color: var(--text-secondary); font-size: .74rem; font-weight: 500; letter-spacing: normal; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.repo-pick-clear:hover, .repo-pick-clear:focus-visible { color: #ffffff; }
+
 /* A member's own picture and its buttons, on sign-up and in settings. The
    picker is a label around a hidden file input, drawn as a ghost button. */
 .picture-field { display: flex; align-items: center; gap: 14px; }

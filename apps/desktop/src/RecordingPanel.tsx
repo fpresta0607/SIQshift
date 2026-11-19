@@ -316,7 +316,9 @@ export const RecordingPanel = ({
             <strong>Your hours are filed under a project.</strong> If an AI tool is working in a folder you have
             matched to a project, they go there. Otherwise they go to
             {" "}<strong>{defaultProjectName ?? "your default project"}</strong>, and you can pick a different one
-            whenever you like.
+            whenever you like. A project gets its folder when you make it: New project lists the repositories your
+            agents worked in that no project has yet, and picking one sends that repository's agent time to the new
+            project from then on.
           </li>
           <li>
             <strong>You see what your team sees.</strong> The same hours, added up the same way, on the SIQshift

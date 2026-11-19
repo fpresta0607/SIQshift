@@ -74,7 +74,9 @@ export const HelpModal = ({ open, onClose }: HelpModalProps) => {
           <li>
             <strong>Hours are filed under a project.</strong> If an AI coding tool is working in a
             folder matched to a project, they go there; if someone picks a project, they go there.
-            Anything else lands in that person's default project.
+            Anything else lands in that person's default project. A project gets its folder when you
+            make it: New project lists the repositories your agents worked in that no project has yet,
+            and picking one sends that repository's agent time to the new project from then on.
           </li>
           <li>
             <strong>This dashboard adds it up.</strong> The leaderboard ranks the team and recent

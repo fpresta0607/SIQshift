@@ -29,6 +29,30 @@ describe("defaultBridge", () => {
     await expect(defaultBridge.bootstrap()).rejects.toMatchObject({ kind: "unknown" });
   });
 
+  it("reads the New project box's repositories and creates a project from one", async () => {
+    // Arrange
+    const choice = { repoKey: "github.com/acme/web-shop", name: "web-shop", remote: "github.com/acme/web-shop", repoRoot: "C:/dev/web-shop" };
+    invoke.mockResolvedValueOnce([choice, { ...choice, repoKey: "path:D:/work/notes", name: "notes", remote: null, repoRoot: "D:/work/notes" }]);
+    invoke.mockResolvedValueOnce({ id: ids.project, name: "Web shop", color: null, icon: null, createdAt: "2026-08-01T09:00:00.000Z" });
+
+    // Act
+    const repositories = await defaultBridge.projectRepositories();
+    await defaultBridge.projectCreate({ name: "Web shop", repoKey: choice.repoKey });
+
+    // Assert
+    expect(repositories).toEqual([choice, { ...choice, repoKey: "path:D:/work/notes", name: "notes", remote: null, repoRoot: "D:/work/notes" }]);
+    expect(invoke).toHaveBeenCalledWith("project_repositories", undefined);
+    expect(invoke).toHaveBeenCalledWith("project_create", { input: { name: "Web shop", repoKey: "github.com/acme/web-shop" } });
+  });
+
+  it.each([
+    ["a list that is not one", { repositories: [] }],
+    ["a repository with no root", [{ repoKey: "github.com/acme/web-shop", name: "web-shop", remote: null }]],
+  ])("rejects %s as an unknown bridge error", async (_case, payload) => {
+    invoke.mockResolvedValueOnce(payload);
+    await expect(defaultBridge.projectRepositories()).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("decodes the signed-in account with where its time lands", async () => {
     invoke.mockResolvedValueOnce({
       kind: "ready",

@@ -5,12 +5,14 @@ import {
   projectListResponseSchema,
   projectUpdateRequestSchema,
   projectUsageResponseSchema,
+  repositoryChoiceListResponseSchema,
 } from "@siqshift/shared";
 import { Hono } from "hono";
 
 import { getAuthenticatedSubject, type ApiEnvironment } from "../app.js";
 import { AppError } from "../errors.js";
 import type { ProjectRepository } from "../repositories.js";
+import { listRepositoryChoices, repositoryFolderLink, type RepositoryChoiceSources } from "../services/project-repositories.js";
 import { createProject, deleteProject, listProjects, projectUsage, updateProject } from "../services/projects.js";
 
 async function requestBody(context: { req: { json(): Promise<unknown> } }): Promise<unknown> {
@@ -21,7 +23,12 @@ async function requestBody(context: { req: { json(): Promise<unknown> } }): Prom
   }
 }
 
-export function createProjectRoutes(repository: ProjectRepository): Hono<ApiEnvironment> {
+/**
+ * `repositories` is what the New project box offers; without it the box lists
+ * nothing and a create naming a repository is refused, as no repository can
+ * be the caller's.
+ */
+export function createProjectRoutes(repository: ProjectRepository, repositories?: RepositoryChoiceSources): Hono<ApiEnvironment> {
   const routes = new Hono<ApiEnvironment>();
   // `?includeArchived=true` still lists archived projects so an archive can be
   // undone through the API; the dashboard's management surface no longer asks
@@ -29,10 +36,21 @@ export function createProjectRoutes(repository: ProjectRepository): Hono<ApiEnvi
   routes.get("/", async (context) => context.json(projectListResponseSchema.parse(
     await listProjects(repository, getAuthenticatedSubject(context), context.req.query("includeArchived") === "true"),
   )));
+  routes.get("/repositories", async (context) => context.json(repositoryChoiceListResponseSchema.parse({
+    repositories: repositories === undefined ? [] : await listRepositoryChoices(repositories, getAuthenticatedSubject(context)),
+  })));
   routes.post("/", async (context) => {
     const input = projectCreateRequestSchema.safeParse(await requestBody(context));
     if (!input.success) throw new AppError("validation_error", "Invalid request body.");
-    const created = await createProject(repository, getAuthenticatedSubject(context), input.data.name);
+    const subject = getAuthenticatedSubject(context);
+    const { name, repoKey } = input.data;
+    if (repoKey !== undefined && repositories === undefined) {
+      throw new AppError("not_found", "That repository is not one your agents worked in.");
+    }
+    const folderLink = repoKey === undefined || repositories === undefined
+      ? undefined
+      : await repositoryFolderLink(repositories, subject, repoKey);
+    const created = await createProject(repository, subject, name, folderLink);
     return context.json(projectListItemSchema.parse(created), 201);
   });
   routes.patch("/:id", async (context) => {
