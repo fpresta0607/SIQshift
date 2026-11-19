@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openAgentsGroup, openClockCard, openConnectedAgentRow, openPersonDashboard, openTodayCard } from "./harness.js";
+import { openAgentsGroup, openClockCard, openConnectedAgentRow, openLiveNow, openPersonDashboard, openTodayCard } from "./harness.js";
 
 /** Every `.meter-row`'s box, plus the boxes of the four cells inside it. */
 const rowBoxes = (page: import("@playwright/test").Page) =>
@@ -349,6 +349,52 @@ for (const app of ["desktop", "web"] as const) {
       // on the same x.
       expect(rights).toHaveLength(2);
       expect(new Set(rights).size).toBe(1);
+    });
+  });
+}
+
+for (const app of ["desktop", "web"] as const) {
+  test.describe(`the Live now card in ${app}`, () => {
+    test("wraps a long codebase name inside its tile at phone width instead of cutting it short", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openLiveNow(page, app);
+
+      const measured = await page.evaluate(() => {
+        const tiles = [...document.querySelectorAll<HTMLElement>(".live-tile")];
+        const texts = [...document.querySelectorAll<HTMLElement>(".live-sessions *")];
+        const longName = document.querySelector<HTMLElement>(".live-tile-codebase")!;
+        return {
+          viewport: document.documentElement.clientWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          tileRights: tiles.map((tile) => Math.round(tile.getBoundingClientRect().right)),
+          // A tile whose text overflows its own box was clipped or spilled.
+          overflowing: tiles.filter((tile) => tile.scrollWidth > tile.clientWidth).length,
+          ellipsised: texts.filter((text) => getComputedStyle(text).textOverflow === "ellipsis").length,
+          unwrappable: texts.filter((text) => getComputedStyle(text).whiteSpace === "nowrap").length,
+          // The name is taller than a line, so it wrapped rather than ran on.
+          longNameHeight: Math.round(longName.getBoundingClientRect().height),
+          longNameFontSize: Number.parseFloat(getComputedStyle(longName).fontSize),
+        };
+      });
+
+      expect(measured.documentScrollWidth).toBeLessThanOrEqual(measured.viewport);
+      for (const right of measured.tileRights) {
+        expect(right).toBeLessThanOrEqual(measured.viewport);
+      }
+      expect(measured.overflowing).toBe(0);
+      expect(measured.ellipsised).toBe(0);
+      expect(measured.unwrappable).toBe(0);
+      expect(measured.longNameHeight).toBeGreaterThan(measured.longNameFontSize * 1.5);
+    });
+
+    test("sets tiles side by side once the window has room", async ({ page }) => {
+      await page.setViewportSize({ width: 1000, height: 900 });
+      await openLiveNow(page, app);
+
+      const tops = await page.locator(".live-runtime").first().locator(".live-tile")
+        .evaluateAll((tiles) => tiles.map((tile) => Math.round(tile.getBoundingClientRect().top)));
+      expect(tops).toHaveLength(3);
+      expect(new Set(tops).size).toBe(1);
     });
   });
 }

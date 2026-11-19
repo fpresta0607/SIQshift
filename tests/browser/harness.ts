@@ -319,3 +319,50 @@ export async function openPersonDashboard(page: Page, app: "desktop" | "web"): P
     </div></section></div></main>`);
   await applyStylesheet(page, app, ".modal-overlay", ".tv", ".tv-totals", ".tv-grid");
 }
+
+/** One session tile on the Live now card, in the markup `LiveSessionTile` draws. */
+const liveTile = (codebase: string, model: string, running: string, state: "Working" | "Waiting"): string => `
+  <li class="live-tile">
+    <span class="live-tile-codebase">${codebase}</span>
+    <span class="live-tile-model">${model}</span>
+    <span class="live-tile-facts">
+      <span class="live-tile-running">Running ${running}</span>
+      <span class="live-tile-state is-${state.toLowerCase()}"><span class="${state === "Working" ? "live-pulse" : "live-dot"}" aria-hidden="true"></span>${state}</span>
+    </span>
+  </li>`;
+
+/**
+ * The Live now card for one person, in the markup `LiveSessions` draws.
+ *
+ * The first tile carries a codebase name with no break in it, longer than a
+ * phone is wide, the case an ellipsis used to hide and a tile now has to wrap.
+ */
+export async function openLiveNow(page: Page, app: "desktop" | "web"): Promise<void> {
+  const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
+  await page.setContent(`
+    ${shell}<div class="modal-overlay"><section class="today-card card modal"><div class="tv">
+      <div class="tv-page">
+        <section class="tv-card tv-live">
+          <div class="tv-card-head"><h4><span class="live-pulse" aria-hidden="true"></span>Live now</h4><span class="tv-card-note">5 running</span></div>
+          <section class="live-sessions" data-testid="live-sessions">
+            <section class="live-runtime">
+              <h5 class="live-runtime-head">Claude Code <span class="live-runtime-count">3</span></h5>
+              <ul class="live-tile-list">
+                ${liveTile("Anunbrokencodebasenamelongerthanaphoneiswideandwithnohyphenstobreakat", "Opus 5.5", "3h 05m", "Working")}
+                ${liveTile("Code Goblins", "Sonnet 5.5", "12m", "Waiting")}
+                ${liveTile("SIQshift", "Opus 5.5", "50s", "Working")}
+              </ul>
+            </section>
+            <section class="live-runtime">
+              <h5 class="live-runtime-head">Codex <span class="live-runtime-count">2</span></h5>
+              <ul class="live-tile-list">
+                ${liveTile("Quartermaster", "GPT 5.6 Sol", "45m", "Working")}
+                ${liveTile("No codebase", "GPT 5.6 Sol", "2m", "Waiting")}
+              </ul>
+            </section>
+          </section>
+        </section>
+      </div>
+    </div></section></div></main>`);
+  await applyStylesheet(page, app, ".modal-overlay", ".tv", ".live-sessions", ".live-tile-list");
+}

@@ -311,6 +311,35 @@ async function openSettings(person: Person) {
   return within(await screen.findByRole("dialog", { name: "Settings" }));
 }
 
+/// A running session as the live read sends it, started `ago` seconds before now.
+const runningSession = (fields: {
+  id: number;
+  source: string;
+  repo: string | null;
+  model: string | null;
+  ago: number;
+  state: "working" | "waiting" | null;
+  project?: { id: string; name: string };
+}) => ({
+  id: `00000000-0000-4000-8000-0000000007${String(fields.id).padStart(2, "0")}`,
+  source: fields.source,
+  repo: fields.repo,
+  project: fields.project ?? null,
+  model: fields.model,
+  startedAt: new Date(Date.now() - fields.ago * 1_000).toISOString(),
+  state: fields.state,
+  description: "A sentence the card no longer draws",
+});
+
+/// What each tile on the Live now card states: its codebase, model, running time and state.
+const tilesOf = (live: HTMLElement) =>
+  [...live.querySelectorAll(".live-tile")].map((tile) => [
+    tile.querySelector(".live-tile-codebase")?.textContent ?? null,
+    tile.querySelector(".live-tile-model")?.textContent ?? null,
+    tile.querySelector(".live-tile-running")?.textContent ?? null,
+    tile.querySelector(".live-tile-state")?.textContent ?? null,
+  ]);
+
 describe("app row folding", () => {
   it("never folds an agent runtime into Everything else", () => {
     // Nine heavy apps outrank a lightly-used Claude Code; the fold must not
@@ -327,28 +356,6 @@ describe("app row folding", () => {
     // The fold keeps only the non-agent tail.
     expect(fold?.durationSeconds).toBe(9_000 - 8);
     expect(rows.filter((row) => row.agent)).toHaveLength(1);
-  });
-
-  // The Overlord's report: All stats printed a project list summing to the
-  // recorded total beside an app list summing to presence, with nothing saying
-  // they were measured on different bases, so an hour read as vanished.
-  it("closes the app list against the total it is read under", () => {
-    const rows = buildAppRows([
-      { processName: "WindowsTerminal.exe", durationSeconds: 1_200 },
-      { processName: "chrome.exe", durationSeconds: 720 },
-    ], 6_960);
-
-    expect(rows.map((row) => row.label)).toContain("Quiet time");
-    expect(rows.reduce((sum, row) => sum + row.durationSeconds, 0)).toBe(6_960);
-  });
-
-  it("leaves a list with nothing in front of it to its empty state", () => {
-    // A remainder needs something to be the remainder of; a lone "Quiet time"
-    // row is not a breakdown, and the surface has an empty state for this.
-    expect(buildAppRows([], 6_960)).toEqual([]);
-    // Under a minute is rounding, not a gap.
-    expect(buildAppRows([{ processName: "chrome.exe", durationSeconds: 1_200 }], 1_230))
-      .toEqual([{ key: "chrome.exe", label: "Google Chrome", durationSeconds: 1_200, agent: false, processNames: ["chrome.exe"], source: undefined }]);
   });
 });
 
@@ -2932,22 +2939,23 @@ describe("the agents' cards on the one page", () => {
     expect(rows[1]!.firstElementChild).toHaveTextContent("V");
   });
 
-  it("shows who is running an agent right now, with the server's own description", async () => {
+  it("shows who is running an agent right now as tiles grouped by person and runtime", async () => {
+    // Arrange
     const person = await signIn(clientFor({
       liveAgentSessions: vi.fn().mockResolvedValue({
         people: [
           {
             owner: { id: "u2", name: "Alex" },
             sessions: [
-              { id: "00000000-0000-4000-8000-000000000701", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
-              { id: "00000000-0000-4000-8000-000000000702", source: "pi", repo: null, description: "Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m" },
+              runningSession({ id: 1, source: "claude_code", repo: "code-goblins", model: "claude-opus-5-5", ago: 12 * 60 + 5, state: "working" }),
+              runningSession({ id: 2, source: "pi", repo: null, model: "deepseek-v4-pro", ago: 3 * 3_600 + 5 * 60 + 10, state: "waiting", project: { id: "00000000-0000-4000-8000-000000000010", name: "client-work" } }),
             ],
           },
           {
             owner: { id: "u1", name: "Sam" },
             sessions: [
-              { id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" },
-              { id: "00000000-0000-4000-8000-000000000704", source: "codex", repo: "siqshift", description: "Codex in siqshift, running 12m" },
+              runningSession({ id: 3, source: "codex", repo: "SIQshift", model: "gpt-5.6-sol", ago: 90, state: "working" }),
+              runningSession({ id: 4, source: "codex", repo: null, model: null, ago: 12 * 60 + 5, state: null }),
             ],
           },
         ],
@@ -2955,22 +2963,34 @@ describe("the agents' cards on the one page", () => {
     }));
     await screen.findByRole("heading", { name: "Lumen Studio" });
 
+    // Act
     const stats = await openAllStats(person);
-
     const live = await stats.findByTestId("live-sessions");
-    // The description renders verbatim, never re-derived: every clause is a
-    // captured fact, and the codebase label rides beside it.
-    expect(live).toHaveTextContent("Claude Code in siqshift, running 12m");
-    expect(live).toHaveTextContent("Pi on deepseek-v4-pro in no codebase recorded, running 3h 5m");
-    expect(live).toHaveTextContent("siqshift");
-    expect(live).toHaveTextContent("Sam");
-    expect(live).toHaveTextContent("Codex in quartermaster, running 45s");
-    expect(live).toHaveTextContent("quartermaster");
-    expect(live).toHaveTextContent("Codex in siqshift, running 12m");
-    expect(within(live).getAllByText(/Codex in (quartermaster|siqshift)/)).toHaveLength(2);
+
+    // Assert: two people, so each is a head with their own runtimes under it.
+    expect([...live.querySelectorAll(".live-person-name")].map((name) => name.textContent)).toEqual(["Alex", "Sam"]);
+    const [alex, sam] = [...live.querySelectorAll<HTMLElement>(".live-person")];
+    expect(within(alex!).getAllByRole("heading", { level: 5 }).map((head) => head.textContent)).toEqual(["Claude Code 1", "Pi 1"]);
+    expect(within(sam!).getByRole("heading", { name: "Codex 2" })).toBeInTheDocument();
+    // Assert: each tile, longest-running first within its runtime. The codebase
+    // falls back to the project, then to "No codebase", and a state the desktop
+    // could not say draws nothing.
+    expect(tilesOf(alex!)).toEqual([
+      ["Code Goblins", "Opus 5.5", "Running 12m", "Working"],
+      ["Client Work", "Deepseek V4 Pro", "Running 3h 05m", "Waiting"],
+    ]);
+    expect(tilesOf(sam!)).toEqual([
+      ["No codebase", null, "Running 12m", null],
+      ["SIQshift", "GPT 5.6 Sol", "Running 1m", "Working"],
+    ]);
+    // Assert: working pulses and waiting does not, and the server's sentence is not drawn.
+    expect(live.querySelectorAll(".live-tile-state .live-pulse")).toHaveLength(2);
+    expect(live.querySelectorAll(".live-tile-state .live-dot")).toHaveLength(1);
+    expect(live).not.toHaveTextContent("A sentence the card no longer draws");
+    expect(live.textContent).not.toMatch(/[\[\]]/);
     expect(within(stats.getByRole("region", { name: /Live now/ })).getByText("4 running")).toBeInTheDocument();
     // One avatar per person, not per session: their initial where they have no picture.
-    const avatars = [...live.querySelectorAll(".live-person")].map((entry) => [entry.querySelectorAll(".member-avatar").length, entry.querySelector(".member-avatar")?.textContent]);
+    const avatars = [...live.querySelectorAll(".live-person-head")].map((entry) => [entry.querySelectorAll(".member-avatar").length, entry.querySelector(".member-avatar")?.textContent]);
     expect(avatars).toEqual([[1, "A"], [1, "S"]]);
   });
 
@@ -2981,7 +3001,7 @@ describe("the agents' cards on the one page", () => {
         {
           owner: { id: "u2", name: "Alex" },
           sessions: [
-            { id: "00000000-0000-4000-8000-000000000704", source: "claude_code", repo: "siqshift", description: "Claude Code in siqshift, running 12m" },
+            runningSession({ id: 4, source: "claude_code", repo: "siqshift", model: "claude-sonnet-5-5-20261001", ago: 12 * 60 + 5, state: "working" }),
           ],
         },
       ],
@@ -3004,8 +3024,11 @@ describe("the agents' cards on the one page", () => {
     // Act
     await pickPerson(person, stats, "Alex");
 
-    // Assert
-    expect(await stats.findByTestId("live-sessions")).toHaveTextContent("Claude Code in siqshift, running 12m");
+    // Assert: one person on the page, so there is no person head, only the runtime's.
+    const live = await stats.findByTestId("live-sessions");
+    expect(live.querySelector(".live-person")).toBeNull();
+    expect(within(live).getByRole("heading", { name: "Claude Code 1" })).toBeInTheDocument();
+    expect(tilesOf(live)).toEqual([["Siqshift", "Sonnet 5.5", "Running 12m", "Working"]]);
   });
 
   it("says the live read failed rather than that nobody is running anything", async () => {
@@ -3477,10 +3500,10 @@ describe("profile pictures", () => {
       memberPicture: vi.fn().mockResolvedValue(new Uint8Array(JPEG_BYTES)),
       workspace: vi.fn().mockResolvedValue(reportWithSamsPicture),
       liveAgentSessions: vi.fn().mockResolvedValue({
-        people: [{
-          owner: { id: "u1", name: "Sam" },
-          sessions: [{ id: "00000000-0000-4000-8000-000000000703", source: "codex", repo: "quartermaster", description: "Codex in quartermaster, running 45s" }],
-        }],
+        people: [
+          { owner: { id: "u2", name: "Alex" }, sessions: [runningSession({ id: 2, source: "claude_code", repo: "siqshift", model: null, ago: 600, state: null })] },
+          { owner: { id: "u1", name: "Sam" }, sessions: [runningSession({ id: 3, source: "codex", repo: "quartermaster", model: null, ago: 45, state: null })] },
+        ],
       }),
     }));
 
@@ -3488,8 +3511,9 @@ describe("profile pictures", () => {
     const stats = await openAllStats(person);
     const live = await stats.findByTestId("live-sessions");
 
-    // Assert
-    await waitFor(() => expect(live.querySelector(".live-person img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    // Assert: Sam's picture arrives, and Alex, who has none, keeps his initial.
+    await waitFor(() => expect(live.querySelector(".live-person-head img.member-avatar")).toHaveAttribute("src", JPEG_DATA_URL));
+    expect(live.querySelector(".live-person-head .member-avatar")).toHaveTextContent("A");
   });
 
   it("keeps a teammate's initials when their picture cannot be read", async () => {

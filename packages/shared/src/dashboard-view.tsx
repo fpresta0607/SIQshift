@@ -6,7 +6,6 @@ import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount, formatTokens } from "./format.js";
 import { MemberAvatar } from "./member-avatar.js";
 import { projectAppearance, type ProjectAppearance } from "./project-appearance.js";
-import { QuietMark } from "./quiet-mark.js";
 import { TeamTotals } from "./team-totals.js";
 import { formatHumanDuration } from "./time.js";
 import {
@@ -407,11 +406,9 @@ export const DashboardView = ({
                   <li key={row.key} className={row.agent ? "meter-row is-agent" : "meter-row"}>
                     {row.agent
                       ? <AgentRuntimeIcon source={row.source ?? "agent"} />
-                      : row.key === "quiet-time"
-                        ? <QuietMark />
-                        : row.processNames.length === 0
-                          ? <span className="app-mark is-plain" aria-hidden="true" />
-                          : <AppMark label={row.label} iconUrl={appIconOf?.(row.processNames)} />}
+                      : row.processNames.length === 0
+                        ? <span className="app-mark is-plain" aria-hidden="true" />
+                        : <AppMark label={row.label} iconUrl={appIconOf?.(row.processNames)} />}
                     <span className="meter-name">{row.label}</span>
                     <span className="meter-bar" aria-hidden="true" style={share(row.durationSeconds, longestApp)} />
                     <span className="meter-duration">{formatHumanDuration(row.durationSeconds)}</span>

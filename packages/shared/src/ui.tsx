@@ -8,10 +8,10 @@ import { ProjectIconTile } from "./project-icon-tile.js";
 import { formatHumanDuration } from "./time.js";
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { ChartTooltip } from "./chart-tooltip.js";
-import { MemberAvatar } from "./member-avatar.js";
 
 export { AgentRuntimeIcon } from "./agent-marks.js";
 export { formatCount, formatRangeDays, formatTokens } from "./format.js";
+export { LiveSessions, type LivePersonGroup, type LiveSessionRow } from "./live-sessions.js";
 export { MemberAvatar } from "./member-avatar.js";
 export { PictureField } from "./picture-field.js";
 export { pictureDataUrl } from "./picture-file.js";
@@ -295,7 +295,7 @@ export type AppRow = {
   durationSeconds: number;
   agent: boolean;
   /// Every recorded name joined into the row, heaviest first, for the OS icon
-  /// lookup. Empty on rows that are not one app: the agents, the fold and quiet time.
+  /// lookup. Empty on rows that are not one app: the agents and the fold.
   processNames: readonly string[];
   /// The agent runtime the agent row is, when it is exactly one; it wears that runtime's mark.
   source: string | undefined;
@@ -307,16 +307,7 @@ export type AppRow = {
 /// "Everything else". Which executables count as an agent comes from the
 /// shared runtime roster, so a newly declared CLI folds in without a second
 /// list to remember.
-///
-/// `recordedSeconds` is the total the list is being read under. These rows
-/// measure time in front of something, and that total is whole sessions, which
-/// also counts the stretches nothing was in front - so the two were never
-/// going to be equal, and the difference gets a row of its own rather than an
-/// hour appearing to vanish between a project list that sums to the total and
-/// an app list that sums to presence. The Today card has always closed the gap
-/// this way; All stats printed both denominators side by side and named
-/// neither.
-export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: number): AppRow[] => {
+export const buildAppRows = (apps: readonly AppDuration[]): AppRow[] => {
   let agentSeconds = 0;
   const agentSources = new Set<string>();
   const rows: AppRow[] = [];
@@ -348,26 +339,14 @@ export const buildAppRows = (apps: readonly AppDuration[], recordedSeconds?: num
     });
   }
   rows.sort((a, b) => b.durationSeconds - a.durationSeconds || a.label.localeCompare(b.label));
-  // Quiet time reads last, after the fold, because it is the remainder rather
-  // than an app. Under a minute is rounding, not a gap worth a row, and a
-  // remainder with nothing to be the remainder of is not a breakdown - the
-  // Today card gates its own quiet row on a non-empty list the same way, and
-  // an empty list still has an empty state to render instead.
-  const measured = rows.reduce((sum, row) => sum + row.durationSeconds, 0);
-  const quietSeconds = recordedSeconds === undefined || rows.length === 0
-    ? 0
-    : Math.max(0, recordedSeconds - measured);
-  const quiet: AppRow[] = quietSeconds < 60
-    ? []
-    : [{ key: "quiet-time", label: "Quiet time", durationSeconds: quietSeconds, agent: false, processNames: [], source: undefined }];
-  if (rows.length <= TOP_APP_ROWS) return [...rows, ...quiet];
+  if (rows.length <= TOP_APP_ROWS) return rows;
   // The agent row never folds into the tail: the fold would hide the agent
   // runtimes inside "Everything else".
   const kept = [...rows.slice(0, TOP_APP_ROWS), ...rows.slice(TOP_APP_ROWS).filter((row) => row.agent)];
   const rest = rows.slice(TOP_APP_ROWS).filter((row) => !row.agent)
     .reduce((sum, row) => sum + row.durationSeconds, 0);
-  if (rest === 0) return [...kept, ...quiet];
-  return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false, processNames: [], source: undefined }, ...quiet];
+  if (rest === 0) return kept;
+  return [...kept, { key: "everything-else", label: "Everything else", durationSeconds: rest, agent: false, processNames: [], source: undefined }];
 };
 
 /// One row of a project breakdown.
@@ -754,71 +733,5 @@ export const ShiftGroups = ({
         );
       })}
     </>
-  );
-};
-
-/** One running agent session as the dashboard's Live now card renders it. */
-export type LiveSessionRow = {
-  id: string;
-  /** The honest line the server composed; rendered verbatim, never re-derived. */
-  description: string;
-  /** The codebase the session works in, when one is known. */
-  repo: string | null;
-  source: string;
-};
-
-/** One person's running sessions, as both apps' Live now cards render them. */
-export type LivePersonGroup = {
-  owner: { id: string; name: string };
-  sessions: readonly LiveSessionRow[];
-};
-
-/**
- * The dashboard's Live now card: who is running an agent right now, and
- * what each one is doing. The server sends only people with at least
- * one running session, so nobody stale can appear here, and an empty roster
- * is the honest "nothing is running" - not an absence to be papered over.
- *
- * The description comes from the server composed from captured facts, so both
- * surfaces render the same sentence and neither can invent one the data does
- * not support. The codebase label rides beside it because that is the repo the
- * page's Repos card files the session under once it ends.
- */
-export const LiveSessions = ({
-  people,
-  pictureOf,
-}: {
-  people: readonly LivePersonGroup[];
-  /// A member's picture as a data URL, where the caller has it; initials stand in otherwise.
-  pictureOf?: ((id: string) => string | undefined) | undefined;
-}) => {
-  if (people.length === 0) {
-    return (
-      <p className="subtle live-sessions-empty" data-testid="live-sessions-empty">
-        No agent is running right now.
-      </p>
-    );
-  }
-  return (
-    <section className="live-sessions" data-testid="live-sessions" aria-label="Agents running now">
-      {people.map((person) => (
-        <div key={person.owner.id} className="live-person">
-          <MemberAvatar id={person.owner.id} name={person.owner.name} picture={pictureOf?.(person.owner.id)} />
-          <span className="live-person-name">
-            {person.owner.name}
-            {person.sessions.length > 1 && <span className="meter-detail"> · {person.sessions.length} agents</span>}
-          </span>
-          <ul className="live-session-list">
-            {person.sessions.map((session) => (
-              <li key={session.id} className="live-session">
-                <span className="live-pulse" aria-hidden="true" />
-                <span className="live-description">{session.description}</span>
-                {session.repo !== null && <span className="live-repo">{session.repo}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
-    </section>
   );
 };
