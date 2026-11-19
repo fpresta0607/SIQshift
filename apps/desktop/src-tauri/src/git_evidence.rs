@@ -148,7 +148,10 @@ fn run_git_sync(git: &str, cwd: &Path, args: &[&str]) -> Option<String> {
 /// exits successfully within `SYNC_GIT_TIMEOUT`.
 ///
 /// A git still running at the deadline is killed and reaped, so a slow
-/// filesystem can neither hold up the caller nor leave a git behind. Stdout is
+/// filesystem cannot hold up the caller. The kill reaches only the direct
+/// child: behind Git for Windows' `cmd\git.exe` shim the real git is a
+/// grandchild that runs on until it finishes, unless the caller ends its
+/// descendants itself, as the hook's kill-on-close job object does. Stdout is
 /// drained on its own thread so a large answer cannot fill the pipe and stall
 /// git, and that thread is waited on for a bounded time only: a descendant that
 /// outlives git and holds the pipe open cannot hold the caller either.
