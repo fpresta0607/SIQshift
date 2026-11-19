@@ -109,6 +109,25 @@ describe("repository choices for a new project", () => {
     expect(choices.map((choice) => choice.repoKey)).toEqual(["github.com/acme/clock-in"]);
   });
 
+  it.each([
+    ["a temp clone", "C:/Users/alex/AppData/Local/Temp/clock-in"],
+    ["a root longer than a folder link holds", `C:/dev/${"a".repeat(500)}`],
+  ])("offers a newer runtime's root when an older runtime's root is %s", async (_case, unusableRoot) => {
+    // Arrange
+    const agents = [
+      agent({ repoRoot: unusableRoot, createdAt: new Date("2026-08-09T12:00:00.000Z") }),
+      agent({ source: "codex", repoRoot: "C:/dev/clock-in", createdAt: new Date("2026-08-10T12:00:00.000Z") }),
+    ];
+
+    // Act
+    const choices = await listRepositoryChoices(sources(agents), member);
+    const link = await repositoryFolderLink(sources(agents), member, "github.com/acme/clock-in");
+
+    // Assert
+    expect(choices.map((choice) => choice.repoRoot)).toEqual(["C:/dev/clock-in"]);
+    expect(link.pathPrefix).toBe("C:/dev/clock-in");
+  });
+
   it("is empty for a member whose agents worked nowhere", async () => {
     await expect(listRepositoryChoices(sources([]), member)).resolves.toEqual([]);
   });

@@ -29,6 +29,11 @@ function remoteUrl(remote: string): string {
   return `https://${remote}`;
 }
 
+function isUsableRoot(root: string | null): root is string {
+  // A folder link's prefix holds 500 characters and a root up to 1000.
+  return root !== null && root.length <= 500 && !isHomeOrTempDirectory(root);
+}
+
 function compareChoices(left: RepositoryChoice, right: RepositoryChoice): number {
   const byName = left.name.toLowerCase().localeCompare(right.name.toLowerCase());
   if (byName !== 0) return byName;
@@ -69,10 +74,9 @@ async function ownRepositories(sources: RepositoryChoiceSources, subject: Authen
     const localRoot = repoKeyPath(repoKey);
     const remote = localRoot === null ? repoKey : null;
     // Several runtimes on one repository are several agents; the oldest one
-    // that recorded a root names it, so the choice is stable between reads.
-    const repoRoot = localRoot ?? oldestFirst.find((candidate) => candidate.repoKey === repoKey && candidate.repoRoot !== null)?.repoRoot ?? null;
-    // A folder link's prefix holds 500 characters and a root up to 1000.
-    if (name === null || repoRoot === null || repoRoot.length > 500 || isHomeOrTempDirectory(repoRoot)) continue;
+    // that recorded a usable root names it, so the choice is stable between reads.
+    const repoRoot = localRoot ?? oldestFirst.find((candidate) => candidate.repoKey === repoKey && isUsableRoot(candidate.repoRoot))?.repoRoot ?? null;
+    if (name === null || !isUsableRoot(repoRoot)) continue;
     const isClaimed = folderLinks.some((link) =>
       resolveProjectForCwd(repoRoot, [link]) !== null
       || (remote !== null && resolveProjectForRemote(remoteUrl(remote), [link]) !== null));
