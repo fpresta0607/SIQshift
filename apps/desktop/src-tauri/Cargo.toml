@@ -63,14 +63,17 @@ tauri-plugin-single-instance = "2"
 # GetForegroundWindow process names, and session lock/suspend events. The
 # Gdi/Shell/Com/FileSystem features exist for `app_icons` icon extraction;
 # Shell also covers SHQueryUserNotificationState and Registry the
-# ConsentStore microphone read, two of the false-idle rescue probes.
+# ConsentStore microphone read, two of the false-idle rescue probes. The
+# JobObjects/Security features are the hook's kill-on-close job object.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_RemoteDesktop",
