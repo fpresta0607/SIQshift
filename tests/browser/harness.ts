@@ -125,6 +125,21 @@ export async function openTodayCard(page: Page, app: "desktop" | "web" = "deskto
 }
 
 /**
+ * The download button the web hands out right after sign-up, in the markup
+ * `DownloadInstaller`'s hero placement renders.
+ */
+export async function openSignupDownload(page: Page): Promise<void> {
+  await page.setContent(`
+    <main class="shell">
+      <div class="download-corner is-hero">
+        <a class="download-button" href="#download">Download for Windows</a>
+        <p class="download-note">Signed by the publisher.</p>
+      </div>
+    </main>`);
+  await applyStylesheet(page, "web", ".download-corner");
+}
+
+/**
  * The clock card both apps lead with: a quiet date label, then the day's
  * total as the page's largest element.
  */
