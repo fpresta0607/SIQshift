@@ -99,7 +99,7 @@ class Reports implements ReportRepository {
   public agentIntervals: AgentIntervalRecord[] = [];
   public runningSessions: {
     sessionId: string; user: { id: string; name: string }; source: string; model: string | null; cwd: string | null;
-    projectId: string | null; projectName: string | null; agentRepoRoot: string | null; agentRepoKey: string | null;
+    state: "working" | "waiting" | null; projectId: string | null; projectName: string | null; agentRepoRoot: string | null; agentRepoKey: string | null;
     startedAt: Date; lastEventAt: Date;
   }[] = [];
   public async readAgentIntervals() {
@@ -216,6 +216,7 @@ describe("report routes", () => {
       source: "claude_code",
       model: null,
       cwd: "C:\\dev\\siqshift",
+      state: "waiting",
       projectId: ids.project,
       projectName: "Timer",
       agentRepoRoot: null,
@@ -227,7 +228,7 @@ describe("report routes", () => {
     const live = await app(reports).request("http://api.test/reports/agent-sessions/live", { headers });
     expect(live.status).toBe(200);
     await expect(live.json()).resolves.toMatchObject({
-      people: [{ owner: { name: "Alex" }, sessions: [{ source: "claude_code", repo: "siqshift", project: { name: "Timer" } }] }],
+      people: [{ owner: { name: "Alex" }, sessions: [{ source: "claude_code", repo: "siqshift", project: { name: "Timer" }, state: "waiting" }] }],
     });
 
     const outside = await app(reports).request(`http://api.test/reports/agent-sessions/live?scope=${ids.outsideProject}`, { headers });

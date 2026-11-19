@@ -430,6 +430,10 @@ export const agentSessions = pgTable(
     // are never backfilled; null also covers roster-ineligible sources.
     agentId: uuid("agent_id"),
     status: agentSessionStatus("status").default("running").notNull(),
+    // What the session is doing, from the last event that said: working, or
+    // waiting on its person. Null until an event says, and an event that says
+    // nothing leaves it as it was. Only the live view reads it.
+    state: text("state", { enum: ["working", "waiting"] }),
     startedAt: timestamp("started_at", { mode: "date", withTimezone: true }).notNull(),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
     lastEventAt: timestamp("last_event_at", { mode: "date", withTimezone: true }).notNull(),
@@ -481,6 +485,7 @@ export const agentSessions = pgTable(
     check("agent_sessions_cwd_length_valid", sql`${table.cwd} is null or char_length(${table.cwd}) between 1 and 1000`),
     check("agent_sessions_source_valid", sql`${table.source} ~ '^[a-z][a-z0-9_]*$' and char_length(${table.source}) <= 40`),
     check("agent_sessions_model_length_valid", sql`${table.model} is null or char_length(${table.model}) between 1 and 200`),
+    check("agent_sessions_state_valid", sql`${table.state} is null or ${table.state} in ('working', 'waiting')`),
     index("agent_sessions_organization_user_started_at_idx").on(table.organizationId, table.userId, table.startedAt),
   ],
 );

@@ -50,8 +50,8 @@ integration("a late agent backlog over a real database", () => {
     expect(body.results.every((result) => result.accepted)).toBe(true);
   };
   const shift = async (externalSessionId: string) => {
-    const rows = await database.client<{ status: string; started_at: string; ended_at: string | null; last_event_at: string; project_id: string | null; model: string | null }[]>`
-      select status, ${iso("started_at")} started_at, ${iso("ended_at")} ended_at, ${iso("last_event_at")} last_event_at, project_id, model
+    const rows = await database.client<{ status: string; started_at: string; ended_at: string | null; last_event_at: string; project_id: string | null; model: string | null; state: string | null }[]>`
+      select status, ${iso("started_at")} started_at, ${iso("ended_at")} ended_at, ${iso("last_event_at")} last_event_at, project_id, model, state
       from agent_sessions where external_session_id = ${externalSessionId}
     `;
     return rows[0];
@@ -158,6 +158,48 @@ integration("a late agent backlog over a real database", () => {
     await upload([{ source: "claude_code", externalSessionId: "short", event: "heartbeat", occurredAt: at(6), cwd, model: "claude-fable-5-1" }]);
 
     expect(await shift("short")).toMatchObject({ status: "ended", ended_at: at(5), model: "claude-fable-5-1" });
+  }, 120_000);
+
+  it("stores the state an event names, keeps it through an event that names none, and serves it on the live view", async () => {
+    const cwd = "C:/dev/app";
+    const recent = (offsetMinutes: number): string => new Date(Date.now() - minutes(offsetMinutes)).toISOString();
+    await upload([
+      { source: "claude_code", externalSessionId: "state-a", event: "started", occurredAt: recent(10), cwd, state: "working" },
+      { source: "claude_code", externalSessionId: "state-b", event: "started", occurredAt: recent(10), cwd },
+      { source: "claude_code", externalSessionId: "state-c", event: "ended", occurredAt: recent(9), cwd, state: "waiting" },
+    ]);
+    expect(await shift("state-a")).toMatchObject({ status: "running", state: "working" });
+    expect(await shift("state-b")).toMatchObject({ status: "running", state: null });
+    expect(await shift("state-c")).toMatchObject({ status: "ended", state: "waiting" });
+
+    await upload([
+      { source: "claude_code", externalSessionId: "state-a", event: "heartbeat", occurredAt: recent(8), cwd, state: "waiting" },
+      { source: "claude_code", externalSessionId: "state-b", event: "heartbeat", occurredAt: recent(8), cwd, state: "waiting" },
+    ]);
+    await upload([
+      { source: "claude_code", externalSessionId: "state-a", event: "heartbeat", occurredAt: recent(7), cwd },
+      { source: "claude_code", externalSessionId: "state-b", event: "started", occurredAt: recent(7), cwd, state: "working" },
+    ]);
+    expect(await shift("state-a")).toMatchObject({ state: "waiting" });
+    expect(await shift("state-b")).toMatchObject({ state: "working" });
+
+    const response = await app.request("/reports/agent-sessions/live", { headers });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { people: { sessions: { id: string; state: string | null }[] }[] };
+    const idOf = async (externalSessionId: string): Promise<string> =>
+      (await database.client<{ id: string }[]>`select id from agent_sessions where external_session_id = ${externalSessionId}`)[0]!.id;
+    const stateById = new Map(body.people.flatMap((person) => person.sessions.map((session) => [session.id, session.state] as const)));
+    expect(stateById.get(await idOf("state-a"))).toBe("waiting");
+    expect(stateById.get(await idOf("state-b"))).toBe("working");
+  }, 120_000);
+
+  it("refuses a state outside working and waiting at the database", async () => {
+    await upload([{ source: "claude_code", externalSessionId: "state-check", event: "started", occurredAt: at(0), cwd: "C:/dev/app" }]);
+
+    await expect(database.client`
+      update agent_sessions set state = 'sleeping' where external_session_id = 'state-check'
+    `).rejects.toThrow(/agent_sessions_state_valid/);
   }, 120_000);
 
   it("places a gate worktree shift through the operator's own shifts of the same repository", async () => {

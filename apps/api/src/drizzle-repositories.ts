@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { generateInviteCode, type AgentSource } from "@siqshift/shared";
+import { generateInviteCode, type AgentSessionState, type AgentSource } from "@siqshift/shared";
 import { and, asc, count, desc, eq, exists, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, max, min, ne, or, sql, sum } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
@@ -1088,6 +1088,7 @@ export class DrizzleReportRepository implements ReportRepository {
         source: agentSessions.source,
         model: agentSessions.model,
         cwd: agentSessions.cwd,
+        state: agentSessions.state,
         projectId: agentSessions.projectId,
         projectName: projects.name,
         agentRepoRoot: agents.repoRoot,
@@ -1117,6 +1118,7 @@ export class DrizzleReportRepository implements ReportRepository {
       source: row.source,
       model: row.model,
       cwd: row.cwd,
+      state: row.state,
       projectId: row.projectId,
       projectName: row.projectName,
       agentRepoRoot: row.agentRepoRoot,
@@ -1495,6 +1497,7 @@ function asAgentSessionRecord(row: typeof agentSessions.$inferSelect): AgentSess
     cwd: row.cwd,
     ruleId: row.ruleId,
     agentId: row.agentId,
+    state: row.state,
     status: row.status,
     startedAt: row.startedAt,
     endedAt: row.endedAt,
@@ -1563,6 +1566,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         projectId: input.projectId,
         agentId: input.agentId,
         linkedSessionId: input.linkedSessionId,
+        state: input.state,
         status: "running",
         startedAt: input.occurredAt,
         endedAt: null,
@@ -1578,6 +1582,9 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         // already over at its last event, and ends there.
         set: {
           ...(input.model === null ? {} : { model: input.model }),
+          // The latest event that says wins; one that says nothing leaves the
+          // state as it was.
+          ...(input.state === null ? {} : { state: input.state }),
           // The first assignment wins: a shift never changes identity, and a
           // replay carrying null never blanks one already stamped.
           agentId: sql`coalesce(${agentSessions.agentId}, ${input.agentId})`,
@@ -1652,6 +1659,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         ruleId: input.ruleId,
         projectId: input.projectId,
         agentId: input.agentId,
+        state: input.state,
         status: "ended",
         startedAt: input.occurredAt,
         endedAt: input.occurredAt,
@@ -1661,7 +1669,7 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
       .onConflictDoNothing({ target: agentSessionKey });
   }
 
-  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null> {
+  public async advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, state: AgentSessionState | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null> {
     const key = and(
       eq(agentSessions.id, priorAgentSession.id),
       eq(agentSessions.organizationId, subject.organizationId),
@@ -1687,6 +1695,9 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         // heartbeat naming a model fills a still-null model and never
         // overwrites one the shift already carries.
         model: sql`coalesce(${agentSessions.model}, ${model})`,
+        // Unlike the model, the latest state wins: it is what the shift is
+        // doing now, and a heartbeat naming none leaves it as it was.
+        state: sql`coalesce(${state}, ${agentSessions.state})`,
         updatedAt: now,
       })
       .from(priorAgentSession)

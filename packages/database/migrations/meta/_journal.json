@@ -183,6 +183,13 @@
       "when": 1788032530001,
       "tag": "0025_user_pictures",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788032530002,
+      "tag": "0026_agent_session_state",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,4 @@
+import type { AgentSessionState } from "@siqshift/shared";
 import { describe, expect, it } from "vitest";
 
 import type { AuthenticatedSubject } from "../auth.js";
@@ -63,6 +64,8 @@ class MemoryAgentSessions implements AgentSessionRepository {
       }
       // Mirrors coalesce(agent_id, $new): the first assignment wins.
       existing.agentId ??= input.agentId;
+      // Mirrors the conditional set: a start that says nothing leaves the state.
+      if (input.state !== null) existing.state = input.state;
       return { session: existing, previousEnd };
     }
     const record: AgentSessionRecord = {
@@ -76,6 +79,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
       cwd: input.cwd,
       ruleId: input.ruleId,
       agentId: input.agentId,
+      state: input.state,
       status: "running",
       startedAt: input.occurredAt,
       endedAt: null,
@@ -125,6 +129,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
       cwd: input.cwd,
       ruleId: input.ruleId,
       agentId: input.agentId,
+      state: input.state,
       status: "ended",
       startedAt: input.occurredAt,
       endedAt: input.occurredAt,
@@ -133,7 +138,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
     });
   }
 
-  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date): Promise<AgentSessionEndShift | null> {
+  public async advanceLastEvent(current: AuthenticatedSubject, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, state: AgentSessionState | null, occurredAt: Date, lapsedBefore: Date): Promise<AgentSessionEndShift | null> {
     const existing = this.find(current, source, externalSessionId);
     if (existing === undefined) return null;
     const previousEnd = knownEnd(existing);
@@ -146,6 +151,8 @@ class MemoryAgentSessions implements AgentSessionRepository {
       }
       // Mirrors coalesce(model, $new): the first assignment wins.
       existing.model ??= model;
+      // Mirrors coalesce($new, state): the latest event that says wins.
+      existing.state = state ?? existing.state;
       return { session: existing, previousEnd };
     }
     if (model === null) return null;
@@ -233,6 +240,7 @@ function event(overrides: Partial<AgentSessionEventInput> = {}): AgentSessionEve
     // the suite's baseline rather than the exception.
     repoRemote: null,
     ruleId: null,
+    state: null,
     ...overrides,
   };
 }
@@ -573,6 +581,64 @@ describe("agent-session service", () => {
     ]);
 
     expect(agentSessions.records[0]).toMatchObject({ model: "claude-opus-4-8" });
+  });
+
+  it("stores the state a start names and records none when it names none", async () => {
+    const { agentSessions, service } = createService();
+
+    await service.ingest(subject, [
+      event({ externalSessionId: "working-start", state: "working" }),
+      event({ externalSessionId: "silent-start" }),
+    ]);
+
+    expect(agentSessions.records.map((record) => [record.externalSessionId, record.state])).toEqual([
+      ["working-start", "working"],
+      ["silent-start", null],
+    ]);
+  });
+
+  it("stores the state on a shift that arrives as an end", async () => {
+    const { agentSessions, service } = createService();
+
+    await service.ingest(subject, [event({ event: "ended", state: "waiting" })]);
+
+    expect(agentSessions.records[0]).toMatchObject({ status: "ended", state: "waiting" });
+  });
+
+  it("moves a running shift's state with each heartbeat that names one", async () => {
+    const { agentSessions, service } = createService();
+    await service.ingest(subject, [event({ state: "working" })]);
+
+    await service.ingest(subject, [
+      event({ event: "heartbeat", state: "waiting", occurredAt: new Date("2026-08-06T13:35:00.000Z") }),
+    ]);
+    expect(agentSessions.records[0]).toMatchObject({ state: "waiting" });
+
+    await service.ingest(subject, [
+      event({ event: "heartbeat", state: "working", occurredAt: new Date("2026-08-06T13:40:00.000Z") }),
+    ]);
+    expect(agentSessions.records[0]).toMatchObject({ state: "working" });
+  });
+
+  it("leaves the state alone when a heartbeat or a repeated start names none", async () => {
+    const { agentSessions, service } = createService();
+    await service.ingest(subject, [event({ state: "waiting" })]);
+
+    await service.ingest(subject, [
+      event({ event: "heartbeat", occurredAt: new Date("2026-08-06T13:35:00.000Z") }),
+      event({ occurredAt: new Date("2026-08-06T13:36:00.000Z") }),
+    ]);
+
+    expect(agentSessions.records[0]).toMatchObject({ state: "waiting" });
+  });
+
+  it("lets a repeated start that names a state replace the one the shift carries", async () => {
+    const { agentSessions, service } = createService();
+    await service.ingest(subject, [event({ state: "waiting" })]);
+
+    await service.ingest(subject, [event({ state: "working", occurredAt: new Date("2026-08-06T13:36:00.000Z") })]);
+
+    expect(agentSessions.records[0]).toMatchObject({ state: "working" });
   });
 
   it("carries a shift uploaded late in two batches to its last heartbeat, whatever the server's clock reads", async () => {

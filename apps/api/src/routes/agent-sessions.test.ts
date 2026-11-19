@@ -65,6 +65,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
       if (existing.status === "running" && input.occurredAt > existing.lastEventAt) {
         existing.lastEventAt = input.occurredAt;
       }
+      if (input.state !== null) existing.state = input.state;
       return { session: existing, previousEnd };
     }
     const record: AgentSessionRecord = {
@@ -78,6 +79,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
       cwd: input.cwd,
       ruleId: input.ruleId,
       agentId: input.agentId,
+      state: input.state,
       status: "running",
       startedAt: input.occurredAt,
       endedAt: null,
@@ -116,6 +118,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
       cwd: input.cwd,
       ruleId: input.ruleId,
       agentId: input.agentId,
+      state: input.state,
       status: "ended",
       startedAt: input.occurredAt,
       endedAt: input.occurredAt,
@@ -124,13 +127,14 @@ class MemoryAgentSessions implements AgentSessionRepository {
     });
   }
 
-  public async advanceLastEvent(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, occurredAt: Date, _lapsedBefore: Date, _now: Date) {
+  public async advanceLastEvent(subject: { organizationId: string; userId: string }, source: AgentSessionRecord["source"], externalSessionId: string, model: string | null, state: AgentSessionRecord["state"], occurredAt: Date, _lapsedBefore: Date, _now: Date) {
     const existing = this.find(subject.organizationId, subject.userId, source, externalSessionId);
     if (existing === undefined) return null;
     const previousEnd = existing.endedAt ?? existing.lastEventAt;
     if (existing.status === "running") {
       if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
       existing.model ??= model;
+      existing.state = state ?? existing.state;
       return { session: existing, previousEnd };
     }
     if (model === null) return null;
@@ -265,6 +269,33 @@ describe("agent-session routes", () => {
       ["claude_code", "running"],
       ["pi", "ended"],
     ]);
+  });
+
+  it("carries the state an event names onto its row, and refuses a state the contract does not know", async () => {
+    const headers = { authorization: bearerHeader, "content-type": "application/json" };
+    const agentSessions = new MemoryAgentSessions();
+    const app = createTestApp(agentSessions, { withMapping: true });
+
+    const accepted = await app.request("http://api.test/agent-sessions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ events: [
+        event({ externalSessionId: "waiting-1", state: "waiting" }),
+        event({ externalSessionId: "silent-1" }),
+      ] }),
+    });
+    expect(accepted.status).toBe(200);
+    expect(agentSessions.records.map((record) => [record.externalSessionId, record.state])).toEqual([
+      ["waiting-1", "waiting"],
+      ["silent-1", null],
+    ]);
+
+    const refused = await app.request("http://api.test/agent-sessions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ events: [event({ externalSessionId: "bad-1", state: "sleeping" })] }),
+    });
+    expect(refused.status).toBe(400);
   });
 
   it("records a runtime the roster has never heard of under its own name", async () => {

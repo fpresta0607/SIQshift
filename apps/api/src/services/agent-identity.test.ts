@@ -59,6 +59,7 @@ function session(overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecor
     cwd: siqshift,
     ruleId: null,
     agentId: ids.bucket,
+    state: null,
     status: "ended",
     startedAt: new Date("2026-08-16T10:00:00.000Z"),
     endedAt: new Date("2026-08-16T11:00:00.000Z"),

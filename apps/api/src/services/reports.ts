@@ -1347,6 +1347,7 @@ export function createReportService(dependencies: ReportServiceDependencies): Re
           repo,
           project,
           description: liveSessionDescription(row, at),
+          state: row.state,
         });
         people.set(row.user.id, person);
       }
