@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 #[cfg(windows)]
+use std::os::windows::io::{AsHandle, BorrowedHandle};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
@@ -49,15 +51,37 @@ const GIT_COMMON_DIR_ARGS: &[&str] = &["rev-parse", "--path-format=absolute", "-
 /// caller always has an honest "unknown" to fall back to.
 async fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
+    command.args(args).current_dir(cwd);
+    run_bounded_git_async(command).await
+}
+
+/// The one asynchronous git spawn: runs a prepared command with stdin and
+/// stderr discarded and stdout captured, and returns trimmed stdout when it
+/// exits successfully within `GIT_TIMEOUT`.
+///
+/// A git still running at the deadline, or when the caller drops this future,
+/// is killed rather than abandoned: dropping the child kills it, and on Windows
+/// the probe's own kill-on-close job, dropped with it, ends every process it
+/// started, the real git behind the `cmd\git.exe` shim included.
+async fn run_bounded_git_async(mut command: Command) -> Option<String> {
     command
-        .args(args)
-        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = tokio::time::timeout(GIT_TIMEOUT, command.output())
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    let child = command.spawn().ok()?;
+    // Dropped when this returns or is dropped, which ends whatever the probe
+    // left running. A probe that cannot join a job is killed as `child` drops.
+    #[cfg(windows)]
+    let _probe_tree = {
+        // SAFETY: tokio's child keeps its process handle open until it drops,
+        // and `child` outlives this borrow.
+        let process = unsafe { BorrowedHandle::borrow_raw(child.raw_handle()?) };
+        start_in_kill_on_close_job(process, child.id()?)?
+    };
+    let output = tokio::time::timeout(GIT_TIMEOUT, child.wait_with_output())
         .await
         .ok()?
         .ok()?;
@@ -171,7 +195,7 @@ fn run_bounded_git(mut command: std::process::Command) -> Option<String> {
     let mut child = command.spawn().ok()?;
     // Dropped when this returns, which ends whatever the probe left running.
     #[cfg(windows)]
-    let _probe_tree = match start_in_kill_on_close_job(&child) {
+    let _probe_tree = match start_in_kill_on_close_job(child.as_handle(), child.id()) {
         Some(job) => job,
         None => {
             let _ = child.kill();
@@ -214,18 +238,21 @@ fn run_bounded_git(mut command: std::process::Command) -> Option<String> {
 /// assigned after a running spawn would miss a grandchild the shim had already
 /// started. `None` when the job cannot be made or the probe cannot be resumed.
 #[cfg(windows)]
-fn start_in_kill_on_close_job(child: &std::process::Child) -> Option<KillOnCloseJob> {
+fn start_in_kill_on_close_job(
+    process: BorrowedHandle<'_>,
+    process_id: u32,
+) -> Option<KillOnCloseJob> {
     let job = KillOnCloseJob::create()?;
-    if !job.assign_child(child) || !resume_suspended_process(child.id()) {
+    if !job.assign_process(process) || !resume_suspended_process(process_id) {
         return None;
     }
     Some(job)
 }
 
 /// Resumes every thread of a process created with `CREATE_SUSPENDED`, which
-/// until then has only the one it was created with. std's `Child` keeps no
-/// handle to that thread, so it is found by the process id the open process
-/// handle keeps from being reused. True when a thread was resumed.
+/// until then has only the one it was created with. Neither std's nor tokio's
+/// `Child` keeps a handle to that thread, so it is found by the process id the
+/// open process handle keeps from being reused. True when a thread was resumed.
 #[cfg(windows)]
 fn resume_suspended_process(process_id: u32) -> bool {
     use std::mem::size_of;
@@ -953,26 +980,13 @@ mod tests {
         }
     }
 
-    /// The desktop app runs the same probes as the hook but has no job of its
-    /// own around them, so killing the shim at the deadline once left the real
-    /// git running until it finished on its own.
+    /// The pid the fake shim's real git recorded, and whether that process
+    /// ended within a few seconds. One still running then is ended here, so a
+    /// failing test leaves nothing behind.
     #[cfg(windows)]
-    #[test]
-    fn a_probe_abandoned_at_its_deadline_leaves_no_descendant_running() {
+    fn real_git_pid_and_is_gone(pid_file: &Path) -> (Option<u32>, bool) {
         const REAL_GIT_GONE_CAP: Duration = Duration::from_secs(5);
-        // Arrange
-        let dir = temp_dir("abandoned-probe");
-        let pid_file = dir.join("real-git.pid");
-        let mut shim =
-            std::process::Command::new(std::env::current_exe().expect("a test binary path"));
-        shim.arg(FAKE_SHIM_TEST)
-            .env(REAL_GIT_PID_FILE_ENV, &pid_file);
-
-        // Act
-        let answer = run_bounded_git(shim);
-
-        // Assert
-        let real_git_pid = std::fs::read_to_string(&pid_file)
+        let real_git_pid = std::fs::read_to_string(pid_file)
             .ok()
             .and_then(|text| text.trim().parse::<u32>().ok());
         let deadline = Instant::now() + REAL_GIT_GONE_CAP;
@@ -986,6 +1000,28 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         });
+        (real_git_pid, is_real_git_gone)
+    }
+
+    /// The desktop app runs the same probes as the hook but has no job of its
+    /// own around them, so killing the shim at the deadline once left the real
+    /// git running until it finished on its own.
+    #[cfg(windows)]
+    #[test]
+    fn a_probe_abandoned_at_its_deadline_leaves_no_descendant_running() {
+        // Arrange
+        let dir = temp_dir("abandoned-probe");
+        let pid_file = dir.join("real-git.pid");
+        let mut shim =
+            std::process::Command::new(std::env::current_exe().expect("a test binary path"));
+        shim.arg(FAKE_SHIM_TEST)
+            .env(REAL_GIT_PID_FILE_ENV, &pid_file);
+
+        // Act
+        let answer = run_bounded_git(shim);
+
+        // Assert
+        let (real_git_pid, is_real_git_gone) = real_git_pid_and_is_gone(&pid_file);
         assert_eq!(answer, None);
         assert!(
             real_git_pid.is_some(),
@@ -994,6 +1030,36 @@ mod tests {
         assert!(
             is_real_git_gone,
             "the real git outlived the abandoned probe"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The uploader's async probes bounded only the wait for git: the future
+    /// dropped at the deadline killed nothing, so the shim and its real git
+    /// ran on until they finished by themselves.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn an_async_probe_abandoned_at_its_deadline_leaves_no_descendant_running() {
+        // Arrange
+        let dir = temp_dir("abandoned-async-probe");
+        let pid_file = dir.join("real-git.pid");
+        let mut shim = Command::new(std::env::current_exe().expect("a test binary path"));
+        shim.arg(FAKE_SHIM_TEST)
+            .env(REAL_GIT_PID_FILE_ENV, &pid_file);
+
+        // Act
+        let answer = run_bounded_git_async(shim).await;
+
+        // Assert
+        let (real_git_pid, is_real_git_gone) = real_git_pid_and_is_gone(&pid_file);
+        assert_eq!(answer, None);
+        assert!(
+            real_git_pid.is_some(),
+            "the shim never started its real git"
+        );
+        assert!(
+            is_real_git_gone,
+            "the real git outlived the abandoned async probe"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
