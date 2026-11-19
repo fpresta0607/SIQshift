@@ -109,6 +109,7 @@ async function expectHoverEffect(button: Locator, isLifted: boolean): Promise<vo
   await button.hover();
   await expect(button).toHaveCSS("transform", isLifted ? LIFTED : "none");
   await expect(button).not.toHaveCSS("box-shadow", resting);
+  await expect(button).toHaveCSS("background-image", "none");
 }
 
 async function expectFocusEffect(button: Locator): Promise<void> {
@@ -116,6 +117,7 @@ async function expectFocusEffect(button: Locator): Promise<void> {
   await button.focus();
   await expect(button).toHaveCSS("transform", LIFTED);
   await expect(button).not.toHaveCSS("box-shadow", resting);
+  await expect(button).toHaveCSS("background-image", "none");
   await button.blur();
   await expect(button).toHaveCSS("transform", "none");
 }
@@ -148,7 +150,29 @@ test("under reduced motion the primary buttons glow on hover without moving", as
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Measure the work/ })).toBeVisible();
 
-  for (const button of landingButtons(page)) await expectHoverEffect(button, false);
+  for (const button of landingButtons(page)) {
+    await expect(button).toHaveCSS("transition-duration", "0s");
+    await expectHoverEffect(button, false);
+  }
+
+  await page.getByRole("navigation", { name: "SIQshift navigation" }).getByRole("button", { name: "Sign up" }).click();
+  const submit = page.getByRole("dialog", { name: "Create your account" }).getByRole("button", { name: "Create account" });
+  await expect(submit).toHaveCSS("transition-duration", "0s");
+  await expectHoverEffect(submit, false);
+});
+
+test("the account dialog's submit keeps the hero's look while it is busy under the pointer", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "SIQshift navigation" }).getByRole("button", { name: "Sign up" }).click();
+  const submit = page.getByRole("dialog", { name: "Create your account" }).getByRole("button", { name: "Create account" });
+  const restingBorder = await submit.evaluate((node) => getComputedStyle(node).borderColor);
+
+  await submit.evaluate((node) => node.setAttribute("disabled", ""));
+  await submit.hover();
+
+  await expect(submit).toHaveCSS("background-image", /linear-gradient/);
+  await expect(submit).toHaveCSS("border-color", restingBorder);
+  await expect(submit).toHaveCSS("transform", "none");
 });
 
 test("the download button after sign-up wears the hero's look and hover", async ({ page }) => {

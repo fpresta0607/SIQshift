@@ -11,7 +11,7 @@
 .landing-header { position: sticky; top: max(24px, env(safe-area-inset-top)); z-index: 20; max-width: 1320px; margin: auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .landing-siq-logo { display: block; width: 150px; height: auto; }
 .landing-header nav { display: flex; align-items: center; gap: 28px; font-size: .875rem; color: var(--text-secondary); }
-.landing-header nav button { min-height: 44px; padding: 10px 23px; border: 1px solid var(--glass-border-hover); background: var(--glass-bg); color: white; font-weight: 500; white-space: nowrap; }
+.landing-header nav button { min-height: 44px; padding: 10px 23px; font-weight: 500; white-space: nowrap; }
 .landing-footer a:hover { color: var(--mint); }
 .landing-header nav .landing-header-sign-in { padding: 8px 20px; border-radius: 999px; background: none; color: white; font-size: .92rem; }
 .landing-hero { padding: 82px 24px 68px; text-align: center; }
@@ -23,7 +23,7 @@
 /* The hero download button's look - a mint fill with a soft green glow - and
    its one hover: the button lifts a little and the glow grows. The sign-up
    form's Create account wears both, and keyboard focus shows what hover does. */
-.landing-primary, .auth-dialog .primary { border: 1px solid var(--mint); background: linear-gradient(110deg, var(--accent-green), var(--mint)); color: var(--body-bg); box-shadow: 0 0 28px color-mix(in srgb, var(--accent-green) 10%, transparent); transition: background .2s, border-color .2s, box-shadow .2s, transform .2s; }
+.landing-primary, .auth-dialog .primary, .auth-dialog .primary:disabled { border: 1px solid var(--mint); background: linear-gradient(110deg, var(--accent-green), var(--mint)); color: var(--body-bg); box-shadow: 0 0 28px color-mix(in srgb, var(--accent-green) 10%, transparent); transition: background .2s, border-color .2s, box-shadow .2s, transform .2s; }
 .landing-primary:hover, .landing-primary:focus-visible,
 .auth-dialog .primary:enabled:hover, .auth-dialog .primary:focus-visible { border-color: var(--mint); background: var(--mint); box-shadow: 0 0 36px color-mix(in srgb, var(--accent-green) 32%, transparent); }
 /* Sign in sits beside Sign up in the nav as its outlined twin, with the same hover. */
@@ -100,7 +100,7 @@
   .landing-footer { margin: 0 20px; padding: 20px 0; flex-wrap: wrap; gap: 2px 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .landing *, .auth-dialog, .auth-dialog * { scroll-behavior: auto; transition: none; animation: none; }
+  .landing *, .auth-dialog, .auth-dialog * { scroll-behavior: auto; transition: none !important; animation: none; }
 }
 
 /* Product identity. The example workspace is the shared `.tv` team view. */
@@ -112,7 +112,7 @@
 .landing-maker { display: flex; align-items: center; gap: 9px; padding-left: 24px; border-left: 1px solid var(--glass-border-hover); color: var(--text-secondary) !important; font-size: .75rem; }
 .landing-siq-logo { width: 88px; }
 .landing-header nav { gap: 20px; font-size: .95rem; }
-.landing-header nav .landing-primary { background: linear-gradient(110deg, var(--accent-green), var(--mint)); color: var(--body-bg); border-color: var(--mint); font-weight: 650; }
+.landing-header nav .landing-primary { font-weight: 650; }
 .landing-header nav .landing-header-cta { padding: 8px 20px; border-radius: 999px; font-size: .92rem; }
 .landing-hero { padding-top: 84px; }
 .landing-wordmark { margin-bottom: 25px; font-size: .8rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--mint); }
