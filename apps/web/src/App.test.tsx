@@ -494,7 +494,7 @@ describe("dashboard", () => {
 
     // Act
     const stats = await openAllStats(person);
-    const sort = await stats.findByRole("combobox", { name: /Sort by/ });
+    const sort = await stats.findByRole("combobox", { name: /Rank by/ });
 
     // Assert: each choice is a column on the row; leverage is not one.
     expect(within(sort).getAllByRole("option").map((option) => option.textContent)).toEqual(["By active time", "By agent time"]);
@@ -518,12 +518,106 @@ describe("dashboard", () => {
     await pickPerson(person, stats, "Sam");
 
     // Act
-    await person.selectOptions(stats.getByRole("combobox", { name: /Sort by/ }), "By agent time");
+    await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By agent time");
 
     // Assert
     expect(rows()).toEqual(["1AAlexYouClient1h 00m2h 00m", "2SSamGeneral2h 14m10m"]);
     expect(stats.getByRole("button", { name: "Show Sam's work" })).toHaveAttribute("aria-pressed", "true");
     expect(stats.getByLabelText("Totals for Sam")).toBeInTheDocument();
+  });
+
+  it("keeps the board's chosen ranking after All stats is closed and opened again", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+    const stats = await openAllStats(person);
+    await person.selectOptions(await stats.findByRole("combobox", { name: /Rank by/ }), "By agent time");
+
+    // Act
+    await person.click(screen.getByRole("button", { name: "Close all stats" }));
+    const reopened = await openAllStats(person);
+
+    // Assert
+    expect(await reopened.findByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By agent time");
+  });
+
+  it("shows each person's tokens in and out, a dash for someone who reported none, and ranks by them", async () => {
+    // Arrange: Alex's agents reported tokens; Sam's ran but reported none.
+    const person = await signIn(clientFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShiftsResponse,
+        tokenTotals: { tokensIn: 1_100_000, tokensOut: 100_000, tokens: 1_200_000 },
+        people: [
+          { owner: { id: "u2", name: "Alex" }, agentSeconds: 5_400, shiftCount: 2, tokens: { tokensIn: 1_100_000, tokensOut: 100_000, tokens: 1_200_000 } },
+          { owner: { id: "u1", name: "Sam" }, agentSeconds: 1_800, shiftCount: 1, tokens: null },
+        ],
+      }),
+    }));
+    const stats = await openAllStats(person);
+    const board = within(await stats.findByRole("table", { name: "People" }));
+    await board.findByRole("columnheader", { name: "Tokens" });
+    const rows = () => board.getAllByRole("row").slice(1).map((row) => row.textContent);
+    expect(rows()).toEqual(["1SSamGeneral2h 14m3h 00m-", "2AAlexYouClient1h 00m0s1.2M1.1M in · 100k out"]);
+
+    // Act
+    await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
+
+    // Assert: the reporter ranks above the person with no report.
+    expect(rows()).toEqual(["1AAlexYouClient1h 00m0s1.2M1.1M in · 100k out", "2SSamGeneral2h 14m3h 00m-"]);
+  });
+
+  it("keeps the board's tokens and ranking while a picked person's read loads, and drops them for a new range", async () => {
+    // Arrange: the team's read carries everyone's tokens; every later read stays pending.
+    const agentShifts = vi.fn()
+      .mockResolvedValueOnce({
+        ...agentShiftsResponse,
+        tokenTotals: { tokensIn: 1_100_000, tokensOut: 100_000, tokens: 1_200_000 },
+        people: [
+          { owner: { id: "u2", name: "Alex" }, agentSeconds: 5_400, shiftCount: 2, tokens: { tokensIn: 1_100_000, tokensOut: 100_000, tokens: 1_200_000 } },
+          { owner: { id: "u1", name: "Sam" }, agentSeconds: 1_800, shiftCount: 1, tokens: null },
+        ],
+      })
+      .mockReturnValue(new Promise(() => {}));
+    const person = await signIn(clientFor({ agentShifts }));
+    const stats = await openAllStats(person);
+    const table = () => within(stats.getByRole("table", { name: "People" }));
+    const rows = () => table().getAllByRole("row").slice(1).map((row) => row.textContent);
+    await within(await stats.findByRole("table", { name: "People" })).findByRole("columnheader", { name: "Tokens" });
+    await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
+    const tokensOrder = ["1AAlexYouClient1h 00m0s1.2M1.1M in · 100k out", "2SSamGeneral2h 14m3h 00m-"];
+    expect(rows()).toEqual(tokensOrder);
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Assert: Sam's read is still out, and the board has not moved.
+    expect(agentShifts).toHaveBeenLastCalledWith(expect.stringContaining("userId=u1"));
+    expect(table().getByRole("columnheader", { name: "Tokens" })).toBeInTheDocument();
+    expect(stats.getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By tokens");
+    expect(rows()).toEqual(tokensOrder);
+
+    // Act: a new range asks a new question of everyone's tokens.
+    await person.click(stats.getByRole("button", { name: "7d" }));
+    await stats.findByText(/^Last 7 days · /);
+    const board = within(await stats.findByRole("table", { name: "People" }));
+
+    // Assert
+    expect(board.queryByRole("columnheader", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(within(stats.getByRole("combobox", { name: /Rank by/ })).queryByRole("option", { name: "By tokens" })).not.toBeInTheDocument();
+  });
+
+  it("leaves the board without a Tokens column or ranking while the agents read carries no tokens", async () => {
+    // Arrange: an API that reads no token usage sends no token totals and no person's tokens.
+    const person = await signIn(clientFor());
+
+    // Act
+    const stats = await openAllStats(person);
+    const board = within(await stats.findByRole("table", { name: "People" }));
+    await stats.findByRole("region", { name: "Agents" });
+
+    // Assert
+    expect(board.queryByRole("columnheader", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(within(stats.getByRole("combobox", { name: /Rank by/ })).queryByRole("option", { name: "By tokens" })).not.toBeInTheDocument();
   });
 
   it("draws the team totals the server added up, never a sum of the rows", async () => {

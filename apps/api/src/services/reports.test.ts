@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PROJECT_APPEARANCE, projectAppearance, summedSeconds, unionSeconds } from "@siqshift/shared";
-import type { AgentShiftsFilters, Interval, ReportFilters } from "@siqshift/shared";
+import type { AgentShiftsFilters, AgentShiftsResponse, Interval, ReportFilters } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
 import type {
@@ -2063,6 +2063,67 @@ describe("agent shifts", () => {
       expect(result.people.map((person) => person.owner.id).sort()).toEqual([ids.user, ids.otherUser].sort());
     });
 
+    const tokensOfPeople = (result: AgentShiftsResponse): Record<string, unknown> =>
+      Object.fromEntries(result.people.map((person) => [person.owner.id, person.tokens]));
+
+    it.each([
+      { label: "the team", filters: {} },
+      { label: "a picked person, still for everyone on the board", filters: { userId: ids.user } },
+    ])("states each person's tokens in and out for $label", async ({ filters }) => {
+      // Arrange: Alex's s1 counts cache reads and writes as tokens in; s9 lands on no shift of the board.
+      const service = createReportService({ reports: board(), agentUsage: usage() });
+
+      // Act
+      const result = await service.agentShifts(subject, filters);
+
+      // Assert
+      expect(tokensOfPeople(result)).toEqual({
+        [ids.user]: { tokensIn: 3_120, tokensOut: 400, tokens: 3_520 },
+        [ids.otherUser]: { tokensIn: 11, tokensOut: 12, tokens: 23 },
+      });
+    });
+
+    it("reads a person whose shifts reported no tokens as null, never as zero", async () => {
+      // Arrange: Riley ran agents, but none of their sessions reported usage.
+      const service = createReportService({
+        reports: board(),
+        agentUsage: new Usage([usageSeed({ agentSessionId: "s1", bucketStartAt: at(10), inputTokens: 5, outputTokens: 5 })]),
+      });
+
+      // Act
+      const result = await service.agentShifts(subject, {});
+
+      // Assert
+      expect(tokensOfPeople(result)).toEqual({
+        [ids.user]: { tokensIn: 5, tokensOut: 5, tokens: 10 },
+        [ids.otherUser]: null,
+      });
+    });
+
+    it("sums each person's tokens over the scoped project only", async () => {
+      // Arrange: Riley also ran a session under another project.
+      const reports = board();
+      reports.agentIntervals.push({ ...reports.agentIntervals[1]!, sessionId: "s5", externalSessionId: "s5-runtime-id", projectId: ids.otherProject, projectName: "Field", startedAt: at(16), endedAt: at(17) });
+      const service = createReportService({
+        reports,
+        agentUsage: new Usage([
+          ...usage().rows,
+          usageSeed({ agentSessionId: "s5", userId: ids.otherUser, projectId: ids.otherProject, bucketStartAt: at(16), inputTokens: 900, outputTokens: 100 }),
+        ]),
+      });
+
+      // Act
+      const everything = await service.agentShifts(subject, {});
+      const scoped = await service.agentShifts(subject, { scope: ids.project });
+
+      // Assert
+      expect(tokensOfPeople(everything)[ids.otherUser]).toEqual({ tokensIn: 911, tokensOut: 112, tokens: 1_023 });
+      expect(tokensOfPeople(scoped)).toEqual({
+        [ids.user]: { tokensIn: 3_120, tokensOut: 400, tokens: 3_520 },
+        [ids.otherUser]: { tokensIn: 11, tokensOut: 12, tokens: 23 },
+      });
+    });
+
     it.each([
       { label: "an unbounded range", filters: {} },
       { label: "a bounded range", filters: { fromAt: at(0).toISOString(), toExclusiveAt: at(24).toISOString() } },
@@ -2102,6 +2163,7 @@ describe("agent shifts", () => {
       expect(result.groups.map((group) => [group.repo, group.shiftCount, group.tokens])).toEqual([["siqshift", shiftCount, 2_000_000]]);
       expect(result.runtimes).toEqual([{ source: "claude_code", agentSeconds, shiftCount, tokens: 2_000_000 }]);
       expect(result.tokenTotals).toEqual({ tokensIn: 1_600_000, tokensOut: 400_000, tokens: 2_000_000 });
+      expect(result.people.map((person) => person.tokens)).toEqual([{ tokensIn: 1_600_000, tokensOut: 400_000, tokens: 2_000_000 }]);
       // The token chart on the same page draws exactly the tokens the totals state.
       expect(result.tokenChart?.buckets.reduce((sum, bucket) => sum + (bucket.tokens ?? 0), 0)).toBe(2_000_000);
     });
@@ -2123,6 +2185,7 @@ describe("agent shifts", () => {
       // Assert
       expect(result.groups.map((group) => group.tokens)).toEqual([0]);
       expect(result.tokenTotals).toEqual({ tokensIn: 0, tokensOut: 0, tokens: 0 });
+      expect(result.people.map((person) => person.tokens)).toEqual([null]);
     });
 
     it("leaves the tokens out without a usage source, and still rolls up the runtimes", async () => {
@@ -2132,6 +2195,7 @@ describe("agent shifts", () => {
 
       expect(result.tokenTotals).toBeUndefined();
       expect(result.groups.every((group) => !("tokens" in group))).toBe(true);
+      expect(result.people.every((person) => !("tokens" in person))).toBe(true);
       expect(result.runtimes).toEqual([
         { source: "claude_code", agentSeconds: 4_200, shiftCount: 2 },
         { source: "codex", agentSeconds: 1_800, shiftCount: 1 },

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { DashboardView, TeamViewHead, projectMeterRows } from "@siqshift/shared/dashboard-view";
+import { DashboardView, TeamViewHead, projectMeterRows, type BoardSort } from "@siqshift/shared/dashboard-view";
 import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
@@ -28,10 +28,16 @@ const agentSources = ["claude_code", "codex"];
 // About as many tokens an hour of agent runtime burns in the example.
 const TOKENS_PER_AGENT_SECOND = 600;
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+// A tokens figure split the way the example's bars split it: 6% out.
+const exampleTokens = (agentSeconds: number) => {
+  const tokens = Math.round(agentSeconds * TOKENS_PER_AGENT_SECOND);
+  const tokensOut = Math.round(tokens * 0.06);
+  return { tokensIn: tokens - tokensOut, tokensOut, tokens };
+};
 const boardMembers = members.map((member, index) => ({
   id: member.id, rank: index + 1, name: member.name,
   project: { name: member.project.name, appearance: { icon: member.project.icon, color: member.project.color } },
-  activeSeconds: sum(member.projects), agentSeconds: sum(member.agents), isSelf: false,
+  activeSeconds: sum(member.projects), agentSeconds: sum(member.agents), tokens: exampleTokens(sum(member.agents)), isSelf: false,
 }));
 
 function LandingBackground() {
@@ -48,6 +54,7 @@ function LandingBackground() {
 
 function ProductPreview() {
   const [memberId, setMemberId] = useState<string | null>(null);
+  const [boardSort, setBoardSort] = useState<BoardSort>("active");
   const selectedMember = members.find(member => member.id === memberId);
   const visibleMembers = selectedMember ? [selectedMember] : members;
   const activeSeconds = sum(visibleMembers.map(member => sum(member.projects)));
@@ -66,11 +73,7 @@ function ProductPreview() {
     return { source, agentSeconds: runtimeSeconds, shiftCount: Math.round(runtimeSeconds / 5400), tokens: runtimeSeconds * TOKENS_PER_AGENT_SECOND };
   });
   // Each hour burns tokens in step with its agent time, so the bars add up to the Tokens total.
-  const tokenBuckets = exampleDay.map(bucket => {
-    const hourTokens = Math.round(bucket.agentSeconds * TOKENS_PER_AGENT_SECOND);
-    const hourOut = Math.round(hourTokens * 0.06);
-    return { start: bucket.hourStart, tokensIn: hourTokens - hourOut, tokensOut: hourOut, tokens: hourTokens };
-  });
+  const tokenBuckets = exampleDay.map(bucket => ({ start: bucket.hourStart, ...exampleTokens(bucket.agentSeconds) }));
   const tokens = sum(tokenBuckets.map(bucket => bucket.tokens));
   const tokensOut = sum(tokenBuckets.map(bucket => bucket.tokensOut));
   return (
@@ -96,7 +99,8 @@ function ProductPreview() {
           }}
           agents={{ tokenTotals: { tokensIn: tokens - tokensOut, tokensOut, tokens }, tokenChart: { bucketSeconds: 3600, buckets: tokenBuckets }, runtimes }}
           people={boardMembers}
-          boardTool={<span className="tv-card-note">Ranked by active time</span>}
+          boardSort={boardSort}
+          onBoardSort={setBoardSort}
           onSelectPerson={member => setMemberId(member === undefined || member.id === memberId ? null : member.id)}
           boardNotes={selectedMember === undefined ? ["Select a teammate to explore their work."] : []}
         />

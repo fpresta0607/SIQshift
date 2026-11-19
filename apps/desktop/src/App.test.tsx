@@ -1364,6 +1364,8 @@ describe("the team board", () => {
         ...agentShifts,
         tokenTotals: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 },
         runtimes: [{ source: "claude_code", agentSeconds: 5_400, shiftCount: 3, tokens: 1_500_000 }],
+        // Sam's shifts reported every token; the viewer's agents reported none.
+        people: [{ owner: { id: sam.id }, tokens: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 } }],
       }),
     });
     const person = userEvent.setup();
@@ -1385,8 +1387,9 @@ describe("the team board", () => {
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m$/);
-    expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m$/);
+    expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m1.5M1.2M in · 300k out$/);
+    expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m-$/);
+    expect(view.getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By active time");
     // Every list at once, with no switch between them.
     const projects = within(view.getByRole("region", { name: "Projects" }));
     expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);
@@ -1674,6 +1677,63 @@ describe("the team board", () => {
     await within(panel).findByLabelText("Totals for Sam");
     expect(teamTotal(panel, "Tokens")).not.toHaveTextContent("1.5M");
     expect(within(panel).queryByRole("region", { name: "Repos" })).toHaveTextContent("Loading…");
+  });
+
+  it("keeps the board's chosen ranking after All stats is closed and opened again", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+    const panel = await openAgentsPage(person);
+    await person.selectOptions(within(panel).getByRole("combobox", { name: /Rank by/ }), "By agent time");
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: "Close all stats" }));
+    const reopened = await openAgentsPage(person);
+
+    // Assert
+    expect(within(reopened).getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By agent time");
+  });
+
+  it("keeps the board's tokens and ranking while a picked person's read loads, and drops them for a new range", async () => {
+    // Arrange: the team's read carries everyone's tokens, the viewer's the most; every later read stays pending.
+    const bridge = bridgeFor({
+      agentShifts: vi.fn()
+        .mockResolvedValueOnce({
+          ...agentShifts,
+          tokenTotals: { tokensIn: 3_000_000, tokensOut: 500_000, tokens: 3_500_000 },
+          people: [
+            { owner: { id: user.id }, tokens: { tokensIn: 1_800_000, tokensOut: 200_000, tokens: 2_000_000 } },
+            { owner: { id: sam.id }, tokens: { tokensIn: 1_200_000, tokensOut: 300_000, tokens: 1_500_000 } },
+          ],
+        })
+        .mockReturnValue(new Promise(() => undefined)),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    const rows = () => within(within(panel).getByRole("table", { name: "People" })).getAllByRole("row").slice(1).map((row) => row.textContent);
+    await person.selectOptions(within(panel).getByRole("combobox", { name: /Rank by/ }), "By tokens");
+    const tokensOrder = ["1TUTimer UserYouClient work1h 00m30m2M1.8M in · 200k out", "2SSamField work1h 56m1h 00m1.5M1.2M in · 300k out"];
+    expect(rows()).toEqual(tokensOrder);
+
+    // Act
+    await pickPerson(person, panel, "Sam");
+    await within(panel).findByLabelText("Totals for Sam");
+
+    // Assert: Sam's read is still out, and the board has not moved.
+    expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), sam.id, undefined);
+    expect(within(panel).getByRole("columnheader", { name: "Tokens" })).toBeInTheDocument();
+    expect(within(panel).getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By tokens");
+    expect(rows()).toEqual(tokensOrder);
+
+    // Act: a new range asks a new question of everyone's tokens.
+    await person.click(within(panel).getByRole("button", { name: "This week" }));
+    await within(panel).findByText(/^This week · /);
+    const board = within(await within(panel).findByRole("table", { name: "People" }));
+
+    // Assert
+    expect(board.queryByRole("columnheader", { name: "Tokens" })).not.toBeInTheDocument();
+    expect(within(within(panel).getByRole("combobox", { name: /Rank by/ })).queryByRole("option", { name: "By tokens" })).not.toBeInTheDocument();
   });
 
   it("returns to the whole team when Everyone is pressed after picking a teammate", async () => {

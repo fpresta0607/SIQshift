@@ -61,8 +61,10 @@ import {
   customRangeName,
   dayBounds,
   localDay,
+  personTokensOf,
   projectMeterRows,
   reportedAppearance,
+  type BoardSort,
   type DashboardDays,
 } from "@siqshift/shared/dashboard-view";
 
@@ -250,6 +252,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [workspaceError, setWorkspaceError] = useState<string | undefined>();
   const [agentShifts, setAgentShifts] = useState<AgentShifts | undefined>();
   const [agentShiftsError, setAgentShiftsError] = useState<string | undefined>();
+  const [boardTokens, setBoardTokens] = useState<{ key: string; agents: AgentShifts } | undefined>();
+  const [boardSort, setBoardSort] = useState<BoardSort>("active");
   /// Who is running an agent right now, for the Live now card. Undefined until
   /// the first read lands, so "nothing is running" is never drawn before the
   /// host has answered; a failed poll keeps the last-good list.
@@ -337,6 +341,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     setWorkspaceError(undefined);
     setAgentShifts(undefined);
     setAgentShiftsError(undefined);
+    setBoardTokens(undefined);
     setLiveSessions(undefined);
     setLiveSessionsError(undefined);
     statsFailures.current = 0;
@@ -578,7 +583,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastAgentsKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const agentsKey = `${boardRangeKey}|${boardScope}|${boardMember?.id ?? ""}`;
+    const tokensKey = `${boardRangeKey}|${boardScope}`;
+    const agentsKey = `${tokensKey}|${boardMember?.id ?? ""}`;
     const blanked = lastAgentsKey.current !== agentsKey;
     if (blanked) {
       lastAgentsKey.current = agentsKey;
@@ -601,6 +607,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
           agentShiftsFailures.current = 0;
           setAgentShifts(result);
           setAgentShiftsError(undefined);
+          setBoardTokens({ key: tokensKey, agents: result });
         }
       },
       (error: unknown) => {
@@ -1818,9 +1825,11 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                     : { name: member.project.name, appearance: appearanceOf(member.project.id) },
                   activeSeconds: member.activeSeconds,
                   agentSeconds: member.agentSeconds,
+                  tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${boardScope}` ? boardTokens.agents : undefined, member.user.id),
                   isSelf: member.user.id === ready.user.id,
                 }))}
-                boardTool={<span className="tv-card-note">Ranked by active time</span>}
+                boardSort={boardSort}
+                onBoardSort={setBoardSort}
                 onSelectPerson={(picked) => setBoardMember(picked === undefined ? undefined : { id: picked.id, name: picked.name })}
                 boardNotes={[
                   ...workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0

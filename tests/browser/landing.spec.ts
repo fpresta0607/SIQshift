@@ -24,6 +24,10 @@ for (const width of [390, 1440]) {
     await expect(board).toContainText("Alex Morgan");
     await expect(board).toContainText("Jordan Lee");
     await expect(board).toContainText("Taylor Chen");
+    // Each person's tokens, in and out, in a column the board can rank by.
+    await expect(board.getByRole("columnheader", { name: "Tokens" })).toBeVisible();
+    await expect(board).toContainText(" in · ");
+    await expect(page.getByRole("combobox", { name: /Rank by/ }).getByRole("option", { name: "By tokens" })).toHaveCount(1);
     await expect(page.locator(".tv-totals")).toContainText("15h 00m");
     await expect(page.locator(".tv-totals")).toContainText("32h 00m");
     // Every project wears a built-in icon, and so does each person's top project.
