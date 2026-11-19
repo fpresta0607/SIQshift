@@ -151,7 +151,6 @@ button:disabled { opacity: .55; cursor: default; }
 .project-dot { width: 10px; height: 10px; margin: 0 auto; border-radius: 50%; background: var(--accent-green); }
 /* A project's icon tile, sized by where it sits. */
 .project-icon { display: block; flex: none; width: 28px; height: 28px; }
-.tv-sub .project-icon { width: 14px; height: 14px; }
 .app-name .project-icon { width: 20px; height: 20px; }
 .manage-name .project-icon { width: 32px; height: 32px; }
 
@@ -265,7 +264,7 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-days .ghost[aria-pressed="true"] { border-color: var(--glass-border-hover); color: var(--mint); }
 .tv-days-note { flex-basis: 100%; margin: 0; color: var(--text-secondary); font-size: .74rem; }
 
-.tv-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tv-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .tv-total { min-width: 0; border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 10px 14px 11px; background: rgba(3, 5, 10, .5); }
 .tv-total dt { color: var(--text-secondary); font-size: .76rem; font-weight: 500; }
 .tv-total dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-top: 2px; }
@@ -322,7 +321,7 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-people td.is-agent .tv-cell-bar::before { background: var(--accent-green); opacity: .8; }
 .tv-people td.is-tokens { color: var(--chart-token-in); }
 .tv-people td.is-tokens .tv-cell-bar::before { background: var(--chart-token-in); opacity: .8; }
-.tv-cell-sub { display: block; color: var(--text-secondary); font-size: .66rem; }
+.tv-cell-line { display: block; }
 /* The People board's ranking, as quiet as the card notes beside it. */
 .board-sort select { border: 0; padding: 2px 0; background: transparent; background-image: none; color: var(--text-secondary); font-size: .8rem; cursor: pointer; }
 .board-sort select:hover { color: #ffffff; }
@@ -360,8 +359,6 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-live .live-sessions { margin: 0; }
 .tv-live .live-sessions-empty { margin: 4px 0 0; }
 
-/* What recorded time holds beyond active time, under the totals it explains. */
-.tv .tv-totals-note { margin-top: -6px; color: var(--text-secondary); font-size: .76rem; line-height: 1.5; }
 /* Whom the page answers for once a person is picked, and the way back to everyone. */
 .tv-subject { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .tv-subject .member-avatar { width: 28px; height: 28px; font-size: .6rem; }

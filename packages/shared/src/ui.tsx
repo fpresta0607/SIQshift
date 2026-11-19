@@ -36,30 +36,6 @@ export { usePictures } from "./use-pictures.js";
  * nothing below hardcodes a color.
  */
 
-/// What "recorded" is made of, in one sentence, from numbers this payload
-/// actually carries.
-///
-/// Recorded is whole sessions, so it counts stretches the person was not at
-/// the keyboard; active time is presence alone. The surfaces used to name that
-/// gap "unattended agent time" on the strength of `recorded > active` and
-/// nothing else - a claim about agents made from a measurement that contains
-/// no agents, and printed just as readily on a day whose measured agent time
-/// was zero. The gap is stated as what it is, and the agent share of it only
-/// when it was measured. `awayAgentSeconds` is summed runtime, so parallel
-/// agents can exceed the wall clock they ran in; it is clamped to the gap
-/// rather than allowed to out-run it.
-export const recordedBasis = (
-  recordedSeconds: number,
-  activeSeconds: number,
-  awayAgentSeconds: number,
-): string | null => {
-  const away = recordedSeconds - activeSeconds;
-  if (away < 60) return null;
-  const withAgent = Math.min(away, awayAgentSeconds);
-  const gap = `${formatHumanDuration(away)} of it away from the keyboard`;
-  return withAgent < 60 ? gap : `${gap}, ${formatHumanDuration(withAgent)} of that with an agent running`;
-};
-
 /// The structural slice of an hourly bucket the charts read. Each app's own
 /// bucket type satisfies it.
 export type ChartHourlyBucket = {

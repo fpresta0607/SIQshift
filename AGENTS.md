@@ -21,8 +21,9 @@ runtime that fell outside the person's presence. **Recorded** is a fourth thing 
 measurement of either: it is whole `time_sessions`, quiet inside them included, so
 `recorded - active` is time away from the keyboard and never agent time. The All-stats card
 had claimed that difference *was* unattended agent time from `recorded > active` alone, on
-days whose measured agent time was zero; `recordedBasis` states the gap and names the agent
-share of it only from `concurrency.awaySeconds`. A session is still attributed whole
+days whose measured agent time was zero, and the page now shows recorded time nowhere: the
+Today card on the home screen is its only reader, and the API still serves it for older
+desktop builds. A session is still attributed whole
 or not at all by `time_sessions.attribution`. The README's "How session tracking works"
 section is the authoritative prose; keep it true when you change the model.
 
@@ -31,7 +32,12 @@ section is the authoritative prose; keep it true when you change the model.
 repeated agent time, the agent list, the chart and, in a workspace of one, the whole team. The page
 answers for one subject - the team, or the person picked on its People board - and every card
 follows it; the board stays the team's because it is the picker, and a workspace of one draws no
-board and answers for its one member. Do not bring back a tab, a count tile that restates how many
+board and answers for its one member.
+It shows three totals - tokens, active time and agent time - and each time total carries one plain note saying what it counts.
+Recorded session time is not on it in any form: no total, no note under a person's totals, no Projects card and no Quiet time row in the apps card.
+The page reads All projects: the project filter in its head is drawn only when the workspace has two or more projects, and the board names no project beside a person.
+The board's tokens cell states in and out on two lines with no total line, while ranking by tokens and the cell's bar still follow the total.
+Do not bring back a tab, a count tile that restates how many
 rows a card holds, or a second chart: issue 161 removed each as a repeat. The agents' cards read
 `/reports/agent-shifts` (`userId` names the person picked) and **that response is aggregates
 only.** A group states its totals and a `groupKey`; the shifts behind it are a separate paged read,

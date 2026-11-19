@@ -274,11 +274,9 @@ export async function openAgentsGroup(page: Page, app: "desktop" | "web"): Promi
 
 /**
  * The dashboard answering for one person, in the markup `DashboardView` draws:
- * whom it answers for, the four totals with the sentence that says what
- * recorded time is made of, then the person's projects and apps, which both
- * close on that recorded total.
+ * whom it answers for, the three totals, then the person's apps.
  *
- * The sentence is the longest line the page draws and it lives in the
+ * The Agent time note is the longest line the page draws and it lives in the
  * narrowest container the apps have - the overlay - so a phone is where it
  * runs out of room first. Each app's overlay is its own, so the page is
  * rendered under each app's sheet.
@@ -287,17 +285,9 @@ export async function openPersonDashboard(page: Page, app: "desktop" | "web"): P
   const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
   const total = (label: string, value: string, note: string): string =>
     `<div class="tv-total"><dt>${label}</dt><dd><b>${value}</b><small>${note}</small></dd></div>`;
-  const projectRow = (label: string, share: number, duration: string): string => `
-    <li class="meter-row">
-      <span class="project-icon" aria-hidden="true"></span>
-      <span class="meter-name">${label}</span>
-      <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
-      <span class="meter-duration">${duration}</span>
-    </li>`;
-  const quietMark = `<svg class="app-mark quiet-mark" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><path d="M12 4.3A6 6 0 1 0 14.64 11.55A4.5 4.5 0 0 1 12 4.3Z" fill="currentColor" /></svg>`;
   const appRow = (label: string, share: number, duration: string): string => `
     <li class="meter-row">
-      ${label === "Quiet time" ? quietMark : `<span class="app-mark app-letter" data-tone="slate" aria-hidden="true">${label.charAt(0)}</span>`}
+      <span class="app-mark app-letter" data-tone="slate" aria-hidden="true">${label.charAt(0)}</span>
       <span class="meter-name">${label}</span>
       <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
       <span class="meter-duration">${duration}</span>
@@ -311,27 +301,17 @@ export async function openPersonDashboard(page: Page, app: "desktop" | "web"): P
       </div>
       <dl class="tv-totals" aria-label="Totals for Alex Morgan">
         ${total("Tokens", "1.3M", "1.2M in · 82k out")}
-        ${total("Active time", "1h 19m", "at the computer")}
-        ${total("Agent time", "2h 10m", "agents running")}
-        ${total("Recorded time", "2h 47m", "whole sessions")}
+        ${total("Active time", "1h 19m", "minutes at the computer")}
+        ${total("Agent time", "2h 10m", "every agent added up, so ten agents for an hour count ten hours")}
       </dl>
-      <p class="tv-totals-note">Recorded: 1h 28m of it away from the keyboard, 43m of that with an agent running.</p>
       <div class="tv-grid">
         <div class="tv-stack"></div>
         <div class="tv-stack">
-          <section class="tv-card tv-list">
-            <div class="tv-card-head"><h4>Projects</h4><span class="tv-card-note">Recorded time</span></div>
-            <ul class="tv-meter-list">
-              ${projectRow("Atlas Portal", 100, "2h 25m")}
-              ${projectRow("General", 15, "22m")}
-            </ul>
-          </section>
           <section class="tv-card tv-list tv-apps">
             <div class="tv-card-head"><h4>Apps</h4><span class="tv-card-note">Time in front</span></div>
             <ul class="tv-meter-list">
               ${appRow("Windows Terminal", 44, "41m")}
               ${appRow("Google Chrome", 35, "33m")}
-              ${appRow("Quiet time", 100, "1h 33m")}
             </ul>
           </section>
         </div>

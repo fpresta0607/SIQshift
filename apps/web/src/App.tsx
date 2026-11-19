@@ -32,7 +32,6 @@ import {
   buildProjectRows,
   formatRangeDays,
   pictureDataUrl,
-  recordedBasis,
   usePictures,
   type ShiftCursor,
   type ShiftPage,
@@ -53,7 +52,6 @@ import {
   dayBounds,
   localDay,
   personTokensOf,
-  projectMeterRows,
   reportedAppearance,
   type BoardSort,
   type DashboardDays,
@@ -370,6 +368,13 @@ export const App = ({ client }: AppProps) => {
     }
     void client.updatePreferences({ scope, range }).catch(() => undefined);
   }, [client, signedIn, preferencesReady, scope, range]);
+
+  // With one project there is no filter to pick it with, and the page reads
+  // All projects: a scope saved while there were more, or picked on the
+  // filing header, falls back to everything.
+  useEffect(() => {
+    if (preferencesReady && projects.length < 2 && scope !== "all") setScope("all");
+  }, [preferencesReady, projects.length, scope]);
 
   // The day is asked of one workspace about one project, so moving either asks
   // a different question and the answer on screen stops being an answer. Only
@@ -916,9 +921,6 @@ export const App = ({ client }: AppProps) => {
       rank: entry.rank,
       name: entry.user.name,
       picture: pictureOf(entry.user),
-      project: entry.project === null
-        ? null
-        : { name: entry.project.name, appearance: reportedAppearance(workspace?.projects ?? [], projects, entry.project.id) },
       activeSeconds: entry.activeSeconds,
       agentSeconds: entry.agentSeconds,
       tokens: personTokensOf(boardAgents, entry.user.id),
@@ -934,18 +936,13 @@ export const App = ({ client }: AppProps) => {
       picture: pictureOf(subjectEntry?.user ?? { id: subjectId }),
       isSelf: subjectId === selfId,
     };
-  // The team's recorded time is its projects' recorded time added up: the
-  // report files every session under exactly one project, so the rows are a
-  // partition of the whole and their sum is the team's recorded total.
   const dashboardTime = subjectId === undefined
     ? workspace === undefined
       ? undefined
       : {
         activeSeconds: workspace.activeSeconds,
         agentSeconds: workspace.agentSeconds,
-        recordedSeconds: workspace.projects.reduce((sum, entry) => sum + entry.durationSeconds, 0),
         hourly: workspace.hourly,
-        projectRows: projectMeterRows(workspace.projects, appearanceOf),
       }
     : memberFailed
       ? "Could not load this person's hours for this range."
@@ -954,14 +951,8 @@ export const App = ({ client }: AppProps) => {
       : {
         activeSeconds: memberStats.activeSeconds,
         agentSeconds: memberStats.agentSeconds,
-        recordedSeconds: memberStats.totalDurationSeconds,
         hourly: memberStats.hourly,
-        projectRows: projectMeterRows(
-          buildProjectRows(memberStats.projects).map((row) => ({ project: { id: row.projectId, name: row.name }, durationSeconds: row.durationSeconds })),
-          appearanceOf,
-        ),
-        recordedNote: recordedBasis(memberStats.totalDurationSeconds, memberStats.activeSeconds, memberStats.concurrency.awaySeconds),
-        appRows: buildAppRows(memberStats.apps, memberStats.totalDurationSeconds),
+        appRows: buildAppRows(memberStats.apps),
       };
   const statsBounds = isCustomRange ? dayBounds(customDays) : rangeBounds(range);
   const filterProjects = projects.map((project) => ({
@@ -970,6 +961,9 @@ export const App = ({ client }: AppProps) => {
     appearance: appearanceOf(project.id),
     firstDay: localDay(new Date(project.createdAt)),
   }));
+  // A project filter narrows nothing in a workspace of one project, so it is
+  // drawn only when there is a choice to make.
+  const isProjectFilterShown = filterProjects.length > 1;
   const rangeName = isCustomRange
     ? customRangeName(customDays, filterProjects.find((project) => project.id === scope)?.firstDay)
     : rangeSentence[range];
@@ -1214,7 +1208,7 @@ export const App = ({ client }: AppProps) => {
                   }}
                   days={customDays}
                   onDays={setCustomDays}
-                  projects={filterProjects}
+                  projects={isProjectFilterShown ? filterProjects : undefined}
                   project={scope}
                   onProject={setScope}
                 />

@@ -297,28 +297,26 @@ for (const app of ["desktop", "web"] as const) {
 
 for (const app of ["desktop", "web"] as const) {
   test.describe(`the dashboard answering for one person in ${app}`, () => {
-    // The page's own arithmetic, drawn: the recorded total, the sentence
-    // saying what the rest of it was, and two lists that both close on it.
-    // The sentence is the first line on the page long enough to need
+    // The Agent time note is the first line on the page long enough to need
     // somewhere to wrap, and it wraps inside the overlay, which is narrower
     // than the page around it.
-    test("wraps the recorded sentence and keeps every duration inside the overlay at phone width", async ({ page }) => {
+    test("wraps the agent time note and keeps every duration inside the overlay at phone width", async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 844 });
       await openPersonDashboard(page, app);
 
       const measured = await page.evaluate(() => {
         const modal = document.querySelector<HTMLElement>(".modal")!;
-        const note = document.querySelector<HTMLElement>(".tv-totals-note")!;
+        const note = document.querySelector<HTMLElement>(".tv-total:last-child small")!;
         return {
           viewport: document.documentElement.clientWidth,
           documentScrollWidth: document.documentElement.scrollWidth,
           modalClientWidth: modal.clientWidth,
           modalScrollWidth: modal.scrollWidth,
           noteRight: Math.round(note.getBoundingClientRect().right),
-          // A one-line sentence at this width would mean it did not wrap,
-          // which at 390px means it went somewhere off screen instead.
-          noteLines: Math.round(note.getBoundingClientRect().height
-            / Number.parseFloat(getComputedStyle(note).lineHeight)),
+          // A note no taller than one line at this width would mean it did
+          // not wrap, which at 390px means it went somewhere off screen.
+          noteHeight: Math.round(note.getBoundingClientRect().height),
+          noteFontSize: Number.parseFloat(getComputedStyle(note).fontSize),
           durationRights: [...document.querySelectorAll<HTMLElement>(".tv-meter-list .meter-duration")]
             .map((cell) => Math.round(cell.getBoundingClientRect().right)),
           // A phone spends the row on the name, so the share bars step aside.
@@ -332,10 +330,8 @@ for (const app of ["desktop", "web"] as const) {
       expect(measured.documentScrollWidth).toBeLessThanOrEqual(measured.viewport);
       expect(measured.modalScrollWidth).toBe(measured.modalClientWidth);
       expect(measured.noteRight).toBeLessThanOrEqual(measured.viewport);
-      expect(measured.noteLines).toBeGreaterThan(1);
-      // Quiet time is a row like any other, so its duration stays on screen
-      // with the rest of them.
-      expect(measured.durationRights).toHaveLength(5);
+      expect(measured.noteHeight).toBeGreaterThan(measured.noteFontSize * 2);
+      expect(measured.durationRights).toHaveLength(2);
       for (const right of measured.durationRights) {
         expect(right).toBeLessThanOrEqual(measured.viewport);
       }
@@ -343,16 +339,15 @@ for (const app of ["desktop", "web"] as const) {
       expect(measured.nameWidth).toBeGreaterThan(120);
     });
 
-    test("keeps the projects' and apps' durations on one scan line at desktop width", async ({ page }) => {
+    test("keeps the apps' durations on one scan line at desktop width", async ({ page }) => {
       await page.setViewportSize({ width: 1000, height: 900 });
       await openPersonDashboard(page, app);
 
       const rights = await page.locator(".tv-meter-list .meter-duration")
         .evaluateAll((cells) => cells.map((cell) => Math.round(cell.getBoundingClientRect().right)));
-      // The project list and the app list are read against one another, so
-      // their durations end on the same x - a project total and an app total
-      // that do not line up read as two different measurements.
-      expect(rights).toHaveLength(5);
+      // The app rows are read against one another, so their durations end
+      // on the same x.
+      expect(rights).toHaveLength(2);
       expect(new Set(rights).size).toBe(1);
     });
   });

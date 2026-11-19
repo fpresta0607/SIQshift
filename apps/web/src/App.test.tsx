@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type MeStatsResponse } from "@siqshift/shared";
 import { localDay } from "@siqshift/shared/dashboard-view";
-import { buildAppRows, recordedBasis } from "@siqshift/shared/ui";
+import { buildAppRows } from "@siqshift/shared/ui";
 import { App, rangeQuery } from "./App.js";
 import { ClientError, type Client } from "./client.js";
 import { macInstallerUrl, windowsInstallerUrl } from "./DownloadInstaller.js";
@@ -352,23 +352,6 @@ describe("app row folding", () => {
   });
 });
 
-describe("recorded basis", () => {
-  // The contradiction this fixes: the sentence fired on `recorded > active`
-  // alone and named the whole gap agent time, on days whose measured agent
-  // time was zero.
-  it("names the gap as time away, and claims an agent only where one was measured", () => {
-    expect(recordedBasis(6_960, 2_220, 0)).toBe("1h 19m of it away from the keyboard");
-    expect(recordedBasis(6_960, 2_220, 3_420))
-      .toBe("1h 19m of it away from the keyboard, 57m of that with an agent running");
-    // Agent time is summed, so parallel agents can out-run the wall clock they
-    // ran in; the claim is clamped to the gap rather than exceeding it.
-    expect(recordedBasis(6_960, 2_220, 99_999))
-      .toBe("1h 19m of it away from the keyboard, 1h 19m of that with an agent running");
-    // Nothing to explain: recorded is presence.
-    expect(recordedBasis(2_220, 2_220, 0)).toBeNull();
-  });
-});
-
 describe("dashboard", () => {
   it("lays the team out as the home page's example workspace", async () => {
     // Arrange
@@ -385,17 +368,14 @@ describe("dashboard", () => {
     expect(stats.getByText(/^Last 30 days · /)).toBeInTheDocument();
     expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
     expect(totalFigure(stats, "Agent time")).toHaveTextContent("3h 00m");
-    expect(totalFigure(stats, "Recorded time")).toHaveTextContent("3h 14m");
     const graph = within(stats.getByRole("region", { name: "Over time" })).getByTestId("work-chart");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(stats.getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(first).toHaveTextContent(/^1SSamGeneral2h 14m3h 00m$/);
-    expect(second).toHaveTextContent(/^2AAlexYouClient1h 00m0s$/);
-    // Every list at once, with no switch between them.
-    const projects = within(stats.getByRole("region", { name: "Projects" }));
-    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 14m", "Client1h 00m"]);
-    expect(projects.getByText("Recorded time")).toBeInTheDocument();
+    expect(first).toHaveTextContent(/^1SSam2h 14m3h 00m$/);
+    expect(second).toHaveTextContent(/^2AAlexYou1h 00m0s$/);
+    // Every list at once, with no switch between them, and no list of projects.
+    expect(stats.queryByRole("region", { name: "Projects" })).toBeNull();
     const agents = within(stats.getByRole("region", { name: "Agents" }));
     expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code2 shifts-1h 30m", "Pi1 shift-30m"]);
     expect(agents.getByText("Agent time")).toBeInTheDocument();
@@ -421,13 +401,9 @@ describe("dashboard", () => {
     expect(stats.queryByRole("tab")).toBeNull();
   });
 
-  it("draws each kept metric once in one totals row, and no count tiles", async () => {
+  it("draws each kept metric once in one totals row, with no Recorded time and no count tiles", async () => {
     // Arrange: told apart, so a figure drawn from the wrong source shows.
     const person = await signIn(clientFor({
-      workspace: vi.fn().mockResolvedValue({
-        ...workspaceReport,
-        projects: [workspaceReport.projects[0]!, { ...workspaceReport.projects[1]!, durationSeconds: 5_400 }],
-      }),
       agentShifts: vi.fn().mockResolvedValue({ ...agentShiftsResponse, tokenTotals: { tokensIn: 900_000, tokensOut: 300_000, tokens: 1_200_000 } }),
     }));
 
@@ -438,53 +414,84 @@ describe("dashboard", () => {
 
     // Assert
     expect(stats.getAllByLabelText(/^Totals/)).toHaveLength(1);
-    expect(totals.getAllByRole("term").map((term) => term.textContent)).toEqual(["Tokens", "Active time", "Agent time", "Recorded time"]);
+    expect(totals.getAllByRole("term").map((term) => term.textContent)).toEqual(["Tokens", "Active time", "Agent time"]);
     expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
     expect(totalFigure(stats, "Agent time")).toHaveTextContent("3h 00m");
-    // The team's recorded time is its project rows added up: 2h 14m + 1h 30m.
-    expect(totalFigure(stats, "Recorded time")).toHaveTextContent("3h 44m");
+    expect(totals.queryByText("Recorded time")).toBeNull();
+    expect(totals.queryByText("whole sessions")).toBeNull();
     for (const retired of ["People", "Projects", "Shifts", "Repos"]) {
       expect(totals.queryByText(retired)).toBeNull();
     }
   });
 
-  it("wears each project's own icon and color on the board, the Projects list and a person's projects", async () => {
+  it("says in one plain note what each time total counts", async () => {
     // Arrange
     const person = await signIn(clientFor());
-    const tiles = (scope: HTMLElement) => [...scope.querySelectorAll(".project-icon")]
-      .map((tile) => [tile.getAttribute("data-icon"), tile.querySelector("rect")?.getAttribute("fill")]);
 
     // Act
     const stats = await openAllStats(person);
-    await stats.findByLabelText("Totals");
+    const totals = within(await stats.findByLabelText("Totals"));
 
-    // Assert: the pair the server sent, General's own among them.
-    expect(tiles(stats.getByRole("table", { name: "People" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
-    expect(tiles(stats.getByRole("region", { name: "Projects" }))).toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
+    // Assert
+    expect(totals.getByText("Active time").nextElementSibling).toHaveTextContent("minutes at the computer");
+    expect(totals.getByText("Agent time").nextElementSibling)
+      .toHaveTextContent("every agent added up, so ten agents for an hour count ten hours");
+  });
 
-    // Act: the viewer's own projects, read by their own request.
+  it("names no project beside a person on the board or in a person's page", async () => {
+    // Arrange
+    const person = await signIn(clientFor());
+
+    // Act
+    const stats = await openAllStats(person);
+    const board = within(await stats.findByRole("table", { name: "People" }));
+
+    // Assert: each row is a person and their figures, with no project line under the name.
+    for (const row of board.getAllByRole("row").slice(1)) {
+      expect(row.querySelector(".project-icon")).toBeNull();
+      expect(row.querySelector(".tv-sub")).toBeNull();
+      expect(row).not.toHaveTextContent(/General|Client/);
+    }
+
+    // Act
     await pickPerson(person, stats, "Alex");
     await stats.findByLabelText("Totals for Alex");
 
     // Assert
-    expect(tiles(stats.getByRole("region", { name: "Projects" }))).toEqual([["grid", "#a3b3c2"]]);
+    expect(board.getByRole("button", { name: "Show Alex's work" })).not.toHaveTextContent(/General|Client/);
   });
 
-  it("wears the project list's own pair for a project the report has not listed yet", async () => {
+  it("wears each project's own icon and color in the project filter", async () => {
+    // Arrange
+    const person = await signIn(clientFor({ projects: vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null }) }));
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Act
+    await person.click(stats.getByRole("button", { name: /^Project: / }));
+    const choices = within(stats.getByRole("radiogroup", { name: "Project" })).getAllByRole("radio");
+
+    // Assert: the pair the server sent, General's own among them.
+    expect(choices.slice(1).map((choice) => [choice.querySelector(".project-icon")?.getAttribute("data-icon"), choice.querySelector(".project-icon rect")?.getAttribute("fill")]))
+      .toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
+  });
+
+  it("wears the project list's own pair in the filter for a project the report has not listed yet", async () => {
     // Arrange: the workspace report lists only Client, so only the viewer's
     // project list, which says General is the default, can draw General.
     const person = await signIn(clientFor({
+      projects: vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null }),
       workspace: vi.fn().mockResolvedValue({ ...workspaceReport, projects: [workspaceReport.projects[1]!] }),
     }));
     const stats = await openAllStats(person);
     await stats.findByLabelText("Totals");
 
     // Act
-    await pickPerson(person, stats, "Alex");
-    const projects = within(await stats.findByRole("region", { name: "Projects" }));
+    await person.click(stats.getByRole("button", { name: /^Project: / }));
+    const choice = within(stats.getByRole("radiogroup", { name: "Project" })).getByRole("radio", { name: "General" });
 
     // Assert
-    const tile = (await projects.findByText("General")).closest("li")?.querySelector(".project-icon");
+    const tile = choice.querySelector(".project-icon");
     expect(tile).toHaveAttribute("data-icon", "grid");
     expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
   });
@@ -515,14 +522,14 @@ describe("dashboard", () => {
     const stats = await openAllStats(person);
     const rows = () => within(stats.getByRole("table", { name: "People" })).getAllByRole("row").slice(1).map((row) => row.textContent);
     await stats.findByLabelText("Totals");
-    expect(rows()).toEqual(["1SSamGeneral2h 14m10m", "2AAlexYouClient1h 00m2h 00m"]);
+    expect(rows()).toEqual(["1SSam2h 14m10m", "2AAlexYou1h 00m2h 00m"]);
     await pickPerson(person, stats, "Sam");
 
     // Act
     await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By agent time");
 
     // Assert
-    expect(rows()).toEqual(["1AAlexYouClient1h 00m2h 00m", "2SSamGeneral2h 14m10m"]);
+    expect(rows()).toEqual(["1AAlexYou1h 00m2h 00m", "2SSam2h 14m10m"]);
     expect(stats.getByRole("button", { name: "Show Sam's work" })).toHaveAttribute("aria-pressed", "true");
     expect(stats.getByLabelText("Totals for Sam")).toBeInTheDocument();
   });
@@ -557,13 +564,47 @@ describe("dashboard", () => {
     const board = within(await stats.findByRole("table", { name: "People" }));
     await board.findByRole("columnheader", { name: "Tokens" });
     const rows = () => board.getAllByRole("row").slice(1).map((row) => row.textContent);
-    expect(rows()).toEqual(["1SSamGeneral2h 14m3h 00m-", "2AAlexYouClient1h 00m0s1.2M1.1M in · 100k out"]);
+    expect(rows()).toEqual(["1SSam2h 14m3h 00m-", "2AAlexYou1h 00m0s1.1M in100k out"]);
+    // Assert: the cell's bold value is two lines, in then out, with no total line.
+    const tokensCell = board.getByText("1.1M in").closest("td")!;
+    expect([...tokensCell.querySelectorAll(".tv-cell-line")].map((line) => line.textContent)).toEqual(["1.1M in", "100k out"]);
+    expect(tokensCell).not.toHaveTextContent("1.2M");
+    expect(tokensCell).toHaveAttribute("title", "1,200,000 tokens: 1,100,000 in, 100,000 out");
 
     // Act
     await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
 
     // Assert: the reporter ranks above the person with no report.
-    expect(rows()).toEqual(["1AAlexYouClient1h 00m0s1.2M1.1M in · 100k out", "2SSamGeneral2h 14m3h 00m-"]);
+    expect(rows()).toEqual(["1AAlexYou1h 00m0s1.1M in100k out", "2SSam2h 14m3h 00m-"]);
+  });
+
+  it("ranks the board by each person's total tokens and sizes the bar by it, not by the in or out line", async () => {
+    // Arrange: Alex's total is the larger though Sam took in more.
+    const person = await signIn(clientFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShiftsResponse,
+        tokenTotals: { tokensIn: 700_000, tokensOut: 1_000_000, tokens: 1_700_000 },
+        people: [
+          { owner: { id: "u2", name: "Alex" }, agentSeconds: 5_400, shiftCount: 2, tokens: { tokensIn: 100_000, tokensOut: 900_000, tokens: 1_000_000 } },
+          { owner: { id: "u1", name: "Sam" }, agentSeconds: 1_800, shiftCount: 1, tokens: { tokensIn: 600_000, tokensOut: 100_000, tokens: 700_000 } },
+        ],
+      }),
+    }));
+    const stats = await openAllStats(person);
+    const board = within(await stats.findByRole("table", { name: "People" }));
+    await board.findByRole("columnheader", { name: "Tokens" });
+
+    // Act
+    await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
+
+    // Assert
+    const [alex, sam] = board.getAllByRole("row").slice(1);
+    expect(alex).toHaveTextContent(/^1AAlexYou/);
+    expect(alex).toHaveTextContent("100k in900k out");
+    expect(sam).toHaveTextContent(/^2SSam/);
+    expect(sam).toHaveTextContent("600k in100k out");
+    const share = (row: HTMLElement) => row.querySelector<HTMLElement>("td.is-tokens .tv-cell-bar")?.style.getPropertyValue("--share");
+    expect([share(alex!), share(sam!)]).toEqual(["100%", "70%"]);
   });
 
   it("keeps the board's tokens and ranking while a picked person's read loads, and drops them for a new range", async () => {
@@ -584,7 +625,7 @@ describe("dashboard", () => {
     const rows = () => table().getAllByRole("row").slice(1).map((row) => row.textContent);
     await within(await stats.findByRole("table", { name: "People" })).findByRole("columnheader", { name: "Tokens" });
     await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
-    const tokensOrder = ["1AAlexYouClient1h 00m0s1.2M1.1M in · 100k out", "2SSamGeneral2h 14m3h 00m-"];
+    const tokensOrder = ["1AAlexYou1h 00m0s1.1M in100k out", "2SSam2h 14m3h 00m-"];
     expect(rows()).toEqual(tokensOrder);
 
     // Act
@@ -655,7 +696,6 @@ describe("dashboard", () => {
     expect(queryOf(meStats.mock.calls.find((call) => queryOf(call).has("userId"))).get("userId")).toBe("u2");
     expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("2h 00m");
     expect(totalFigure(stats, "Agent time", "Alex")).toHaveTextContent("1h 00m");
-    expect(totalFigure(stats, "Recorded time", "Alex")).toHaveTextContent("2h 00m");
     expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
     const apps = within(stats.getByRole("region", { name: "Apps" }));
     expect(apps.getByText("Claude Code")).toBeInTheDocument();
@@ -1463,10 +1503,9 @@ describe("dashboard", () => {
 
     // Assert
     expect(await stats.findByRole("alert")).toHaveTextContent("Could not load this person's hours for this range.");
-    for (const label of ["Active time", "Agent time", "Recorded time"]) {
+    for (const label of ["Active time", "Agent time"]) {
       expect(totalFigure(stats, label, "Sam")).toHaveTextContent(/^-$/);
     }
-    expect(stats.getByRole("region", { name: "Projects" })).toHaveTextContent("Not loaded.");
     // The agents' own read did not fail, so it is still drawn.
     expect(stats.getAllByTestId("shift-group")).toHaveLength(2);
     // The board that picked Sam is still there to unpick him with.
@@ -1486,7 +1525,6 @@ describe("dashboard", () => {
 
     // Assert
     expect(await stats.findByText(/No recorded time in this range yet/)).toBeInTheDocument();
-    expect(await within(stats.getByRole("region", { name: "Projects" })).findByText("Nothing recorded in this range.")).toBeInTheDocument();
   });
 
   it("keeps the install hint beside a roster-only zero row", async () => {
@@ -1536,10 +1574,7 @@ describe("dashboard", () => {
     // claude.exe reads as the tool it is, so the team sees Claude usage plainly.
     expect(apps.getByText("Claude Code")).toBeInTheDocument();
     expect(apps.getByText("VS Code")).toBeInTheDocument();
-    // The half hour nothing named a project for was filed under General, and
-    // counts as General's: one row, no separate unattributed line.
-    const projects = within(stats.getByRole("region", { name: "Projects" }));
-    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["General2h 00m"]);
+    expect(stats.queryByRole("region", { name: "Projects" })).not.toBeInTheDocument();
     expect(stats.queryByTestId("unattributed-foot")).not.toBeInTheDocument();
   });
 
@@ -1675,11 +1710,10 @@ describe("dashboard", () => {
   });
 
   // The Overlord's card, to the minute: 1h56m recorded, 37m active, no agent
-  // time measured anywhere in the window. The header used to call the 1h19m
-  // difference "unattended agent time" while the board beside it read
-  // "Agent 0s", and the app list under it summed to 37m against a project list
-  // summing to 1h56m.
-  it("explains the gap between recorded and active without inventing agent time", async () => {
+  // time measured anywhere in the window. Recorded session time is not part of
+  // this page at all: no total, no note under the totals, no Quiet time row.
+  it("leaves recorded session time off a person's page", async () => {
+    // Arrange
     const person = await signIn(clientFor({
       workspace: vi.fn().mockResolvedValue(workspaceOfOne),
       meStats: vi.fn().mockResolvedValue({
@@ -1701,42 +1735,40 @@ describe("dashboard", () => {
       }),
     }));
 
+    // Act
     const stats = await openAllStats(person);
-    await stats.findByRole("region", { name: "Apps" });
+    const apps = within(await stats.findByRole("region", { name: "Apps" }));
 
-    // No agent claim on a window whose measured agent time is zero.
-    const basis = stats.getByText(/^Recorded: /);
-    expect(basis).not.toHaveTextContent(/agent/i);
-    expect(basis).toHaveTextContent("1h 19m of it away from the keyboard");
-    expect(totalFigure(stats, "Recorded time", "Alex")).toHaveTextContent("1h 56m");
+    // Assert: presence is the only time stated, and the app list is just the apps.
     expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("37m");
-
-    // Both lists now close on the same total: 1h 34m + 22m of projects, and
-    // 20m + 12m + 5m of apps with the 1h 19m nobody was in front of anything.
-    const projects = stats.getByRole("region", { name: "Projects" });
-    expect(projects).toHaveTextContent("Atlas Portal1h 34m");
-    expect(projects).toHaveTextContent("General22m");
-    expect(projects).not.toHaveTextContent("Unattributed");
-    const apps = stats.getByRole("region", { name: "Apps" });
-    expect(apps).toHaveTextContent("Quiet time");
-    expect(within(apps).getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
+    expect(stats.queryByText("Recorded time")).not.toBeInTheDocument();
+    expect(stats.queryByText(/^Recorded: /)).not.toBeInTheDocument();
+    expect(stats.queryByText(/away from the keyboard/)).not.toBeInTheDocument();
+    expect(stats.queryByRole("region", { name: "Projects" })).not.toBeInTheDocument();
+    expect(stats.queryByText("Atlas Portal")).not.toBeInTheDocument();
+    expect(apps.queryByText("Quiet time")).not.toBeInTheDocument();
+    expect(apps.getAllByRole("listitem")).toHaveLength(3);
   });
 
-  it("names a basis for recorded time under a person's totals only, never under the team's", async () => {
+  it.each([
+    ["the team's", undefined],
+    ["a person's", "Sam"],
+  ])("draws no Recorded time or Recorded note under %s totals", async (_whose, personName) => {
     // Arrange
     const person = await signIn(clientFor({ meStats: vi.fn().mockImplementation(meStatsPerPerson) }));
     const stats = await openAllStats(person);
     await stats.findByLabelText("Totals");
 
-    // Assert: the team's recorded time is a sum of project rows, with no basis to name.
-    expect(stats.queryByText(/^Recorded: /)).not.toBeInTheDocument();
-
     // Act
-    await pickPerson(person, stats, "Sam");
-    await stats.findByLabelText("Totals for Sam");
+    if (personName !== undefined) {
+      await pickPerson(person, stats, personName);
+      await stats.findByLabelText(`Totals for ${personName}`);
+    }
 
-    // Assert: 2h 30m recorded against 1h 30m active.
-    expect(await stats.findByText(/^Recorded: /)).toHaveTextContent("1h 00m of it away from the keyboard");
+    // Assert: Sam's 2h 30m recorded against 1h 30m active would have named a gap.
+    expect(stats.queryByText("Recorded time")).not.toBeInTheDocument();
+    expect(stats.queryByText(/^Recorded: /)).not.toBeInTheDocument();
+    expect(stats.queryByText(/away from the keyboard/)).not.toBeInTheDocument();
   });
 
   it("points every card at the person picked on the board", async () => {
@@ -1760,9 +1792,7 @@ describe("dashboard", () => {
     await waitFor(() => expect(totalFigure(stats, "Tokens", "Sam")).toHaveTextContent("42k"));
     expect(totalFigure(stats, "Active time", "Sam")).toHaveTextContent("1h 30m");
     expect(totalFigure(stats, "Agent time", "Sam")).toHaveTextContent("2h 00m");
-    expect(totalFigure(stats, "Recorded time", "Sam")).toHaveTextContent("2h 30m");
     // And so is every card under them.
-    expect(within(stats.getByRole("region", { name: "Projects" })).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Client2h 30m"]);
     expect(within(stats.getByRole("region", { name: "Apps" })).getByText("VS Code")).toBeInTheDocument();
     expect(within(stats.getByRole("region", { name: "Agents" })).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Pi1 shift42k30m"]);
     expect(stats.getAllByTestId("shift-group")).toHaveLength(1);
@@ -1792,7 +1822,6 @@ describe("dashboard", () => {
     expect(stats.queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
     expect(totalFigure(stats, "Active time")).toHaveTextContent("3h 14m");
     expect(totalFigure(stats, "Agent time")).toHaveTextContent("3h 00m");
-    expect(totalFigure(stats, "Recorded time")).toHaveTextContent("3h 14m");
     await waitFor(() => expect(queryOf(agentShifts.mock.calls.at(-1)).has("userId")).toBe(false));
     expect(stats.queryByRole("region", { name: "Apps" })).not.toBeInTheDocument();
     expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
@@ -2516,6 +2545,40 @@ describe("the dashboard's filter", () => {
   };
   const twoProjects = () => vi.fn().mockResolvedValue({ projects: pickableProjects, selectedProjectId: null });
 
+  it.each([
+    ["one project", [pickableProjects[0]!], false],
+    ["two projects", pickableProjects, true],
+  ])("draws the project filter only when the workspace has two or more projects: %s", async (_name, listed, isShown) => {
+    // Arrange
+    const person = await signIn(clientFor({ projects: vi.fn().mockResolvedValue({ projects: listed, selectedProjectId: null }) }));
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Assert: the range is always there, the project picker only with a choice to make.
+    expect(stats.getByRole("group", { name: "Date range" })).toBeInTheDocument();
+    expect(stats.queryByRole("button", { name: /^Project: / }) !== null).toBe(isShown);
+  });
+
+  it("reads All projects when the saved project is the workspace's only one", async () => {
+    // Arrange: a scope saved while the workspace had more projects.
+    const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const person = await signIn(clientFor({
+      preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
+      workspace,
+    }));
+
+    // Act
+    const stats = await openAllStats(person);
+    await stats.findByLabelText("Totals");
+
+    // Assert
+    await waitFor(() => expect(queryOf(workspace.mock.calls.at(-1)).has("scope")).toBe(false));
+    expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects");
+    expect(stats.queryByRole("button", { name: /^Project: / })).not.toBeInTheDocument();
+  });
+
   it("sends custom days as local midnights to every read, and never saves them as a preference", async () => {
     // Arrange: a person picked and the history open, so every read is in play.
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
@@ -2847,7 +2910,7 @@ describe("the agents' cards on the one page", () => {
     expect(rows.every((row) => [...row.querySelectorAll(".tv-cell-bar")].every((bar) => bar.getAttribute("aria-hidden") === "true"))).toBe(true);
   });
 
-  it("draws a mark before every app row: the runtime's for the agent, the app's own, the moon for quiet time", async () => {
+  it("draws a mark before every app row: the runtime's for the agent and the app's own", async () => {
     // Arrange
     const person = await signIn(clientFor());
     const stats = await openAllStats(person);
@@ -2859,7 +2922,7 @@ describe("the agents' cards on the one page", () => {
 
     // Assert: the mark is the row's first cell, ahead of the name.
     const rows = apps.getAllByRole("listitem");
-    expect(rows.map((row) => row.querySelector(".meter-name")?.textContent)).toEqual(["Claude Code", "VS Code", "Quiet time"]);
+    expect(rows.map((row) => row.querySelector(".meter-name")?.textContent)).toEqual(["Claude Code", "VS Code"]);
     for (const row of rows) {
       expect(row.firstElementChild).toHaveClass(row.querySelector(".agent-mark") === null ? "app-mark" : "agent-mark");
     }
@@ -2867,7 +2930,6 @@ describe("the agents' cards on the one page", () => {
     // A browser has no OS icon to read, so an app wears its initial.
     expect(rows[1]!.firstElementChild).toHaveClass("app-letter");
     expect(rows[1]!.firstElementChild).toHaveTextContent("V");
-    expect(rows[2]!.firstElementChild).toHaveClass("quiet-mark");
   });
 
   it("shows who is running an agent right now, with the server's own description", async () => {
@@ -3280,12 +3342,26 @@ describe("the home page's example", () => {
     // Assert
     expect(preview.getAllByLabelText(/^Totals/)).toHaveLength(1);
     expect(within(preview.getByLabelText("Totals")).getAllByRole("term").map((term) => term.textContent))
-      .toEqual(["Tokens", "Active time", "Agent time", "Recorded time"]);
+      .toEqual(["Tokens", "Active time", "Agent time"]);
     expect(preview.queryByRole("group", { name: "Humans or agents" })).toBeNull();
     expect(preview.queryByRole("tab")).toBeNull();
     expect(preview.getByRole("table", { name: "People" })).toBeInTheDocument();
-    for (const card of ["Over time", "Projects", "Agents"]) {
+    for (const card of ["Over time", "Agents"]) {
       expect(preview.getByRole("region", { name: card })).toBeInTheDocument();
+    }
+    expect(preview.queryByRole("region", { name: "Projects" })).toBeNull();
+  });
+
+  it("shows each example person's tokens in and out and names no project beside them", async () => {
+    // Act
+    const preview = await example();
+
+    // Assert
+    const board = within(preview.getByRole("table", { name: "People" }));
+    for (const row of board.getAllByRole("row").slice(1)) {
+      expect(row.querySelectorAll("td.is-tokens .tv-cell-line")).toHaveLength(2);
+      expect(row).toHaveTextContent(/[\d.]+[kMB]? in[\d.]+[kMB]? out/);
+      expect(row.querySelector(".project-icon")).toBeNull();
     }
   });
 

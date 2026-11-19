@@ -835,23 +835,6 @@ describe("macOS permissions", () => {
 });
 
 describe("today", () => {
-  it("totals the range with the time nothing named a project for in its project's row", async () => {
-    // Arrange: Field work's two hours include half an hour filed there by default.
-    const person = userEvent.setup();
-    render(<App bridge={bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(status) })} />);
-
-    // Act
-    const panel = await openAllStats(person);
-    await pickPerson(person, panel, user.name);
-
-    // Assert: the recorded total and the project row under it are the same two hours.
-    await within(panel).findByLabelText(`Totals for ${user.name}`);
-    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 00m");
-    const projects = within(within(panel).getByRole("region", { name: "Projects" })).getAllByRole("listitem");
-    expect(projects.map((row) => row.textContent)).toEqual([`${project.name}2h 00m`]);
-    expect(within(panel).queryByTestId("unattributed-foot")).not.toBeInTheDocument();
-  });
-
   it("switches range and refetches the picked person from the week's start", async () => {
     const bridge = bridgeFor();
     const person = userEvent.setup();
@@ -1498,19 +1481,15 @@ describe("the team board", () => {
     expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M");
     expect(teamTotal(panel, "Active time")).toHaveTextContent("2h 56m");
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("1h 30m");
-    // The team's recorded time is its projects' added up.
-    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
     const graph = within(view.getByRole("region", { name: "Over time" })).getByTestId("work-chart");
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(first).toHaveTextContent(/^1SSamField work1h 56m1h 00m1.5M1.2M in · 300k out$/);
-    expect(second).toHaveTextContent(/^2TUTimer UserYouClient work1h 00m30m-$/);
+    expect(first).toHaveTextContent(/^1SSam1h 56m1h 00m1.2M in300k out$/);
+    expect(second).toHaveTextContent(/^2TUTimer UserYou1h 00m30m-$/);
     expect(view.getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By active time");
-    // Every list at once, with no switch between them.
-    const projects = within(view.getByRole("region", { name: "Projects" }));
-    expect(projects.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Field work1h 56m", "Client work1h 00m"]);
-    expect(projects.getByText("Recorded time")).toBeInTheDocument();
+    // Every list at once, with no switch between them, and no list of projects.
+    expect(view.queryByRole("region", { name: "Projects" })).toBeNull();
     const agents = within(view.getByRole("region", { name: "Agents" }));
     expect(agents.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["Claude Code3 shifts1.5M1h 30m"]);
     expect(view.getByRole("region", { name: "Repos" })).toBeInTheDocument();
@@ -1534,7 +1513,7 @@ describe("the team board", () => {
     expect(within(panel).queryByRole("button", { name: "Agents" })).not.toBeInTheDocument();
   });
 
-  it.each(["Tokens", "Active time", "Agent time", "Recorded time"])(
+  it.each(["Tokens", "Active time", "Agent time"])(
     "draws %s once in the totals, for the team and for a person",
     async (label) => {
       // Arrange
@@ -1553,32 +1532,59 @@ describe("the team board", () => {
     },
   );
 
-  it("wears each project's own icon and color on the board and the Projects list, for the team and for a person", async () => {
+  it("says in one plain note what each time total counts, and draws no Recorded time", async () => {
     // Arrange
     const person = userEvent.setup();
     render(<App bridge={bridgeFor()} />);
-    const tiles = (scope: HTMLElement) => [...scope.querySelectorAll(".project-icon")]
-      .map((tile) => [tile.getAttribute("data-icon"), tile.querySelector("rect")?.getAttribute("fill")]);
 
     // Act
     const panel = await openAgentsPage(person);
-    const view = within(panel);
-
-    // Assert: the pair the server sent, not one made up from the id.
-    expect(tiles(view.getByRole("table", { name: "People" }))).toEqual([["flask", "#f5c26b"], ["rocket", "#ff9d8a"]]);
-    expect(tiles(view.getByRole("region", { name: "Projects" }))).toEqual([["flask", "#f5c26b"], ["rocket", "#ff9d8a"]]);
-
-    // Act
-    await pickPerson(person, panel, user.name);
-    await view.findByLabelText(`Totals for ${user.name}`);
+    const totals = within(within(panel).getByLabelText("Totals"));
 
     // Assert
-    expect(tiles(view.getByRole("region", { name: "Projects" }))).toEqual([["flask", "#f5c26b"]]);
+    expect(totals.getAllByRole("term").map((term) => term.textContent)).toEqual(["Tokens", "Active time", "Agent time"]);
+    expect(totals.getByText("Active time").nextElementSibling).toHaveTextContent("minutes at the computer");
+    expect(totals.getByText("Agent time").nextElementSibling)
+      .toHaveTextContent("every agent added up, so ten agents for an hour count ten hours");
+    expect(totals.queryByText("Recorded time")).toBeNull();
+    expect(totals.queryByText("whole sessions")).toBeNull();
   });
 
-  it("wears the account's own pair on a person's project row for a project the team report has not listed", async () => {
+  it("names no project beside a person on the board or in a person's page", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+
+    // Act
+    const panel = await openAgentsPage(person);
+    const board = within(within(panel).getByRole("table", { name: "People" }));
+
+    // Assert: each row is a person and their figures, with no project line under the name.
+    for (const row of board.getAllByRole("row").slice(1)) {
+      expect(row.querySelector(".project-icon")).toBeNull();
+      expect(row.querySelector(".tv-sub")).toBeNull();
+      expect(row).not.toHaveTextContent(/Field work|Client work/);
+    }
+  });
+
+  it("wears each project's own icon and color in the project filter", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+    const panel = await openAgentsPage(person);
+
+    // Act
+    await person.click(within(panel).getByRole("button", { name: /^Project: / }));
+    const choices = within(within(panel).getByRole("radiogroup", { name: "Project" })).getAllByRole("radio");
+
+    // Assert: the pair the server sent, not one made up from the id.
+    expect(choices.slice(1).map((choice) => [choice.querySelector(".project-icon")?.getAttribute("data-icon"), choice.querySelector(".project-icon rect")?.getAttribute("fill")]))
+      .toEqual([["flask", "#f5c26b"], ["rocket", "#ff9d8a"]]);
+  });
+
+  it("wears the account's own pair in the project filter for a project the team report has not listed", async () => {
     // Arrange: the report lists no project, so only the account's own list,
-    // which the server resolved, can draw the default project the day is in.
+    // which the server resolved, can draw them.
     const person = userEvent.setup();
     render(<App bridge={bridgeFor({
       bootstrap: vi.fn().mockResolvedValue({
@@ -1587,20 +1593,16 @@ describe("the team board", () => {
       }),
       workspaceReport: vi.fn().mockResolvedValue({ ...workspaceReport, projects: [] }),
     })} />);
+    const panel = await openAllStats(person);
+    await within(panel).findByLabelText("Totals");
 
     // Act
-    const panel = await openAllStats(person);
-    await pickPerson(person, panel, user.name);
+    await person.click(within(panel).getByRole("button", { name: /^Project: / }));
+    const choices = within(within(panel).getByRole("radiogroup", { name: "Project" })).getAllByRole("radio");
 
     // Assert
-    const ownProjects = await within(panel).findByRole("region", { name: "Projects" });
-    const tile = await waitFor(() => {
-      const found = ownProjects.querySelector(".project-icon");
-      expect(found).not.toBeNull();
-      return found;
-    });
-    expect(tile).toHaveAttribute("data-icon", "grid");
-    expect(tile?.querySelector("rect")).toHaveAttribute("fill", "#a3b3c2");
+    expect(choices.slice(1).map((choice) => [choice.querySelector(".project-icon")?.getAttribute("data-icon"), choice.querySelector(".project-icon rect")?.getAttribute("fill")]))
+      .toEqual([["grid", "#a3b3c2"], ["rocket", "#ff9d8a"]]);
   });
 
   it("draws only agent time once the team chart's legend turns active time off", async () => {
@@ -1754,7 +1756,6 @@ describe("the team board", () => {
     // Assert: it opens on the team - nobody is picked, and no person's hours are read.
     const panel = await openAgentsPage(person);
     expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M");
-    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
     expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined, undefined);
     expect(bridge.meStats).toHaveBeenCalledTimes(1);
 
@@ -1768,7 +1769,6 @@ describe("the team board", () => {
     await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("2.5k"));
     expect(teamTotal(panel, "Active time")).toHaveTextContent("50m");
     expect(teamTotal(panel, "Agent time")).toHaveTextContent("20m");
-    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("1h 30m");
     expect(await within(panel).findByText("Blender")).toBeInTheDocument();
   });
 
@@ -1829,7 +1829,7 @@ describe("the team board", () => {
     const panel = await openAgentsPage(person);
     const rows = () => within(within(panel).getByRole("table", { name: "People" })).getAllByRole("row").slice(1).map((row) => row.textContent);
     await person.selectOptions(within(panel).getByRole("combobox", { name: /Rank by/ }), "By tokens");
-    const tokensOrder = ["1TUTimer UserYouClient work1h 00m30m2M1.8M in · 200k out", "2SSamField work1h 56m1h 00m1.5M1.2M in · 300k out"];
+    const tokensOrder = ["1TUTimer UserYou1h 00m30m1.8M in200k out", "2SSam1h 56m1h 00m1.2M in300k out"];
     expect(rows()).toEqual(tokensOrder);
 
     // Act
@@ -1850,6 +1850,41 @@ describe("the team board", () => {
     // Assert
     expect(board.queryByRole("columnheader", { name: "Tokens" })).not.toBeInTheDocument();
     expect(within(within(panel).getByRole("combobox", { name: /Rank by/ })).queryByRole("option", { name: "By tokens" })).not.toBeInTheDocument();
+  });
+
+  it("shows each person's tokens as an in line and an out line with no total, and ranks by the total", async () => {
+    // Arrange: the viewer's total is the larger though Sam took in more.
+    const bridge = bridgeFor({
+      agentShifts: vi.fn().mockResolvedValue({
+        ...agentShifts,
+        tokenTotals: { tokensIn: 700_000, tokensOut: 1_000_000, tokens: 1_700_000 },
+        people: [
+          { owner: { id: user.id }, tokens: { tokensIn: 100_000, tokensOut: 900_000, tokens: 1_000_000 } },
+          { owner: { id: sam.id }, tokens: { tokensIn: 600_000, tokensOut: 100_000, tokens: 700_000 } },
+        ],
+      }),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    const board = within(within(panel).getByRole("table", { name: "People" }));
+    const [samRow] = board.getAllByRole("row").slice(1);
+    const samCell = samRow!.querySelector("td.is-tokens")!;
+
+    // Assert: Sam's bold value is two lines, in then out, and no total is drawn.
+    expect([...samCell.querySelectorAll(".tv-cell-line")].map((line) => line.textContent)).toEqual(["600k in", "100k out"]);
+    expect(samCell).not.toHaveTextContent("700k");
+    expect(samCell).toHaveAttribute("title", "700,000 tokens: 600,000 in, 100,000 out");
+
+    // Act
+    await person.selectOptions(within(panel).getByRole("combobox", { name: /Rank by/ }), "By tokens");
+
+    // Assert: ranked by the total and each bar sized by it, not by the in or out line.
+    const [first, second] = board.getAllByRole("row").slice(1);
+    expect(first).toHaveTextContent(/^1TUTimer UserYou/);
+    expect(second).toHaveTextContent(/^2SSam/);
+    const share = (row: HTMLElement) => row.querySelector<HTMLElement>("td.is-tokens .tv-cell-bar")?.style.getPropertyValue("--share");
+    expect([share(first!), share(second!)]).toEqual(["100%", "70%"]);
   });
 
   it("returns to the whole team when Everyone is pressed after picking a teammate", async () => {
@@ -1876,7 +1911,6 @@ describe("the team board", () => {
     await within(panel).findByLabelText("Totals");
     await waitFor(() => expect(teamTotal(panel, "Tokens")).toHaveTextContent("1.5M"));
     expect(bridge.agentShifts).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined, undefined);
-    expect(teamTotal(panel, "Recorded time")).toHaveTextContent("2h 56m");
     expect(within(panel).queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
   });
 
@@ -1895,11 +1929,10 @@ describe("the team board", () => {
   });
 
   // The same page as the web's, and the same report: 1h56m recorded against
-  // 37m active with no agent time measured anywhere in the window. The header
-  // called the difference "unattended agent time" from `recorded > active`
-  // alone, and the app list under it summed to presence while the project list
-  // above it summed to the total.
-  it("explains the gap between recorded and active without inventing agent time", async () => {
+  // 37m active. Recorded session time is not part of this page at all: no
+  // total, no note under the totals, no Quiet time row, no project list.
+  it("leaves recorded session time off a teammate's page", async () => {
+    // Arrange
     const samStats = {
       ...meStats,
       totalDurationSeconds: 6_960,
@@ -1926,21 +1959,36 @@ describe("the team board", () => {
     const person = userEvent.setup();
     render(<App bridge={bridge} />);
 
-    // A teammate's page, so the numbers are the server's rather than this
-    // machine's live day.
+    // Act: a teammate's page, so the numbers are the server's rather than this machine's live day.
     const panel = await openAllStats(person);
     await pickPerson(person, panel, "Sam");
     await within(panel).findByLabelText("Totals for Sam");
-    await waitFor(() => expect(teamTotal(panel, "Recorded time")).toHaveTextContent("1h 56m"));
+    await waitFor(() => expect(teamTotal(panel, "Active time")).toHaveTextContent("37m"));
 
-    const note = await within(panel).findByText(/^Recorded: /);
-    expect(note).not.toHaveTextContent(/agent/i);
-    expect(note).toHaveTextContent("1h 19m of it away from the keyboard");
+    // Assert
+    const apps = within(await within(panel).findByRole("region", { name: "Apps" }));
+    expect(within(panel).queryByText("Recorded time")).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Recorded: /)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/away from the keyboard/)).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("region", { name: "Projects" })).not.toBeInTheDocument();
+    expect(apps.queryByText("Quiet time")).not.toBeInTheDocument();
+    expect(apps.getAllByRole("listitem")).toHaveLength(2);
+  });
 
-    // The app list closes on the same total the project list does.
-    const apps = within(within(panel).getByRole("region", { name: "Apps" }));
-    expect(apps.getByText("Quiet time").closest("li")).toHaveTextContent("1h 19m");
-    expect(within(within(panel).getByRole("region", { name: "Projects" })).getAllByRole("listitem")[0]).toHaveTextContent("1h 56m");
+  it("draws no Recorded note under your own page on the live day either", async () => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor()} />);
+
+    // Act
+    const panel = await openAllStats(person);
+    await pickPerson(person, panel, user.name);
+    await within(panel).findByLabelText(`Totals for ${user.name}`);
+
+    // Assert: the live day keeps its Today card's Quiet time on the home screen, never on this page.
+    expect(within(panel).queryByText(/^Recorded: /)).not.toBeInTheDocument();
+    expect(within(panel).queryByText("Recorded time")).not.toBeInTheDocument();
+    expect(within(panel).queryByText("Quiet time")).not.toBeInTheDocument();
   });
 
   it("offers Everyone, not a way back to yourself, after picking a teammate", async () => {
@@ -2289,6 +2337,37 @@ describe("the dashboard filter", () => {
     await person.click(within(panel).getByRole("button", { name: /^Project: / }));
     await person.click(within(within(panel).getByRole("radiogroup", { name: "Project" })).getByRole("radio", { name }));
   };
+
+  it.each([
+    ["one project", [project], false],
+    ["two projects", [project, otherProject], true],
+  ])("draws the project filter only when the workspace has two or more projects: %s", async (_name, projects, isShown) => {
+    // Arrange
+    const person = userEvent.setup();
+    render(<App bridge={bridgeFor({ bootstrap: vi.fn().mockResolvedValue({ ...account, projects }) })} />);
+
+    // Act
+    const panel = await openAllStats(person);
+    await within(panel).findByLabelText("Totals");
+
+    // Assert: the range is always there, the project picker only with a choice to make.
+    expect(within(panel).getByRole("group", { name: "Date range" })).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: /^Project: / }) !== null).toBe(isShown);
+  });
+
+  it("reads everything when the workspace has one project", async () => {
+    // Arrange
+    const bridge = bridgeFor({ bootstrap: vi.fn().mockResolvedValue({ ...account, projects: [project] }) });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+
+    // Act
+    const panel = await openAgentsPage(person);
+
+    // Assert
+    expect(bridge.workspaceReport).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined);
+    expect(within(panel).queryByRole("button", { name: /^Project: / })).not.toBeInTheDocument();
+  });
 
   it("reads the custom days on every overlay read and says Custom in the subtitle", async () => {
     // Arrange

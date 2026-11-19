@@ -13,36 +13,34 @@ for (const width of [390, 1440]) {
     const canvas = page.locator("canvas.shader-bg");
     expect(await page.locator(".landing-scene").evaluate(node => getComputedStyle(node).position)).toBe("fixed");
 
-    // Both lists show at once, with no switch between them.
-    const projects = page.getByRole("region", { name: "Projects" });
+    // The example is the app's one dashboard page: no tabs, no project list, and the three totals once each.
     const agents = page.getByRole("region", { name: "Agents" });
     await expect(agents).toContainText("Claude Code");
-    await expect(projects).toContainText("Atlas Portal");
+    await expect(page.getByRole("region", { name: "Projects" })).toHaveCount(0);
     await expect(page.getByRole("group", { name: "Projects or agents" })).toHaveCount(0);
-    // The example is the app's one dashboard page: no tabs, and the four kept totals once each.
     await expect(page.getByRole("group", { name: "Humans or agents" })).toHaveCount(0);
-    await expect(page.locator(".tv-total dt")).toHaveText(["Tokens", "Active time", "Agent time", "Recorded time"]);
+    await expect(page.locator(".tv-total dt")).toHaveText(["Tokens", "Active time", "Agent time"]);
+    await expect(page.locator(".tv-totals")).not.toContainText("Recorded");
     const board = page.getByRole("table", { name: "People" });
     await expect(board).toContainText("Alex Morgan");
     await expect(board).toContainText("Jordan Lee");
     await expect(board).toContainText("Taylor Chen");
-    // Each person's tokens, in and out, in a column the board can rank by.
+    // Each person's tokens, in and out on their own lines, in a column the board can rank by.
     await expect(board.getByRole("columnheader", { name: "Tokens" })).toBeVisible();
-    await expect(board).toContainText(" in · ");
+    await expect(board.locator("td.is-tokens .tv-cell-line")).toHaveCount(6);
+    await expect(board.locator("td.is-tokens").first()).toContainText(/\d in/);
+    await expect(board.locator("td.is-tokens").first()).toContainText(/\d out/);
     await expect(page.getByRole("combobox", { name: /Rank by/ }).getByRole("option", { name: "By tokens" })).toHaveCount(1);
     await expect(page.locator(".tv-totals")).toContainText("15h 00m");
     await expect(page.locator(".tv-totals")).toContainText("32h 00m");
-    // Every project wears a built-in icon, and so does each person's top project.
-    await expect(projects.locator(".is-plain")).toHaveCount(0);
-    await expect(projects.locator(".project-icon")).toHaveCount(3);
-    await expect(board.locator(".tv-sub .project-icon")).toHaveCount(3);
+    // No project is named beside a person.
+    await expect(board.locator(".project-icon")).toHaveCount(0);
     await page.getByRole("button", { name: "Show Alex Morgan's work" }).click();
     expect(await canvas.evaluate(node => Math.round(node.getBoundingClientRect().top))).toBe(0);
     await expect(page.locator(".tv-totals")).toContainText("6h 00m");
     await expect(page.locator(".tv-totals")).toContainText("14h 00m");
-    await expect(projects).not.toContainText("Relay App");
     await page.getByRole("button", { name: "Everyone" }).click();
-    await expect(projects).toContainText("Relay App");
+    await expect(page.locator(".tv-totals")).toContainText("15h 00m");
     // The footer that sat under the example is gone.
     await expect(page.getByText("Local agents, shared visibility")).toHaveCount(0);
 

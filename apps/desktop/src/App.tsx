@@ -47,7 +47,6 @@ import {
   buildProjectRows,
   formatRangeDays,
   pictureDataUrl,
-  recordedBasis,
   usePictures,
   type ShiftCursor,
   type ShiftPage,
@@ -65,7 +64,6 @@ import {
   dayBounds,
   localDay,
   personTokensOf,
-  projectMeterRows,
   reportedAppearance,
   type BoardSort,
   type DashboardDays,
@@ -419,6 +417,14 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   }, [bridge]);
 
   const signedIn = account?.kind === "ready" ? account : undefined;
+  const signedInProjectCount = signedIn?.projects.length;
+
+  // With one project there is no filter to pick it with, and the All stats page
+  // reads All projects: a project left picked when the others were deleted
+  // falls back to everything.
+  useEffect(() => {
+    if (signedInProjectCount !== undefined && signedInProjectCount < 2) setBoardScope("all");
+  }, [signedInProjectCount]);
 
   // The elapsed reading on the recording card ticks like a clock.
   useEffect(() => {
@@ -1552,12 +1558,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // re-deriving them, because two numbers for one day is the whole confusion.
   const showingLiveDay = viewingSelf && isLiveDayRange;
   const boardError = showingLiveDay ? statsError : boardStatsError;
-  const boardTotalSeconds = showingLiveDay ? todayTotalSeconds : boardStats?.totalDurationSeconds ?? 0;
   const boardMeasurement = showingLiveDay ? stats : boardStats;
-  const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? [], boardTotalSeconds);
-  const boardProjectRows = showingLiveDay
-    ? projectRows.map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }))
-    : buildProjectRows(boardStats?.projects ?? []).map((row) => ({ id: row.projectId, name: row.name, durationSeconds: row.durationSeconds }));
+  const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? []);
   const appearanceOf = (projectId: string) => reportedAppearance(workspace?.projects ?? [], listedProjects, projectId);
   const subjectEntry = workspace?.members.find((member) => member.user.id === subjectId);
   const subject = subjectId === undefined
@@ -1568,18 +1570,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       picture: pictureOf(viewingSelf ? ready.user : subjectEntry?.user ?? { id: subjectId }),
       isSelf: viewingSelf,
     };
-  // The team's recorded time is its projects' recorded time added up: the
-  // report files every session under exactly one project, so the rows are a
-  // partition of the whole and their sum is the team's recorded total.
   const dashboardTime = subjectId === undefined
     ? workspace === undefined
       ? undefined
       : {
         activeSeconds: workspace.activeSeconds,
         agentSeconds: workspace.agentSeconds,
-        recordedSeconds: workspace.projects.reduce((sum, entry) => sum + entry.durationSeconds, 0),
         hourly: workspace.hourly,
-        projectRows: projectMeterRows(workspace.projects, appearanceOf),
       }
     : boardError !== undefined
       ? boardError
@@ -1588,15 +1585,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
         : {
           activeSeconds: boardMeasurement.activeSeconds,
           agentSeconds: boardMeasurement.agentSeconds,
-          recordedSeconds: boardTotalSeconds,
           hourly: boardMeasurement.hourly,
-          projectRows: projectMeterRows(
-            boardProjectRows.map((row) => ({ project: { id: row.id, name: row.name }, durationSeconds: row.durationSeconds })),
-            appearanceOf,
-          ),
-          // Recorded is whole sessions and active time is presence alone.
-          // `recordedBasis` names the gap between them from measured numbers.
-          recordedNote: recordedBasis(boardTotalSeconds, boardMeasurement.activeSeconds, boardMeasurement.concurrency.awaySeconds),
           appRows: boardAppRows,
         };
   const filterProjects = ready.projects.map((item) => ({
@@ -1605,6 +1594,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     appearance: appearanceOf(item.id),
     firstDay: localDay(new Date(item.createdAt)),
   }));
+  // A project filter narrows nothing in a workspace of one project, so it is
+  // drawn only when there is a choice to make.
+  const isProjectFilterShown = filterProjects.length > 1;
   const boardRangeLabel = isCustomRange
     ? customRangeName(customDays, filterProjects.find((item) => item.id === boardScope)?.firstDay)
     : RANGE_LABEL[boardRange];
@@ -1841,7 +1833,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 }}
                 days={customDays}
                 onDays={setCustomDays}
-                projects={filterProjects}
+                projects={isProjectFilterShown ? filterProjects : undefined}
                 project={boardScope}
                 onProject={setBoardScope}
               />
@@ -1875,9 +1867,6 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   // Your own row reads your account, which knows a new
                   // picture before the next report does.
                   picture: pictureOf(member.user.id === ready.user.id ? ready.user : member.user),
-                  project: member.project === null
-                    ? null
-                    : { name: member.project.name, appearance: appearanceOf(member.project.id) },
                   activeSeconds: member.activeSeconds,
                   agentSeconds: member.agentSeconds,
                   tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${boardScope}` ? boardTokens.agents : undefined, member.user.id),

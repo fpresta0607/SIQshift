@@ -6,18 +6,15 @@ import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount, formatTokens } from "./format.js";
 import { MemberAvatar } from "./member-avatar.js";
 import { projectAppearance, type ProjectAppearance } from "./project-appearance.js";
-import { ProjectIconTile } from "./project-icon-tile.js";
 import { QuietMark } from "./quiet-mark.js";
 import { TeamTotals } from "./team-totals.js";
 import { formatHumanDuration } from "./time.js";
 import {
   LiveSessions,
-  MeterRowItem,
   ShiftGroups,
   type AppRow,
   type ChartHourlyBucket,
   type LivePersonGroup,
-  type MeterRow,
   type ShiftCursor,
   type ShiftGroup,
   type ShiftPage,
@@ -37,8 +34,8 @@ export { DashboardFilter, customRangeName, dayBounds, localDay, type DashboardDa
  *
  * The page answers for one subject at a time - the whole team, or the one
  * person picked on the People board - and every card follows it: the four
- * totals (tokens, active time, agent time, recorded time), the one chart, the
- * projects, the agents, the repos and who is running one now. The board is the
+ * totals (tokens, active time, agent time), the one chart, the agents, the
+ * repos and who is running one now. The board is the
  * picker, so it stays the whole team's and is drawn only when there are two or
  * more people to pick between; in a workspace of one the person is the team.
  * A person also gets the one card only a person has: the apps their time was
@@ -61,8 +58,6 @@ export type DashboardPerson = {
   name: string;
   /** The member's picture as a data URL; their initials stand in without one. */
   picture?: string | undefined;
-  /** The project this member spent most time on, or null when none had any. */
-  project: { name: string; appearance: ProjectAppearance } | null;
   activeSeconds: number;
   agentSeconds: number;
   /**
@@ -141,11 +136,7 @@ export type DashboardViewProps = {
   time: {
     activeSeconds: number;
     agentSeconds: number;
-    recordedSeconds: number;
     hourly: readonly ChartHourlyBucket[];
-    projectRows: readonly MeterRow[];
-    /** What recorded is made of beyond active time, from `recordedBasis`. */
-    recordedNote?: string | null | undefined;
     /** A person's apps; the team has none. */
     appRows?: readonly AppRow[] | undefined;
   } | string | undefined;
@@ -165,16 +156,7 @@ export type DashboardViewProps = {
   appIconOf?: ((processNames: readonly string[]) => string | undefined) | undefined;
 };
 
-/** Why a project can hold more time than the Active time total above it. */
-export const RECORDED_TIME_NOTE = "Recorded time counts whole sessions, quiet minutes included. Active time counts only minutes at the computer, so a project can show more than the Active time total.";
-
 const LOADING = "…";
-
-/** Breakdown rows, each bar a share of its own list's longest row. */
-const shareRows = (rows: readonly Omit<MeterRow, "share">[]): MeterRow[] => {
-  const longest = rows.reduce((most, row) => Math.max(most, row.durationSeconds), 0);
-  return rows.map((row) => ({ ...row, share: longest === 0 ? 0 : Math.round((row.durationSeconds / longest) * 100) }));
-};
 
 /** A project as a report names it, with the icon and color a server that predates them leaves out. */
 type ReportedProject = { id: string; name: string; icon?: string | null | undefined; color?: string | null | undefined };
@@ -202,19 +184,6 @@ export const reportedAppearance = (
   return projectAppearance({ id: projectId, isDefault: own?.isDefault ?? false, icon: resolved?.icon, color: resolved?.color });
 };
 
-/** Recorded time per project as meter rows, in the order given, each wearing the appearance `appearanceOf` names. */
-export const projectMeterRows = (
-  projects: readonly { project: { id: string; name: string }; durationSeconds: number }[],
-  appearanceOf: (projectId: string) => ProjectAppearance,
-): MeterRow[] => shareRows(projects.map((entry) => ({
-  key: entry.project.id,
-  label: entry.project.name,
-  source: undefined,
-  processNames: [],
-  appearance: appearanceOf(entry.project.id),
-  durationSeconds: entry.durationSeconds,
-})));
-
 const byTokens = <Row extends { tokens?: number | undefined; agentSeconds: number }>(a: Row, b: Row): number =>
   (b.tokens ?? 0) - (a.tokens ?? 0) || b.agentSeconds - a.agentSeconds;
 
@@ -235,7 +204,6 @@ export const DashboardView = ({
 }: DashboardViewProps) => {
   const chartTitleId = useId();
   const boardTitleId = useId();
-  const projectsTitleId = useId();
   const appsTitleId = useId();
   const runtimesTitleId = useId();
   const reposTitleId = useId();
@@ -305,13 +273,11 @@ export const DashboardView = ({
                 isAgent: true,
                 title: `${formatCount(tokenTotals.tokens)} tokens`,
               },
-          { label: "Active time", value: timeFigure(time?.activeSeconds), note: "at the computer" },
-          { label: "Agent time", value: timeFigure(time?.agentSeconds), note: "agents running", isAgent: true },
-          { label: "Recorded time", value: timeFigure(time?.recordedSeconds), note: "whole sessions" },
+          { label: "Active time", value: timeFigure(time?.activeSeconds), note: "minutes at the computer" },
+          { label: "Agent time", value: timeFigure(time?.agentSeconds), note: "every agent added up, so ten agents for an hour count ten hours", isAgent: true },
         ]}
       />
       {timeFailure !== undefined && <p className="error" role="alert">{timeFailure}</p>}
-      {time?.recordedNote != null && <p className="tv-totals-note">Recorded: {time.recordedNote}.</p>}
 
       {(hasHourly || hasTokenBars) && (
         <section className="tv-card tv-chart" aria-labelledby={chartTitleId}>
@@ -362,12 +328,6 @@ export const DashboardView = ({
                             <MemberAvatar id={person.id} name={person.name} picture={person.picture} />
                             <span className="tv-name">
                               <span>{person.name}{person.isSelf && <span className="tv-you">You</span>}</span>
-                              {person.project !== null && (
-                                <span className="tv-sub">
-                                  <ProjectIconTile appearance={person.project.appearance} />
-                                  {person.project.name}
-                                </span>
-                              )}
                             </span>
                           </button>
                         </th>
@@ -386,8 +346,8 @@ export const DashboardView = ({
                               className="is-tokens"
                               title={`${formatCount(person.tokens.tokens)} tokens: ${formatCount(person.tokens.tokensIn)} in, ${formatCount(person.tokens.tokensOut)} out`}
                             >
-                              {formatTokens(person.tokens.tokens)}
-                              <span className="tv-cell-sub">{formatTokens(person.tokens.tokensIn)} in · {formatTokens(person.tokens.tokensOut)} out</span>
+                              <span className="tv-cell-line">{formatTokens(person.tokens.tokensIn)} in</span>
+                              <span className="tv-cell-line">{formatTokens(person.tokens.tokensOut)} out</span>
                               <span className="tv-cell-bar" aria-hidden="true" style={share(person.tokens.tokens, mostTokens)} />
                             </td>
                           ))}
@@ -436,25 +396,6 @@ export const DashboardView = ({
         </div>
 
         <div className="tv-stack">
-          <section className="tv-card tv-list" aria-labelledby={projectsTitleId}>
-            <div className="tv-card-head">
-              <h4 id={projectsTitleId}>Projects</h4>
-              <span className="tv-card-note">Recorded time</span>
-            </div>
-            {time === undefined ? (
-              <p className="subtle" role={timeFailure === undefined ? "status" : undefined}>{timeFailure === undefined ? "Loading…" : "Not loaded."}</p>
-            ) : time.projectRows.length === 0 ? (
-              <p className="subtle">Nothing recorded in this range.</p>
-            ) : (
-              <>
-                <ul className="tv-meter-list">
-                  {time.projectRows.map((row) => <MeterRowItem key={row.key} row={row} />)}
-                </ul>
-                <p className="tv-card-foot">{RECORDED_TIME_NOTE}</p>
-              </>
-            )}
-          </section>
-
           {appRows.length > 0 && (
             <section className="tv-card tv-list tv-apps" aria-labelledby={appsTitleId}>
               <div className="tv-card-head">
