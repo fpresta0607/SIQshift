@@ -240,22 +240,29 @@ a.download-choice.is-primary:hover { background: var(--accent-green-deep); borde
    so it says all of it at once and shouts the button. */
 .download-corner { display: grid; justify-items: center; gap: 5px; text-align: center; }
 
+/* The home hero's download button, look and hover alike (`.landing-primary`
+   in landing.css): a mint fill with a soft green glow that lifts a little and
+   glows more on hover or keyboard focus. */
 a.download-button {
   display: inline-block;
-  border: 1px solid var(--accent-green);
+  border: 1px solid var(--mint);
   border-radius: 9999px;
-  padding: 16px 38px;
-  background: var(--accent-green);
-  color: #03130c;
-  font-size: 1rem;
-  font-weight: 750;
-  letter-spacing: .08em;
+  padding: 15px 34px;
+  background: linear-gradient(110deg, var(--accent-green), var(--mint));
+  color: var(--body-bg);
+  font-size: 1.05rem;
+  font-weight: 600;
   text-decoration: none;
-  text-transform: uppercase;
-  box-shadow: 0 0 20px rgba(0, 229, 155, .28);
-  transition: background .15s ease, border-color .15s ease;
+  box-shadow: 0 0 28px color-mix(in srgb, var(--accent-green) 10%, transparent);
+  transition: background .2s, border-color .2s, box-shadow .2s, transform .2s;
 }
-a.download-button:hover { background: var(--accent-green-deep); border-color: var(--accent-green-deep); }
+a.download-button:hover, a.download-button:focus-visible { background: var(--mint); box-shadow: 0 0 36px color-mix(in srgb, var(--accent-green) 32%, transparent); }
+@media (prefers-reduced-motion: no-preference) {
+  a.download-button:hover, a.download-button:focus-visible { transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  a.download-button { transition: none; }
+}
 
 /* The SmartScreen warning: on screen in the hero, and in the masthead panel
    plus the trigger's tooltip. A visitor who meets that dialog unwarned reads
