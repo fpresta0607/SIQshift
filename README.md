@@ -140,6 +140,16 @@ Every session belongs to exactly one project, resolved in this order:
    That time is stored under the default project and counts in that project's row in every breakdown and in the session history.
    The API and the CSV export still report it apart, as unattributed seconds.
 
+A project gets a repository when it is made.
+New project, in the desktop app and on the web, lists the repositories the person's own agents worked in that none of their folder links claims yet, and filters them by the name being typed.
+Picking one names the project after the repository, and the name stays editable.
+Creating it makes the project and a folder link for that repository's root and remote together, so that repository's agent time lands on the new project from the next shift on.
+Typing a name and picking nothing makes a plain project, as before.
+The list reads only the person's own agents, whatever their role, so nobody is ever offered a teammate's repository or shown its folder.
+A folder link is the person's own, because attribution reads only the uploader's links, so a teammate's link never claims anyone else's repository.
+Earlier sessions keep the project they were filed under when they arrived: nothing moves them when a link is added, unless an operator re-runs the attribution backfill, which `DEPLOY.md` describes.
+On the desktop a project made from a repository is not pinned, because a pin would file every other hour there too.
+
 The project cannot change under an open session: when the answer changes, the
 session closes at its last active moment and the next one picks up there. No
 second of work is dropped or counted twice.
@@ -658,7 +668,8 @@ organization are derived from verified claims, never from the request body.
 | `POST` | `/organization/join` | move an account into another workspace |
 | `POST` | `/organization/claim-admin` | first signed-in member claims the administrator role in a workspace that has none; refused (`409`) once one exists |
 | `GET` | `/projects` | projects the caller belongs to; `?includeArchived=true` lists archived ones so an archive can be undone |
-| `POST` | `/projects` | create a project (case-insensitive duplicate names rejected, archived names included) |
+| `POST` | `/projects` | create a project (case-insensitive duplicate names rejected, archived names included); an optional `repoKey` from `/projects/repositories` creates it with that repository's folder link in the same transaction |
+| `GET` | `/projects/repositories` | the repositories the caller's own agents worked in that none of the caller's folder links claims yet, for the New project box |
 | `PATCH` | `/projects/:id` | inline rename or archive; any member may pick the project's icon and color from the built-in lists |
 | `GET` | `/projects/:id/usage` | what deleting the project would take with it |
 | `DELETE` | `/projects/:id` | delete (reassign its sessions or delete them with it); admin-only |

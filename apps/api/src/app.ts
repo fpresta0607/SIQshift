@@ -350,7 +350,12 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
   if (dependencies.projectRepository !== undefined) {
     app.use("/projects", authenticate);
     app.use("/projects/*", authenticate);
-    app.route("/projects", createProjectRoutes(dependencies.projectRepository));
+    app.route("/projects", createProjectRoutes(
+      dependencies.projectRepository,
+      dependencies.agentRepository === undefined || dependencies.pathMappingRepository === undefined
+        ? undefined
+        : { agents: dependencies.agentRepository, pathMappings: dependencies.pathMappingRepository },
+    ));
   }
   if (dependencies.viewPreferencesRepository !== undefined) {
     if (dependencies.projectRepository === undefined) {

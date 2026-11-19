@@ -1,4 +1,4 @@
-import type { ProjectAppearance } from "@siqshift/shared";
+import type { ProjectAppearance, RepositoryChoice } from "@siqshift/shared";
 import type { AccountSnapshot, TimerProject, TimerUser } from "./account.js";
 
 export type BridgeErrorKind = "auth" | "transient" | "conflict" | "validation" | "unknown" | "account_exists";
@@ -438,6 +438,8 @@ export type AgentShiftRows = {
 
 export type ProjectCreateInput = {
   name: string;
+  /// One of `projectRepositories`' keys: the project is created with a folder link for it.
+  repoKey?: string;
 };
 
 export interface TimerBridge {
@@ -511,6 +513,8 @@ export interface TimerBridge {
     scope?: string,
   ): Promise<AgentShiftRows>;
   projectCreate(input: ProjectCreateInput): Promise<TimerProject>;
+  /// The member's own repositories no folder link claims yet, for the New project box.
+  projectRepositories(): Promise<readonly RepositoryChoice[]>;
   projectUpdate(id: string, input: { name?: string; isArchived?: boolean } | ProjectAppearance): Promise<TimerProject>;
   projectUsage(id: string): Promise<ProjectUsage>;
   /// Deletes a project; reassignTo moves its data to another project first.
@@ -1189,6 +1193,19 @@ export const decodeProjectUsage = (value: unknown): ProjectUsage => {
   };
 };
 
+const decodeRepositoryChoices = (value: unknown): RepositoryChoice[] => {
+  if (!Array.isArray(value)) invalidResponse();
+  return (value as unknown[]).map((item) => {
+    const candidate = record(item);
+    return {
+      repoKey: string(candidate.repoKey),
+      name: string(candidate.name),
+      remote: optionalString(candidate.remote) ?? null,
+      repoRoot: string(candidate.repoRoot),
+    };
+  });
+};
+
 const decodeVoid = (value: unknown): void => {
   if (value !== undefined && value !== null) invalidResponse();
 };
@@ -1244,6 +1261,7 @@ export const defaultBridge: TimerBridge = {
       query: { fromAt, toExclusiveAt, userId, scope },
     }),
   projectCreate: (input) => invokeDecoded("project_create", decodeProject, { input }),
+  projectRepositories: () => invokeDecoded("project_repositories", decodeRepositoryChoices),
   projectUpdate: (id, input) => invokeDecoded("project_update", decodeProject, { id, input }),
   projectUsage: (id) => invokeDecoded("project_usage", decodeProjectUsage, { id }),
   projectDelete: (id, reassignTo) => invokeDecoded("project_delete", decodeVoid, { id, reassignTo }),

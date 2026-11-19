@@ -18,6 +18,7 @@ export { pictureDataUrl } from "./picture-file.js";
 export { ProjectIconPicker } from "./project-icon-picker.js";
 export { ProjectIconTile } from "./project-icon-tile.js";
 export { QuietMark } from "./quiet-mark.js";
+export { filterRepositoryChoices, RepositoryPicker } from "./repository-picker.js";
 export { SegmentedControl, type SegmentedOption } from "./segmented-control.js";
 export { usePictures } from "./use-pictures.js";
 

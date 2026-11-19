@@ -41,8 +41,16 @@ export interface ProjectUsageRecord {
 export interface ProjectRepository {
   listForMember(subject: AuthenticatedSubject): Promise<ProjectRecord[]>;
   findForMember(subject: AuthenticatedSubject, projectId: string): Promise<ProjectRecord | null>;
-  /** Creates the project and the creator's membership in one transaction. */
-  createForMember(subject: AuthenticatedSubject, name: string): Promise<ProjectRecord>;
+  /**
+   * Creates the project and the creator's membership in one transaction, and
+   * with `folderLink` the creator's path mapping onto it in the same one. A
+   * prefix the creator already maps throws `PathMappingRepositoryError`.
+   */
+  createForMember(
+    subject: AuthenticatedSubject,
+    name: string,
+    folderLink?: { pathPrefix: string; repoUrl: string | null },
+  ): Promise<ProjectRecord>;
   /**
    * The project automatic time lands in, by the report path's rule: the
    * flagged one, else the oldest active one. Null with no active project.

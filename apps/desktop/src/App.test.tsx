@@ -285,6 +285,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   liveAgentSessions: vi.fn().mockResolvedValue({ people: [] } satisfies LiveAgentSessions),
   agentShiftRows: vi.fn().mockImplementation(async (groupKey: string, after: { id: string } | null) => agentShiftRowsFor(groupKey, after)),
   projectCreate: vi.fn().mockResolvedValue(newProject),
+  projectRepositories: vi.fn().mockResolvedValue([]),
   projectUpdate: vi.fn().mockResolvedValue(project),
   projectUsage: vi.fn().mockResolvedValue({ sessionCount: 0, durationSeconds: 0, agentSessionCount: 0 }),
   projectDelete: vi.fn().mockResolvedValue(undefined),
@@ -621,6 +622,84 @@ describe("recording", () => {
 
     await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledWith({ name: "Fresh" }));
     await waitFor(() => expect(bridge.sessionSelectProject).toHaveBeenCalledWith(newProject.id));
+  });
+
+  const repositories = [
+    { repoKey: "github.com/acme/clock-in", name: "clock-in", remote: "github.com/acme/clock-in", repoRoot: "C:/dev/clock-in" },
+    { repoKey: "path:D:/work/shop-admin", name: "shop-admin", remote: null, repoRoot: "D:/work/shop-admin" },
+    { repoKey: "github.com/acme/web-shop", name: "web-shop", remote: "github.com/acme/web-shop", repoRoot: "C:/dev/web-shop" },
+  ];
+
+  const openNewProjectBox = async (bridge: TimerBridge) => {
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    await person.click(await screen.findByTestId("filing-change"));
+    await person.click(await screen.findByRole("button", { name: "New project…" }));
+    return person;
+  };
+
+  it("lists the member's unclaimed repositories and filters them by the name typed", async () => {
+    // Arrange
+    const bridge = bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(recording), projectRepositories: vi.fn().mockResolvedValue(repositories) });
+    const person = await openNewProjectBox(bridge);
+    const list = within(await screen.findByTestId("repo-pick"));
+    expect(list.getAllByRole("button").map((button) => button.querySelector(".repo-pick-name")?.textContent)).toEqual(["clock-in", "shop-admin", "web-shop"]);
+    expect(list.getByRole("button", { name: /shop-admin/ })).toHaveTextContent("D:/work/shop-admin");
+
+    // Act
+    await person.type(screen.getByLabelText("New project name"), "Shop");
+
+    // Assert
+    expect(list.getAllByRole("button").map((button) => button.querySelector(".repo-pick-name")?.textContent)).toEqual(["shop-admin", "web-shop"]);
+  });
+
+  it("creates a project from a picked repository in one step and leaves recording unpinned", async () => {
+    // Arrange
+    const bridge = bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(recording), projectRepositories: vi.fn().mockResolvedValue(repositories) });
+    const person = await openNewProjectBox(bridge);
+
+    // Act
+    await person.click(within(await screen.findByTestId("repo-pick")).getByRole("button", { name: /web-shop/ }));
+    const name = screen.getByLabelText("New project name");
+    expect(name).toHaveValue("web-shop");
+    expect(screen.getByTestId("repo-pick")).toHaveTextContent("Agent time in this repository lands on the new project from now on.");
+    await person.type(name, " site");
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    // Assert
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledWith({ name: "web-shop site", repoKey: "github.com/acme/web-shop" }));
+    await waitFor(() => expect(screen.queryByLabelText("New project name")).not.toBeInTheDocument());
+    // The folder link files the repository's agent time; a pin would file every hour.
+    expect(bridge.sessionSelectProject).not.toHaveBeenCalled();
+  });
+
+  it("drops a pick on request and makes a plain, pinned project", async () => {
+    const bridge = bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(recording), projectRepositories: vi.fn().mockResolvedValue(repositories) });
+    const person = await openNewProjectBox(bridge);
+
+    await person.click(within(await screen.findByTestId("repo-pick")).getByRole("button", { name: /clock-in/ }));
+    await person.click(screen.getByRole("button", { name: "Do not link a repository" }));
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledWith({ name: "clock-in" }));
+    await waitFor(() => expect(bridge.sessionSelectProject).toHaveBeenCalledWith(newProject.id));
+  });
+
+  it.each([
+    ["has no unclaimed repositories", () => vi.fn().mockResolvedValue([])],
+    ["cannot list repositories", () => vi.fn().mockRejectedValue({ kind: "unknown", message: "The server could not be reached." })],
+  ])("is the plain name box when the API %s", async (_case, projectRepositories) => {
+    const listed = projectRepositories();
+    const bridge = bridgeFor({ monitorStatus: vi.fn().mockResolvedValue(recording), projectRepositories: listed });
+    const person = await openNewProjectBox(bridge);
+
+    await waitFor(() => expect(listed).toHaveBeenCalled());
+    expect(screen.queryByTestId("repo-pick")).not.toBeInTheDocument();
+    await person.type(screen.getByLabelText("New project name"), "Admin");
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledWith({ name: "Admin" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("says nothing about syncing, which happens on its own", async () => {

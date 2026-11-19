@@ -2,7 +2,8 @@ import { projectAppearance, type ProjectColor, type ProjectIcon, type ProjectUpd
 
 import type { AuthenticatedSubject } from "../auth.js";
 import { AppError } from "../errors.js";
-import type { ProjectRecord, ProjectRepository as Repository, ProjectUsageRecord } from "../repositories.js";
+import { PathMappingRepositoryError, type ProjectRecord, type ProjectRepository as Repository, type ProjectUsageRecord } from "../repositories.js";
+import type { RepositoryFolderLink } from "./project-repositories.js";
 
 export type ProjectRepository = Repository;
 
@@ -73,9 +74,25 @@ async function rejectDuplicateName(repository: ProjectRepository, subject: Authe
   }
 }
 
-export async function createProject(repository: ProjectRepository, subject: AuthenticatedSubject, name: string): Promise<ProjectItem> {
+/**
+ * With `folderLink`, the project is created already mapped to that folder, so
+ * the repository's agent time lands on it from the next shift. Earlier shifts
+ * keep the project they were filed under when they arrived.
+ */
+export async function createProject(
+  repository: ProjectRepository,
+  subject: AuthenticatedSubject,
+  name: string,
+  folderLink?: RepositoryFolderLink,
+): Promise<ProjectItem> {
   await rejectDuplicateName(repository, subject, name);
-  const project = await repository.createForMember(subject, name);
+  let project: ProjectRecord;
+  try {
+    project = await repository.createForMember(subject, name, folderLink);
+  } catch (error) {
+    if (error instanceof PathMappingRepositoryError) throw new AppError("conflict", "Another project already has that repository.");
+    throw error;
+  }
   return projectItem(project, await repository.defaultIdForOrganization(subject));
 }
 

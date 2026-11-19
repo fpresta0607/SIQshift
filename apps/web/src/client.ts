@@ -11,6 +11,7 @@ import type {
   ProjectListResponse,
   ProjectUsageResponse,
   ReportResponse,
+  RepositoryChoiceListResponse,
   ViewPreferences,
   ViewPreferencesUpdate,
   WorkspaceReportResponse,
@@ -351,11 +352,14 @@ export function createClient(config: ClientConfig) {
     },
 
     projects: () => json<ProjectListResponse>("/projects"),
-    async createProject(name: string): Promise<ProjectListItem> {
+    /** The viewer's own repositories no folder link claims yet, for the New project box. */
+    repositoryChoices: () => json<RepositoryChoiceListResponse>("/projects/repositories"),
+    /** With `repoKey`, the project is created with a folder link for that repository. */
+    async createProject(name: string, repoKey?: string): Promise<ProjectListItem> {
       const response = await apiRequest("/projects", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(repoKey === undefined ? { name } : { name, repoKey }),
       });
       return response.json() as Promise<ProjectListItem>;
     },

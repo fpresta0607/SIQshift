@@ -252,6 +252,7 @@ function clientFor(overrides: Partial<Client> = {}): Client {
     me: vi.fn().mockResolvedValue({ user: self }),
     meStats: vi.fn().mockResolvedValue(memberStats),
     projects: vi.fn().mockResolvedValue({ projects: [{ id: "p1", name: "General", createdAt: "2026-08-10T12:00:00.000Z", isArchived: false, isDefault: true }], selectedProjectId: null }),
+    repositoryChoices: vi.fn().mockResolvedValue({ repositories: [] }),
     preferences: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
     updatePreferences: vi.fn().mockResolvedValue({ scope: "all", range: "30d" }),
     report: vi.fn().mockResolvedValue({ rows: [], totalDurationSeconds: 0, filters: {}, pagination: { page: 1, pageSize: 25, totalRows: 0, totalPages: 0 } }),
@@ -2241,6 +2242,98 @@ describe("project management", () => {
     // Assert
     expect(await settings.findByText("Pick an icon and a color from the lists.")).toHaveAttribute("role", "alert");
     expect(settings.getByRole("form", { name: "Icon for Client" })).toBeInTheDocument();
+  });
+});
+
+describe("the New project box", () => {
+  const repositories = [
+    { repoKey: "github.com/acme/clock-in", name: "clock-in", remote: "github.com/acme/clock-in", repoRoot: "C:/dev/clock-in" },
+    { repoKey: "path:D:/work/shop-admin", name: "shop-admin", remote: null, repoRoot: "D:/work/shop-admin" },
+    { repoKey: "github.com/acme/web-shop", name: "web-shop", remote: "github.com/acme/web-shop", repoRoot: "C:/dev/web-shop" },
+  ];
+  const created = { id: "p9", name: "web-shop", createdAt: "2026-08-12T12:00:00.000Z", isArchived: false, isDefault: false };
+
+  async function openBox(client: Client) {
+    const person = await signIn(client);
+    await screen.findByRole("heading", { name: "Lumen Studio" });
+    await person.click(screen.getByTestId("filing-change"));
+    await person.click(screen.getByRole("button", { name: "New project…" }));
+    return person;
+  }
+
+  it("lists the viewer's unclaimed repositories and filters them by the name typed", async () => {
+    // Arrange
+    const person = await openBox(clientFor({ repositoryChoices: vi.fn().mockResolvedValue({ repositories }) }));
+    const list = within(await screen.findByTestId("repo-pick"));
+    expect(list.getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "clock-ingithub.com/acme/clock-in",
+      "shop-adminD:/work/shop-admin",
+      "web-shopgithub.com/acme/web-shop",
+    ]);
+
+    // Act
+    await person.type(screen.getByLabelText("New project name"), "SHOP");
+
+    // Assert
+    expect(list.getAllByRole("button").map((button) => button.querySelector(".repo-pick-name")?.textContent)).toEqual(["shop-admin", "web-shop"]);
+  });
+
+  it("names the project after a picked repository and creates it with that repository in one step", async () => {
+    // Arrange
+    const createProject = vi.fn().mockResolvedValue(created);
+    const person = await openBox(clientFor({ repositoryChoices: vi.fn().mockResolvedValue({ repositories }), createProject }));
+    await person.type(screen.getByLabelText("New project name"), "web");
+
+    // Act
+    await person.click(within(await screen.findByTestId("repo-pick")).getByRole("button", { name: /web-shop/ }));
+    const name = screen.getByLabelText("New project name");
+    expect(name).toHaveValue("web-shop");
+    expect(screen.getByTestId("repo-pick")).toHaveTextContent("Linked to web-shop");
+    await person.clear(name);
+    await person.type(name, "Web shop");
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    // Assert
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith("Web shop", "github.com/acme/web-shop"));
+    await waitFor(() => expect(screen.queryByLabelText("New project name")).toBeNull());
+  });
+
+  it("drops a pick on request and makes a plain project", async () => {
+    const createProject = vi.fn().mockResolvedValue(created);
+    const person = await openBox(clientFor({ repositoryChoices: vi.fn().mockResolvedValue({ repositories }), createProject }));
+
+    await person.click(within(await screen.findByTestId("repo-pick")).getByRole("button", { name: /clock-in/ }));
+    await person.click(screen.getByRole("button", { name: "Do not link a repository" }));
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith("clock-in", undefined));
+  });
+
+  it("makes a plain project from a typed name that matches no repository", async () => {
+    const createProject = vi.fn().mockResolvedValue(created);
+    const person = await openBox(clientFor({ repositoryChoices: vi.fn().mockResolvedValue({ repositories }), createProject }));
+
+    await person.type(screen.getByLabelText("New project name"), "Client work");
+    expect(await screen.findByTestId("repo-pick")).toHaveTextContent("No repository has that name, so this makes a plain project.");
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith("Client work", undefined));
+  });
+
+  it.each([
+    ["has no unclaimed repositories", vi.fn().mockResolvedValue({ repositories: [] })],
+    ["cannot list repositories", vi.fn().mockRejectedValue(new ClientError("unknown", "Not found."))],
+  ])("is the plain name box when the API %s", async (_case, repositoryChoices) => {
+    const createProject = vi.fn().mockResolvedValue(created);
+    const person = await openBox(clientFor({ repositoryChoices, createProject }));
+
+    await waitFor(() => expect(repositoryChoices).toHaveBeenCalled());
+    expect(screen.queryByTestId("repo-pick")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await person.type(screen.getByLabelText("New project name"), "Admin");
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith("Admin", undefined));
   });
 });
 
