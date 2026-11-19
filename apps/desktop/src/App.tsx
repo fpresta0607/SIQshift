@@ -1546,9 +1546,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
             boardProjectRows.map((row) => ({ project: { id: row.id, name: row.name }, durationSeconds: row.durationSeconds })),
             appearanceOf,
           ),
-          // Recorded is whole sessions; the split is presence alone.
+          // Recorded is whole sessions and active time is presence alone.
           // `recordedBasis` names the gap between them from measured numbers.
-          split: boardMeasurement.concurrency,
           recordedNote: recordedBasis(boardTotalSeconds, boardMeasurement.activeSeconds, boardMeasurement.concurrency.awaySeconds),
           appRows: boardAppRows,
         };

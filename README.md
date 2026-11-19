@@ -158,10 +158,9 @@ The leaderboard reports three time measurements, deliberately distinct:
   app draws it as a figure.
 
 Active time is then partitioned by **concurrency** — the share with no agent (t0), exactly
-one (t1), two (t2), or three-plus (t3+). Both dashboards render that split as labeled rows,
-not one cramped sentence: **Human work** is the t0 bucket (no agent running), and the t1/t2/t3+
-rows are the agent-assisted share — still the person's hours, split by how many agents ran
-beside them at once. An agent still working while the person is away feeds agent time only,
+one (t1), two (t2), or three-plus (t3+). The API reports that split, and the dashboards draw
+no card for it: only its away bucket shows, in the note on recorded time described below.
+An agent still working while the person is away feeds agent time only,
 never the person's hours.
 
 **Recorded** is none of those three: it is the whole of a person's sessions, so it also counts
@@ -180,7 +179,7 @@ It answers for one subject at a time: the whole team, or the one person picked o
 In a workspace of one there is no board to pick from, and the page answers for that one person, who is the whole team.
 Every card follows the subject: the four totals (**Tokens**, **Active time**, **Agent time**, **Recorded time**), the one chart, the projects, the agents, the repos and who is running an agent right now.
 The team's recorded time is its projects' recorded time added up, since every session is filed under exactly one project.
-A person also gets the two cards only a person has: their active time split by agents running, and the apps it went to.
+A person also gets the one card only a person has: the apps their time went to.
 The board itself stays the whole team's, because it is the picker, and ranks by active time, agent time or tokens.
 Its Tokens column states each person's tokens in and out, from the `people` rows of `/reports/agent-shifts`, and a dash for someone whose agents reported none.
 
