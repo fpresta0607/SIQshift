@@ -13,6 +13,7 @@ import {
   type ProjectScope,
   type ProjectUsageResponse,
   type ReportRow,
+  type RepositoryChoice,
   type ViewPreferences,
   type WorkspaceReportResponse,
 } from "@siqshift/shared";
@@ -25,6 +26,7 @@ import {
   ProjectIconPicker,
   ProjectIconTile,
   QuietMark,
+  RepositoryPicker,
   buildAppRows,
   buildMeterRows,
   buildProjectRows,
@@ -207,6 +209,8 @@ export const App = ({ client }: AppProps) => {
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectBusy, setNewProjectBusy] = useState(false);
   const [newProjectError, setNewProjectError] = useState<string | undefined>();
+  const [newProjectRepositories, setNewProjectRepositories] = useState<readonly RepositoryChoice[]>([]);
+  const [newProjectRepository, setNewProjectRepository] = useState<RepositoryChoice | null>(null);
   const [copied, setCopied] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [joinBusy, setJoinBusy] = useState(false);
@@ -730,8 +734,33 @@ export const App = ({ client }: AppProps) => {
     return scopeSurvives;
   };
 
+  /// Opens the New project box with the viewer's unclaimed repositories. The
+  /// list is a suggestion: an API that cannot answer it leaves the plain box.
+  const openNewProject = (): void => {
+    setNewProjectOpen(true);
+    client.repositoryChoices().then(
+      (response) => setNewProjectRepositories(response.repositories),
+      () => setNewProjectRepositories([]),
+    );
+  };
+
+  const closeNewProject = (): void => {
+    setNewProjectOpen(false);
+    setNewProjectName("");
+    setNewProjectError(undefined);
+    setNewProjectRepositories([]);
+    setNewProjectRepository(null);
+  };
+
+  /// Picking a repository names the project after it, and the name stays editable.
+  const pickRepository = (repository: RepositoryChoice | null): void => {
+    setNewProjectRepository(repository);
+    if (repository !== null) setNewProjectName(repository.name.slice(0, 80));
+  };
+
   /// Creates a project and points the dashboard at it, which is the only
-  /// reason to make one from the filing header.
+  /// reason to make one from the filing header. A picked repository is
+  /// created with it as the project's folder link.
   const createProject = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const trimmed = newProjectName.trim();
@@ -739,10 +768,9 @@ export const App = ({ client }: AppProps) => {
     setNewProjectBusy(true);
     setNewProjectError(undefined);
     try {
-      const created = await client.createProject(trimmed);
+      const created = await client.createProject(trimmed, newProjectRepository?.repoKey);
       await refreshProjects();
-      setNewProjectName("");
-      setNewProjectOpen(false);
+      closeNewProject();
       setScope(created.id);
       setScopePickerOpen(false);
     } catch (error: unknown) {
@@ -1065,14 +1093,21 @@ export const App = ({ client }: AppProps) => {
               {newProjectOpen ? (
                 <form className="new-project-form" onSubmit={createProject}>
                   <label>New project name<input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} maxLength={80} placeholder="e.g. Client work" autoComplete="off" required /></label>
+                  <RepositoryPicker
+                    repositories={newProjectRepositories}
+                    query={newProjectName}
+                    picked={newProjectRepository}
+                    isBusy={newProjectBusy}
+                    onPick={pickRepository}
+                  />
                   {newProjectError && <p className="error" role="alert">{newProjectError}</p>}
                   <div className="new-project-actions">
                     <button className="primary" type="submit" disabled={newProjectBusy || newProjectName.trim() === ""}>{newProjectBusy ? "Creating…" : "Create project"}</button>
-                    <button className="ghost" type="button" disabled={newProjectBusy} onClick={() => { setNewProjectOpen(false); setNewProjectName(""); setNewProjectError(undefined); }}>Cancel</button>
+                    <button className="ghost" type="button" disabled={newProjectBusy} onClick={closeNewProject}>Cancel</button>
                   </div>
                 </form>
               ) : (
-                <button className="new-project-trigger" type="button" onClick={() => setNewProjectOpen(true)}>New project…</button>
+                <button className="new-project-trigger" type="button" onClick={openNewProject}>New project…</button>
               )}
             </div>
           )}

@@ -1,3 +1,4 @@
+import { projectCreateRequestSchema, repositoryChoiceListResponseSchema } from "@siqshift/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { ClientError, createClient } from "./client.js";
@@ -243,6 +244,38 @@ describe("web client", () => {
     const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/projects/p2`);
     expect(call?.[1]?.method).toBe("PATCH");
     expect(call?.[1]?.body).toBe(JSON.stringify({ icon: "bolt", color: "#c6a1f4" }));
+  });
+
+  it.each([
+    ["a plain project", undefined, { name: "Admin" }],
+    ["a project from a repository", "github.com/acme/web-shop", { name: "Admin", repoKey: "github.com/acme/web-shop" }],
+  ])("creates %s with a body the API's create schema accepts", async (_case, repoKey, body) => {
+    // Arrange
+    const created = { id: "p9", name: "Admin", createdAt: "2026-08-12T12:00:00.000Z", isArchived: false, isDefault: false };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(created, 201)
+    ));
+
+    // Act
+    await client.createProject("Admin", repoKey);
+
+    // Assert
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === `${apiBaseUrl}/projects`);
+    expect(call?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual(body);
+    expect(projectCreateRequestSchema.parse(body)).toEqual(body);
+  });
+
+  it("reads the New project box's repositories from /projects/repositories", async () => {
+    const listed = { repositories: [{ repoKey: "github.com/acme/web-shop", name: "web-shop", remote: "github.com/acme/web-shop", repoRoot: "C:/dev/web-shop" }] };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(listed)
+    ));
+
+    const response = await client.repositoryChoices();
+
+    expect(repositoryChoiceListResponseSchema.parse(response)).toEqual(listed);
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === `${apiBaseUrl}/projects/repositories`)).toBe(true);
   });
 
   it("puts up the viewer's picture as raw bytes with one PUT and reads the new version back", async () => {

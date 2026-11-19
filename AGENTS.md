@@ -246,7 +246,9 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
 - A repo root is a working directory, so `shiftCommitViewSchema.repoRoot` and the roster
   row's `agentSchema.repoRoot` go only to the agent's owner and workspace admins and are
   omitted - never blanked - for everyone else (`mayReadRepoRoot` in `services/agents.ts`);
-  every member still gets the `repoName` label. The disclosure sentence naming what leaves the machine is
+  every member still gets the `repoName` label. The New project box's `GET /projects/repositories`
+  is narrower still: it reads only the caller's own agents, admins included, because a folder link
+  is one person's (`services/project-repositories.ts`). The disclosure sentence naming what leaves the machine is
   stated in `apps/web/src/HelpModal.tsx`, `apps/desktop/src/RecordingPanel.tsx`
   and README's "What is never collected"; the three word it differently, but they must
   all describe the same thing that actually leaves the machine, so change what is sent

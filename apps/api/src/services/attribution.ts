@@ -196,6 +196,11 @@ export function identityRepoKey(repoRoot: string | null, repoRemote: string | nu
   return root === null ? null : `${pathKeyPrefix}${root}`;
 }
 
+/** The directory a local-only identity is keyed on; null for a remote key. */
+export function repoKeyPath(repoKey: string): string | null {
+  return repoKey.startsWith(pathKeyPrefix) ? repoKey.slice(pathKeyPrefix.length) : null;
+}
+
 /**
  * The codebase name an identity key carries: the repository's own name from a
  * remote key, and the directory's last segment from a path key. The fallback

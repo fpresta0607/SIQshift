@@ -704,7 +704,8 @@ pub struct AgentUsageBatchOutcome {
 
 /// A per-user path prefix → project mapping, as `/path-mappings` returns it.
 /// Read-only from the desktop: the host uses these to file an agent's work by
-/// the folder it ran in. There is no longer a screen for editing them by hand.
+/// the folder it ran in. There is no screen for editing them by hand; the New
+/// project box only asks the API to create a project with one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathMapping {
@@ -736,6 +737,23 @@ pub enum MappingKind {
 #[derive(Deserialize)]
 struct PathMappingListResponse {
     mappings: Vec<PathMapping>,
+}
+
+/// A repository the member's own agents worked in that none of their folder
+/// links claims, as `/projects/repositories` lists it for the New project box.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryChoice {
+    pub repo_key: String,
+    pub name: String,
+    #[serde(default)]
+    pub remote: Option<String>,
+    pub repo_root: String,
+}
+
+#[derive(Deserialize)]
+struct RepositoryChoiceListResponse {
+    repositories: Vec<RepositoryChoice>,
 }
 
 /// Active time split by how many agents ran at once, plus agent runtime that
@@ -1276,13 +1294,26 @@ impl ApiClient {
     }
 
     /// Creates a project for the signed-in member; the API answers 201 with the
-    /// created list item, the same shape `/projects` returns.
-    pub async fn create_project(&self, access_token: &str, name: &str) -> ApiResult<TimerProject> {
+    /// created list item, the same shape `/projects` returns. A `repo_key`
+    /// names one of `repository_choices`' entries, and the API then creates the
+    /// project with a folder link for that repository. It is sent only when one
+    /// was picked, because the create body is strict and an API older than the
+    /// field refuses any key it does not know.
+    pub async fn create_project(
+        &self,
+        access_token: &str,
+        name: &str,
+        repo_key: Option<&str>,
+    ) -> ApiResult<TimerProject> {
+        let body = match repo_key {
+            Some(repo_key) => serde_json::json!({ "name": name, "repoKey": repo_key }),
+            None => serde_json::json!({ "name": name }),
+        };
         let response = self
             .http
             .post(format!("{}/projects", self.api_base_url))
             .bearer_auth(access_token)
-            .json(&serde_json::json!({ "name": name }))
+            .json(&body)
             .send()
             .await
             .map_err(|error| classify_transport(&error))?;
@@ -1387,6 +1418,14 @@ impl ApiClient {
             .json()
             .await
             .map_err(|_| BridgeError::unknown("The preferences response could not be read."))
+    }
+
+    /// The member's own repositories that no folder link of theirs claims yet.
+    pub async fn repository_choices(&self, access_token: &str) -> ApiResult<Vec<RepositoryChoice>> {
+        let body: RepositoryChoiceListResponse = self
+            .get_json(access_token, "/projects/repositories")
+            .await?;
+        Ok(body.repositories)
     }
 
     /// What deleting the project would take with it, for the confirm dialog.
@@ -2843,6 +2882,92 @@ mod tests {
                 )]
             );
         }
+    }
+
+    const CREATED_PROJECT: StubAnswer = (
+        "201 Created",
+        "",
+        r#"{"id":"00000000-0000-4000-8000-000000000901","name":"Web shop","createdAt":"2026-08-12T12:00:00.000Z","isArchived":false,"isDefault":false}"#,
+    );
+
+    /// A plain project sends the name alone, exactly as before the New project
+    /// box listed repositories, and a picked one adds its key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn creating_a_project_sends_the_repository_only_when_one_was_picked() {
+        for (repo_key, expected_body) in [
+            (None, r#"{"name":"Web shop"}"#),
+            (
+                Some("github.com/acme/web-shop"),
+                r#"{"name":"Web shop","repoKey":"github.com/acme/web-shop"}"#,
+            ),
+        ] {
+            // Arrange
+            let (client, served) = scripted_stub(vec![CREATED_PROJECT]).await;
+
+            // Act
+            let project = client
+                .create_project("access-jwt", "Web shop", repo_key)
+                .await
+                .expect("the project is created");
+
+            // Assert
+            assert_eq!(project.name, "Web shop");
+            assert_eq!(
+                requests_seen(served).await,
+                vec![(
+                    "POST /projects".to_string(),
+                    expected_body.to_string(),
+                    Some("Bearer access-jwt".to_string())
+                )]
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reads_the_new_project_boxs_repositories() {
+        // Arrange
+        let (client, served) = scripted_stub(vec![(
+            "200 OK",
+            "",
+            r#"{"repositories":[
+                {"repoKey":"github.com/acme/web-shop","name":"web-shop","remote":"github.com/acme/web-shop","repoRoot":"C:/dev/web-shop"},
+                {"repoKey":"path:D:/work/notes","name":"notes","remote":null,"repoRoot":"D:/work/notes"}
+            ]}"#,
+        )])
+        .await;
+
+        // Act
+        let choices = client
+            .repository_choices("access-jwt")
+            .await
+            .expect("the repositories decode");
+
+        // Assert
+        assert_eq!(
+            choices,
+            vec![
+                RepositoryChoice {
+                    repo_key: "github.com/acme/web-shop".to_string(),
+                    name: "web-shop".to_string(),
+                    remote: Some("github.com/acme/web-shop".to_string()),
+                    repo_root: "C:/dev/web-shop".to_string(),
+                },
+                RepositoryChoice {
+                    repo_key: "path:D:/work/notes".to_string(),
+                    name: "notes".to_string(),
+                    remote: None,
+                    repo_root: "D:/work/notes".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            requests_seen(served).await,
+            vec![(
+                "GET /projects/repositories".to_string(),
+                String::new(),
+                Some("Bearer access-jwt".to_string())
+            )]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

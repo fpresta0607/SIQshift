@@ -49,8 +49,8 @@ use tokio::sync::Mutex;
 
 use api::{
     AgentShiftCursor, AgentShiftRows, AgentShifts, AgentShiftsQuery, ApiClient, ApiResult,
-    BridgeError, ErrorKind, LiveAgentSessions, MeStats, Organization, ProjectUsage, TimerProject,
-    TimerUser, ViewPreferences, WorkspaceReport,
+    BridgeError, ErrorKind, LiveAgentSessions, MeStats, Organization, ProjectUsage,
+    RepositoryChoice, TimerProject, TimerUser, ViewPreferences, WorkspaceReport,
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
@@ -766,6 +766,9 @@ async fn app_icons(process_names: Vec<String>) -> HashMap<String, Option<String>
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCreateInput {
     name: String,
+    /// The repository picked in the New project box, when one was.
+    #[serde(default)]
+    repo_key: Option<String>,
 }
 
 #[tauri::command]
@@ -781,7 +784,18 @@ async fn project_create(
         ));
     }
     let access_token = state.access_token().await?;
-    state.client.create_project(&access_token, name).await
+    state
+        .client
+        .create_project(&access_token, name, input.repo_key.as_deref())
+        .await
+}
+
+/// The member's own repositories no folder link claims yet, for the New
+/// project box.
+#[tauri::command]
+async fn project_repositories(state: State<'_, AppState>) -> ApiResult<Vec<RepositoryChoice>> {
+    let access_token = state.access_token().await?;
+    state.client.repository_choices(&access_token).await
 }
 
 #[derive(serde::Deserialize)]
@@ -1275,6 +1289,7 @@ pub fn run() {
             agent_live_sessions,
             app_icons,
             project_create,
+            project_repositories,
             project_update,
             project_usage,
             preferences_get,

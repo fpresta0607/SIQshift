@@ -3,7 +3,16 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { createApp } from "../app.js";
 import { parseEnv } from "../env.js";
-import type { ProjectRecord, ProjectRepository } from "../repositories.js";
+import {
+  PathMappingRepositoryError,
+  type AgentRecord,
+  type AgentRepository,
+  type PathMappingRecord,
+  type PathMappingRepository,
+  type ProjectRecord,
+  type ProjectRepository,
+  type ReportRepository,
+} from "../repositories.js";
 import { createTestAuth } from "../test-tokens.js";
 
 const ids = {
@@ -50,9 +59,16 @@ class MemoryProjects implements ProjectRepository {
   public async findForMember(subject: { organizationId: string }, projectId: string) {
     return this.records.find((record) => record.id === projectId && record.organizationId === subject.organizationId) ?? null;
   }
-  public async createForMember(subject: { organizationId: string; userId: string }, name: string) {
+  /** The folder links each create was handed, in the same transaction as the project. */
+  public readonly folderLinks: { projectId: string; pathPrefix: string; repoUrl: string | null }[] = [];
+  public async createForMember(
+    subject: { organizationId: string; userId: string },
+    name: string,
+    folderLink?: { pathPrefix: string; repoUrl: string | null },
+  ) {
     const record: ProjectRecord = { id: crypto.randomUUID(), organizationId: subject.organizationId, name, archived: false, isDefault: false, icon: null, color: null, createdAt: new Date("2026-08-10T12:00:00.000Z") };
     this.records.push(record);
+    if (folderLink !== undefined) this.folderLinks.push({ projectId: record.id, ...folderLink });
     return record;
   }
   public async defaultIdForOrganization() {
@@ -105,6 +121,154 @@ function createTestApp(projects = new MemoryProjects()) {
     projectRepository: projects,
   });
 }
+
+const TEAMMATE = "e3c7e513-b094-4d4c-ae55-21790ae019a4";
+
+function agentIn(repoKey: string, repoRoot: string, ownerId: string = ids.user): AgentRecord {
+  return {
+    id: crypto.randomUUID(),
+    organizationId: ids.organization,
+    name: "Claude Code",
+    source: "claude_code",
+    status: "registered",
+    owner: { id: ownerId, name: ownerId === ids.user ? "Alex" : "Sam" },
+    project: null,
+    repoRoot,
+    repoKey,
+    createdAt: new Date("2026-08-10T12:00:00.000Z"),
+  };
+}
+
+function folderLinkRecord(pathPrefix: string): PathMappingRecord {
+  return {
+    id: "c1c7e513-b094-4d4c-ae55-21790ae019a4",
+    organizationId: ids.organization,
+    userId: ids.user,
+    kind: "path_prefix",
+    pathPrefix,
+    repoUrl: null,
+    projectId: ids.project,
+  };
+}
+
+/**
+ * The project routes with the roster and folder links mounted beside them.
+ * Only `listForOrganization` and `listForSubject` are read; the rest of each
+ * repository belongs to routes these tests never call.
+ */
+function createRepositoryTestApp(agents: AgentRecord[], mappings: PathMappingRecord[] = [], projects = new MemoryProjects()) {
+  const app = createApp({
+    config,
+    keys,
+    accounts: { resolve: async (identity) => users[identity.authUserId as keyof typeof users] },
+    clock: () => new Date("2026-08-06T14:00:00.000Z"),
+    projectRepository: projects,
+    agentRepository: { listForOrganization: async () => agents } as unknown as AgentRepository,
+    reportRepository: {} as ReportRepository,
+    pathMappingRepository: {
+      listForSubject: async (subject: { userId: string }) => mappings.filter((mapping) => mapping.userId === subject.userId),
+    } as unknown as PathMappingRepository,
+  });
+  return { app, projects };
+}
+
+const CLOCK_IN = agentIn("github.com/acme/clock-in", "C:/dev/clock-in");
+const NOTES = agentIn("path:D:/work/notes", "D:/work/notes");
+const THEIRS = agentIn("github.com/acme/payroll", "C:/src/payroll", TEAMMATE);
+
+describe("repositories offered by the New project box", () => {
+  it("requires a bearer token", async () => {
+    const { app } = createRepositoryTestApp([CLOCK_IN]);
+    expect((await app.request("http://api.test/projects/repositories")).status).toBe(401);
+  });
+
+  it("lists the caller's own unclaimed repositories and never a teammate's", async () => {
+    // Arrange
+    const { app } = createRepositoryTestApp([CLOCK_IN, NOTES, THEIRS], [folderLinkRecord("D:/work")]);
+
+    // Act
+    const asMember = await app.request("http://api.test/projects/repositories", { headers: { authorization: bearerHeader } });
+    const asAdmin = await app.request("http://api.test/projects/repositories", { headers: { authorization: adminBearerHeader } });
+
+    // Assert
+    expect(asMember.status).toBe(200);
+    await expect(asMember.json()).resolves.toEqual({
+      repositories: [{ repoKey: "github.com/acme/clock-in", name: "clock-in", remote: "github.com/acme/clock-in", repoRoot: "C:/dev/clock-in" }],
+    });
+    // The admin's own agents worked nowhere, and a teammate's root is never offered.
+    await expect(asAdmin.json()).resolves.toEqual({ repositories: [] });
+  });
+
+  it("is an empty list when the roster is not mounted", async () => {
+    const response = await createTestApp().request("http://api.test/projects/repositories", { headers: { authorization: bearerHeader } });
+    await expect(response.json()).resolves.toEqual({ repositories: [] });
+  });
+});
+
+describe("creating a project from a repository", () => {
+  const headers = () => ({ authorization: bearerHeader, "content-type": "application/json" });
+
+  it("creates the project with a folder link for the repository's root and remote", async () => {
+    // Arrange
+    const { app, projects } = createRepositoryTestApp([CLOCK_IN]);
+
+    // Act
+    const created = await app.request("http://api.test/projects", {
+      method: "POST", headers: headers(), body: JSON.stringify({ name: "Clock in", repoKey: "github.com/acme/clock-in" }),
+    });
+
+    // Assert
+    expect(created.status).toBe(201);
+    const project = await created.json() as { id: string; name: string };
+    expect(project.name).toBe("Clock in");
+    expect(projects.folderLinks).toEqual([
+      { projectId: project.id, pathPrefix: "C:/dev/clock-in", repoUrl: "https://github.com/acme/clock-in" },
+    ]);
+  });
+
+  it("makes a plain project with no folder link when no repository is named", async () => {
+    const { app, projects } = createRepositoryTestApp([CLOCK_IN]);
+
+    const created = await app.request("http://api.test/projects", { method: "POST", headers: headers(), body: JSON.stringify({ name: "Admin" }) });
+
+    expect(created.status).toBe(201);
+    expect(projects.folderLinks).toEqual([]);
+    expect(projects.records.map((record) => record.name)).toEqual(["General", "Admin"]);
+  });
+
+  it.each([
+    ["a teammate's repository", [CLOCK_IN, THEIRS], [], "github.com/acme/payroll", 404],
+    ["a repository the caller never worked in", [CLOCK_IN], [], "github.com/acme/unknown", 404],
+    ["a repository a folder link already claims", [CLOCK_IN], [folderLinkRecord("C:/dev/clock-in")], "github.com/acme/clock-in", 409],
+  ])("refuses %s and creates nothing", async (_case, agents, mappings, repoKey, status) => {
+    const { app, projects } = createRepositoryTestApp(agents, mappings);
+
+    const refused = await app.request("http://api.test/projects", { method: "POST", headers: headers(), body: JSON.stringify({ name: "Taken", repoKey }) });
+
+    expect(refused.status).toBe(status);
+    expect(projects.records.map((record) => record.name)).toEqual(["General"]);
+  });
+
+  it("answers a folder link that raced in between the check and the insert as a conflict", async () => {
+    const projects = new MemoryProjects();
+    projects.createForMember = async () => { throw new PathMappingRepositoryError("path_prefix"); };
+    const { app } = createRepositoryTestApp([CLOCK_IN], [], projects);
+
+    const refused = await app.request("http://api.test/projects", {
+      method: "POST", headers: headers(), body: JSON.stringify({ name: "Clock in", repoKey: "github.com/acme/clock-in" }),
+    });
+
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toEqual({ error: { code: "conflict", message: "Another project already has that repository." } });
+  });
+
+  it("refuses a named repository when the roster is not mounted", async () => {
+    const refused = await createTestApp().request("http://api.test/projects", {
+      method: "POST", headers: headers(), body: JSON.stringify({ name: "Clock in", repoKey: "github.com/acme/clock-in" }),
+    });
+    expect(refused.status).toBe(404);
+  });
+});
 
 describe("project routes", () => {
   it("requires a bearer token", async () => {
