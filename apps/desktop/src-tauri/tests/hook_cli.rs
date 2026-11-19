@@ -891,29 +891,72 @@ fn a_session_start_hook_returns_within_its_git_budget_and_leaves_no_git() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn run_claude_hook_with_git_trace(
+    dir: &Path,
+    cwd: &Path,
+    hook_event_name: &str,
+    git_trace: &Path,
+) -> std::process::Output {
+    let payload = serde_json::json!({
+        "session_id": "git-trace-1",
+        "cwd": cwd,
+        "hook_event_name": hook_event_name,
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_siqshift-hook"))
+        .env("SIQSHIFT_SPOOL", dir.join("agent-spool.jsonl"))
+        .env("GIT_TRACE", git_trace)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hook binary spawns");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(payload.to_string().as_bytes())
+        .expect("stdin writes");
+    child.wait_with_output().expect("hook exits")
+}
+
+/// git appends to the file `GIT_TRACE` names on every invocation, whatever its
+/// arguments, so the file existing is the oracle for "the hook started git".
+/// The `SessionStart` run is the control that the oracle sees the hook's git.
 #[test]
 fn a_session_end_hook_never_starts_git() {
     // Arrange
     let dir = temp_dir("end-no-git");
+    let repo = dir.join("repo");
+    init_repo_with_one_commit(&repo);
     let spool = dir.join("agent-spool.jsonl");
-    let fake_git = install_fake_git(&dir);
+    let start_trace = dir.join("start-git-trace.log");
+    let end_trace = dir.join("end-git-trace.log");
 
     // Act
-    let mut hook = spawn_hook_with_fake_git(&dir, &fake_git, "SessionEnd");
-    let is_hook_done = wait_until(HOOK_EXIT_CAP, || {
-        hook.try_wait().expect("hook status reads").is_some()
-    });
-    if !is_hook_done {
-        let _ = hook.kill();
-    }
-    let status = hook.wait().expect("hook is reaped");
+    let start_output = run_claude_hook_with_git_trace(&dir, &repo, "SessionStart", &start_trace);
+    let end_output = run_claude_hook_with_git_trace(&dir, &repo, "SessionEnd", &end_trace);
 
     // Assert
-    clean_up_fake_git(&fake_git);
-    assert!(is_hook_done, "the hook did not exit");
-    assert!(status.success());
-    assert!(!fake_git.pid_file.exists(), "the hook started git");
-    let content = std::fs::read_to_string(&spool).expect("the ended line spools");
-    assert!(content.contains("\"ended\""));
+    assert!(
+        start_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start_output.stderr)
+    );
+    assert!(
+        start_trace.exists(),
+        "the trace never saw the start hook's git"
+    );
+    assert!(
+        end_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&end_output.stderr)
+    );
+    assert!(!end_trace.exists(), "the end hook started git");
+    let content = std::fs::read_to_string(&spool).expect("the spool reads");
+    let events: Vec<serde_json::Value> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("line parses"))
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["event"], "ended");
     let _ = std::fs::remove_dir_all(&dir);
 }
