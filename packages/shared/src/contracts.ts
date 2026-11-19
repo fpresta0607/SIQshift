@@ -567,6 +567,14 @@ export const agentEventKindValues = ["started", "ended", "heartbeat"] as const;
 export const agentEventKindSchema = z.enum(agentEventKindValues);
 
 /**
+ * What an open agent session is doing: `working` on a prompt, or `waiting` for
+ * its person, done with its turn or held on a permission prompt. The hook
+ * learns it from the runtime's own prompt and stop events.
+ */
+export const agentSessionStateValues = ["working", "waiting"] as const;
+export const agentSessionStateSchema = z.enum(agentSessionStateValues);
+
+/**
  * One lifecycle event drained from an agent-hook or browser spool; keyed server-side by
  * (source, externalSessionId). Browser spans carry the matched `ruleId` instead of a `cwd`:
  * exactly one of the two must be present, `ruleId` iff the source is `browser`.
@@ -601,6 +609,8 @@ export const agentSessionEventSchema = z
     repoRemote: z.string().min(1).max(1_000).optional(),
     model: z.string().min(1).max(200).optional(),
     ruleId: idSchema.optional(),
+    /** The session's state from this event on. Optional: a desktop from before it shipped never sends one. */
+    state: agentSessionStateSchema.optional(),
   })
   .strict()
   .superRefine((event, ctx) => {
@@ -1246,6 +1256,8 @@ export const liveAgentSessionSchema = z
     /** The project the session's attribution resolved to; null when nothing did. */
     project: z.object({ id: idSchema, name: z.string().min(1) }).strict().nullable(),
     description: z.string().min(1).max(500),
+    /** Working or waiting, from the session's last event that said; null when no event has said yet. */
+    state: agentSessionStateSchema.nullable(),
   })
   .strict();
 
@@ -1526,6 +1538,7 @@ export type ActivitySegmentBatchResponse = z.infer<typeof activitySegmentBatchRe
 export type ActivitySegmentKind = z.infer<typeof activitySegmentKindSchema>;
 export type ActivitySegmentUpload = z.infer<typeof activitySegmentUploadSchema>;
 export type AgentEventKind = z.infer<typeof agentEventKindSchema>;
+export type AgentSessionState = z.infer<typeof agentSessionStateSchema>;
 export type AgentSessionEvent = z.infer<typeof agentSessionEventSchema>;
 export type AgentSessionEventBatchRequest = z.infer<typeof agentSessionEventBatchRequestSchema>;
 export type AgentSessionEventBatchResponse = z.infer<typeof agentSessionEventBatchResponseSchema>;
