@@ -64,7 +64,8 @@ tauri-plugin-single-instance = "2"
 # Gdi/Shell/Com/FileSystem features exist for `app_icons` icon extraction;
 # Shell also covers SHQueryUserNotificationState and Registry the
 # ConsentStore microphone read, two of the false-idle rescue probes. The
-# JobObjects/Security features are the hook's kill-on-close job object.
+# JobObjects/Security features are the kill-on-close job objects of the hook
+# and of every git probe.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
