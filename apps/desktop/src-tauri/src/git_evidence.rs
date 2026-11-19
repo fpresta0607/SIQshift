@@ -250,9 +250,9 @@ fn start_in_kill_on_close_job(
 }
 
 /// Resumes every thread of a process created with `CREATE_SUSPENDED`, which
-/// until then has only the one it was created with. std's `Child` keeps no
-/// handle to that thread, so it is found by the process id the open process
-/// handle keeps from being reused. True when a thread was resumed.
+/// until then has only the one it was created with. Neither std's nor tokio's
+/// `Child` keeps a handle to that thread, so it is found by the process id the
+/// open process handle keeps from being reused. True when a thread was resumed.
 #[cfg(windows)]
 fn resume_suspended_process(process_id: u32) -> bool {
     use std::mem::size_of;
