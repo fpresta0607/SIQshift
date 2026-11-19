@@ -655,8 +655,7 @@ describe("dashboard", () => {
     expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("2h 00m");
     expect(totalFigure(stats, "Agent time", "Alex")).toHaveTextContent("1h 00m");
     expect(totalFigure(stats, "Recorded time", "Alex")).toHaveTextContent("2h 00m");
-    const split = within(stats.getByRole("region", { name: "Active time, by agents running" }));
-    expect(split.getAllByRole("listitem").map((row) => row.textContent)).toEqual(["No agent running1h 00m", "With 1 agent1h 00m"]);
+    expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
     const apps = within(stats.getByRole("region", { name: "Apps" }));
     expect(apps.getByText("Claude Code")).toBeInTheDocument();
     expect(apps.getByText("VS Code")).toBeInTheDocument();
@@ -1527,13 +1526,11 @@ describe("dashboard", () => {
     await pickPerson(person, stats, "Alex");
     const apps = within(await stats.findByRole("region", { name: "Apps" }));
 
-    // Assert: their active time split into the agent-assisted levels that
-    // actually have time in them.
+    // Assert: their totals and apps, with no card splitting their active time
+    // by how many agents ran.
     expect(totalFigure(stats, "Active time", "Alex")).toHaveTextContent("2h 00m");
-    const split = within(stats.getByRole("region", { name: "Active time, by agents running" }));
-    expect(split.getByText("No agent running")).toBeInTheDocument();
-    expect(split.getByText("With 1 agent")).toBeInTheDocument();
-    expect(split.queryByText("With 2 agents")).not.toBeInTheDocument();
+    expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
+    expect(stats.queryByText("No agent running")).not.toBeInTheDocument();
     expect(stats.queryByText(/while away|Total agent time/)).not.toBeInTheDocument();
     // claude.exe reads as the tool it is, so the team sees Claude usage plainly.
     expect(apps.getByText("Claude Code")).toBeInTheDocument();
@@ -1676,23 +1673,6 @@ describe("dashboard", () => {
     expect(graph).not.toHaveTextContent(/token/i);
   });
 
-  it("labels 3+ concurrency in plain words", async () => {
-    const person = await signIn(clientFor({
-      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
-      meStats: vi.fn().mockResolvedValue({
-        ...memberStats,
-        concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 5_400, awaySeconds: 1_800 },
-      }),
-    }));
-
-    const stats = await openAllStats(person);
-    const split = within(await stats.findByRole("region", { name: "Active time, by agents running" }));
-    expect(split.getByText("With 3+ agents").closest("li")).toHaveTextContent("1h 30m");
-    expect(split.queryByText("With 2 agents")).not.toBeInTheDocument();
-    expect(split.queryByText("With 1 agent")).not.toBeInTheDocument();
-    expect(split.queryByText(/while away/)).not.toBeInTheDocument();
-  });
-
   // The Overlord's card, to the minute: 1h56m recorded, 37m active, no agent
   // time measured anywhere in the window. The header used to call the 1h19m
   // difference "unattended agent time" while the board beside it read
@@ -1756,25 +1736,6 @@ describe("dashboard", () => {
 
     // Assert: 2h 30m recorded against 1h 30m active.
     expect(await stats.findByText(/^Recorded: /)).toHaveTextContent("1h 00m of it away from the keyboard");
-  });
-
-  it("keeps the person's split quiet when there is nothing recorded", async () => {
-    const person = await signIn(clientFor({
-      workspace: vi.fn().mockResolvedValue(workspaceOfOne),
-      meStats: vi.fn().mockResolvedValue({
-        ...memberStats,
-        activeSeconds: 0,
-        agentSeconds: 0,
-        concurrency: { t0Seconds: 0, t1Seconds: 0, t2Seconds: 0, t3PlusSeconds: 0, awaySeconds: 0 },
-        byAgent: [],
-      }),
-    }));
-
-    const stats = await openAllStats(person);
-    await stats.findByLabelText("Totals for Alex");
-
-    expect(stats.queryByRole("region", { name: "Active time, by agents running" })).not.toBeInTheDocument();
-    expect(stats.queryByText("Total agent time")).not.toBeInTheDocument();
   });
 
   it("points every card at the person picked on the board", async () => {

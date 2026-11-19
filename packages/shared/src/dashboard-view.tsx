@@ -16,7 +16,6 @@ import {
   ShiftGroups,
   type AppRow,
   type ChartHourlyBucket,
-  type ConcurrencySplit,
   type LivePersonGroup,
   type MeterRow,
   type ShiftCursor,
@@ -42,8 +41,8 @@ export { DashboardFilter, customRangeName, dayBounds, localDay, type DashboardDa
  * projects, the agents, the repos and who is running one now. The board is the
  * picker, so it stays the whole team's and is drawn only when there are two or
  * more people to pick between; in a workspace of one the person is the team.
- * A person also gets the two cards only a person has: their active time split
- * by agents running, and the apps it was spent in.
+ * A person also gets the one card only a person has: the apps their time was
+ * spent in.
  *
  * It draws the numbers it is handed and adds nothing up: the apps pass the
  * server's reports, the home page its illustrative data. Its parts are the
@@ -145,8 +144,6 @@ export type DashboardViewProps = {
     recordedSeconds: number;
     hourly: readonly ChartHourlyBucket[];
     projectRows: readonly MeterRow[];
-    /** A person's active time split by agents running; the team has none. */
-    split?: ConcurrencySplit | undefined;
     /** What recorded is made of beyond active time, from `recordedBasis`. */
     recordedNote?: string | null | undefined;
     /** A person's apps; the team has none. */
@@ -218,13 +215,6 @@ export const projectMeterRows = (
   durationSeconds: entry.durationSeconds,
 })));
 
-const SPLIT_ROWS = [
-  { key: "t0Seconds", label: "No agent running", level: 0 },
-  { key: "t1Seconds", label: "With 1 agent", level: 1 },
-  { key: "t2Seconds", label: "With 2 agents", level: 2 },
-  { key: "t3PlusSeconds", label: "With 3+ agents", level: 3 },
-] as const;
-
 const byTokens = <Row extends { tokens?: number | undefined; agentSeconds: number }>(a: Row, b: Row): number =>
   (b.tokens ?? 0) - (a.tokens ?? 0) || b.agentSeconds - a.agentSeconds;
 
@@ -245,7 +235,6 @@ export const DashboardView = ({
 }: DashboardViewProps) => {
   const chartTitleId = useId();
   const boardTitleId = useId();
-  const splitTitleId = useId();
   const projectsTitleId = useId();
   const appsTitleId = useId();
   const runtimesTitleId = useId();
@@ -411,24 +400,6 @@ export const DashboardView = ({
             </section>
           )}
           {!isBoardShown && boardNotes.map((note) => <p key={note} className="tv-foot">{note}</p>)}
-
-          {time?.split !== undefined && time.activeSeconds > 0 && (
-            <section className="tv-card tv-split" aria-labelledby={splitTitleId}>
-              <div className="tv-card-head">
-                <h4 id={splitTitleId}>Active time, by agents running</h4>
-              </div>
-              <ul className="tv-meter-list">
-                {SPLIT_ROWS.filter((row) => row.level === 0 || time.split![row.key] > 0).map((row) => (
-                  <li key={row.key} className="meter-row">
-                    <span className="tv-swatch" data-level={row.level} aria-hidden="true" />
-                    <span className="meter-name">{row.label}</span>
-                    <span className="meter-bar" aria-hidden="true" style={share(time.split![row.key], time.activeSeconds)} />
-                    <span className="meter-duration">{formatHumanDuration(time.split![row.key])}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
 
           {repos !== undefined && (
             <section className="tv-card tv-repos" aria-labelledby={reposTitleId}>
