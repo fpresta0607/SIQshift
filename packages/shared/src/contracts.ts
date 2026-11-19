@@ -986,10 +986,10 @@ export const agentShiftRowSchema = z
 
 /**
  * The Agents tab's whole story: who ran agents, what those agents ran, and
- * where. `people` opens the tab, ranked by the agent time the range recorded,
- * and doubles as the tab's person filter. `hourly` is the same seconds over
- * time, for the line above it. Then one group per repo label the shifts
- * named, heaviest first, the label-less group last.
+ * where. `people` is everyone whose agents the range recorded, ranked by agent
+ * time, and gives the dashboard's People board each person's tokens. `hourly`
+ * is the same seconds over time, for the line above it. Then one group per
+ * repo label the shifts named, heaviest first, the label-less group last.
  *
  * Aggregates only: a group states its totals and nothing else, and the shifts
  * behind it are a separate paged read - `GET /reports/agent-shifts/rows`,
