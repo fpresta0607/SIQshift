@@ -315,7 +315,8 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           // backfill can land after the end that closed a short session); an
           // existing model is never overwritten (first assignment wins). A
           // heartbeat naming a state sets a running row's state, the one thing
-          // here that is overwritten, since it is what the session is doing now.
+          // here that is overwritten, since it is what the session is doing now,
+          // unless the heartbeat is older than the row's last event.
           recordEndShift(await dependencies.agentSessions.advanceLastEvent(
             subject,
             event.source,

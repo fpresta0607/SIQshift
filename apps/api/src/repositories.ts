@@ -615,8 +615,9 @@ export interface AgentSessionRepository {
   /**
    * Inserts a running row; a replayed start only refreshes lastEventAt and never
    * reopens an ended row, and one past `lapsedBefore` closes a running row at
-   * its last event instead. A start carrying a state sets the row's state, and
-   * one carrying none leaves it as it was.
+   * its last event instead. A start carrying a state sets the row's state when
+   * it is at least as new as the row's last event, and one carrying none, or
+   * older than that event, leaves it as it was.
    */
   upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift>;
   /**
@@ -635,8 +636,9 @@ export interface AgentSessionRepository {
   insertEnded(input: InsertEndedAgentSession): Promise<void>;
   /**
    * Advances lastEventAt on a running row; null when nothing matched (unknown).
-   * A heartbeat carrying a state sets the running row's state, and one carrying
-   * none leaves it as it was.
+   * A heartbeat carrying a state sets the running row's state when it is at
+   * least as new as the row's last event, and one carrying none, or older than
+   * that event, leaves it as it was.
    * A heartbeat naming a model fills a still-null model; an existing model is
    * never overwritten (first assignment wins). A model-bearing heartbeat also
    * fills a still-null model on an already-ended row - the transcript reader's
