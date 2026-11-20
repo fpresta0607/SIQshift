@@ -1,0 +1,22 @@
+-- What a running agent session is doing right now, hand-written for the same
+-- reason 0018 through 0025 are: the generated snapshots under meta/ stop at
+-- 0017, so drizzle-kit generate would re-emit every hand-written migration
+-- since as a diff.
+--
+-- What it is for
+-- --------------
+-- The Live now card says whether each running agent is working or waiting on
+-- its person. The runtime's hook reports that with its events, and the last
+-- event that said is the state the card shows. A row no event has said
+-- anything for keeps it null, and the card draws nothing for it, so there is
+-- nothing to backfill.
+--
+-- Why it is safe
+-- --------------
+-- A nullable column with no default is a catalog change: it rewrites no row
+-- and holds its lock only for that change. The check constraint is added with
+-- the column, so it tests no existing row, every one of which is null. The
+-- running API selects named columns, so it neither reads nor depends on the
+-- column until the release that writes it.
+ALTER TABLE "agent_sessions" ADD COLUMN "state" text;--> statement-breakpoint
+ALTER TABLE "agent_sessions" ADD CONSTRAINT "agent_sessions_state_valid" CHECK ("agent_sessions"."state" is null or "agent_sessions"."state" in ('working', 'waiting'));

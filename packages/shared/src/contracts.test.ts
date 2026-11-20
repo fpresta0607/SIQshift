@@ -1310,6 +1310,7 @@ describe("agent shifts contracts", () => {
             repo: "siqshift",
             project: null,
             description: "Codex on gpt-5.6-sol in siqshift, running 59m",
+            state: "working",
           },
           {
             id: "00000000-0000-4000-8000-000000000702",
@@ -1321,11 +1322,27 @@ describe("agent shifts contracts", () => {
             repo: "quartermaster",
             project: null,
             description: "Codex on gpt-5.6-sol in quartermaster, running 29m",
+            state: "waiting",
+          },
+          {
+            id: "00000000-0000-4000-8000-000000000703",
+            source: "codex",
+            owner: { id: ids.user, name: "Alex" },
+            model: null,
+            startedAt: "2026-08-06T14:45:00.000Z",
+            lastEventAt: "2026-08-06T14:59:45.000Z",
+            repo: null,
+            project: null,
+            description: "Codex in no codebase recorded, running 14m",
+            state: null,
           },
         ],
       }],
     };
     expect(liveAgentSessionsResponseSchema.parse(response)).toEqual(response);
+    expect(() => liveAgentSessionsResponseSchema.parse({
+      people: [{ owner: response.people[0]!.owner, sessions: [{ ...response.people[0]!.sessions[0], state: "sleeping" }] }],
+    })).toThrow();
     // The browser spans that never reach the roster reach nowhere here
     // either: they are attention, not workers.
     expect(() => liveAgentSessionsResponseSchema.parse({ people: [] })).not.toThrow();

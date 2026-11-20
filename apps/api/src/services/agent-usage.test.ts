@@ -37,6 +37,7 @@ function sessionRecord(overrides: Partial<AgentSessionRecord> = {}): AgentSessio
     cwd: "C:/dev/siqshift",
     ruleId: null,
     agentId: ids.agent,
+    state: null,
     status: "ended",
     startedAt: new Date("2026-08-06T10:00:00.000Z"),
     endedAt: new Date("2026-08-06T11:00:00.000Z"),

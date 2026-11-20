@@ -1,4 +1,4 @@
-import { agentRuntimeLabel, type AgentSessionEventBatchResponse, type AgentSource } from "@siqshift/shared";
+import { agentRuntimeLabel, type AgentSessionEventBatchResponse, type AgentSessionState, type AgentSource } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
 import type {
@@ -98,6 +98,12 @@ export interface AgentSessionEventInput {
   repoRemote: string | null;
   /** The matched url-rule mapping id for browser spans; null for agent events. */
   ruleId: string | null;
+  /**
+   * Whether the session is working or waiting on its person, when the hook
+   * said. Null from a desktop that predates it, and null leaves what an earlier
+   * event said in place rather than clearing it.
+   */
+  state: AgentSessionState | null;
 }
 
 export interface AgentSessionServiceDependencies {
@@ -265,6 +271,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
             projectId,
             agentId: await resolveAgent(event, projectId),
             linkedSessionId,
+            state: event.state,
             occurredAt: event.occurredAt,
             lapsedBefore: lapsedBefore(event),
             receivedAt: now,
@@ -284,6 +291,7 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
               ruleId: event.ruleId,
               projectId,
               agentId: await resolveAgent(event, projectId),
+              state: event.state,
               occurredAt: event.occurredAt,
               receivedAt: now,
             });
@@ -305,12 +313,16 @@ export function createAgentSessionService(dependencies: AgentSessionServiceDepen
           // ended. A heartbeat naming a model fills a still-null model, on a
           // running or an already-ended row alike (the transcript reader's
           // backfill can land after the end that closed a short session); an
-          // existing model is never overwritten (first assignment wins).
+          // existing model is never overwritten (first assignment wins). A
+          // heartbeat naming a state sets a running row's state, the one thing
+          // here that is overwritten, since it is what the session is doing now,
+          // unless the heartbeat is older than the row's last event.
           recordEndShift(await dependencies.agentSessions.advanceLastEvent(
             subject,
             event.source,
             event.externalSessionId,
             attestedModel(event.model),
+            event.state,
             event.occurredAt,
             lapsedBefore(event),
             now,

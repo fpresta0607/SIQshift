@@ -2591,6 +2591,7 @@ describe("live agent sessions", () => {
     source: "claude_code",
     model: null,
     cwd: "C:/dev/siqshift",
+    state: null,
     projectId: ids.project,
     projectName: "Timer",
     agentRepoRoot: null,
@@ -2647,6 +2648,24 @@ describe("live agent sessions", () => {
     ]);
     // The codebase label rides beside the description, a name and never a path.
     expect(result.people[0]!.sessions.map((session) => session.repo)).toEqual(["siqshift", "quartermaster"]);
+  });
+
+  it("puts the state each session last reported on the live view, and null where none has", async () => {
+    const reports = new Reports();
+    reports.runningSessions = [
+      running({ sessionId: "s1", state: "working", startedAt: at(12, 10) }),
+      running({ sessionId: "s2", state: "waiting", startedAt: at(12, 5) }),
+      running({ sessionId: "s3", state: null, startedAt: at(12) }),
+    ];
+    const service = createReportService({ reports, now: () => at(12, 30) });
+
+    const result = await service.liveAgentSessions(subject, {});
+
+    expect(result.people[0]!.sessions.map((session) => [session.id, session.state])).toEqual([
+      ["s1", "working"],
+      ["s2", "waiting"],
+      ["s3", null],
+    ]);
   });
 
   it("orders project-tied sessions above untied ones, then newest, and people by their running time", async () => {

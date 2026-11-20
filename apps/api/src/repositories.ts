@@ -1,4 +1,4 @@
-import type { ActivitySegmentKind, AgentSource, PictureType, SessionAttribution } from "@siqshift/shared";
+import type { ActivitySegmentKind, AgentSessionState, AgentSource, PictureType, SessionAttribution } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "./auth.js";
 
@@ -311,6 +311,8 @@ export interface RunningAgentSessionRecord {
   source: string;
   model: string | null;
   cwd: string | null;
+  /** Working or waiting, from the last event that said; null when none has. */
+  state: AgentSessionState | null;
   projectId: string | null;
   projectName: string | null;
   agentRepoRoot: string | null;
@@ -540,6 +542,8 @@ export interface AgentSessionRecord {
   ruleId: string | null;
   /** The roster identity this shift belongs to; legacy rows stay null. */
   agentId: string | null;
+  /** Working or waiting, from the last event that said; null when none has. */
+  state: AgentSessionState | null;
   status: "running" | "ended";
   startedAt: Date;
   endedAt: Date | null;
@@ -558,6 +562,8 @@ export interface UpsertStartedAgentSession {
   projectId: string | null;
   agentId: string | null;
   linkedSessionId: string | null;
+  /** What the event said the session is doing; null when it said nothing. */
+  state: AgentSessionState | null;
   occurredAt: Date;
   /**
    * occurredAt minus the staleness window. A start on a running row that has
@@ -578,6 +584,8 @@ export interface InsertEndedAgentSession {
   ruleId: string | null;
   projectId: string | null;
   agentId: string | null;
+  /** What the event said the session is doing; null when it said nothing. */
+  state: AgentSessionState | null;
   occurredAt: Date;
   receivedAt: Date;
 }
@@ -607,7 +615,9 @@ export interface AgentSessionRepository {
   /**
    * Inserts a running row; a replayed start only refreshes lastEventAt and never
    * reopens an ended row, and one past `lapsedBefore` closes a running row at
-   * its last event instead.
+   * its last event instead. A start carrying a state sets the row's state when
+   * it is at least as new as the row's last event, and one carrying none, or
+   * older than that event, leaves it as it was.
    */
   upsertStarted(input: UpsertStartedAgentSession): Promise<AgentSessionEndShift>;
   /**
@@ -626,6 +636,9 @@ export interface AgentSessionRepository {
   insertEnded(input: InsertEndedAgentSession): Promise<void>;
   /**
    * Advances lastEventAt on a running row; null when nothing matched (unknown).
+   * A heartbeat carrying a state sets the running row's state when it is at
+   * least as new as the row's last event, and one carrying none, or older than
+   * that event, leaves it as it was.
    * A heartbeat naming a model fills a still-null model; an existing model is
    * never overwritten (first assignment wins). A model-bearing heartbeat also
    * fills a still-null model on an already-ended row - the transcript reader's
@@ -639,7 +652,7 @@ export interface AgentSessionRepository {
    * forward. Without it a start and an end a day and a half apart landed in one
    * batch and read as one shift a day and a half long.
    */
-  advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null>;
+  advanceLastEvent(subject: AuthenticatedSubject, source: AgentSource, externalSessionId: string, model: string | null, state: AgentSessionState | null, occurredAt: Date, lapsedBefore: Date, now: Date): Promise<AgentSessionEndShift | null>;
   /**
    * Assigns an identity to a session whose agent_id is still null - how a
    * shift that started before the roster existed takes commits after it. The
