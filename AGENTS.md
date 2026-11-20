@@ -300,6 +300,13 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   translocated path that vanishes, issue 192). The browser host
   and the app share the same rule for `spool::browser_dir()`, so the two cannot
   drift apart the same way.
+- `SessionTracker` checkpoints a session once it has been open `SESSION_CHECKPOINT_SECONDS`:
+  on an active tick it closes the session at `now` and opens the next at the same instant, in
+  the same project. While any agent is active an idle or locked spell never closes a session,
+  so without it one session stayed open all day, the server's project-scoped active time
+  (presence intersected with closed sessions) read zero, and a session open past 7 days was
+  refused whole at close. A project change still closes at the last active moment, as before,
+  and no second is lost or counted twice.
 - `api.rs`'s `upload_agent_events` sends the explicit `AgentEventUpload` projection, never
   `SpoolEvent` itself: `agentSessionEventSchema` is `.strict()`, so serializing the spool
   struct would 400 every agent-event batch the moment it grew a local-only field, and

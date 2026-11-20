@@ -119,6 +119,12 @@ a workday is a handful of sessions, not one row per interruption. An open agent
 session holds a session through quiet time and lock, because an overnight agent
 run is unattended work rather than an abandoned desk.
 
+A session is also saved in pieces.
+Once a session has been open for 15 minutes, the next stretch of work closes it and opens the next one at the same instant, in the same project.
+Nothing is lost or counted twice, because the two sessions meet at one second, and quiet time stays with the session it fell in.
+Without this, agents running all day would hold one session open all day, and the server would see none of it until it closed.
+A session open for more than 7 days is refused whole when it closes.
+
 The open session is written to disk on every 30-second tick. A crash or a forced
 shutdown therefore costs the seconds since the last tick, and the next launch
 closes the carried session at its last active moment rather than resuming across
