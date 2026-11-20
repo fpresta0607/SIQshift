@@ -266,6 +266,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   permissionRequest: vi.fn().mockResolvedValue([]),
   permissionDecline: vi.fn().mockResolvedValue([]),
   permissionOpenSettings: vi.fn().mockResolvedValue(undefined),
+  appIsTranslocated: vi.fn().mockResolvedValue(false),
   sessionSelectProject: vi.fn().mockResolvedValue(status),
   hookRegister: vi.fn().mockResolvedValue({ status: "registered", configPath: "C:/Users/dev/.claude/settings.json" }),
   monitorSetEnabled: vi.fn().mockResolvedValue(settings),
@@ -711,6 +712,41 @@ describe("recording", () => {
     // and never earns a banner on the record surface.
     expect(screen.queryByTestId("sync-line")).not.toBeInTheDocument();
     expect(screen.queryByText(/still on this computer/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("a launch from a temporary App Translocation copy", () => {
+  it.each([
+    ["the sign-in screen", { kind: "signed-out" } as const],
+    ["the main screen", account],
+  ])("tells the person on %s to move SIQshift to Applications", async (_screen, snapshot) => {
+    // Arrange
+    const bridge = bridgeFor({ bootstrap: vi.fn().mockResolvedValue(snapshot), appIsTranslocated: vi.fn().mockResolvedValue(true) });
+
+    // Act
+    render(<App bridge={bridge} />);
+
+    // Assert
+    const notice = await screen.findByTestId("move-to-applications");
+    expect(notice).toHaveTextContent("won't start when you log in");
+    expect(notice).toHaveTextContent("drag it into your Applications folder");
+    expect(screen.getAllByTestId("move-to-applications")).toHaveLength(1);
+    expect(bridge.appIsTranslocated).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["an installed launch", vi.fn().mockResolvedValue(false)],
+    ["a host that cannot say", vi.fn().mockRejectedValue({ kind: "unknown", message: "Unavailable" })],
+  ])("says nothing about the install for %s", async (_case, appIsTranslocated) => {
+    // Arrange
+    render(<App bridge={bridgeFor({ appIsTranslocated })} />);
+
+    // Act
+    await screen.findByTestId("elapsed-time");
+
+    // Assert
+    expect(appIsTranslocated).toHaveBeenCalled();
+    expect(screen.queryByTestId("move-to-applications")).not.toBeInTheDocument();
   });
 });
 

@@ -297,7 +297,9 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   ignores `XDG_DATA_HOME`: the app starts without it and the hook inherits the login
   shell's. A hook registration counts as connected only while the helper path it names
   exists, and launch repoints a dead one (a first launch from the disk image registers a
-  translocated path that vanishes, issue 192). The browser host
+  translocated path that vanishes, issue 192). A translocated launch (an `AppTranslocation`
+  path component, `is_translocated` in `lib.rs`) never writes the login item and shows the
+  move-to-Applications notice (issue 194). The browser host
   and the app share the same rule for `spool::browser_dir()`, so the two cannot
   drift apart the same way.
 - `api.rs`'s `upload_agent_events` sends the explicit `AgentEventUpload` projection, never
