@@ -29,9 +29,10 @@ decides the hours:
 - **OS activity.** A slow, read-only monitor folds the machine's state into coarse segments
   (`active`, `idle`, `locked`, `suspended`). No hooks, no injection, no keystrokes. Those
   boundaries are the sessions.
-- **Agent sessions.** Claude Code, Codex, and Cursor fire true lifecycle hooks into a tiny local
-  spool; Pi and opencode fire theirs from a small extension. A session's working directory
-  resolves to a project, so an hour on the leaderboard can name *what* produced it, and the
+- **Agent sessions.** Claude Code and Cursor fire true lifecycle hooks into a tiny local
+  spool; Pi and opencode fire theirs from a small extension; Codex terminals need no hook,
+  because the desktop reads them natively from the thread writer locks Codex holds.
+  A session's working directory resolves to a project, so an hour on the leaderboard can name *what* produced it, and the
   runtime is recorded beside the model it was driving without either being read off the other.
   Which runtimes SIQshift knows by name is a roster, not a schema: see
   [**Agent hooks**](#agent-hooks).
@@ -61,7 +62,7 @@ tracking you can't is surveillance.
 ```mermaid
 flowchart LR
     subgraph WS["Your workstation"]
-        CLI["Agent CLIs<br/>Claude Code · Codex · Cursor<br/>Pi · opencode · Kimi Code · …"] -->|"JSON on stdin"| HOOK["siqshift-hook"]
+        CLI["Agent CLIs<br/>Claude Code · Cursor<br/>Pi · opencode · Kimi Code · …"] -->|"JSON on stdin"| HOOK["siqshift-hook"]
         OS["OS signals<br/>idle · foreground process<br/>lock · suspend"] --> MON["Activity monitor<br/>30s poll"]
         EXT["Browser extension<br/>Chrome · Edge · Firefox"] -->|"native messaging"| HOST["siqshift-browser-host"]
         HOOK --> SPOOL[("Local spool<br/>append-only")]
@@ -722,11 +723,18 @@ silently ignored.
 
 At startup, SIQshift auto-discovers which agent CLIs are installed (by checking for their
 config directories) and silently wires up every one whose hook shape it knows how to merge:
-today Claude Code, Codex, and Cursor. Where a config can be merged safely it is, with a
+today Claude Code and Cursor. Where a config can be merged safely it is, with a
 backup and an atomic write; where it can't (Kimi Code, Pi, opencode, Grok, Muse, GitHub
 Copilot), the "what's switched on" panel carries the exact snippet to paste. A runtime that
 is not installed on this machine reports as absent rather than offering a button that cannot
 work.
+
+Codex registers no hook at all.
+The desktop captures a Codex terminal natively: a live terminal is a held
+`~/.codex/thread-writer-locks/<thread>.lock`, and Codex's local app-server names its working
+directory and model.
+Each launch removes the lifecycle hooks older SIQshift versions merged into
+`~/.codex/hooks.json`, and leaves every other hook there alone.
 
 A hook SIQshift merges itself (Claude Code, Cursor) names the `siqshift-hook` helper beside
 the running app by its absolute path, so that runtime reads as connected only while the
@@ -763,9 +771,9 @@ hook that names no model records none rather than a guess.
 | CLI | Config | Signal quality | Reports model | Registration |
 |---|---|---|---|---|
 | **Claude Code** | `~/.claude/settings.json` | true session boundaries (`SessionStart`/`SessionEnd`); between them, liveness from the session log the start names, one heartbeat per five minutes of entries | never | merged automatically |
-| **Codex** | `~/.codex/hooks.json` | true boundaries; same hook shape as Claude Code, told apart by the `--source` its registration passes | never | merged automatically |
+| **Codex** | `~/.codex/thread-writer-locks/` | native capture of terminal (`cli` and `exec`) threads only; a session starts when Codex takes the thread's writer lock and ends at the first check, every 15 seconds while the desktop runs, that finds the lock released; one heartbeat per five minutes while it is held | sometimes | none: captured natively, and the app removes SIQshift's old Codex hooks |
 | **Cursor** | `~/.cursor/hooks.json` | true boundaries, IDE only — cloud agents never fire them | never | merged automatically |
-| **Pi** / **pi-signed** | `~/.pi/agent/extensions/` | true boundaries (`session_start`/`session_shutdown`); reports its model | always | extension to paste |
+| **Pi** / **Pi (signed)** | `~/.pi/agent/extensions/` | true boundaries (`session_start`/`session_shutdown`); reports its model | always | extension to paste |
 | **opencode** | `~/.config/opencode/plugins/` | start is a true boundary; no end event, so `session.idle` heartbeats and gaps close it | sometimes | plugin to paste |
 | **Kimi Code**, **Grok**, **Muse**, **GitHub Copilot** | per the roster | hook mechanism unconfirmed against any installed version | sometimes | snippet to paste |
 | anything else | — | call `siqshift-hook --source <runtime> --event …` yourself; see [Wiring up your own orchestrator](#wiring-up-your-own-orchestrator) | up to you | manual |
