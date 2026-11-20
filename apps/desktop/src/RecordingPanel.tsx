@@ -222,9 +222,10 @@ export const RecordingPanel = ({
                   )}
                   {hook.source === "claude_code" && hook.installed && (
                     <p className="source-note">
-                      Sessions on this computer are recorded, in a terminal, an editor or the Claude app&apos;s Code
-                      tab. Cloud sessions are not: they run on Anthropic&apos;s computers, where SIQshift can&apos;t see
-                      them.
+                      {hook.detected &&
+                        "Sessions on this computer are recorded, in a terminal, an editor or the Claude app's Code tab. "}
+                      Cloud sessions are not recorded: they run on Anthropic&apos;s computers, where SIQshift can&apos;t
+                      see them.
                     </p>
                   )}
                   {hookSnippets[hook.source] !== undefined && (

@@ -157,10 +157,28 @@ describe("RecordingPanel", () => {
 
     const panel = screen.getByRole("dialog", { name: "What SIQshift is recording" });
     const claude = within(panel).getByText("Claude Code").closest("li") as HTMLElement;
+    expect(claude).toHaveTextContent("Sessions on this computer are recorded");
     expect(claude).toHaveTextContent("the Claude app's Code tab");
-    expect(claude).toHaveTextContent("Cloud sessions are not: they run on Anthropic's computers");
+    expect(claude).toHaveTextContent("Cloud sessions are not recorded: they run on Anthropic's computers");
     const codex = within(panel).getByText("Codex").closest("li") as HTMLElement;
     expect(codex).not.toHaveTextContent("Cloud sessions");
+  });
+
+  it("does not claim Claude Code sessions are recorded while it is not connected", () => {
+    panelFor({
+      status: {
+        ...status,
+        hooks: [
+          { source: "claude_code", detected: false, installed: true, needsYou: false, configPath: "C:/Users/dev/.claude/settings.json" },
+        ],
+      },
+    });
+
+    const panel = screen.getByRole("dialog", { name: "What SIQshift is recording" });
+    const claude = within(panel).getByText("Claude Code").closest("li") as HTMLElement;
+    expect(claude).toHaveTextContent("Not connected");
+    expect(claude).not.toHaveTextContent("Sessions on this computer are recorded");
+    expect(claude).toHaveTextContent("Cloud sessions are not recorded: they run on Anthropic's computers");
   });
 
   it("says the browser is not watched rather than implying a connection", () => {
