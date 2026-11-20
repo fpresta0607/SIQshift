@@ -115,15 +115,14 @@ microphone is live (see *The OS monitor, in detail*).
 It always closes at the **last active moment**, never at "now", so an unattended
 tail is never recorded. Quiet gaps shorter than the limit stay inside the session
 and are reported as trimmed idle, which the server subtracts from the duration:
-a workday is a handful of sessions, not one row per interruption. An open agent
+an interruption does not split a session. An open agent
 session holds a session through quiet time and lock, because an overnight agent
 run is unattended work rather than an abandoned desk.
 
 A session is also saved in pieces.
 Once a session has been open for 15 minutes, the next stretch of work closes it and opens the next one at the same instant, in the same project.
 Nothing is lost or counted twice, because the two sessions meet at one second, and quiet time stays with the session it fell in.
-Without this, agents running all day would hold one session open all day, and the server would see none of it until it closed.
-A session open for more than 7 days is refused whole when it closes.
+Without this, agents running all day would hold one session open all day, and the server would see none of it until it closed, or none at all once the session was older than the server's 7-day limit (see *Attributed seconds*).
 
 The open session is written to disk on every 30-second tick. A crash or a forced
 shutdown therefore costs the seconds since the last tick, and the next launch
