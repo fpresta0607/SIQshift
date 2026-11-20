@@ -721,8 +721,9 @@ Copilot), the "what's switched on" panel carries the exact snippet to paste. A r
 is not installed on this machine reports as absent rather than offering a button that cannot
 work.
 
-A hook names the `siqshift-hook` helper beside the running app by its absolute path, so a
-runtime reads as connected only while the helper that path names is on disk.
+A hook SIQshift merges itself (Claude Code, Cursor) names the `siqshift-hook` helper beside
+the running app by its absolute path, so that runtime reads as connected only while the
+helper that path names is on disk.
 Every launch repoints a registration whose helper is gone at the running app's own helper,
 and leaves one whose helper still exists alone.
 
