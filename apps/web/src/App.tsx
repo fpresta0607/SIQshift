@@ -222,9 +222,22 @@ export const App = ({ client }: AppProps) => {
     setAuthError("Your session expired. Sign in again.");
   }, []);
 
+  // A project filter narrows nothing in a workspace of one project, so it is
+  // drawn only once the project list has loaded with a choice to make. The
+  // All stats page reads the project its filter shows and All projects
+  // otherwise, and never overwrites `scope`: that is the home screen's own
+  // project, and the saved preference a failed or late project list must not
+  // reset.
+  const isProjectFilterShown = projects.length > 1;
+  const statsScope: ProjectScope = isProjectFilterShown ? scope : "all";
+
   const scopeParams = useCallback(
     (base: string): string => (scope === "all" ? base : withParams(base, { scope })),
     [scope],
+  );
+  const statsScopeParams = useCallback(
+    (base: string): string => (statsScope === "all" ? base : withParams(base, { scope: statsScope })),
+    [statsScope],
   );
   /// The dashboard's range as a query: a preset, or the custom days.
   const statsQuery = isCustomRange ? boundsQuery(dayBounds(customDays)) : rangeQuery(range);
@@ -236,10 +249,10 @@ export const App = ({ client }: AppProps) => {
   // deployed before `userId` existed: the filters schema is strict, and an
   // unknown key is a 400 that empties the agents' cards.
   const shiftsQuery = useCallback(
-    (): string => scopeParams(
+    (): string => statsScopeParams(
       member === undefined ? statsQuery : withParams(statsQuery, { userId: member.id }),
     ),
-    [scopeParams, statsQuery, member],
+    [statsScopeParams, statsQuery, member],
   );
 
   // One page of one group's shifts, asked for when a drawer opens. Its
@@ -329,7 +342,7 @@ export const App = ({ client }: AppProps) => {
     const request = boardRequest.current;
     setBoardFailed(false);
     try {
-      const report = await client.workspace(scopeParams(statsQuery));
+      const report = await client.workspace(statsScopeParams(statsQuery));
       if (request !== boardRequest.current) return undefined;
       setWorkspace(report);
       setDataError(undefined);
@@ -346,11 +359,11 @@ export const App = ({ client }: AppProps) => {
       setDataError(message);
       return message;
     }
-  }, [client, statsQuery, scopeParams, expireSession]);
+  }, [client, statsQuery, statsScopeParams, expireSession]);
 
   useEffect(() => {
     setWorkspace(undefined);
-  }, [statsQuery, scope]);
+  }, [statsQuery, statsScope]);
 
   useEffect(() => {
     if (!signedIn || !preferencesReady) return;
@@ -368,13 +381,6 @@ export const App = ({ client }: AppProps) => {
     }
     void client.updatePreferences({ scope, range }).catch(() => undefined);
   }, [client, signedIn, preferencesReady, scope, range]);
-
-  // With one project there is no filter to pick it with, and the page reads
-  // All projects: a scope saved while there were more, or picked on the
-  // filing header, falls back to everything.
-  useEffect(() => {
-    if (preferencesReady && projects.length < 2 && scope !== "all") setScope("all");
-  }, [preferencesReady, projects.length, scope]);
 
   // The day is asked of one workspace about one project, so moving either asks
   // a different question and the answer on screen stops being an answer. Only
@@ -440,7 +446,7 @@ export const App = ({ client }: AppProps) => {
     let cancelled = false;
     setMemberStats(undefined);
     setMemberFailed(false);
-    client.meStats(scopeParams(withParams(statsQuery, { userId: subjectId }))).then(
+    client.meStats(statsScopeParams(withParams(statsQuery, { userId: subjectId }))).then(
       (result) => {
         if (!cancelled) setMemberStats(result);
       },
@@ -456,7 +462,7 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, allStatsOpen, statsQuery, subjectId, scopeParams, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, statsQuery, subjectId, statsScopeParams, expireSession]);
 
   // The agents' read - tokens, the token chart, the agents and the repos -
   // for the same person and range. It is blanked when the question changes,
@@ -464,7 +470,7 @@ export const App = ({ client }: AppProps) => {
   useEffect(() => {
     if (!signedIn || !preferencesReady || !allStatsOpen) return undefined;
     let cancelled = false;
-    const boardQuery = scopeParams(statsQuery);
+    const boardQuery = statsScopeParams(statsQuery);
     setAgentShifts(undefined);
     setAgentShiftsFailed(false);
     client.agentShifts(shiftsQuery()).then(
@@ -485,7 +491,7 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, allStatsOpen, shiftsQuery, scopeParams, statsQuery, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, shiftsQuery, statsScopeParams, statsQuery, expireSession]);
 
   // The live view reads "now", not the range, so it follows the scope alone
   // and re-asks on the minute tick like the Today panel does - a live card
@@ -494,7 +500,7 @@ export const App = ({ client }: AppProps) => {
   useEffect(() => {
     if (!signedIn || !preferencesReady || !allStatsOpen) return undefined;
     let cancelled = false;
-    client.liveAgentSessions(scopeParams("")).then(
+    client.liveAgentSessions(statsScopeParams("")).then(
       (result) => {
         if (!cancelled) {
           setLiveSessions(result);
@@ -513,13 +519,13 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, allStatsOpen, scopeParams, todayTick, expireSession]);
+  }, [client, signedIn, preferencesReady, allStatsOpen, statsScopeParams, todayTick, expireSession]);
 
   // Recent sessions load only while their drawer is open, one page at a time.
   useEffect(() => {
     if (!signedIn || !preferencesReady || !sessionsOpen) return undefined;
     let cancelled = false;
-    client.report(withParams(scopeParams(statsQuery), { page: String(sessionPage), pageSize: "25" })).then(
+    client.report(withParams(statsScopeParams(statsQuery), { page: String(sessionPage), pageSize: "25" })).then(
       (result) => {
         if (cancelled) return;
         setSessionRows((current) => (sessionPage === 1 ? result.rows : [...current, ...result.rows]));
@@ -530,14 +536,14 @@ export const App = ({ client }: AppProps) => {
     return () => {
       cancelled = true;
     };
-  }, [client, signedIn, preferencesReady, sessionsOpen, statsQuery, sessionPage, scopeParams]);
+  }, [client, signedIn, preferencesReady, sessionsOpen, statsQuery, sessionPage, statsScopeParams]);
 
   // Reset on scope, range, or a fresh open: reopening the drawer with a page
   // counter still at 2 would append page 2's rows on top of themselves.
   useEffect(() => {
     setSessionPage(1);
     setSessionRows([]);
-  }, [scope, statsQuery, sessionsOpen]);
+  }, [statsScope, statsQuery, sessionsOpen]);
 
   // Settings draws the viewer's picture from what /me last said, so opening it
   // asks again: a picture put up or taken down from the desktop since then
@@ -673,7 +679,7 @@ export const App = ({ client }: AppProps) => {
       // is also what makes the effect that follows it reload the board, so
       // only a page already reading everything has to ask for itself - and
       // there the reload below closes over the same "all" it needs.
-      const readingEverything = scope === "all";
+      const readingEverything = statsScope === "all";
       setScope("all");
       // The new workspace has its own projects; the filing header, the picker
       // and every scoped request would otherwise still name the old one's. Its
@@ -727,16 +733,18 @@ export const App = ({ client }: AppProps) => {
     }
   };
 
-  /// Reports whether the scope on screen survived the refresh. A scope naming
-  /// a project the list no longer carries falls back to everything, and the
-  /// effects that follow `scope` reload the board and the day themselves, so a
-  /// caller must not fire its own reload against the scope it just retired.
+  /// Reports whether the scope the board reads survived the refresh. A scope
+  /// naming a project the list no longer carries falls back to everything, and
+  /// the effects that follow `scope` and the project count reload the board
+  /// and the day themselves, so a caller must not fire its own reload against
+  /// a scope that moved.
   const refreshProjects = async (): Promise<boolean> => {
     const listed = await client.projects();
     setProjects(listed.projects);
     const scopeSurvives = scope === "all" || listed.projects.some((project) => project.id === scope);
     if (!scopeSurvives) setScope("all");
-    return scopeSurvives;
+    const statsScopeAfter = scopeSurvives && listed.projects.length > 1 ? scope : "all";
+    return statsScopeAfter === statsScope;
   };
 
   /// Opens the New project box with the viewer's unclaimed repositories. The
@@ -914,7 +922,7 @@ export const App = ({ client }: AppProps) => {
 
   const boardHasTime = workspace !== undefined
     && (workspace.activeSeconds > 0 || workspace.agentSeconds > 0 || workspace.projects.length > 0);
-  const boardAgents = boardTokens?.query === scopeParams(statsQuery) ? boardTokens.agents : undefined;
+  const boardAgents = boardTokens?.query === statsScopeParams(statsQuery) ? boardTokens.agents : undefined;
   const boardMembers = (workspace?.members ?? [])
     .map((entry) => ({
       id: entry.user.id,
@@ -961,11 +969,8 @@ export const App = ({ client }: AppProps) => {
     appearance: appearanceOf(project.id),
     firstDay: localDay(new Date(project.createdAt)),
   }));
-  // A project filter narrows nothing in a workspace of one project, so it is
-  // drawn only when there is a choice to make.
-  const isProjectFilterShown = filterProjects.length > 1;
   const rangeName = isCustomRange
-    ? customRangeName(customDays, filterProjects.find((project) => project.id === scope)?.firstDay)
+    ? customRangeName(customDays, filterProjects.find((project) => project.id === statsScope)?.firstDay)
     : rangeSentence[range];
   const rangeSubtitle = statsBounds === undefined
     ? rangeName
@@ -1209,7 +1214,7 @@ export const App = ({ client }: AppProps) => {
                   days={customDays}
                   onDays={setCustomDays}
                   projects={isProjectFilterShown ? filterProjects : undefined}
-                  project={scope}
+                  project={statsScope}
                   onProject={setScope}
                 />
                 <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
@@ -1242,7 +1247,7 @@ export const App = ({ client }: AppProps) => {
                   boardNotes={[
                     ...boardHasTime
                       ? []
-                      : [scope === "all"
+                      : [statsScope === "all"
                         ? "No recorded time in this range yet. Install the desktop app and it records on its own."
                         : "Nothing recorded here in this range. Pick another range, or All projects."],
                     ...boardMembers.length > 1 && member === undefined ? ["Select a teammate to explore their work."] : [],

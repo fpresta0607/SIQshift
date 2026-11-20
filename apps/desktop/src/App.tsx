@@ -241,7 +241,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   /// app forgets them, as it forgets whom the board had picked.
   const [isCustomRange, setCustomRange] = useState(false);
   const [customDays, setCustomDays] = useState<DashboardDays>(lastWeek);
-  /// The project the dashboard reads: "all", or a project id. Local to the
+  /// The project the dashboard filter has picked: "all", or a project id. Local to the
   /// overlay - the main screen's filing bar answers a different question.
   const [boardScope, setBoardScope] = useState("all");
   /// The person the dashboard answers for, picked on its People board.
@@ -417,14 +417,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   }, [bridge]);
 
   const signedIn = account?.kind === "ready" ? account : undefined;
-  const signedInProjectCount = signedIn?.projects.length;
 
-  // With one project there is no filter to pick it with, and the All stats page
-  // reads All projects: a project left picked when the others were deleted
-  // falls back to everything.
-  useEffect(() => {
-    if (signedInProjectCount !== undefined && signedInProjectCount < 2) setBoardScope("all");
-  }, [signedInProjectCount]);
+  // A project filter narrows nothing in a workspace of one project, so it is
+  // drawn only when there is a choice to make, and the All stats page reads
+  // All projects otherwise. `boardScope` is left as picked: the filter's own
+  // project returns when a second project does.
+  const isProjectFilterShown = (signedIn?.projects.length ?? 0) > 1;
+  const statsScope = isProjectFilterShown ? boardScope : "all";
 
   // The elapsed reading on the recording card ticks like a clock.
   useEffect(() => {
@@ -511,12 +510,12 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // their own bounds and never take the main screen's live day.
   const overlayBounds = isCustomRange ? dayBounds(customDays) : rangeBounds(boardRange);
   const boardRangeKey = isCustomRange ? `${customDays.from}..${customDays.to}` : boardRange;
-  const scopeParam = boardScope === "all" ? undefined : boardScope;
-  const isLiveDayRange = !isCustomRange && boardRange === "today" && boardScope === "all";
+  const scopeParam = statsScope === "all" ? undefined : statsScope;
+  const isLiveDayRange = !isCustomRange && boardRange === "today" && statsScope === "all";
   const lastBoardKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const boardKey = `${boardRangeKey}|${boardScope}|${subjectId ?? ""}`;
+    const boardKey = `${boardRangeKey}|${statsScope}|${subjectId ?? ""}`;
     // Blanked means who or what changed: there is no last-good reading to
     // keep, so a failure surfaces immediately rather than after three.
     const blanked = lastBoardKey.current !== boardKey;
@@ -556,7 +555,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `boardStats` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRangeKey, boardScope, subjectId, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, statsScope, subjectId, signedIn?.user.id, statsTick]);
 
   // The team view follows the overlay's range and project too: hours beside a
   // name and the breakdown under it must answer for the same days. All time
@@ -564,7 +563,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastWorkspaceKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const workspaceKey = `${boardRangeKey}|${boardScope}`;
+    const workspaceKey = `${boardRangeKey}|${statsScope}`;
     const blanked = lastWorkspaceKey.current !== workspaceKey;
     if (blanked) {
       lastWorkspaceKey.current = workspaceKey;
@@ -597,7 +596,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `workspace` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRangeKey, boardScope, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, statsScope, signedIn?.user.id, statsTick]);
 
   // The agents' read - tokens, the token chart, the agents and the repos - for
   // the person picked (the team when nobody is) over the overlay's own range.
@@ -607,7 +606,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastAgentsKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const tokensKey = `${boardRangeKey}|${boardScope}`;
+    const tokensKey = `${boardRangeKey}|${statsScope}`;
     const agentsKey = `${tokensKey}|${boardMember?.id ?? ""}`;
     const blanked = lastAgentsKey.current !== agentsKey;
     if (blanked) {
@@ -646,7 +645,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `agentShifts` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRangeKey, boardScope, boardMember?.id, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, statsScope, boardMember?.id, signedIn?.user.id, statsTick]);
 
   // The live view reads "now", not the range: who is running an agent at this
   // instant. It rides the same minute tick the other polls do, because a live
@@ -659,8 +658,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
     // Another project's sessions are not this one's last-good list.
-    if (lastLiveScope.current !== boardScope) {
-      lastLiveScope.current = boardScope;
+    if (lastLiveScope.current !== statsScope) {
+      lastLiveScope.current = statsScope;
       liveSessionsFailures.current = 0;
       setLiveSessions(undefined);
       setLiveSessionsError(undefined);
@@ -690,7 +689,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `liveSessions` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardScope, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, statsScope, signedIn?.user.id, statsTick]);
 
   // One page of one group's shifts, asked for when a drawer opens. Its
   // identity tracks the bridge, the range, the project and the person picked
@@ -706,7 +705,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `overlayBounds` is rebuilt each render; the key it is built from is the
     // identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [bridge, boardRangeKey, boardScope, boardMember?.id],
+    [bridge, boardRangeKey, statsScope, boardMember?.id],
   );
 
   // Agent plan quota, read from this machine. Advisory and never on the
@@ -1594,11 +1593,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     appearance: appearanceOf(item.id),
     firstDay: localDay(new Date(item.createdAt)),
   }));
-  // A project filter narrows nothing in a workspace of one project, so it is
-  // drawn only when there is a choice to make.
-  const isProjectFilterShown = filterProjects.length > 1;
   const boardRangeLabel = isCustomRange
-    ? customRangeName(customDays, filterProjects.find((item) => item.id === boardScope)?.firstDay)
+    ? customRangeName(customDays, filterProjects.find((item) => item.id === statsScope)?.firstDay)
     : RANGE_LABEL[boardRange];
   const boardSubtitle = overlayBounds === undefined
     ? boardRangeLabel
@@ -1834,7 +1830,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 days={customDays}
                 onDays={setCustomDays}
                 projects={isProjectFilterShown ? filterProjects : undefined}
-                project={boardScope}
+                project={statsScope}
                 onProject={setBoardScope}
               />
               <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
@@ -1869,7 +1865,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   picture: pictureOf(member.user.id === ready.user.id ? ready.user : member.user),
                   activeSeconds: member.activeSeconds,
                   agentSeconds: member.agentSeconds,
-                  tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${boardScope}` ? boardTokens.agents : undefined, member.user.id),
+                  tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${statsScope}` ? boardTokens.agents : undefined, member.user.id),
                   isSelf: member.user.id === ready.user.id,
                 }))}
                 boardSort={boardSort}

@@ -1,4 +1,4 @@
-import { agentRuntimeLabel } from "./agent-runtimes.js";
+import { runtimeDisplayName } from "./live-session-labels.js";
 import { LiveSessionTile, type LiveSessionRow } from "./live-session-tile.js";
 
 /** One runtime's running sessions, headed by its name and how many there are. */
@@ -13,7 +13,7 @@ export const LiveRuntimeGroup = ({
 }) => (
   <section className="live-runtime" data-testid={`live-runtime-${source}`}>
     <h5 className="live-runtime-head">
-      {agentRuntimeLabel(source)}{" "}
+      {runtimeDisplayName(source)}{" "}
       <span className="live-runtime-count">{sessions.length}</span>
     </h5>
     <ul className="live-tile-list">

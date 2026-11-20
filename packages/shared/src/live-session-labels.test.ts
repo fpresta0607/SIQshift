@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { codebaseDisplayName, modelDisplayName } from "./live-session-labels.js";
+import { codebaseDisplayName, modelDisplayName, runtimeDisplayName } from "./live-session-labels.js";
 
 describe("a codebase in proper case", () => {
   it.each([
@@ -44,5 +44,16 @@ describe("a model in proper case without its runtime's name", () => {
     ["codex", "   ", null],
   ])("reads %s model %j as %j", (source, model, expected) => {
     expect(modelDisplayName(source, model)).toBe(expected);
+  });
+});
+
+describe("a runtime's name on a group heading, without brackets", () => {
+  it.each([
+    ["claude_code", "Claude Code"],
+    ["pi", "Pi"],
+    ["pi_signed", "Pi signed"],
+    ["undeclared_runtime", "undeclared_runtime"],
+  ])("reads %s as %j", (source, expected) => {
+    expect(runtimeDisplayName(source)).toBe(expected);
   });
 });

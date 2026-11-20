@@ -55,3 +55,6 @@ export const modelDisplayName = (source: string, model: string | null): string |
   const named = repeatsRuntime ? words.slice(runtimeWords.length) : words;
   return named.length === 0 ? null : named.map(capitalise).join(" ");
 };
+
+/** A runtime's name for a group heading, without the brackets the roster's label may carry (`Pi (signed)` reads Pi signed). */
+export const runtimeDisplayName = (source: string): string => agentRuntimeLabel(source).replace(/[()]/g, "");

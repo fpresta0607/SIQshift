@@ -32,7 +32,7 @@ export { DashboardFilter, customRangeName, dayBounds, localDay, type DashboardDa
  * drift.
  *
  * The page answers for one subject at a time - the whole team, or the one
- * person picked on the People board - and every card follows it: the four
+ * person picked on the People board - and every card follows it: the three
  * totals (tokens, active time, agent time), the one chart, the agents, the
  * repos and who is running one now. The board is the
  * picker, so it stays the whole team's and is drawn only when there are two or

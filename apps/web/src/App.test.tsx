@@ -2568,22 +2568,71 @@ describe("the dashboard's filter", () => {
     expect(stats.queryByRole("button", { name: /^Project: / }) !== null).toBe(isShown);
   });
 
-  it("reads All projects when the saved project is the workspace's only one", async () => {
-    // Arrange: a scope saved while the workspace had more projects.
+  it.each([
+    ["saved in the preferences", "p1", false],
+    ["picked on the home screen", "all", true],
+  ])("keeps the home screen on a project the one-project workspace has while All stats reads All projects: %s", async (_name, savedScope, isPickedOnHome) => {
+    // Arrange: one project, so the filter on the All stats page is not drawn.
     const workspace = vi.fn().mockResolvedValue(workspaceReport);
+    const meStats = vi.fn().mockResolvedValue(memberStats);
+    const agentShifts = vi.fn().mockResolvedValue(agentShiftsResponse);
+    const liveAgentSessions = vi.fn().mockResolvedValue({ people: [] });
+    const updatePreferences = vi.fn().mockResolvedValue({ scope: "all", range: "30d" });
     const person = await signIn(clientFor({
-      preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
+      preferences: vi.fn().mockResolvedValue({ scope: savedScope, range: "30d" }),
+      updatePreferences,
       workspace,
+      meStats,
+      agentShifts,
+      liveAgentSessions,
     }));
+    await screen.findByRole("heading", { name: "Lumen Studio" });
 
     // Act
+    if (isPickedOnHome) {
+      await person.click(screen.getByTestId("filing-change"));
+      await person.click(within(screen.getByTestId("project-picker")).getByRole("radio", { name: /General/ }));
+    }
     const stats = await openAllStats(person);
     await stats.findByLabelText("Totals");
 
-    // Assert
-    await waitFor(() => expect(queryOf(workspace.mock.calls.at(-1)).has("scope")).toBe(false));
-    expect(screen.getByTestId("filing-where")).toHaveTextContent("All projects");
+    // Assert: the home screen stays on the project it was given or picked.
+    await waitFor(() => expect(screen.getByTestId("filing-where")).toHaveTextContent("General"));
+    const todayReads = meStats.mock.calls.filter((call) => !queryOf(call).has("userId"));
+    expect(queryOf(todayReads.at(-1)).get("scope")).toBe("p1");
+    // Assert: the page reads everything, and its filter has no choice to show.
+    for (const read of [workspace, agentShifts, liveAgentSessions]) {
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      expect(read.mock.calls.map((call) => queryOf(call).has("scope"))).not.toContain(true);
+    }
     expect(stats.queryByRole("button", { name: /^Project: / })).not.toBeInTheDocument();
+    expect(updatePreferences.mock.calls.map(([preferences]) => (preferences as { scope: string }).scope)).not.toContain("all");
+  });
+
+  it.each([
+    ["the project list fails to load", () => vi.fn().mockRejectedValue(new ClientError("transient", "The project list is taking a break."))],
+    ["the workspace lists no project yet", () => vi.fn().mockResolvedValue({ projects: [], selectedProjectId: null })],
+  ])("keeps the saved project when %s, instead of saving All projects over it", async (_name, projectsRead) => {
+    // Arrange: a project saved on another device, and a list that cannot confirm it.
+    const meStats = vi.fn().mockResolvedValue(memberStats);
+    const updatePreferences = vi.fn().mockResolvedValue({ scope: "p2", range: "30d" });
+    await signIn(clientFor({
+      projects: projectsRead(),
+      preferences: vi.fn().mockResolvedValue({ scope: "p2", range: "30d" }),
+      updatePreferences,
+      meStats,
+    }));
+
+    // Act
+    await screen.findByRole("heading", { name: "Lumen Studio" });
+    await waitFor(() => expect(meStats).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Assert: the day is read for the saved project and nothing was saved over it.
+    expect(queryOf(meStats.mock.calls.at(-1)).get("scope")).toBe("p2");
+    expect(updatePreferences).not.toHaveBeenCalled();
   });
 
   it("sends custom days as local midnights to every read, and never saves them as a preference", async () => {
@@ -2956,6 +3005,7 @@ describe("the agents' cards on the one page", () => {
             sessions: [
               runningSession({ id: 3, source: "codex", repo: "SIQshift", model: "gpt-5.6-sol", ago: 90, state: "working" }),
               runningSession({ id: 4, source: "codex", repo: null, model: null, ago: 12 * 60 + 5, state: null }),
+              runningSession({ id: 5, source: "pi_signed", repo: null, model: null, ago: 5 * 60, state: null }),
             ],
           },
         ],
@@ -2971,7 +3021,7 @@ describe("the agents' cards on the one page", () => {
     expect([...live.querySelectorAll(".live-person-name")].map((name) => name.textContent)).toEqual(["Alex", "Sam"]);
     const [alex, sam] = [...live.querySelectorAll<HTMLElement>(".live-person")];
     expect(within(alex!).getAllByRole("heading", { level: 5 }).map((head) => head.textContent)).toEqual(["Claude Code 1", "Pi 1"]);
-    expect(within(sam!).getByRole("heading", { name: "Codex 2" })).toBeInTheDocument();
+    expect(within(sam!).getAllByRole("heading", { level: 5 }).map((head) => head.textContent)).toEqual(["Codex 2", "Pi signed 1"]);
     // Assert: each tile, longest-running first within its runtime. The codebase
     // falls back to the project, then to "No codebase", and a state the desktop
     // could not say draws nothing.
@@ -2982,13 +3032,14 @@ describe("the agents' cards on the one page", () => {
     expect(tilesOf(sam!)).toEqual([
       ["No codebase", null, "Running 12m", null],
       ["SIQshift", "GPT 5.6 Sol", "Running 1m", "Working"],
+      ["No codebase", null, "Running 5m", null],
     ]);
     // Assert: working pulses and waiting does not, and the server's sentence is not drawn.
     expect(live.querySelectorAll(".live-tile-state .live-pulse")).toHaveLength(2);
     expect(live.querySelectorAll(".live-tile-state .live-dot")).toHaveLength(1);
     expect(live).not.toHaveTextContent("A sentence the card no longer draws");
-    expect(live.textContent).not.toMatch(/[\[\]]/);
-    expect(within(stats.getByRole("region", { name: /Live now/ })).getByText("4 running")).toBeInTheDocument();
+    expect(live.textContent).not.toMatch(/[()[\]]/);
+    expect(within(stats.getByRole("region", { name: /Live now/ })).getByText("5 running")).toBeInTheDocument();
     // One avatar per person, not per session: their initial where they have no picture.
     const avatars = [...live.querySelectorAll(".live-person-head")].map((entry) => [entry.querySelectorAll(".member-avatar").length, entry.querySelector(".member-avatar")?.textContent]);
     expect(avatars).toEqual([[1, "A"], [1, "S"]]);

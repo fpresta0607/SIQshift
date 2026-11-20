@@ -2369,6 +2369,54 @@ describe("the dashboard filter", () => {
     expect(within(panel).queryByRole("button", { name: /^Project: / })).not.toBeInTheDocument();
   });
 
+  it("keeps the project the filter picked while one project leaves it with no choice", async () => {
+    // Arrange: two projects, Client work picked, then it is deleted and a project added in its place.
+    let listed = [project, otherProject];
+    const bridge = bridgeFor({
+      bootstrap: vi.fn().mockImplementation(() => Promise.resolve({ ...account, projects: listed })),
+      projectDelete: vi.fn().mockImplementation(() => {
+        listed = [project];
+        return Promise.resolve();
+      }),
+      projectCreate: vi.fn().mockImplementation(() => {
+        listed = [project, otherProject];
+        return Promise.resolve(newProject);
+      }),
+    });
+    const person = userEvent.setup();
+    render(<App bridge={bridge} />);
+    const panel = await openAgentsPage(person);
+    await pickProject(person, panel, "Client work");
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), otherProject.id));
+    await person.click(within(panel).getByRole("button", { name: "Close all stats" }));
+
+    // Act: the other project goes, so the filter has nothing to offer and the page reads everything.
+    const settings = await openSettings(person);
+    await person.click(within(settings).getByText("Projects"));
+    const otherRow = within(within(settings).getByTestId("project-manage-list")).getByText("Client work").closest("li");
+    await person.click(within(otherRow as HTMLElement).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(bridge.projectDelete).toHaveBeenCalled());
+    await person.click(within(settings).getByRole("button", { name: "Close settings" }));
+    const oneProjectPanel = await openAgentsPage(person);
+
+    // Assert
+    expect(within(oneProjectPanel).queryByRole("button", { name: /^Project: / })).not.toBeInTheDocument();
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), undefined));
+
+    // Act: a second project arrives and the filter returns with its own pick.
+    await person.click(within(oneProjectPanel).getByRole("button", { name: "Close all stats" }));
+    await person.click(await screen.findByTestId("filing-change"));
+    await person.click(await screen.findByRole("button", { name: "New project…" }));
+    await person.type(screen.getByLabelText("New project name"), "Fresh");
+    await person.click(screen.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalled());
+    const twoProjectPanel = await openAgentsPage(person);
+
+    // Assert
+    expect(within(twoProjectPanel).getByRole("button", { name: "Project: Client work" })).toBeInTheDocument();
+    await waitFor(() => expect(bridge.workspaceReport).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), otherProject.id));
+  });
+
   it("reads the custom days on every overlay read and says Custom in the subtitle", async () => {
     // Arrange
     pinToday();
