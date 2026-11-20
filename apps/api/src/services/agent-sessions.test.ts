@@ -56,6 +56,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
     const existing = this.find({ organizationId: input.organizationId, userId: input.userId, role: "member" }, input.source, input.externalSessionId);
     if (existing !== undefined) {
       const previousEnd = knownEnd(existing);
+      const isLatest = input.occurredAt >= existing.lastEventAt;
       if (existing.status === "running" && existing.lastEventAt < input.lapsedBefore) {
         existing.status = "ended";
         existing.endedAt = existing.lastEventAt;
@@ -64,8 +65,9 @@ class MemoryAgentSessions implements AgentSessionRepository {
       }
       // Mirrors coalesce(agent_id, $new): the first assignment wins.
       existing.agentId ??= input.agentId;
-      // Mirrors the conditional set: a start that says nothing leaves the state.
-      if (input.state !== null) existing.state = input.state;
+      // Mirrors the conditional set: a start that says nothing, or happened
+      // before the stored last event, leaves the state.
+      if (input.state !== null && isLatest) existing.state = input.state;
       return { session: existing, previousEnd };
     }
     const record: AgentSessionRecord = {
@@ -143,6 +145,7 @@ class MemoryAgentSessions implements AgentSessionRepository {
     if (existing === undefined) return null;
     const previousEnd = knownEnd(existing);
     if (existing.status === "running") {
+      const isLatest = occurredAt >= existing.lastEventAt;
       if (existing.lastEventAt < lapsedBefore) {
         existing.status = "ended";
         existing.endedAt = existing.lastEventAt;
@@ -151,8 +154,8 @@ class MemoryAgentSessions implements AgentSessionRepository {
       }
       // Mirrors coalesce(model, $new): the first assignment wins.
       existing.model ??= model;
-      // Mirrors coalesce($new, state): the latest event that says wins.
-      existing.state = state ?? existing.state;
+      // Mirrors the guarded coalesce($new, state): the latest event that says wins.
+      if (isLatest) existing.state = state ?? existing.state;
       return { session: existing, previousEnd };
     }
     if (model === null) return null;

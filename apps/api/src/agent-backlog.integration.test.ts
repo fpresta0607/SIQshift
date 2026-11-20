@@ -194,6 +194,30 @@ integration("a late agent backlog over a real database", () => {
     expect(stateById.get(await idOf("state-b"))).toBe("working");
   }, 120_000);
 
+  it("keeps the state of the newest event when an older one arrives after it", async () => {
+    const cwd = "C:/dev/app";
+    const recent = (offsetMinutes: number): string => new Date(Date.now() - minutes(offsetMinutes)).toISOString();
+    const started = recent(10);
+    const older = recent(8);
+    const newer = recent(6);
+    await upload([
+      { source: "claude_code", externalSessionId: "late-heartbeat", event: "started", occurredAt: started, cwd, state: "working" },
+      { source: "claude_code", externalSessionId: "late-start", event: "started", occurredAt: started, cwd, state: "working" },
+    ]);
+    await upload([
+      { source: "claude_code", externalSessionId: "late-heartbeat", event: "heartbeat", occurredAt: newer, cwd, state: "waiting" },
+      { source: "claude_code", externalSessionId: "late-start", event: "heartbeat", occurredAt: newer, cwd, state: "waiting" },
+    ]);
+
+    await upload([
+      { source: "claude_code", externalSessionId: "late-heartbeat", event: "heartbeat", occurredAt: older, cwd, state: "working" },
+      { source: "claude_code", externalSessionId: "late-start", event: "started", occurredAt: older, cwd, state: "working" },
+    ]);
+
+    expect(await shift("late-heartbeat")).toMatchObject({ status: "running", last_event_at: newer, state: "waiting" });
+    expect(await shift("late-start")).toMatchObject({ status: "running", last_event_at: newer, state: "waiting" });
+  }, 120_000);
+
   it("refuses a state outside working and waiting at the database", async () => {
     await upload([{ source: "claude_code", externalSessionId: "state-check", event: "started", occurredAt: at(0), cwd: "C:/dev/app" }]);
 

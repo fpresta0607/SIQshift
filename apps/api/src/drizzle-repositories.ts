@@ -1582,9 +1582,9 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         // already over at its last event, and ends there.
         set: {
           ...(input.model === null ? {} : { model: input.model }),
-          // The latest event that says wins; one that says nothing leaves the
-          // state as it was.
-          ...(input.state === null ? {} : { state: input.state }),
+          // The latest event that says wins, by when it happened rather than
+          // when it arrived; one that says nothing leaves the state as it was.
+          ...(input.state === null ? {} : { state: sql`case when ${input.occurredAt.toISOString()}::timestamptz >= ${agentSessions.lastEventAt} then ${input.state} else ${agentSessions.state} end` }),
           // The first assignment wins: a shift never changes identity, and a
           // replay carrying null never blanks one already stamped.
           agentId: sql`coalesce(${agentSessions.agentId}, ${input.agentId})`,
@@ -1696,8 +1696,10 @@ export class DrizzleAgentSessionRepository implements AgentSessionRepository {
         // overwrites one the shift already carries.
         model: sql`coalesce(${agentSessions.model}, ${model})`,
         // Unlike the model, the latest state wins: it is what the shift is
-        // doing now, and a heartbeat naming none leaves it as it was.
-        state: sql`coalesce(${state}, ${agentSessions.state})`,
+        // doing now, and a heartbeat naming none leaves it as it was. Latest is
+        // by when the event happened, so a retried older batch landing last
+        // never rolls it back.
+        state: sql`case when ${occurredAt.toISOString()}::timestamptz >= ${agentSessions.lastEventAt} then coalesce(${state}, ${agentSessions.state}) else ${agentSessions.state} end`,
         updatedAt: now,
       })
       .from(priorAgentSession)

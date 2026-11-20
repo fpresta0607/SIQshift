@@ -62,10 +62,11 @@ class MemoryAgentSessions implements AgentSessionRepository {
     const existing = this.find(input.organizationId, input.userId, input.source, input.externalSessionId);
     if (existing !== undefined) {
       const previousEnd = existing.endedAt ?? existing.lastEventAt;
+      const isLatest = input.occurredAt >= existing.lastEventAt;
       if (existing.status === "running" && input.occurredAt > existing.lastEventAt) {
         existing.lastEventAt = input.occurredAt;
       }
-      if (input.state !== null) existing.state = input.state;
+      if (input.state !== null && isLatest) existing.state = input.state;
       return { session: existing, previousEnd };
     }
     const record: AgentSessionRecord = {
@@ -132,9 +133,10 @@ class MemoryAgentSessions implements AgentSessionRepository {
     if (existing === undefined) return null;
     const previousEnd = existing.endedAt ?? existing.lastEventAt;
     if (existing.status === "running") {
+      const isLatest = occurredAt >= existing.lastEventAt;
       if (occurredAt > existing.lastEventAt) existing.lastEventAt = occurredAt;
       existing.model ??= model;
-      existing.state = state ?? existing.state;
+      if (isLatest) existing.state = state ?? existing.state;
       return { session: existing, previousEnd };
     }
     if (model === null) return null;
