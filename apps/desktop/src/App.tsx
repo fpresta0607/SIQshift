@@ -53,6 +53,7 @@ import {
   type ShiftPage,
 } from "@siqshift/shared/ui";
 import { PermissionsCard } from "./PermissionsCard.js";
+import { MoveToApplicationsNotice } from "./MoveToApplicationsNotice.js";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
@@ -228,6 +229,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [now, setNow] = useState(() => Date.now());
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | undefined>();
   const [updateVersion, setUpdateVersion] = useState<string | undefined>();
+  const [isTranslocated, setIsTranslocated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recordingOpen, setRecordingOpen] = useState(false);
   const [allStatsOpen, setAllStatsOpen] = useState(false);
@@ -384,6 +386,18 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       active = false;
       unlisten?.();
     };
+  }, [bridge]);
+
+  // Read once: where this launch runs from cannot change while it runs.
+  useEffect(() => {
+    let active = true;
+    void bridge.appIsTranslocated().then(
+      (next) => {
+        if (active && mounted.current) setIsTranslocated(next);
+      },
+      () => undefined,
+    );
+    return () => { active = false; };
   }, [bridge]);
 
   useEffect(() => {
@@ -1349,6 +1363,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 ? "Your workspace and first project are set up automatically."
                 : "SIQshift keeps your hours for you."}
             </p>
+            {isTranslocated && <MoveToApplicationsNotice />}
             {authError && <p className="form-error" role="alert">{authError}</p>}
             <form onSubmit={submitAuth}>
               {isSignUp && (
@@ -1602,6 +1617,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       <WebGLShader />
       <Titlebar onOpenSettings={() => setSettingsOpen(true)} />
       <div className="screen">
+        {isTranslocated && <MoveToApplicationsNotice />}
         {updateVersion && (
           <p className="update-banner" role="status" data-testid="update-banner">
             Version {updateVersion} is on its way — SIQshift restarts itself when it&apos;s ready.

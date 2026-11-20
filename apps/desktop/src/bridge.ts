@@ -471,6 +471,9 @@ export interface TimerBridge {
   permissionDecline(permissionId: PermissionId): Promise<PermissionStatus[]>;
   /// Opens the System Settings pane that holds the grant.
   permissionOpenSettings(permissionId: PermissionId): Promise<void>;
+  /// Whether macOS runs this launch from a temporary App Translocation copy,
+  /// which cannot start at login; false on other platforms.
+  appIsTranslocated(): Promise<boolean>;
   /// Pins recording to one project, or clears the pin with `null`.
   sessionSelectProject(projectId: string | null): Promise<MonitorStatus>;
   hookRegister(source: string): Promise<HookRegisterResult>;
@@ -1239,6 +1242,7 @@ export const defaultBridge: TimerBridge = {
   permissionRequest: (permissionId) => invokeDecoded("permission_request", decodePermissionStatusList, { permissionId }),
   permissionDecline: (permissionId) => invokeDecoded("permission_decline", decodePermissionStatusList, { permissionId }),
   permissionOpenSettings: (permissionId) => invokeDecoded("permission_open_settings", decodeVoid, { permissionId }),
+  appIsTranslocated: () => invokeDecoded("app_is_translocated", boolean),
   sessionSelectProject: (projectId) => invokeDecoded("session_select_project", decodeMonitorStatus, { projectId }),
   hookRegister: (source) => invokeDecoded("hook_register", decodeHookRegisterResult, { source }),
   monitorSetEnabled: (enabled) => invokeDecoded("monitor_set_enabled", decodeMonitorSettings, { enabled }),

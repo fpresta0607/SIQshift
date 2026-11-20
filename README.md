@@ -96,6 +96,13 @@ tray and recording continues, and it registers a login autostart on every launch
 so hours survive a reboot. Quit lives in the tray menu, and a second launch
 surfaces the already-running instance instead of a second monitor.
 
+On a Mac, an app opened straight from its disk image, or copied into Applications by
+anything but the Finder, runs from a temporary App Translocation copy that is gone once
+it quits.
+Such a launch leaves the login autostart as it is, because an entry naming that copy would
+start nothing at the next login, and the window tells the person to drag SIQshift into
+Applications and open it from there.
+
 ### Sessions are decided by the machine, not by a person
 
 The monitor already folds the OS into coarse spans (`active`, `idle`, `locked`,

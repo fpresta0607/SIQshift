@@ -1149,6 +1149,28 @@ fn spawn_verification_checks() {
     });
 }
 
+/// Whether `executable` runs from an App Translocation copy. macOS runs a
+/// quarantined app opened from its disk image, or copied into Applications by
+/// anything but the Finder, from a randomized copy under
+/// `.../AppTranslocation/<uuid>/d/` that is gone once that launch ends, so
+/// nothing may be registered by that path.
+fn is_translocated(executable: &Path) -> bool {
+    executable
+        .components()
+        .any(|component| component.as_os_str() == OsStr::new("AppTranslocation"))
+}
+
+fn this_launch_is_translocated() -> bool {
+    std::env::current_exe().is_ok_and(|executable| is_translocated(&executable))
+}
+
+/// Whether this launch runs from a translocated copy, which the window answers
+/// with one notice to move SIQshift to Applications.
+#[tauri::command]
+fn app_is_translocated() -> bool {
+    this_launch_is_translocated()
+}
+
 /// The login autostart launches with `--hidden`, so a second `--hidden`
 /// launch is the OS pointing at the already-running tray app, not a person
 /// asking for the window. Only a hand launch (no `--hidden`) surfaces it.
@@ -1243,7 +1265,12 @@ pub fn run() {
             // with the OS on every launch - re-enabling also repairs an entry
             // a cleanup tool removed. The login start passes `--hidden` and
             // stays in the tray; a person opening it by hand gets the window.
-            {
+            // A translocated launch leaves the entry as it is: written now it
+            // would name a copy that is gone at the next login, and the next
+            // launch from Applications writes it.
+            if this_launch_is_translocated() {
+                eprintln!("siqshift: running from a translocated copy, so the login autostart is left as it is");
+            } else {
                 use tauri_plugin_autostart::ManagerExt;
                 if let Err(error) = app.autolaunch().enable() {
                     eprintln!("siqshift: could not register the login autostart: {error}");
@@ -1271,6 +1298,7 @@ pub fn run() {
             browser_repair,
             browser_open_store,
             permissions_status,
+            app_is_translocated,
             permission_request,
             permission_decline,
             permission_open_settings,
@@ -1474,6 +1502,24 @@ mod tests {
         assert!(second_launch_surfaces_window(&[
             "--some-other-flag".to_string()
         ]));
+    }
+
+    #[test]
+    fn only_an_app_translocation_copy_reads_as_translocated() {
+        for (executable, expected) in [
+            (
+                "/private/var/folders/q2/xyz/T/AppTranslocation/9A5DC32F-8E96-4510-8472-7933D7F6B184/d/SIQshift.app/Contents/MacOS/siqshift-desktop",
+                true,
+            ),
+            ("/Applications/SIQshift.app/Contents/MacOS/siqshift-desktop", false),
+            // Opened in place from the mounted disk image without quarantine.
+            ("/Volumes/SIQshift/SIQshift.app/Contents/MacOS/siqshift-desktop", false),
+            // A folder whose name only contains the word is not the mount.
+            ("/Users/riley/AppTranslocationNotes/SIQshift.app/Contents/MacOS/siqshift-desktop", false),
+            (r"C:\Program Files\SIQshift\siqshift-desktop.exe", false),
+        ] {
+            assert_eq!(is_translocated(Path::new(executable)), expected, "{executable}");
+        }
     }
 
     #[test]

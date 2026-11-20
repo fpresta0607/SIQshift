@@ -728,6 +728,29 @@ describe("defaultBridge", () => {
     await expect(read).rejects.toMatchObject({ kind: "unknown" });
   });
 
+  it.each([true, false])("reads whether the launch is translocated as %s", async (isTranslocated) => {
+    // Arrange
+    invoke.mockResolvedValueOnce(isTranslocated);
+
+    // Act
+    const answer = await defaultBridge.appIsTranslocated();
+
+    // Assert
+    expect(answer).toBe(isTranslocated);
+    expect(invoke.mock.calls.at(-1)).toEqual(["app_is_translocated", undefined]);
+  });
+
+  it("rejects a translocation answer that is not a boolean", async () => {
+    // Arrange
+    invoke.mockResolvedValueOnce("yes");
+
+    // Act
+    const answer = defaultBridge.appIsTranslocated();
+
+    // Assert
+    await expect(answer).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("decodes the macOS permissions and names the permission on every action", async () => {
     // Arrange
     invoke.mockResolvedValueOnce([
