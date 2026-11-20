@@ -1196,7 +1196,8 @@ fn app_data_dir() -> PathBuf {
 }
 
 /// Where the spool lives unless `SIQSHIFT_SPOOL` says otherwise:
-/// `%APPDATA%/siqshift/agent-spool.jsonl` on Windows, the XDG data dir
+/// `%APPDATA%/siqshift/agent-spool.jsonl` on Windows,
+/// `~/.local/share/siqshift/agent-spool.jsonl` on macOS, the XDG data dir
 /// elsewhere — or the pre-rename `clock-in` directory when this machine is
 /// carrying one, see [`resolve_data_dir`].
 pub fn default_spool_path() -> PathBuf {
@@ -1498,7 +1499,21 @@ fn default_data_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-#[cfg(not(windows))]
+/// macOS has no XDG convention, and the two processes that must agree on this
+/// directory start in different environments: the app from the Finder or at
+/// login, which never sets `XDG_DATA_HOME`, and the hook from inside an agent
+/// CLI, which inherits what the person's login shell exports (the Claude app
+/// reads it when it starts). Honouring the variable here put the hook's spool
+/// where the uploader never looks, so the home folder alone decides it.
+#[cfg(target_os = "macos")]
+fn default_data_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(|home| PathBuf::from(home).join(".local/share"))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn default_data_dir() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
         return PathBuf::from(xdg);

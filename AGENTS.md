@@ -293,7 +293,11 @@ timer once said RECORDING above a card reading "Turn on recording in settings".
   migrates on deploy, so this is always a deliberate, separate step.
 - `siqshift-hook` and the desktop uploader must resolve the spool through the same
   `spool::agent_spool_path()`. When they disagreed, the hook exited 0, wrote nothing
-  the uploader could see, and every agent event vanished silently. The browser host
+  the uploader could see, and every agent event vanished silently. On macOS that rule
+  ignores `XDG_DATA_HOME`: the app starts without it and the hook inherits the login
+  shell's. A hook registration counts as connected only while the helper path it names
+  exists, and launch repoints a dead one (a first launch from the disk image registers a
+  translocated path that vanishes, issue 192). The browser host
   and the app share the same rule for `spool::browser_dir()`, so the two cannot
   drift apart the same way.
 - `api.rs`'s `upload_agent_events` sends the explicit `AgentEventUpload` projection, never

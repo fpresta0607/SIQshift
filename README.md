@@ -721,6 +721,23 @@ Copilot), the "what's switched on" panel carries the exact snippet to paste. A r
 is not installed on this machine reports as absent rather than offering a button that cannot
 work.
 
+A hook names the `siqshift-hook` helper beside the running app by its absolute path, so a
+runtime reads as connected only while the helper that path names is on disk.
+Every launch repoints a registration whose helper is gone at the running app's own helper,
+and leaves one whose helper still exists alone.
+
+On a Mac the helper lives at `/Applications/SIQshift.app/Contents/MacOS/siqshift-hook` once
+the app is dragged to Applications.
+An app opened straight from its disk image runs from a randomized translocated copy that is
+gone once that launch ends, so a hook written then stops working until the next launch from
+Applications repairs it.
+Claude Code runs the same hooks from `~/.claude/settings.json` in a terminal, in an editor and
+in the Claude app's Code tab, and the helper and the app keep the agent spool in
+`~/.local/share/siqshift` whatever `XDG_DATA_HOME` the login shell exports.
+A cloud session, whether Claude Code on the web or a Cloud environment in the Claude app, runs
+on Anthropic's computers and does not read your local settings, so it is never recorded; the
+panel says so on the Claude Code row.
+
 ### The roster is not an allowlist
 
 `packages/shared/src/agent-runtimes.json` is the one place a runtime is declared, and both the

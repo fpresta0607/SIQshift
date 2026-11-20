@@ -1088,7 +1088,9 @@ pub fn detect_hooks(probes: &[HookProbe]) -> Vec<HookRegistration> {
             let installed = runtime_is_installed(probe);
             let detected = match probe.registration {
                 agent_runtimes::Registration::CodexNative => installed,
-                _ => std::fs::read_to_string(&probe.config_path)
+                agent_runtimes::Registration::ClaudeJson
+                | agent_runtimes::Registration::CursorJson => json_hook_is_live(probe),
+                agent_runtimes::Registration::Manual => std::fs::read_to_string(&probe.config_path)
                     .map(|content| mentions_any_hook_binary(&content))
                     .unwrap_or(false),
             };
@@ -1120,6 +1122,15 @@ pub fn detect_hooks(probes: &[HookProbe]) -> Vec<HookRegistration> {
 /// text to paste, because guessing a rewrite of a file SIQshift does not own
 /// is worse than asking.
 pub fn auto_connect_hooks(probes: &[HookProbe]) -> Vec<String> {
+    connect_hooks(probes, hook_binary_command().ok().as_deref())
+}
+
+/// `auto_connect_hooks` with the helper command it points hooks at, or `None`
+/// when this install has no helper to point them at. A registration whose
+/// helper is still on disk is left alone; one naming a helper that is gone is
+/// repointed at `command`, which is how launch repairs a hook registered from
+/// a disk image or a translocated copy.
+fn connect_hooks(probes: &[HookProbe], command: Option<&str>) -> Vec<String> {
     let mut connected = Vec::new();
     for probe in probes {
         if probe.registration == agent_runtimes::Registration::Manual
@@ -1127,23 +1138,17 @@ pub fn auto_connect_hooks(probes: &[HookProbe]) -> Vec<String> {
         {
             continue;
         }
-        if probe.registration == agent_runtimes::Registration::CodexNative {
-            if let Ok(HookRegisterResult::Registered { .. }) =
-                register_codex_native(&probe.config_path)
-            {
-                connected.push(probe.source.to_string());
-            }
-            continue;
-        }
-        let already = std::fs::read_to_string(&probe.config_path)
-            .map(|content| mentions_any_hook_binary(&content))
-            .unwrap_or(false);
-        if already {
-            continue;
-        }
+        let result = match probe.registration {
+            agent_runtimes::Registration::CodexNative => register_codex_native(&probe.config_path),
+            _ if json_hook_is_live(probe) => continue,
+            _ => match command {
+                Some(command) => register_json_hook(probe, command),
+                None => continue,
+            },
+        };
         // A failure here is not worth interrupting startup over: the row stays
         // "not connected" and the panel's own button still works.
-        if let Ok(HookRegisterResult::Registered { .. }) = register_hook(probe.source) {
+        if let Ok(HookRegisterResult::Registered { .. }) = result {
             connected.push(probe.source.to_string());
         }
     }
@@ -1222,15 +1227,10 @@ pub fn register_hook(source: &str) -> ApiResult<HookRegisterResult> {
         .find(|probe| probe.source == source)
         .ok_or_else(|| BridgeError::new(ErrorKind::Validation, "Unknown agent CLI."))?;
     match probe.registration {
-        agent_runtimes::Registration::ClaudeJson => {
-            let command = hook_binary_command()?;
-            register_claude_shaped(&probe.config_path, &command, source)
+        agent_runtimes::Registration::ClaudeJson | agent_runtimes::Registration::CursorJson => {
+            register_json_hook(&probe, &hook_binary_command()?)
         }
         agent_runtimes::Registration::CodexNative => register_codex_native(&probe.config_path),
-        agent_runtimes::Registration::CursorJson => {
-            let command = hook_binary_command()?;
-            register_cursor(&probe.config_path, &command)
-        }
         // A CLI whose hook mechanism is not a JSON array of commands — Pi's and
         // opencode's are JavaScript, and the rest are unconfirmed against any
         // installed version — gets the honest paste-it-yourself text from the
@@ -1244,6 +1244,57 @@ pub fn register_hook(source: &str) -> ApiResult<HookRegisterResult> {
             })
         }
     }
+}
+
+/// Merges `command` into the JSON hook config of a runtime whose hook shape
+/// SIQshift owns.
+fn register_json_hook(probe: &HookProbe, command: &str) -> ApiResult<HookRegisterResult> {
+    match probe.registration {
+        agent_runtimes::Registration::ClaudeJson => {
+            register_claude_shaped(&probe.config_path, command, probe.source)
+        }
+        agent_runtimes::Registration::CursorJson => register_cursor(&probe.config_path, command),
+        agent_runtimes::Registration::CodexNative | agent_runtimes::Registration::Manual => {
+            Err(unexpected_settings_shape())
+        }
+    }
+}
+
+/// Whether a session event in this runtime would reach SIQshift: one of its
+/// session hooks runs a helper that is on disk. Naming the helper is not
+/// enough, because a registration made while the app ran from its disk image
+/// or a translocated copy names a path that is gone once that copy is, and
+/// the runtime then fails the command on every session event.
+fn json_hook_is_live(probe: &HookProbe) -> bool {
+    let events: Vec<&str> = match probe.registration {
+        agent_runtimes::Registration::ClaudeJson => {
+            CLAUDE_HOOK_EVENTS.iter().map(|(key, _)| *key).collect()
+        }
+        agent_runtimes::Registration::CursorJson => {
+            CURSOR_HOOKS.iter().map(|(key, _)| *key).collect()
+        }
+        agent_runtimes::Registration::CodexNative | agent_runtimes::Registration::Manual => {
+            return false
+        }
+    };
+    read_json_object(&probe.config_path)
+        .is_ok_and(|config| hook_arrays_any(&config, &events, &command_runs_live_helper))
+}
+
+/// The helper a stored hook command runs and the arguments after it: the
+/// first quoted segment, or the first word of an unquoted command.
+fn hook_command_binary(command: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = command.strip_prefix('"') {
+        return rest.split_once('"');
+    }
+    let command = command.trim_start();
+    let end = command.find(char::is_whitespace).unwrap_or(command.len());
+    (end > 0).then(|| command.split_at(end))
+}
+
+fn command_runs_live_helper(command: &str) -> bool {
+    hook_command_binary(command)
+        .is_some_and(|(binary, _)| binary.contains(HOOK_BINARY_NAME) && Path::new(binary).is_file())
 }
 
 /// Removes SIQshift's obsolete Codex lifecycle hooks. Codex has no terminal
@@ -1333,8 +1384,8 @@ fn register_claude_shaped(
     source: &str,
 ) -> ApiResult<HookRegisterResult> {
     let mut settings = read_json_object(config_path)?;
-    // A pre-rename registration is repaired in place, never appended beside.
-    if repoint_legacy_hooks_in_object(&mut settings, command) {
+    // A stale registration is repaired in place, never appended beside.
+    if repoint_stale_hooks_in_object(&mut settings, command) {
         write_json_atomically(config_path, &settings)?;
         return Ok(HookRegisterResult::Registered {
             config_path: config_path.to_string_lossy().into_owned(),
@@ -1371,8 +1422,8 @@ fn register_claude_shaped(
 /// the binary knows the event without relying on Cursor's payload shape.
 fn register_cursor(config_path: &Path, command: &str) -> ApiResult<HookRegisterResult> {
     let mut config = read_json_object(config_path)?;
-    // A pre-rename registration is repaired in place, never appended beside.
-    if repoint_legacy_hooks_in_object(&mut config, command) {
+    // A stale registration is repaired in place, never appended beside.
+    if repoint_stale_hooks_in_object(&mut config, command) {
         write_json_atomically(config_path, &config)?;
         return Ok(HookRegisterResult::Registered {
             config_path: config_path.to_string_lossy().into_owned(),
@@ -1457,18 +1508,24 @@ fn unexpected_settings_shape() -> BridgeError {
 /// detection would later find reads as already registered here.
 fn claude_hook_present(settings: &serde_json::Map<String, serde_json::Value>) -> bool {
     let keys: Vec<&str> = CLAUDE_HOOK_EVENTS.iter().map(|(key, _)| *key).collect();
-    hook_arrays_mention_hook(settings, &keys)
+    hook_arrays_any(settings, &keys, &mentions_any_hook_binary)
 }
 
 /// True when any sessionStart/sessionEnd entry already mentions the hook
 /// binary — same heuristic as `claude_hook_present`, on Cursor's keys.
 fn cursor_hook_present(config: &serde_json::Map<String, serde_json::Value>) -> bool {
-    hook_arrays_mention_hook(config, &["sessionStart", "sessionEnd"])
+    hook_arrays_any(
+        config,
+        &["sessionStart", "sessionEnd"],
+        &mentions_any_hook_binary,
+    )
 }
 
-fn hook_arrays_mention_hook(
+/// True when any string under the named hook arrays satisfies `matches`.
+fn hook_arrays_any(
     settings: &serde_json::Map<String, serde_json::Value>,
     events: &[&str],
+    matches: &dyn Fn(&str) -> bool,
 ) -> bool {
     let Some(hooks) = settings.get("hooks").and_then(|hooks| hooks.as_object()) else {
         return false;
@@ -1476,14 +1533,14 @@ fn hook_arrays_mention_hook(
     events
         .iter()
         .filter_map(|event| hooks.get(*event))
-        .any(value_mentions_hook)
+        .any(|value| value_has_string(value, matches))
 }
 
-fn value_mentions_hook(value: &serde_json::Value) -> bool {
+fn value_has_string(value: &serde_json::Value, matches: &dyn Fn(&str) -> bool) -> bool {
     match value {
-        serde_json::Value::String(text) => mentions_any_hook_binary(text),
-        serde_json::Value::Array(items) => items.iter().any(value_mentions_hook),
-        serde_json::Value::Object(map) => map.values().any(value_mentions_hook),
+        serde_json::Value::String(text) => matches(text),
+        serde_json::Value::Array(items) => items.iter().any(|item| value_has_string(item, matches)),
+        serde_json::Value::Object(map) => map.values().any(|item| value_has_string(item, matches)),
         _ => false,
     }
 }
@@ -1497,41 +1554,44 @@ fn mentions_any_hook_binary(text: &str) -> bool {
 }
 
 /// Re-point one stored command at the current binary, keeping its arguments.
-/// `None` when the command is not a legacy registration, so a caller can tell
-/// "nothing to do" from "rewritten".
+/// `None` when the command is not a stale registration, so a caller can tell
+/// "nothing to do" from "rewritten". A registration is stale when it names
+/// the pre-rename binary or a helper that is no longer on disk, such as the
+/// copy inside a disk image that has since been ejected; one whose helper is
+/// still there is left alone, even when it is another install's.
 ///
 /// The stored shape is `"<binary>" --source X --event Y`, so the binary is the
 /// first quoted segment and everything after it is the argv this registration
 /// was written with. Rewriting only the path preserves argv exactly, which
 /// matters: `--source` is how the hook knows which CLI fired it, and a Codex
 /// session filed as Claude Code would be worse than none.
-fn repoint_legacy_hook_command(command: &str, quoted_binary: &str) -> Option<String> {
+fn repoint_stale_hook_command(command: &str, quoted_binary: &str) -> Option<String> {
     let rest = command.strip_prefix('"')?;
     let (path, tail) = rest.split_once('"')?;
-    if !path.contains(LEGACY_HOOK_BINARY_NAME) {
-        return None;
-    }
-    Some(format!("{quoted_binary}{tail}"))
+    let is_stale = path.contains(LEGACY_HOOK_BINARY_NAME)
+        || (path.contains(HOOK_BINARY_NAME) && !Path::new(path).is_file());
+    let repointed = format!("{quoted_binary}{tail}");
+    (is_stale && repointed != command).then_some(repointed)
 }
 
-/// `repoint_legacy_hooks` over a parsed top-level config object.
-fn repoint_legacy_hooks_in_object(
+/// `repoint_stale_hooks` over a parsed top-level config object.
+fn repoint_stale_hooks_in_object(
     settings: &mut serde_json::Map<String, serde_json::Value>,
     quoted_binary: &str,
 ) -> bool {
     let mut changed = false;
     for value in settings.values_mut() {
-        changed |= repoint_legacy_hooks(value, quoted_binary);
+        changed |= repoint_stale_hooks(value, quoted_binary);
     }
     changed
 }
 
-/// Walks a parsed config, re-pointing every legacy hook command. Returns
+/// Walks a parsed config, re-pointing every stale hook command. Returns
 /// whether anything changed. Visits the whole tree rather than stopping at the
 /// first hit - a config can carry one registration per event.
-fn repoint_legacy_hooks(value: &mut serde_json::Value, quoted_binary: &str) -> bool {
+fn repoint_stale_hooks(value: &mut serde_json::Value, quoted_binary: &str) -> bool {
     match value {
-        serde_json::Value::String(text) => match repoint_legacy_hook_command(text, quoted_binary) {
+        serde_json::Value::String(text) => match repoint_stale_hook_command(text, quoted_binary) {
             Some(updated) => {
                 *text = updated;
                 true
@@ -1541,14 +1601,14 @@ fn repoint_legacy_hooks(value: &mut serde_json::Value, quoted_binary: &str) -> b
         serde_json::Value::Array(items) => {
             let mut changed = false;
             for item in items {
-                changed |= repoint_legacy_hooks(item, quoted_binary);
+                changed |= repoint_stale_hooks(item, quoted_binary);
             }
             changed
         }
         serde_json::Value::Object(map) => {
             let mut changed = false;
             for item in map.values_mut() {
-                changed |= repoint_legacy_hooks(item, quoted_binary);
+                changed |= repoint_stale_hooks(item, quoted_binary);
             }
             changed
         }
@@ -4171,42 +4231,209 @@ mod tests {
         assert_eq!(parsed, without);
     }
 
-    #[test]
-    fn hook_detection_matches_the_binary_name_in_config_files() {
-        let dir = std::env::temp_dir().join(format!("siqshift-hook-detect-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir is created");
-        let registered = dir.join("settings.json");
-        let plain = dir.join("config.toml");
-        std::fs::write(&registered, r#"{"hooks": ["C:/bin/siqshift-hook.exe"]}"#)
-            .expect("config writes");
-        std::fs::write(&plain, "model = \"default\"").expect("config writes");
+    /// A stand-in for the helper the app ships beside itself.
+    fn helper_in(dir: &Path) -> PathBuf {
+        let helper = dir
+            .join("SIQshift.app/Contents/MacOS")
+            .join(HOOK_BINARY_NAME);
+        std::fs::create_dir_all(helper.parent().expect("a parent")).expect("bundle dir creates");
+        std::fs::write(&helper, b"#!/bin/sh\n").expect("helper writes");
+        helper
+    }
 
-        let probes = vec![
-            HookProbe {
-                source: "claude_code",
-                config_path: registered,
-                registration: agent_runtimes::Registration::ClaudeJson,
-            },
-            HookProbe {
-                source: "codex",
-                config_path: plain,
-                registration: agent_runtimes::Registration::ClaudeJson,
-            },
-            HookProbe {
-                source: "kimi_code",
-                config_path: dir.join("missing.toml"),
-                registration: agent_runtimes::Registration::Manual,
-            },
-        ];
-        let hooks = detect_hooks(&probes);
+    /// The config `register_claude_shaped` writes, naming `helper`.
+    fn claude_settings_naming(helper: &str) -> String {
+        let entry = |event: &str| {
+            serde_json::json!([{"hooks": [{
+                "type": "command",
+                "command": format!("\"{helper}\" --source claude_code --event {event}"),
+            }]}])
+        };
+        serde_json::json!({"hooks": {
+            "SessionStart": entry("session-start"),
+            "SessionEnd": entry("session-end"),
+        }})
+        .to_string()
+    }
+
+    /// Where a first launch from the disk image registers the helper: the
+    /// randomized translocated copy macOS runs it from, which is gone once
+    /// that launch ends (seen on the macOS runner with the 0.2.5 image).
+    const TRANSLOCATED_HELPER: &str = "/private/var/folders/q2/xyz/T/AppTranslocation/9A5DC32F-8E96-4510-8472-7933D7F6B184/d/SIQshift.app/Contents/MacOS/siqshift-hook";
+
+    #[test]
+    fn hook_detection_reads_connected_only_when_the_registered_helper_exists() {
+        let root = probe_dir("detect-live");
+        let helper = helper_in(&root);
+        let live = probe(
+            &root,
+            "claude_code",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        let dead = probe(
+            &root,
+            "claude_dead",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        let unrelated = probe(
+            &root,
+            "claude_plain",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        let manual = HookProbe {
+            source: "kimi_code",
+            config_path: root.join("missing.toml"),
+            registration: agent_runtimes::Registration::Manual,
+        };
+        for each in [&live, &dead, &unrelated] {
+            install(each);
+        }
+        std::fs::write(
+            &live.config_path,
+            claude_settings_naming(&helper.to_string_lossy()),
+        )
+        .expect("config writes");
+        std::fs::write(
+            &dead.config_path,
+            claude_settings_naming(TRANSLOCATED_HELPER),
+        )
+        .expect("config writes");
+        std::fs::write(&unrelated.config_path, r#"{"model":"default"}"#).expect("config writes");
+
+        let hooks = detect_hooks(&[live, dead, unrelated, manual]);
+
         assert_eq!(
             hooks.iter().map(|hook| hook.detected).collect::<Vec<_>>(),
-            vec![true, false, false]
+            vec![true, false, false, false],
+            "a hook naming a helper that is gone captures nothing, so it is not connected"
         );
-        assert_eq!(hooks[0].source, "claude_code");
+        assert!(
+            hooks[1].installed && !hooks[1].needs_you,
+            "SIQshift repairs it itself"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn hook_detection_accepts_an_unquoted_command_naming_a_live_helper() {
+        let root = probe_dir("detect-unquoted");
+        let helper = helper_in(&root);
+        let claude = probe(
+            &root,
+            "claude_code",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        install(&claude);
+        let command = format!(
+            "{} --source claude_code --event session-start",
+            helper.display()
+        );
+        let settings = serde_json::json!({"hooks": {"SessionStart": [{"hooks": [
+            {"type": "command", "command": command}
+        ]}]}});
+        std::fs::write(&claude.config_path, settings.to_string()).expect("config writes");
+
+        assert!(detect_hooks(&[claude])[0].detected);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn launch_repoints_a_registration_whose_helper_is_gone_at_the_running_app() {
+        let root = probe_dir("repair-dead");
+        let helper = helper_in(&root);
+        let claude = probe(
+            &root,
+            "claude_code",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        install(&claude);
+        std::fs::write(
+            &claude.config_path,
+            claude_settings_naming(TRANSLOCATED_HELPER),
+        )
+        .expect("config writes");
+        let command = format!("\"{}\"", helper.display());
+        let probes = vec![claude];
+        assert!(
+            !detect_hooks(&probes)[0].detected,
+            "not connected before launch"
+        );
+
+        let connected = connect_hooks(&probes, Some(&command));
+
+        assert_eq!(connected, vec!["claude_code".to_string()]);
+        assert!(
+            detect_hooks(&probes)[0].detected,
+            "connected once launch repaired it"
+        );
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&probes[0].config_path).expect("config reads"),
+        )
+        .expect("config parses");
+        for (key, event) in CLAUDE_HOOK_EVENTS {
+            let entries = repaired["hooks"][key].as_array().expect("an array");
+            assert_eq!(entries.len(), 1, "{key} is repointed, not duplicated");
+            assert_eq!(
+                entries[0]["hooks"][0]["command"],
+                format!("{command} --source claude_code --event {event}")
+            );
+        }
+        assert!(
+            connect_hooks(&probes, Some(&command)).is_empty(),
+            "the next launch finds nothing to repair"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn launch_leaves_a_registration_whose_helper_exists_alone() {
+        let root = probe_dir("repair-live");
+        let helper = helper_in(&root);
+        let claude = probe(
+            &root,
+            "claude_code",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        install(&claude);
+        let original = claude_settings_naming(&helper.to_string_lossy());
+        std::fs::write(&claude.config_path, &original).expect("config writes");
+        let probes = vec![claude];
+
+        let connected = connect_hooks(
+            &probes,
+            Some("\"/Volumes/SIQshift/SIQshift.app/Contents/MacOS/siqshift-hook\""),
+        );
+
+        assert!(
+            connected.is_empty(),
+            "a live registration is never rewritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&probes[0].config_path).expect("config reads"),
+            original
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn launch_without_a_helper_beside_the_app_writes_nothing() {
+        let root = probe_dir("repair-no-helper");
+        let claude = probe(
+            &root,
+            "claude_code",
+            agent_runtimes::Registration::ClaudeJson,
+        );
+        install(&claude);
+        let original = claude_settings_naming(TRANSLOCATED_HELPER);
+        std::fs::write(&claude.config_path, &original).expect("config writes");
+        let probes = vec![claude];
+
+        assert!(connect_hooks(&probes, None).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&probes[0].config_path).expect("config reads"),
+            original
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -4813,7 +5040,7 @@ mod tests {
     fn repointing_keeps_the_argv_the_registration_was_written_with() {
         // --source is how the hook knows which CLI fired it; a Codex session
         // filed as Claude Code would be worse than none.
-        let repointed = repoint_legacy_hook_command(
+        let repointed = repoint_stale_hook_command(
             "\"C:/old/clock-in-hook.exe\" --source codex --event session-end",
             "\"C:/new/siqshift-hook.exe\"",
         )
@@ -4825,14 +5052,34 @@ mod tests {
     }
 
     #[test]
-    fn a_current_registration_is_left_alone() {
+    fn a_registration_whose_helper_exists_is_left_alone() {
+        let root = probe_dir("repoint-live");
+        let helper = helper_in(&root);
         assert!(
-            repoint_legacy_hook_command(
-                "\"C:/new/siqshift-hook.exe\" --source claude_code --event session-start",
+            repoint_stale_hook_command(
+                &format!(
+                    "\"{}\" --source claude_code --event session-start",
+                    helper.display()
+                ),
                 "\"C:/other/siqshift-hook.exe\"",
             )
             .is_none(),
             "nothing to repoint means None, so the caller does not rewrite the file"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_registration_whose_helper_is_gone_is_repointed() {
+        assert_eq!(
+            repoint_stale_hook_command(
+                &format!("\"{TRANSLOCATED_HELPER}\" --source claude_code --event session-end"),
+                "\"/Applications/SIQshift.app/Contents/MacOS/siqshift-hook\"",
+            ),
+            Some(
+                "\"/Applications/SIQshift.app/Contents/MacOS/siqshift-hook\" --source claude_code --event session-end"
+                    .to_string()
+            )
         );
     }
 
@@ -4844,7 +5091,7 @@ mod tests {
             "clock-in-hook",
         ] {
             assert!(
-                repoint_legacy_hook_command(command, "\"C:/new/siqshift-hook.exe\"").is_none(),
+                repoint_stale_hook_command(command, "\"C:/new/siqshift-hook.exe\"").is_none(),
                 "{command:?} is not a quoted legacy registration"
             );
         }

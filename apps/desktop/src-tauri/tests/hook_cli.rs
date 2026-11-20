@@ -208,6 +208,42 @@ fn a_claude_native_stdin_payload_is_translated_and_spooled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The app starts from the Finder or at login without `XDG_DATA_HOME`, while
+/// the hook runs inside Claude Code with what the login shell exports, so a
+/// shell that sets it must not move the hook's spool away from the app's.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_shell_xdg_data_home_does_not_move_the_spool_on_macos() {
+    let home = temp_dir("xdg-home");
+    let xdg = home.join("xdg");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_siqshift-hook"))
+        .env_remove("SIQSHIFT_SPOOL")
+        .env("HOME", &home)
+        .env("XDG_DATA_HOME", &xdg)
+        .current_dir(&home)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hook binary spawns");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(
+            br#"{"session_id":"xdg-split","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}"#,
+        )
+        .expect("stdin writes");
+    let output = child.wait_with_output().expect("hook exits");
+
+    assert!(output.status.success(), "{output:?}");
+    let spool = home.join(".local/share/siqshift/agent-spool.jsonl");
+    let content = std::fs::read_to_string(&spool).expect("the app's spool holds the event");
+    assert!(content.contains("xdg-split"));
+    assert!(!xdg.exists(), "nothing lands under XDG_DATA_HOME");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// An orchestrator runs its agents natively: no shell between it and the
 /// agent, and no console or window of their own. Detection rides the agent's
 /// hook, so the hook spools a session from such a parent exactly as from a

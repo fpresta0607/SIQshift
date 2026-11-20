@@ -152,6 +152,17 @@ describe("RecordingPanel", () => {
     expect(within(manual).getByRole("button", { name: "Show me how" })).toBeInTheDocument();
   });
 
+  it("says Claude Code cloud sessions are not recorded, and why", () => {
+    panelFor();
+
+    const panel = screen.getByRole("dialog", { name: "What SIQshift is recording" });
+    const claude = within(panel).getByText("Claude Code").closest("li") as HTMLElement;
+    expect(claude).toHaveTextContent("the Claude app's Code tab");
+    expect(claude).toHaveTextContent("Cloud sessions are not: they run on Anthropic's computers");
+    const codex = within(panel).getByText("Codex").closest("li") as HTMLElement;
+    expect(codex).not.toHaveTextContent("Cloud sessions");
+  });
+
   it("says the browser is not watched rather than implying a connection", () => {
     panelFor();
 
