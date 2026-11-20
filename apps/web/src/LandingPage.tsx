@@ -115,7 +115,7 @@ export function LandingPage({ onAuth }: { onAuth: (mode: AuthMode) => void }) {
           <div className="landing-features">
             <article><span className="landing-feature-number">01</span><h3>Just work.</h3><p>The desktop app records activity automatically. Step away and your active time pauses.</p></article>
             <article><span className="landing-feature-number">02</span><h3>See both sides.</h3><p>Measure human effort and agent runtime across your team, even when several agents work in parallel.</p></article>
-            <article><span className="landing-feature-number">03</span><h3>Keep it together.</h3><p>See your team’s leaderboard and the tokens and agent runtimes behind their hours. One workspace for everyone’s work.</p></article>
+            <article><span className="landing-feature-number">03</span><h3>Keep it together.</h3><p>See your team’s leaderboard and the projects behind their hours. One workspace for everyone’s work.</p></article>
           </div>
         </section>
         <section className="landing-closing" aria-labelledby="landing-closing-title">

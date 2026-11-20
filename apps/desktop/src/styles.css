@@ -528,7 +528,3 @@ select:disabled { opacity: .55; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 4px 0 0; padding: 0; list-style: none; color: var(--text-secondary); font-size: .74rem; }
 .legend li { display: flex; align-items: center; gap: 6px; }
 .legend-line { width: 14px; height: 2px; border-radius: 1px; }
-
-/* The Agents page's Live now card: who is running an agent now.
-   A breathing dot marks each running session; the description is the server's
-   own sentence and is never re-derived here. */

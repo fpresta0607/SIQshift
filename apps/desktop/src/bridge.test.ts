@@ -587,7 +587,7 @@ describe("defaultBridge", () => {
         }],
       }],
     });
-    // A host older than this build sends none of the tile's facts, which decode as null.
+    // An API older than this build sends none of the tile's facts, which decode as null.
     await expect(defaultBridge.liveAgentSessions()).resolves.toEqual({
       people: [{
         owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },

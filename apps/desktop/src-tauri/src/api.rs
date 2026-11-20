@@ -476,9 +476,7 @@ impl AgentShiftsQuery {
 }
 
 /// One agent session running at the moment the read answered, as the live
-/// view renders it. The description is the server's own sentence, composed
-/// once from captured facts; the webview renders it verbatim and never
-/// re-derives it. Every field is tolerant the way every response here is.
+/// view renders it. Every field is tolerant the way every response here is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveAgentSessionRow {
@@ -487,6 +485,14 @@ pub struct LiveAgentSessionRow {
     pub description: String,
     #[serde(default)]
     pub repo: Option<String>,
+    #[serde(default)]
+    pub project: Option<LeaderboardMember>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 /// One person's running sessions. Only people with at least one arrive, so
@@ -2719,6 +2725,10 @@ mod tests {
                         "source": "claude_code",
                         "description": "Claude Code in siqshift, running 12m",
                         "repo": "siqshift",
+                        "project": {"id": "p1", "name": "Atlas Portal"},
+                        "model": "claude-opus-5-5",
+                        "startedAt": "2026-08-01T09:00:00.000Z",
+                        "state": "working",
                         "aFieldFromTheFuture": true
                     }]
                 }]
@@ -2729,6 +2739,22 @@ mod tests {
         assert_eq!(full.people[0].owner.name, "Alex");
         assert_eq!(full.people[0].sessions.len(), 1);
         assert_eq!(full.people[0].sessions[0].repo.as_deref(), Some("siqshift"));
+        // The tile's facts reach the webview as the server sent them.
+        let session = serde_json::to_value(&full.people[0].sessions[0]).expect("a session serializes");
+        assert_eq!(session["project"], serde_json::json!({"id": "p1", "name": "Atlas Portal"}));
+        assert_eq!(session["model"], "claude-opus-5-5");
+        assert_eq!(session["startedAt"], "2026-08-01T09:00:00.000Z");
+        assert_eq!(session["state"], "working");
+
+        // A server that says no state, project or model sends them as null.
+        let bare: LiveAgentSessionRow = serde_json::from_str(
+            r#"{"id": "s2", "source": "codex", "description": "Codex, running 3m"}"#,
+        )
+        .expect("a bare session decodes");
+        let bare = serde_json::to_value(&bare).expect("a bare session serializes");
+        for fact in ["repo", "project", "model", "startedAt", "state"] {
+            assert!(bare[fact].is_null(), "{fact} reads as null");
+        }
 
         // Absence on an older API decodes as nobody running, never an error -
         // the exact bridge rule the rest of this file keeps.
