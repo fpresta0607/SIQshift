@@ -58,6 +58,16 @@ const PAUSE_COUNTED_AS_WORK_SECONDS: u32 = 5 * 60;
 /// (`AGENT_STALE_WINDOW_MS` in `agent-sessions.ts`); tighten them together.
 pub const AGENT_ACTIVE_WINDOW_SECONDS: u64 = 30 * 60;
 
+/// How long a session may stay open before the tracker checkpoints it: closes
+/// it and opens the next one at the same instant. While any agent is active an
+/// idle or locked spell never closes a session, so with agents running all day
+/// one session would stay open all day. It would reach the server only at its
+/// close, the server's project-scoped active time (presence intersected with
+/// closed sessions) would read zero until then, and a session open past seven
+/// days is rejected whole at close. Checkpoints bound all three without moving
+/// a second between sessions.
+const SESSION_CHECKPOINT_SECONDS: u64 = 15 * 60;
+
 /// How stale the last poll may be before the monitor stops claiming it is
 /// watching this machine. Three intervals, so one late tick is not an alarm.
 ///
@@ -824,6 +834,16 @@ impl SessionTracker {
                     opens_at = resumed_idle.map_or(boundary, |_| span_started_at);
                 }
                 self.agent_first_in_idle = 0;
+                // A session open for a checkpoint's worth closes here and the
+                // next opens at the same instant, in the same project, so the
+                // two tile the span exactly. Idle that fell in the spell just
+                // ended was added to the closing session above.
+                if self.open.as_ref().is_some_and(|open| {
+                    input.now.saturating_sub(open.started_at) >= SESSION_CHECKPOINT_SECONDS
+                }) {
+                    closed.extend(self.close_at(input.now));
+                    opens_at = input.now;
+                }
                 match self.open.as_mut() {
                     Some(open) => open.last_active_at = input.now,
                     None => {
@@ -3713,6 +3733,152 @@ mod tests {
         assert!(quiet.is_empty());
         assert!(locked.is_empty());
         assert!(tracker.open_session().is_some());
+    }
+
+    fn seconds_between(session: &ObservedSession) -> u64 {
+        parse_iso8601(&session.stopped_at).expect("stop parses")
+            - parse_iso8601(&session.started_at).expect("start parses")
+    }
+
+    #[test]
+    fn continuous_activity_checkpoints_into_sessions_that_tile_the_span() {
+        let mut tracker = SessionTracker::new();
+        let project = project("p1", Attribution::Agent);
+        let mut closed = Vec::new();
+
+        // Forty minutes of one unbroken active span, polled every thirty seconds.
+        for now in (1_000..=3_400).step_by(30) {
+            closed.extend(tick(
+                &mut tracker,
+                now,
+                Some((SegmentKind::Active, 1_000)),
+                Some(&project),
+                false,
+            ));
+        }
+
+        let open = tracker.open_session().expect("the span is still open");
+        let mut cursor = 1_000;
+        for session in &closed {
+            assert_eq!(
+                parse_iso8601(&session.started_at),
+                Some(cursor),
+                "each session starts where the one before it stopped"
+            );
+            assert_eq!(session.project_id, "p1");
+            assert_eq!(session.attribution, Attribution::Agent);
+            assert_eq!(session.idle_seconds, 0);
+            cursor = parse_iso8601(&session.stopped_at).expect("stop parses");
+        }
+        assert_eq!(open.started_at, cursor, "the open one continues from there");
+        assert_eq!(
+            closed
+                .iter()
+                .map(|session| session.stopped_at.clone())
+                .collect::<Vec<_>>(),
+            [iso8601(1_900), iso8601(2_800)],
+            "a session closes once it has been open for the checkpoint"
+        );
+        let mut client_ids: Vec<&str> = closed
+            .iter()
+            .map(|session| session.client_id.as_str())
+            .chain([open.client_id.as_str()])
+            .collect();
+        client_ids.sort_unstable();
+        client_ids.dedup();
+        assert_eq!(client_ids.len(), 3, "every session has its own client id");
+        assert_eq!(
+            closed.iter().map(seconds_between).sum::<u64>() + (3_400 - open.started_at),
+            2_400,
+            "no second is lost or counted twice"
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_does_not_fire_across_a_project_change() {
+        let mut tracker = SessionTracker::new();
+        let first = project("p1", Attribution::Agent);
+        let second = project("p2", Attribution::Agent);
+        for now in (1_000..=1_870).step_by(30) {
+            let closed = tick(
+                &mut tracker,
+                now,
+                Some((SegmentKind::Active, 1_000)),
+                Some(&first),
+                false,
+            );
+            assert!(closed.is_empty(), "under the checkpoint, nothing closes");
+        }
+
+        // The tick the checkpoint would have fired on, in another project.
+        let closed = tick(
+            &mut tracker,
+            1_900,
+            Some((SegmentKind::Active, 1_000)),
+            Some(&second),
+            false,
+        );
+
+        let [session] = closed.as_slice() else {
+            panic!("only the project change closed a session")
+        };
+        assert_eq!(session.project_id, "p1");
+        assert_eq!(
+            session.stopped_at,
+            iso8601(1_870),
+            "it closed where its work last showed, as a project change always has"
+        );
+        let open = tracker.open_session().expect("the new project's session");
+        assert_eq!(open.project.project_id, "p2");
+        assert_eq!(open.started_at, 1_870);
+    }
+
+    #[test]
+    fn a_session_an_agent_held_open_through_idle_checkpoints_on_the_next_active_tick() {
+        let mut tracker = SessionTracker::new();
+        let project = project("p1", Attribution::Agent);
+        tick(
+            &mut tracker,
+            1_000,
+            Some((SegmentKind::Active, 1_000)),
+            Some(&project),
+            false,
+        );
+
+        // Hours of quiet with an agent working: the session stays open, and the
+        // idle spell checkpoints nothing.
+        for now in [2_000, 3_000, 4_000] {
+            let closed = tick(
+                &mut tracker,
+                now,
+                Some((SegmentKind::Idle, 1_600)),
+                Some(&project),
+                true,
+            );
+            assert!(closed.is_empty(), "an idle tick closes nothing at {now}");
+        }
+
+        let closed = tick(
+            &mut tracker,
+            4_030,
+            Some((SegmentKind::Active, 4_020)),
+            Some(&project),
+            true,
+        );
+
+        let [session] = closed.as_slice() else {
+            panic!("the session checkpointed once")
+        };
+        assert_eq!(session.started_at, iso8601(1_000));
+        assert_eq!(session.stopped_at, iso8601(4_030));
+        assert_eq!(
+            session.idle_seconds, 400,
+            "the idle before the agent was seen stays with the session it fell in"
+        );
+        let open = tracker.open_session().expect("the next session is open");
+        assert_eq!(open.started_at, 4_030, "it opens at the same instant");
+        assert_eq!(open.idle_seconds, 0);
+        assert_eq!(open.project, project);
     }
 
     #[test]
