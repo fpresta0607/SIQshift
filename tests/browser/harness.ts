@@ -159,12 +159,15 @@ export async function openClockCard(page: Page, app: "desktop" | "web"): Promise
 }
 
 /**
- * The desktop's Today rows with a connected agent on top: a row with no
- * minutes of its own, so no duration cell, and its plan dial at the
- * component's real 36px size showing a full plan's "100%". An app row below
- * marks where the duration column starts.
+ * The desktop's Today rows with an agent on top, its plan dial at the
+ * component's real 36px size showing a full plan's "100%". Without a
+ * `duration` it is a connected agent: no minutes of its own, so no duration
+ * cell. An app row below marks where the other rows' columns start.
  */
-export async function openConnectedAgentRow(page: Page): Promise<void> {
+export async function openAgentRow(
+  page: Page,
+  { detail = "siqshift", plan = "Max", duration }: { detail?: string; plan?: string; duration?: string } = {},
+): Promise<void> {
   await page.setContent(`
     <main class="app-shell">
       <div class="screen">
@@ -173,7 +176,7 @@ export async function openConnectedAgentRow(page: Page): Promise<void> {
           <ul class="meter-list meter-apps" data-testid="session-app-list">
             <li class="meter-row">
               <span class="app-mark is-plain" aria-hidden="true"></span>
-              <span class="meter-name">Claude Code<span class="meter-detail"> · siqshift</span></span>
+              <span class="meter-name">Claude Code${detail === "" ? "" : `<span class="meter-detail"> · ${detail}</span>`}</span>
               <div class="quota">
                 <button type="button" class="quota-trigger" aria-expanded="false">
                   <svg class="quota-face" viewBox="0 0 36 36" width="36" height="36" aria-hidden="true">
@@ -181,11 +184,12 @@ export async function openConnectedAgentRow(page: Page): Promise<void> {
                     <text class="quota-figure is-wide" x="18" y="18" text-anchor="middle" dominant-baseline="central">100%</text>
                   </svg>
                   <span class="quota-meta">
-                    <span class="quota-plan">Max</span>
+                    <span class="quota-plan">${plan}</span>
                     <span class="quota-window">til 12:45 PM</span>
                   </span>
                 </button>
               </div>
+              ${duration === undefined ? "" : `<span class="meter-duration">${duration}</span>`}
             </li>
             ${meterRow("Google Chrome", "", 51, "2h 09m")}
           </ul>

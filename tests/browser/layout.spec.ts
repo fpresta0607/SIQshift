@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openAgentsGroup, openClockCard, openConnectedAgentRow, openPersonDashboard, openTodayCard } from "./harness.js";
+import { openAgentRow, openAgentsGroup, openClockCard, openPersonDashboard, openTodayCard } from "./harness.js";
 
 /** Every `.meter-row`'s box, plus the boxes of the four cells inside it. */
 const rowBoxes = (page: import("@playwright/test").Page) =>
@@ -25,6 +25,26 @@ const rowBoxes = (page: import("@playwright/test").Page) =>
         duration: box(".meter-duration"),
       };
     }));
+
+/** Every cell matching `selector` that shows less than its whole text. */
+const clippedCells = (page: import("@playwright/test").Page, selector: string) =>
+  page.locator(".meter-row").evaluateAll((meterRows, cellSelector) =>
+    meterRows.flatMap((row) => [...row.querySelectorAll<HTMLElement>(cellSelector)]
+      .filter((cell) => {
+        // A cell with `text-overflow: ellipsis` reports the clipped width as
+        // its scrollWidth, so the natural width comes off a loose clone. A
+        // cell that wraps is whole as long as nothing runs past its own box.
+        if (getComputedStyle(cell).whiteSpace !== "nowrap") {
+          return cell.scrollWidth > cell.clientWidth || cell.scrollHeight > cell.clientHeight;
+        }
+        const probe = cell.cloneNode(true) as HTMLElement;
+        probe.style.cssText = "position:absolute;visibility:hidden;width:auto;white-space:nowrap;overflow:visible";
+        cell.parentElement?.appendChild(probe);
+        const natural = probe.getBoundingClientRect().width;
+        probe.remove();
+        return natural > cell.clientWidth + 0.5;
+      })
+      .map((cell) => `${row.querySelector(".meter-name")?.textContent ?? ""}: ${cell.className}`)), selector);
 
 /** Every repo row's box on the Agents page, plus the boxes of the cells inside it. */
 const repoRowBoxes = (page: import("@playwright/test").Page) =>
@@ -112,25 +132,9 @@ for (const app of ["desktop", "web"] as const) {
         expect(new Set(inColumn.map((row) => row.duration.right)).size, `column ${column} duration ends`).toBe(1);
       }
 
-      // A second column may cost the name room - `.meter-name` carries an
-      // ellipsis by design and a 335px column is not going to fit every app's
-      // full name - but it may never cost a measure: the duration, and the
-      // dial's plan and reset window, all have to stay readable.
-      const clipped = await page.locator(".meter-row").evaluateAll((meterRows) =>
-        meterRows.flatMap((row) => [...row.querySelectorAll<HTMLElement>(".meter-duration, .quota-plan, .quota-window")]
-          .filter((cell) => {
-            // A cell with `text-overflow: ellipsis` reports the clipped width as
-            // its scrollWidth, so the natural width comes off a loose clone.
-            const probe = cell.cloneNode(true) as HTMLElement;
-            probe.style.cssText = "position:absolute;visibility:hidden;width:auto;white-space:nowrap;overflow:visible";
-            cell.parentElement?.appendChild(probe);
-            const natural = probe.getBoundingClientRect().width;
-            probe.remove();
-            return natural > cell.clientWidth + 0.5;
-          })
-          .map((cell) => `${row.querySelector(".meter-name")?.textContent ?? ""}: ${cell.className}`)));
-      // A truncated name is allowed; a truncated measure is not.
-      expect(clipped).toEqual([]);
+      // A second column costs a row its room, never its words: the name wraps,
+      // and the duration and the dial's plan and reset window stay readable.
+      expect(await clippedCells(page, ".meter-name, .meter-duration, .quota-plan, .quota-window")).toEqual([]);
     });
 
     // The card's own comment calls the day's total "the page's largest
@@ -158,7 +162,7 @@ for (const app of ["desktop", "web"] as const) {
 test.describe("a connected agent's row on the desktop", () => {
   test("gives the plan dial the empty duration cell, so its reset shows whole", async ({ page }) => {
     await page.setViewportSize({ width: 520, height: 920 });
-    await openConnectedAgentRow(page);
+    await openAgentRow(page);
 
     const measured = await page.evaluate(() => {
       const [agent, app] = [...document.querySelectorAll(".meter-row")];
@@ -176,7 +180,7 @@ test.describe("a connected agent's row on the desktop", () => {
 
   test("prints a full plan's 100% inside its ring", async ({ page }) => {
     await page.setViewportSize({ width: 520, height: 920 });
-    await openConnectedAgentRow(page);
+    await openAgentRow(page);
 
     const farthestCorner = await page.evaluate(() => {
       const box = document.querySelector<SVGTextElement>(".quota-figure")!.getBBox();
@@ -186,6 +190,79 @@ test.describe("a connected agent's row on the desktop", () => {
     // The ring's inner edge: its 16px radius less half its 4px stroke.
     expect(farthestCorner).toBeLessThanOrEqual(14);
   });
+});
+
+// Issue 203: the main screen cut "Claude Code · 3 sessions" short beside its
+// plan dial. 400px is the desktop window's `minWidth` and 1200px the width it
+// opens at.
+test.describe("an agent's name beside its plan dial on the desktop", () => {
+  test("gives way in the dial's text before the row overflows at 400px", async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 600 });
+    await openAgentRow(page, { detail: "siqshift, precisiondocs-ai", plan: "Copilot Business Enterprise Unlimited" });
+
+    expect(await clippedCells(page, ".meter-name")).toEqual([]);
+    const overflow = await page.locator(".meter-row").first()
+      .evaluate((row) => row.querySelector(".quota-trigger")!.getBoundingClientRect().right - row.getBoundingClientRect().right);
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  for (const width of [400, 1200]) {
+    for (const duration of [undefined, "3h 06m"]) {
+      test(`shows a long label whole at ${width}px ${duration === undefined ? "with no duration" : "with a duration"}`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 600 });
+        await openAgentRow(page, {
+          detail: "siqshift, precisiondocs-ai, pocket-piggies",
+          ...(duration === undefined ? {} : { duration }),
+        });
+
+        // Beside a duration the dial keeps to its own column, where its text
+        // is what gives way; with that cell empty it has room for all of it.
+        const wholeCells = duration === undefined
+          ? ".meter-name, .quota-plan, .quota-window"
+          : ".meter-name, .meter-duration";
+        expect(await clippedCells(page, wholeCells)).toEqual([]);
+        const measured = await page.locator(".meter-row").first().evaluate((row) => {
+          const box = (selector: string) => row.querySelector(selector)?.getBoundingClientRect();
+          return {
+            textOverflow: getComputedStyle(row.querySelector(".meter-name")!).textOverflow,
+            rowRight: row.getBoundingClientRect().right,
+            nameRight: box(".meter-name")!.right,
+            dialLeft: box(".quota")!.left,
+            dialRight: box(".quota")!.right,
+            durationLeft: box(".meter-duration")?.left,
+          };
+        });
+        expect(measured.textOverflow).not.toBe("ellipsis");
+        // Name, dial, duration, in that order and none over another.
+        expect(measured.nameRight).toBeLessThanOrEqual(measured.dialLeft);
+        expect(measured.dialRight).toBeLessThanOrEqual(measured.durationLeft ?? measured.rowRight);
+      });
+    }
+
+    test(`moves the dial into the empty duration cell before wrapping the name at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 600 });
+      await openAgentRow(page, { detail: "3 sessions" });
+
+      const nameLines = await page.locator(".meter-name").first().evaluate((name) => {
+        const range = document.createRange();
+        range.selectNodeContents(name);
+        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.bottom / 8))).size;
+      });
+      expect(nameLines).toBe(1);
+      expect(await clippedCells(page, ".meter-name, .quota-plan, .quota-window")).toEqual([]);
+    });
+
+    test(`keeps the dial in the bars' column at ${width}px while the name fits`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 600 });
+      await openAgentRow(page, { detail: "" });
+
+      // Measured from each row's own edge: at 1200px the two rows sit in
+      // different columns of the list.
+      const [dialStart, barStart] = await page.locator(".quota, .meter-bar").evaluateAll((cells) =>
+        cells.map((cell) => cell.getBoundingClientRect().left - cell.closest(".meter-row")!.getBoundingClientRect().left));
+      expect(Math.abs(dialStart! - barStart!)).toBeLessThan(1);
+    });
+  }
 });
 
 test("a wide window spends its room on the repo's name", async ({ page }) => {
