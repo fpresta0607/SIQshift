@@ -2740,8 +2740,12 @@ mod tests {
         assert_eq!(full.people[0].sessions.len(), 1);
         assert_eq!(full.people[0].sessions[0].repo.as_deref(), Some("siqshift"));
         // The tile's facts reach the webview as the server sent them.
-        let session = serde_json::to_value(&full.people[0].sessions[0]).expect("a session serializes");
-        assert_eq!(session["project"], serde_json::json!({"id": "p1", "name": "Atlas Portal"}));
+        let session =
+            serde_json::to_value(&full.people[0].sessions[0]).expect("a session serializes");
+        assert_eq!(
+            session["project"],
+            serde_json::json!({"id": "p1", "name": "Atlas Portal"})
+        );
         assert_eq!(session["model"], "claude-opus-5-5");
         assert_eq!(session["startedAt"], "2026-08-01T09:00:00.000Z");
         assert_eq!(session["state"], "working");
