@@ -54,6 +54,7 @@ import {
 } from "@siqshift/shared/ui";
 import { PermissionsCard } from "./PermissionsCard.js";
 import { MoveToApplicationsNotice } from "./MoveToApplicationsNotice.js";
+import { UpdateFailingNotice } from "./UpdateFailingNotice.js";
 import { RecordingPanel, recordingState, type RecordingState } from "./RecordingPanel.js";
 import { WorkspaceName } from "./WorkspaceName.js";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
@@ -230,6 +231,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | undefined>();
   const [updateVersion, setUpdateVersion] = useState<string | undefined>();
   const [isTranslocated, setIsTranslocated] = useState(false);
+  const [isUpdateFailing, setIsUpdateFailing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recordingOpen, setRecordingOpen] = useState(false);
   const [allStatsOpen, setAllStatsOpen] = useState(false);
@@ -379,6 +381,32 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       (stop) => {
         if (active) unlisten = stop;
         else stop();
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [bridge]);
+
+  // Read at launch, because a run of failed updates outlives a restart, then
+  // kept current as each update check starts or ends that run.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void bridge.onUpdateFailing((next) => {
+      if (active && mounted.current) setIsUpdateFailing(next);
+    }).then(
+      (stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      },
+      () => undefined,
+    );
+    void bridge.updateIsFailing().then(
+      (next) => {
+        if (active && mounted.current) setIsUpdateFailing(next);
       },
       () => undefined,
     );
@@ -1235,6 +1263,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   };
 
   const isMacos = navigator.userAgent.includes("Macintosh");
+  // A translocated copy's notice already says how to install it properly.
+  const updateFailingNotice = isUpdateFailing && !isTranslocated && <UpdateFailingNotice isMacos={isMacos} />;
 
   const permissionProps = {
     permissions,
@@ -1364,6 +1394,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 : "SIQshift keeps your hours for you."}
             </p>
             {isTranslocated && <MoveToApplicationsNotice />}
+            {updateFailingNotice}
             {authError && <p className="form-error" role="alert">{authError}</p>}
             <form onSubmit={submitAuth}>
               {isSignUp && (
@@ -1618,6 +1649,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       <Titlebar onOpenSettings={() => setSettingsOpen(true)} />
       <div className="screen">
         {isTranslocated && <MoveToApplicationsNotice />}
+        {updateFailingNotice}
         {updateVersion && (
           <p className="update-banner" role="status" data-testid="update-banner">
             Version {updateVersion} is on its way — SIQshift restarts itself when it&apos;s ready.

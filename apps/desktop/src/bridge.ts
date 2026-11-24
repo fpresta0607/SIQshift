@@ -474,6 +474,9 @@ export interface TimerBridge {
   /// Whether macOS runs this launch from a temporary App Translocation copy,
   /// which cannot start at login; false on other platforms.
   appIsTranslocated(): Promise<boolean>;
+  /// Whether this copy's update attempts have failed too many times in a row
+  /// for it to update itself.
+  updateIsFailing(): Promise<boolean>;
   /// Pins recording to one project, or clears the pin with `null`.
   sessionSelectProject(projectId: string | null): Promise<MonitorStatus>;
   hookRegister(source: string): Promise<HookRegisterResult>;
@@ -530,6 +533,9 @@ export interface TimerBridge {
   /// Subscribes to "an update is downloading" notices; resolves to the
   /// unsubscribe function.
   onUpdateAvailable(handler: (version: string) => void): Promise<() => void>;
+  /// Subscribes to this copy starting (`true`) or stopping (`false`) being
+  /// unable to update itself; resolves to the unsubscribe function.
+  onUpdateFailing(handler: (isFailing: boolean) => void): Promise<() => void>;
 }
 
 type TauriInvoke = <Result>(command: string, args?: Record<string, unknown>) => Promise<Result>;
@@ -1243,6 +1249,7 @@ export const defaultBridge: TimerBridge = {
   permissionDecline: (permissionId) => invokeDecoded("permission_decline", decodePermissionStatusList, { permissionId }),
   permissionOpenSettings: (permissionId) => invokeDecoded("permission_open_settings", decodeVoid, { permissionId }),
   appIsTranslocated: () => invokeDecoded("app_is_translocated", boolean),
+  updateIsFailing: () => invokeDecoded("update_is_failing", boolean),
   sessionSelectProject: (projectId) => invokeDecoded("session_select_project", decodeMonitorStatus, { projectId }),
   hookRegister: (source) => invokeDecoded("hook_register", decodeHookRegisterResult, { source }),
   monitorSetEnabled: (enabled) => invokeDecoded("monitor_set_enabled", decodeMonitorSettings, { enabled }),
@@ -1274,6 +1281,10 @@ export const defaultBridge: TimerBridge = {
   onUpdateAvailable: async (handler) => {
     const { listen } = await import("@tauri-apps/api/event");
     return listen<string>("update-available", (event) => handler(event.payload));
+  },
+  onUpdateFailing: async (handler) => {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<boolean>("update-failing", (event) => handler(event.payload));
   },
 };
 
