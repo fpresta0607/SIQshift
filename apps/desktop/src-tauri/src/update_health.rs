@@ -162,6 +162,9 @@ mod tests {
     /// A real `reqwest` answer, so the test rests on reqwest's own idea of a
     /// connect error rather than on one built by hand.
     fn reqwest_error(url: String) -> tauri_plugin_updater::Error {
+        // As the updater's own check does; a second install is refused, and
+        // whichever test got there first already installed the same provider.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

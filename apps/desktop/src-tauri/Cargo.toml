@@ -45,6 +45,9 @@ tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread"] }
 # The updater's own client (the app's is 0.12), so a test can produce the
 # connect error the updater would return.
 updater-reqwest = { package = "reqwest", version = "0.13", default-features = false }
+# The updater builds that client with `rustls-no-provider` and installs ring
+# first, so the test has to install it too.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
