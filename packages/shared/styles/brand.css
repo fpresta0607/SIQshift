@@ -139,7 +139,7 @@ button:disabled { opacity: .55; cursor: default; }
 }
 /* A row with nothing for its duration cell - an agent that is connected but
    has no minutes of its own - has that cell to flex into. Its name starts as
-   wide as the shared name track (the first track below restates it), so a name
+   wide as the shared name track (its minimum below restates that), so a name
    that fits leaves the measure in line with the other rows'; a longer one
    pushes the measure along before it wraps, and the measure takes the rest, so
    the plan dial says its reset whole. */
