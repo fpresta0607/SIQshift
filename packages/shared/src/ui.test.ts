@@ -15,15 +15,13 @@ const CROSS_PLATFORM_APPS = [
 
 describe("app rows across operating systems", () => {
   it("joins one app's names from Windows and macOS into one All-stats row", () => {
-    const rows = buildAppRows(CROSS_PLATFORM_APPS, 5_000);
+    const rows = buildAppRows(CROSS_PLATFORM_APPS);
 
     expect(rows).toEqual([
       { key: "chrome.exe", label: "Google Chrome", durationSeconds: 3_000, agent: false, processNames: ["chrome.exe", "Google Chrome"], source: undefined },
       { key: "Code.exe", label: "VS Code", durationSeconds: 900, agent: false, processNames: ["Code.exe"], source: undefined },
       { key: "agent-clis", label: "Claude Code", durationSeconds: 420, agent: true, processNames: [], source: "claude_code" },
-      { key: "quiet-time", label: "Quiet time", durationSeconds: 680, agent: false, processNames: [], source: undefined },
     ]);
-    expect(rows.reduce((sum, row) => sum + row.durationSeconds, 0)).toBe(5_000);
   });
 
   it("joins one app's names from Windows and macOS into one Today row", () => {

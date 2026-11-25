@@ -391,4 +391,38 @@ describe("web client", () => {
 
     await expect(client.signIn({ email: "a@b.test", password: "x" })).rejects.toBeInstanceOf(ClientError);
   });
+
+  it.each([
+    { label: "a server that sends no state", sent: {}, expected: null },
+    { label: "a session no event said anything for", sent: { state: null }, expected: null },
+    { label: "a working session", sent: { state: "working" }, expected: "working" },
+    { label: "a waiting session", sent: { state: "waiting" }, expected: "waiting" },
+  ])("reads the live state of $label", async ({ sent, expected }) => {
+    // Arrange
+    const owner = { id: "00000000-0000-4000-8000-000000000001", name: "Avery Quinn" };
+    const session = {
+      id: "00000000-0000-4000-8000-000000000701",
+      source: "claude",
+      owner,
+      model: null,
+      startedAt: "2026-08-06T14:00:00.000Z",
+      lastEventAt: "2026-08-06T14:59:00.000Z",
+      repo: null,
+      project: null,
+      description: "Claude in no codebase recorded, running 59m",
+      ...sent,
+    };
+    const { client } = clientWith(async (url) => {
+      if (url.endsWith("/sign-in/email")) return jsonResponse({ token: "session" });
+      if (url.endsWith("/token")) return jsonResponse({ token: "jwt-1" });
+      return jsonResponse({ people: [{ owner, sessions: [session] }] });
+    });
+    await client.signIn({ email: "a@b.test", password: "long-enough-password" });
+
+    // Act
+    const live = await client.liveAgentSessions();
+
+    // Assert
+    expect(live.people[0]?.sessions[0]?.state).toBe(expected);
+  });
 });

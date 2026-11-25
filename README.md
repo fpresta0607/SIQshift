@@ -182,7 +182,7 @@ The leaderboard reports three time measurements, deliberately distinct:
 
 Active time is then partitioned by **concurrency** — the share with no agent (t0), exactly
 one (t1), two (t2), or three-plus (t3+). The API reports that split, and the dashboards draw
-no card for it: only its away bucket shows, in the note on recorded time described below.
+no card for it.
 An agent still working while the person is away feeds agent time only,
 never the person's hours.
 
@@ -191,20 +191,23 @@ the quiet inside them - the gaps too short to close a session, and the stretches
 open while nobody was at the machine.
 Recorded is therefore always at least active time, and the difference is time away from the
 keyboard rather than agent time; how much of that difference an agent was actually running for
-is the `away` bucket of the concurrency split, and the dashboard says so under a person's
-totals only when that bucket was measured.
-A person's two lists are read against the same recorded total: projects sum to it directly,
-and the app list - which measures foreground presence - closes on it with a **Quiet time** row,
-the same way the Today card does.
+is the `away` bucket of the concurrency split.
+The All stats page does not show recorded time, neither as a total nor as a note under a person's totals.
+The home screen's Today card still does: its project list sums to the day's recorded total, and its app list closes on it with a **Quiet time** row.
+The API still serves recorded time for older desktop builds.
 
 All stats is one dashboard page with no tabs, and every stat on it is shown once.
 It answers for one subject at a time: the whole team, or the one person picked on its **People** board, with **Everyone** to go back.
 In a workspace of one there is no board to pick from, and the page answers for that one person, who is the whole team.
-Every card follows the subject: the four totals (**Tokens**, **Active time**, **Agent time**, **Recorded time**), the one chart, the projects, the agents, the repos and who is running an agent right now.
-The team's recorded time is its projects' recorded time added up, since every session is filed under exactly one project.
+Every card follows the subject: the three totals (**Tokens**, **Active time**, **Agent time**), the one chart, the agents, the repos and who is running an agent right now.
+Each time total carries one plain note saying what it counts.
+Active time is "minutes at the computer".
+Agent time is "every agent added up, so ten agents for an hour count ten hours".
+The page reads All projects, so it draws no list of projects and no project beside a person.
 A person also gets the one card only a person has: the apps their time went to.
 The board itself stays the whole team's, because it is the picker, and ranks by active time, agent time or tokens.
-Its Tokens column states each person's tokens in and out, from the `people` rows of `/reports/agent-shifts`, and a dash for someone whose agents reported none.
+Its Tokens column states each person's tokens in and out on two lines, from the `people` rows of `/reports/agent-shifts`, with no total line, and a dash for someone whose agents reported none.
+Ranking by tokens still follows each person's total, and the bar under the figure is that person's share of the largest total.
 
 Everything the agents themselves did is read for the same subject: the tokens, then the shifts grouped by the codebase they worked, one group per repo ranked by the tokens its shifts reported and then by agent time, with its shifts underneath - each shift naming its runtime, its operator, the model it drove, and the commits it recorded.
 Beside the repos, the agent runtimes that ran are ranked the same way, with who is running an agent right now beneath them.
@@ -225,7 +228,8 @@ A bar's height is the server's own total, so the chart never adds the halves up.
 Its legend is its filter: each series is a toggle, the last one on stays on, and a series the range has nothing to draw for is not offered.
 A bucket with no token data draws no bar and reads as a dash rather than a zero that never happened.
 Hours are bucketed to the viewer's local midnight-to-midnight calendar, never UTC.
-The dashboard's head holds its one filter, which every card, the chart and the board read under: the range (a preset, or **Custom** days) and the project.
+The dashboard's head holds its one filter, which every card, the chart and the board read under: the range (a preset, or **Custom** days) and, in a workspace with two or more projects, the project.
+A workspace with one project has no project filter, and the page reads All projects.
 With a project picked, **Custom** opens on the project's lifetime, from the day it was created to today.
 **All time** is unbounded and has no chart in either app - its full history lives in the CSV export.
 Both apps chart the course of the day on their main screen, and both All-stats overlays chart the range on the dashboard.

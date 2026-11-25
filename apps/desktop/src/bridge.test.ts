@@ -587,6 +587,7 @@ describe("defaultBridge", () => {
         }],
       }],
     });
+    // An API older than this build sends none of the tile's facts, which decode as null.
     await expect(defaultBridge.liveAgentSessions()).resolves.toEqual({
       people: [{
         owner: { id: "00000000-0000-4000-8000-000000000001", name: "Alex" },
@@ -595,6 +596,10 @@ describe("defaultBridge", () => {
           source: "claude_code",
           description: "Claude Code in siqshift, running 12m",
           repo: "siqshift",
+          project: null,
+          model: null,
+          startedAt: null,
+          state: null,
         }],
       }],
     });
@@ -606,6 +611,57 @@ describe("defaultBridge", () => {
     // honest empty state, not an error.
     invoke.mockResolvedValueOnce({});
     await expect(defaultBridge.liveAgentSessions()).resolves.toEqual({ people: [] });
+  });
+
+  it.each([
+    ["working", "working"],
+    ["waiting", "waiting"],
+    ["a state from the future", null],
+    [null, null],
+  ])("passes a live session's tile facts through, reading state %j as %j", async (sent, decoded) => {
+    // Arrange
+    const sessionId = "00000000-0000-4000-8000-000000000601";
+    invoke.mockResolvedValueOnce({
+      people: [{
+        owner: { id: ids.user, name: "Alex" },
+        sessions: [{
+          id: sessionId,
+          source: "claude_code",
+          description: "Claude Code on claude-opus-5-5 in code-goblins, running 2h",
+          repo: "code-goblins",
+          project: { id: ids.project, name: "Field work" },
+          model: "claude-opus-5-5",
+          startedAt: "2026-08-06T14:00:00.000Z",
+          state: sent,
+        }],
+      }],
+    });
+
+    // Act
+    const live = await defaultBridge.liveAgentSessions();
+
+    // Assert
+    expect(live.people[0]!.sessions).toEqual([{
+      id: sessionId,
+      source: "claude_code",
+      description: "Claude Code on claude-opus-5-5 in code-goblins, running 2h",
+      repo: "code-goblins",
+      project: { id: ids.project, name: "Field work" },
+      model: "claude-opus-5-5",
+      startedAt: "2026-08-06T14:00:00.000Z",
+      state: decoded,
+    }]);
+  });
+
+  it("rejects a live session whose start is not a timestamp", async () => {
+    invoke.mockResolvedValueOnce({
+      people: [{
+        owner: { id: ids.user, name: "Alex" },
+        sessions: [{ id: "00000000-0000-4000-8000-000000000601", source: "codex", description: "x", repo: null, startedAt: "yesterday" }],
+      }],
+    });
+
+    await expect(defaultBridge.liveAgentSessions()).rejects.toMatchObject({ kind: "unknown" });
   });
 
   it("reads the workspace's name and invite code with no range", async () => {

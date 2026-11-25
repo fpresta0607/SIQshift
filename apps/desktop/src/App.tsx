@@ -47,7 +47,6 @@ import {
   buildProjectRows,
   formatRangeDays,
   pictureDataUrl,
-  recordedBasis,
   usePictures,
   type ShiftCursor,
   type ShiftPage,
@@ -65,7 +64,6 @@ import {
   dayBounds,
   localDay,
   personTokensOf,
-  projectMeterRows,
   reportedAppearance,
   type BoardSort,
   type DashboardDays,
@@ -243,7 +241,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   /// app forgets them, as it forgets whom the board had picked.
   const [isCustomRange, setCustomRange] = useState(false);
   const [customDays, setCustomDays] = useState<DashboardDays>(lastWeek);
-  /// The project the dashboard reads: "all", or a project id. Local to the
+  /// The project the dashboard filter has picked: "all", or a project id. Local to the
   /// overlay - the main screen's filing bar answers a different question.
   const [boardScope, setBoardScope] = useState("all");
   /// The person the dashboard answers for, picked on its People board.
@@ -420,6 +418,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
 
   const signedIn = account?.kind === "ready" ? account : undefined;
 
+  // A project filter narrows nothing in a workspace of one project, so it is
+  // drawn only when there is a choice to make, and the All stats page reads
+  // All projects otherwise. `boardScope` is left as picked: the filter's own
+  // project returns when a second project does.
+  const isProjectFilterShown = (signedIn?.projects.length ?? 0) > 1;
+  const statsScope = isProjectFilterShown ? boardScope : "all";
+
   // The elapsed reading on the recording card ticks like a clock.
   useEffect(() => {
     if (monitorStatus?.currentSession == null) return undefined;
@@ -505,12 +510,12 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // their own bounds and never take the main screen's live day.
   const overlayBounds = isCustomRange ? dayBounds(customDays) : rangeBounds(boardRange);
   const boardRangeKey = isCustomRange ? `${customDays.from}..${customDays.to}` : boardRange;
-  const scopeParam = boardScope === "all" ? undefined : boardScope;
-  const isLiveDayRange = !isCustomRange && boardRange === "today" && boardScope === "all";
+  const scopeParam = statsScope === "all" ? undefined : statsScope;
+  const isLiveDayRange = !isCustomRange && boardRange === "today" && statsScope === "all";
   const lastBoardKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const boardKey = `${boardRangeKey}|${boardScope}|${subjectId ?? ""}`;
+    const boardKey = `${boardRangeKey}|${statsScope}|${subjectId ?? ""}`;
     // Blanked means who or what changed: there is no last-good reading to
     // keep, so a failure surfaces immediately rather than after three.
     const blanked = lastBoardKey.current !== boardKey;
@@ -550,7 +555,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `boardStats` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRangeKey, boardScope, subjectId, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, statsScope, subjectId, signedIn?.user.id, statsTick]);
 
   // The team view follows the overlay's range and project too: hours beside a
   // name and the breakdown under it must answer for the same days. All time
@@ -558,7 +563,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastWorkspaceKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const workspaceKey = `${boardRangeKey}|${boardScope}`;
+    const workspaceKey = `${boardRangeKey}|${statsScope}`;
     const blanked = lastWorkspaceKey.current !== workspaceKey;
     if (blanked) {
       lastWorkspaceKey.current = workspaceKey;
@@ -591,7 +596,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `workspace` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRangeKey, boardScope, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, statsScope, signedIn?.user.id, statsTick]);
 
   // The agents' read - tokens, the token chart, the agents and the repos - for
   // the person picked (the team when nobody is) over the overlay's own range.
@@ -601,7 +606,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   const lastAgentsKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
-    const tokensKey = `${boardRangeKey}|${boardScope}`;
+    const tokensKey = `${boardRangeKey}|${statsScope}`;
     const agentsKey = `${tokensKey}|${boardMember?.id ?? ""}`;
     const blanked = lastAgentsKey.current !== agentsKey;
     if (blanked) {
@@ -640,7 +645,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `agentShifts` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardRangeKey, boardScope, boardMember?.id, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, boardRangeKey, statsScope, boardMember?.id, signedIn?.user.id, statsTick]);
 
   // The live view reads "now", not the range: who is running an agent at this
   // instant. It rides the same minute tick the other polls do, because a live
@@ -653,8 +658,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   useEffect(() => {
     if (signedIn === undefined || !allStatsOpen) return undefined;
     // Another project's sessions are not this one's last-good list.
-    if (lastLiveScope.current !== boardScope) {
-      lastLiveScope.current = boardScope;
+    if (lastLiveScope.current !== statsScope) {
+      lastLiveScope.current = statsScope;
       liveSessionsFailures.current = 0;
       setLiveSessions(undefined);
       setLiveSessionsError(undefined);
@@ -684,7 +689,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `liveSessions` is read only to tell "nothing to show" from "stale";
     // re-running on its change would refetch after every success.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, allStatsOpen, boardScope, signedIn?.user.id, statsTick]);
+  }, [bridge, allStatsOpen, statsScope, signedIn?.user.id, statsTick]);
 
   // One page of one group's shifts, asked for when a drawer opens. Its
   // identity tracks the bridge, the range, the project and the person picked
@@ -700,7 +705,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     // `overlayBounds` is rebuilt each render; the key it is built from is the
     // identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [bridge, boardRangeKey, boardScope, boardMember?.id],
+    [bridge, boardRangeKey, statsScope, boardMember?.id],
   );
 
   // Agent plan quota, read from this machine. Advisory and never on the
@@ -1552,12 +1557,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   // re-deriving them, because two numbers for one day is the whole confusion.
   const showingLiveDay = viewingSelf && isLiveDayRange;
   const boardError = showingLiveDay ? statsError : boardStatsError;
-  const boardTotalSeconds = showingLiveDay ? todayTotalSeconds : boardStats?.totalDurationSeconds ?? 0;
   const boardMeasurement = showingLiveDay ? stats : boardStats;
-  const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? [], boardTotalSeconds);
-  const boardProjectRows = showingLiveDay
-    ? projectRows.map((row) => ({ id: row.key, name: row.name, durationSeconds: row.durationSeconds }))
-    : buildProjectRows(boardStats?.projects ?? []).map((row) => ({ id: row.projectId, name: row.name, durationSeconds: row.durationSeconds }));
+  const boardAppRows = buildAppRows(showingLiveDay ? liveApps : boardStats?.apps ?? []);
   const appearanceOf = (projectId: string) => reportedAppearance(workspace?.projects ?? [], listedProjects, projectId);
   const subjectEntry = workspace?.members.find((member) => member.user.id === subjectId);
   const subject = subjectId === undefined
@@ -1568,18 +1569,13 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
       picture: pictureOf(viewingSelf ? ready.user : subjectEntry?.user ?? { id: subjectId }),
       isSelf: viewingSelf,
     };
-  // The team's recorded time is its projects' recorded time added up: the
-  // report files every session under exactly one project, so the rows are a
-  // partition of the whole and their sum is the team's recorded total.
   const dashboardTime = subjectId === undefined
     ? workspace === undefined
       ? undefined
       : {
         activeSeconds: workspace.activeSeconds,
         agentSeconds: workspace.agentSeconds,
-        recordedSeconds: workspace.projects.reduce((sum, entry) => sum + entry.durationSeconds, 0),
         hourly: workspace.hourly,
-        projectRows: projectMeterRows(workspace.projects, appearanceOf),
       }
     : boardError !== undefined
       ? boardError
@@ -1588,15 +1584,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
         : {
           activeSeconds: boardMeasurement.activeSeconds,
           agentSeconds: boardMeasurement.agentSeconds,
-          recordedSeconds: boardTotalSeconds,
           hourly: boardMeasurement.hourly,
-          projectRows: projectMeterRows(
-            boardProjectRows.map((row) => ({ project: { id: row.id, name: row.name }, durationSeconds: row.durationSeconds })),
-            appearanceOf,
-          ),
-          // Recorded is whole sessions and active time is presence alone.
-          // `recordedBasis` names the gap between them from measured numbers.
-          recordedNote: recordedBasis(boardTotalSeconds, boardMeasurement.activeSeconds, boardMeasurement.concurrency.awaySeconds),
           appRows: boardAppRows,
         };
   const filterProjects = ready.projects.map((item) => ({
@@ -1606,7 +1594,7 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
     firstDay: localDay(new Date(item.createdAt)),
   }));
   const boardRangeLabel = isCustomRange
-    ? customRangeName(customDays, filterProjects.find((item) => item.id === boardScope)?.firstDay)
+    ? customRangeName(customDays, filterProjects.find((item) => item.id === statsScope)?.firstDay)
     : RANGE_LABEL[boardRange];
   const boardSubtitle = overlayBounds === undefined
     ? boardRangeLabel
@@ -1841,8 +1829,8 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                 }}
                 days={customDays}
                 onDays={setCustomDays}
-                projects={filterProjects}
-                project={boardScope}
+                projects={isProjectFilterShown ? filterProjects : undefined}
+                project={statsScope}
                 onProject={setBoardScope}
               />
               <button className="tv-close" type="button" aria-label="Close all stats" onClick={() => setAllStatsOpen(false)}>✕</button>
@@ -1875,12 +1863,9 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
                   // Your own row reads your account, which knows a new
                   // picture before the next report does.
                   picture: pictureOf(member.user.id === ready.user.id ? ready.user : member.user),
-                  project: member.project === null
-                    ? null
-                    : { name: member.project.name, appearance: appearanceOf(member.project.id) },
                   activeSeconds: member.activeSeconds,
                   agentSeconds: member.agentSeconds,
-                  tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${boardScope}` ? boardTokens.agents : undefined, member.user.id),
+                  tokens: personTokensOf(boardTokens?.key === `${boardRangeKey}|${statsScope}` ? boardTokens.agents : undefined, member.user.id),
                   isSelf: member.user.id === ready.user.id,
                 }))}
                 boardSort={boardSort}

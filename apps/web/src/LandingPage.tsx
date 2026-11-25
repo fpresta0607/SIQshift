@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type ChartHourlyBucket } from "@siqshift/shared/ui";
 import { WebGLShader } from "@siqshift/shared/webgl-shader";
-import { DashboardView, TeamViewHead, projectMeterRows, type BoardSort } from "@siqshift/shared/dashboard-view";
+import { DashboardView, TeamViewHead, type BoardSort } from "@siqshift/shared/dashboard-view";
 import { InstallTabs } from "./InstallTabs.js";
 import "./landing.css";
 
@@ -12,17 +12,10 @@ const hours = [
   [0, 0], [1800, 2400], [3300, 5400], [3000, 6600], [900, 3600],
   [2700, 7200], [3300, 6300], [2400, 4500], [600, 1800], [0, 600],
 ] as const;
-// Fictional projects wearing the app's own built-in icons and colors.
-const exampleProjects = [
-  { id: "atlas", name: "Atlas Portal", icon: "compass", color: "#62e4ba" },
-  { id: "nova", name: "Nova Website", icon: "globe", color: "#85c6ff" },
-  { id: "relay", name: "Relay App", icon: "bolt", color: "#c6a1f4" },
-] as const;
-const [atlas, nova, relay] = exampleProjects;
 const members = [
-  { id: "alex", name: "Alex Morgan", project: atlas, projects: [14400, 7200, 0], agents: [28800, 21600] },
-  { id: "jordan", name: "Jordan Lee", project: relay, projects: [7200, 3600, 7200], agents: [14400, 21600] },
-  { id: "taylor", name: "Taylor Chen", project: nova, projects: [0, 7200, 7200], agents: [14400, 14400] },
+  { id: "alex", name: "Alex Morgan", activeSeconds: 21600, agents: [28800, 21600] },
+  { id: "jordan", name: "Jordan Lee", activeSeconds: 18000, agents: [14400, 21600] },
+  { id: "taylor", name: "Taylor Chen", activeSeconds: 14400, agents: [14400, 14400] },
 ];
 const agentSources = ["claude_code", "codex"];
 // About as many tokens an hour of agent runtime burns in the example.
@@ -36,8 +29,7 @@ const exampleTokens = (agentSeconds: number) => {
 };
 const boardMembers = members.map((member, index) => ({
   id: member.id, rank: index + 1, name: member.name,
-  project: { name: member.project.name, appearance: { icon: member.project.icon, color: member.project.color } },
-  activeSeconds: sum(member.projects), agentSeconds: sum(member.agents), tokens: exampleTokens(sum(member.agents)), isSelf: false,
+  activeSeconds: member.activeSeconds, agentSeconds: sum(member.agents), tokens: exampleTokens(sum(member.agents)), isSelf: false,
 }));
 
 function LandingBackground() {
@@ -57,17 +49,13 @@ function ProductPreview() {
   const [boardSort, setBoardSort] = useState<BoardSort>("active");
   const selectedMember = members.find(member => member.id === memberId);
   const visibleMembers = selectedMember ? [selectedMember] : members;
-  const activeSeconds = sum(visibleMembers.map(member => sum(member.projects)));
+  const activeSeconds = sum(visibleMembers.map(member => member.activeSeconds));
   const agentSeconds = sum(visibleMembers.map(member => sum(member.agents)));
   const exampleDay: ChartHourlyBucket[] = hours.map(([active, agent], index) => ({
     hourStart: new Date(2026, 9, 12, index + 8).toISOString(),
     activeSeconds: active * activeSeconds / 18000,
     agentSeconds: agent * agentSeconds / 38400,
   }));
-  const projects = exampleProjects
-    .map((project, index) => ({ project, durationSeconds: sum(visibleMembers.map(member => member.projects[index] ?? 0)) }))
-    .filter(entry => entry.durationSeconds > 0)
-    .sort((a, b) => b.durationSeconds - a.durationSeconds);
   const runtimes = agentSources.map((source, index) => {
     const runtimeSeconds = sum(visibleMembers.map(member => member.agents[index] ?? 0));
     return { source, agentSeconds: runtimeSeconds, shiftCount: Math.round(runtimeSeconds / 5400), tokens: runtimeSeconds * TOKENS_PER_AGENT_SECOND };
@@ -81,7 +69,7 @@ function ProductPreview() {
       <div className="tv tv-frame">
         <TeamViewHead
           title={selectedMember?.name ?? "Atlas Studio"}
-          subtitle={selectedMember === undefined ? "Today" : `${selectedMember.project.name} · Today`}
+          subtitle="Today"
         >
           <span className="tv-badge">Example data</span>
         </TeamViewHead>
@@ -90,12 +78,7 @@ function ProductPreview() {
           time={{
             activeSeconds,
             agentSeconds,
-            recordedSeconds: sum(projects.map(entry => entry.durationSeconds)),
             hourly: exampleDay,
-            projectRows: projectMeterRows(projects, projectId => {
-              const project = exampleProjects.find(entry => entry.id === projectId) ?? atlas;
-              return { icon: project.icon, color: project.color };
-            }),
           }}
           agents={{ tokenTotals: { tokensIn: tokens - tokensOut, tokensOut, tokens }, tokenChart: { bucketSeconds: 3600, buckets: tokenBuckets }, runtimes }}
           people={boardMembers}
