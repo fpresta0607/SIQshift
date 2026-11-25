@@ -79,7 +79,8 @@ integration("stored devices", () => {
     const userId = await member();
     // The older device has the lower id and is stored first, so a heap scan, a
     // primary-key scan and an ascending sort all list it first.
-    const [older, newer] = [randomUUID(), randomUUID()].sort();
+    const [idA, idB] = [randomUUID(), randomUUID()];
+    const [older, newer] = idA < idB ? [idA, idB] : [idB, idA];
 
     await devices.recordSeen({ organizationId, userId, deviceIds: [older, newer], appVersion: "0.2.6", seenAt: first });
     await devices.recordSeen({ organizationId, userId, deviceIds: [newer], appVersion: "0.2.7", seenAt: third });
