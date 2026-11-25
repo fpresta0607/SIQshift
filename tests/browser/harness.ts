@@ -48,9 +48,9 @@ const stylesheet = (app: "desktop" | "web"): string =>
 async function applyStylesheet(page: Page, app: "desktop" | "web", ...containers: readonly string[]): Promise<void> {
   await page.addStyleTag({ content: stylesheet(app) });
   for (const container of containers) {
-    const display = await page.locator(container).evaluate((element) => getComputedStyle(element).display);
-    if (display !== "grid") {
-      throw new Error(`${container} is not laid out by the ${app} stylesheet: display is "${display}", not "grid"`);
+    const displays = await page.locator(container).evaluateAll((elements) => elements.map((element) => getComputedStyle(element).display));
+    if (displays.length === 0 || displays.some((display) => display !== "grid")) {
+      throw new Error(`${container} is not laid out by the ${app} stylesheet: display is ${JSON.stringify(displays)}, not "grid"`);
     }
   }
 }

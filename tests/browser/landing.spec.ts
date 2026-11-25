@@ -28,8 +28,7 @@ for (const width of [390, 1440]) {
     // Each person's tokens, in and out on their own lines, in a column the board can rank by.
     await expect(board.getByRole("columnheader", { name: "Tokens" })).toBeVisible();
     await expect(board.locator("td.is-tokens .tv-cell-line")).toHaveCount(6);
-    await expect(board.locator("td.is-tokens").first()).toContainText(/\d in/);
-    await expect(board.locator("td.is-tokens").first()).toContainText(/\d out/);
+    await expect(board.locator("td.is-tokens").first().locator(".tv-cell-line")).toHaveText(["28.4M in", "1.8M out"]);
     await expect(page.getByRole("combobox", { name: /Rank by/ }).getByRole("option", { name: "By tokens" })).toHaveCount(1);
     await expect(page.locator(".tv-totals")).toContainText("15h 00m");
     await expect(page.locator(".tv-totals")).toContainText("32h 00m");
