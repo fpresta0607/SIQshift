@@ -204,7 +204,7 @@ Each time total carries one plain note saying what it counts.
 Active time is "minutes at the computer".
 Agent time is "every agent added up, so ten agents for an hour count ten hours".
 The page reads All projects, so it draws no list of projects and no project beside a person.
-A person also gets the one card only a person has: the apps their time went to.
+A person also gets the cards only a person has: the apps their time went to and, on the web dashboard for the viewer's own machines or for an admin, **Machines**, the build each of their machines last uploaded from and when it was last seen.
 The board itself stays the whole team's, because it is the picker, and ranks by active time, agent time or tokens.
 Its Tokens column states each person's tokens in and out on two lines, from the `people` rows of `/reports/agent-shifts`, with no total line, and a dash for someone whose agents reported none.
 Ranking by tokens still follows each person's total, and the bar under the figure is that person's share of the largest total.
