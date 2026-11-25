@@ -934,7 +934,8 @@ still designed and not started. What's deliberately not built yet:
   Intel, signed with an Apple Developer ID and notarized by Apple (see DEPLOY.md). Both
   carry the auto-updater, and the Mac app restarts into an update once no work session is
   open, but that has run only in tests until a Mac installed from one release takes the
-  next.
+  next. A copy whose update fails three times in a row says so in its window and points to
+  the site for the newest build.
 - Evidence can be forged by a determined user. Automatic recording raises the cost and the
   visibility of padding; it does not attempt cryptographic proof.
 
