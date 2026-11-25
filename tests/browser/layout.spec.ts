@@ -243,12 +243,22 @@ test.describe("an agent's name beside its plan dial on the desktop", () => {
       await page.setViewportSize({ width, height: 600 });
       await openAgentRow(page, { detail: "3 sessions" });
 
-      const nameLines = await page.locator(".meter-name").first().evaluate((name) => {
+      // Fonts differ between machines, so the label may still need a second
+      // line, but only once the dial has no spare width left to give it.
+      const measured = await page.locator(".meter-row").first().evaluate((row) => {
         const range = document.createRange();
-        range.selectNodeContents(name);
-        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.bottom / 8))).size;
+        range.selectNodeContents(row.querySelector(".meter-name")!);
+        const startIn = (cell: Element): number =>
+          cell.getBoundingClientRect().left - cell.closest(".meter-row")!.getBoundingClientRect().left;
+        const dial = row.querySelector(".quota")!;
+        return {
+          nameLines: new Set([...range.getClientRects()].map((rect) => Math.round(rect.bottom / 8))).size,
+          dialShift: startIn(dial) - startIn(document.querySelector(".meter-bar")!),
+          dialSpare: dial.getBoundingClientRect().width - dial.querySelector(".quota-trigger")!.getBoundingClientRect().width,
+        };
       });
-      expect(nameLines).toBe(1);
+      expect(measured.dialShift).toBeGreaterThan(1);
+      expect(measured.nameLines === 1 || measured.dialSpare < 1).toBe(true);
       expect(await clippedCells(page, ".meter-name, .quota-plan, .quota-window")).toEqual([]);
     });
 
