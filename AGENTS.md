@@ -62,8 +62,10 @@ the client never receives.
 session; a person with none is absent, never a stale row, and browser spans are excluded by the
 same `rosterEligibleSource` rule as everywhere else. Each row's `description` is composed once,
 server-side, from captured facts alone (runtime, attested model, the project or codebase the
-directory resolved to, how long the session has been up): there is no summary field behind it, and
-none may be invented on the client. The read lists only running rows heard from inside the
+directory resolved to, how long the session has been up): there is no summary field behind it.
+The server still sends `description`, but the card no longer draws it: each tile shows only the
+captured facts (`repo`, `project`, `model`, `startedAt`, `state`), grouped by runtime, and no
+summary is invented on the client. The read lists only running rows heard from inside the
 30-minute staleness window, so a session silent for longer never appears live, though no write has
 ended it. In the dashboard's repos the ordering is project-tie first: group heads keep the
 label-less group last, and within a drawer the project-tied shifts read above the untied ones

@@ -436,8 +436,8 @@ export const App = ({ client }: AppProps) => {
 
   // The person the dashboard answers for: the one picked on its board, or in
   // a workspace of one, that one person, who is the whole team. Their own
-  // read is what carries the recorded total, the away time its note names,
-  // and their apps. Only while All stats is open - nobody is served by
+  // read is what carries their totals, their chart and their apps. Only
+  // while All stats is open - nobody is served by
   // fetching a teammate's year in the background.
   const soleMemberId = workspace?.members.length === 1 ? workspace.members[0]?.user.id : undefined;
   const subjectId = member?.id ?? soleMemberId;

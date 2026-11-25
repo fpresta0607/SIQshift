@@ -3026,7 +3026,7 @@ describe("the agents' cards on the one page", () => {
     // falls back to the project, then to "No codebase", and a state the desktop
     // could not say draws nothing.
     expect(tilesOf(alex!)).toEqual([
-      ["Code Goblins", "Opus 5.5", "Running 12m", "Working"],
+      ["Code Goblins", "Claude Opus 5.5", "Running 12m", "Working"],
       ["Client Work", "Deepseek V4 Pro", "Running 3h 05m", "Waiting"],
     ]);
     expect(tilesOf(sam!)).toEqual([
@@ -3079,7 +3079,7 @@ describe("the agents' cards on the one page", () => {
     const live = await stats.findByTestId("live-sessions");
     expect(live.querySelector(".live-person")).toBeNull();
     expect(within(live).getByRole("heading", { name: "Claude Code 1" })).toBeInTheDocument();
-    expect(tilesOf(live)).toEqual([["Siqshift", "Sonnet 5.5", "Running 12m", "Working"]]);
+    expect(tilesOf(live)).toEqual([["Siqshift", "Claude Sonnet 5.5", "Running 12m", "Working"]]);
   });
 
   it("says the live read failed rather than that nobody is running anything", async () => {

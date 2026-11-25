@@ -4,6 +4,8 @@ const WORD_SEPARATOR = /[-_\s]+/;
 const CODEBASE_SEPARATOR = /[-_.\s]+/;
 const NUMERIC_TOKEN = /^\d+(\.\d+)*$/;
 const RELEASE_DATE_TOKEN = /^\d{8}$/;
+const CLOUD_PROVIDER_PREFIX = /^(?:[a-z]+\.)?anthropic\./i;
+const CLOUD_PROVIDER_SUFFIX = /(?:@\d{8}|-v\d+:\d+)$/i;
 
 const KNOWN_CAPITALS: Readonly<Record<string, string>> = { gpt: "GPT", glm: "GLM" };
 
@@ -27,33 +29,29 @@ export const codebaseDisplayName = (label: string): string => {
 };
 
 /// `claude-opus-5-5`, `claude-sonnet-5-5-20261001` and `Claude Opus 5.5` all
-/// read as the model family and its dotted version. Null when the model is not
-/// a Claude model, so the caller falls through to the general rule.
-const claudeModelName = (model: string, shouldKeepBrand: boolean): string | null | undefined => {
-  const tokens = model.replace(/\[[^\]]*\]/g, "").split(WORD_SEPARATOR).filter((token) => token !== "");
-  const [brand, ...rest] = tokens;
+/// read as Claude, the model family and its dotted version. A Bedrock id such
+/// as `us.anthropic.claude-sonnet-4-5-20250929-v1:0` and a Vertex id such as
+/// `claude-sonnet-4-5@20250929` read the same once the provider's prefix and
+/// suffix are dropped. Undefined when the model is not a Claude model, so the
+/// caller falls through to the general rule.
+const claudeModelName = (model: string): string | undefined => {
+  const bare = model.replace(/\[[^\]]*\]/g, "").replace(CLOUD_PROVIDER_PREFIX, "").replace(CLOUD_PROVIDER_SUFFIX, "");
+  const [brand, ...rest] = bare.split(WORD_SEPARATOR).filter((token) => token !== "");
   if (brand?.toLowerCase() !== "claude") return undefined;
   const details = rest.filter((token) => !RELEASE_DATE_TOKEN.test(token));
   const family = details.filter((token) => !NUMERIC_TOKEN.test(token)).map(capitalise);
   const version = details.filter((token) => NUMERIC_TOKEN.test(token)).join(".");
-  const parts = [...(shouldKeepBrand ? ["Claude"] : []), ...family, ...(version === "" ? [] : [version])];
-  return parts.length === 0 ? null : parts.join(" ");
+  return ["Claude", ...family, ...(version === "" ? [] : [version])].join(" ");
 };
 
-/**
- * A model in proper case without the runtime's own name, which the group
- * heading already says. Null when there is no model to show.
- */
-export const modelDisplayName = (source: string, model: string | null): string | null => {
+/** A model in proper case, its whole name kept. Null when there is no model to show. */
+export const modelDisplayName = (model: string | null): string | null => {
   const trimmed = model?.trim() ?? "";
   if (trimmed === "") return null;
-  const claude = claudeModelName(trimmed, source !== "claude_code");
+  const claude = claudeModelName(trimmed);
   if (claude !== undefined) return claude;
-  const runtimeWords = agentRuntimeLabel(source).toLowerCase().split(WORD_SEPARATOR);
   const words = trimmed.split(WORD_SEPARATOR).filter((word) => word !== "");
-  const repeatsRuntime = runtimeWords.every((word, index) => words[index]?.toLowerCase() === word);
-  const named = repeatsRuntime ? words.slice(runtimeWords.length) : words;
-  return named.length === 0 ? null : named.map(capitalise).join(" ");
+  return words.length === 0 ? null : words.map(capitalise).join(" ");
 };
 
 /** A runtime's name for a group heading, without the brackets the roster's label may carry (`Pi (signed)` reads Pi signed). */

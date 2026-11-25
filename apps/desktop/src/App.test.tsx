@@ -2928,7 +2928,7 @@ describe("the agents and repos on the one page", () => {
     expect([...live.querySelectorAll(".live-person-name")].map((name) => name.textContent)).toEqual([sam.name, user.name]);
     const [samsBlock] = [...live.querySelectorAll<HTMLElement>(".live-person")];
     expect(within(samsBlock!).getByRole("heading", { name: "Claude Code 1" })).toBeInTheDocument();
-    expect(tilesOf(samsBlock!)).toEqual([["Code Goblins", "Opus 5.5", "Running 2m", "Working"]]);
+    expect(tilesOf(samsBlock!)).toEqual([["Code Goblins", "Claude Opus 5.5", "Running 2m", "Working"]]);
   });
 
   it("narrows who is running an agent to the person picked, without asking again", async () => {

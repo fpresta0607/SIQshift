@@ -24,7 +24,7 @@ const STATE_LABELS = { working: "Working", waiting: "Waiting" } as const;
  */
 export const LiveSessionTile = ({ session, now }: { session: LiveSessionRow; now: number }) => {
   const codebase = session.repo ?? session.project?.name ?? null;
-  const model = modelDisplayName(session.source, session.model);
+  const model = modelDisplayName(session.model);
   const runningSeconds = session.startedAt === null ? null : (now - Date.parse(session.startedAt)) / 1_000;
   return (
     <li className="live-tile">

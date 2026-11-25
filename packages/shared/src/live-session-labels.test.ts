@@ -21,29 +21,32 @@ describe("a codebase in proper case", () => {
   });
 });
 
-describe("a model in proper case without its runtime's name", () => {
+describe("a model in proper case, its whole name kept", () => {
   it.each([
-    ["claude_code", "claude-opus-5-5", "Opus 5.5"],
-    ["claude_code", "claude-sonnet-5-5-20261001", "Sonnet 5.5"],
-    ["claude_code", "Claude Opus 5.5", "Opus 5.5"],
-    ["claude_code", "claude-3-5-sonnet-20241022", "Sonnet 3.5"],
-    ["claude_code", "claude-opus-4-5[1m]", "Opus 4.5"],
-    ["claude_code", "claude-haiku-5", "Haiku 5"],
-    ["claude_code", "claude", null],
-    ["codex", "gpt-5.6-sol", "GPT 5.6 Sol"],
-    ["codex", "codex-mini-latest", "Mini Latest"],
-    ["codex", "codex", null],
-    ["pi", "deepseek-v4-pro", "Deepseek V4 Pro"],
-    ["kimi_code", "kimi-k2", "Kimi K2"],
-    ["kimi_code", "kimi-code-k2", "K2"],
-    ["cursor", "claude-opus-5-5", "Claude Opus 5.5"],
-    ["cursor", "GPT-5", "GPT 5"],
-    ["undeclared_runtime", "some-model", "Some Model"],
-    ["codex", null, null],
-    ["codex", "", null],
-    ["codex", "   ", null],
-  ])("reads %s model %j as %j", (source, model, expected) => {
-    expect(modelDisplayName(source, model)).toBe(expected);
+    ["claude-opus-5-5", "Claude Opus 5.5"],
+    ["claude-sonnet-5-5-20261001", "Claude Sonnet 5.5"],
+    ["Claude Opus 5.5", "Claude Opus 5.5"],
+    ["claude-3-5-sonnet-20241022", "Claude Sonnet 3.5"],
+    ["claude-opus-4-5[1m]", "Claude Opus 4.5"],
+    ["claude-haiku-5", "Claude Haiku 5"],
+    ["claude", "Claude"],
+    ["claude-sonnet-4-5@20250929", "Claude Sonnet 4.5"],
+    ["us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"],
+    ["anthropic.claude-3-5-sonnet-20241022-v2:0", "Claude Sonnet 3.5"],
+    ["gpt-5.6-sol", "GPT 5.6 Sol"],
+    ["codex-mini-latest", "Codex Mini Latest"],
+    ["codex", "Codex"],
+    ["deepseek-v4-pro", "Deepseek V4 Pro"],
+    ["kimi-k2", "Kimi K2"],
+    ["kimi-code-k2", "Kimi Code K2"],
+    ["GPT-5", "GPT 5"],
+    ["some-model", "Some Model"],
+    [null, null],
+    ["", null],
+    ["   ", null],
+    ["---", null],
+  ])("reads model %j as %j", (model, expected) => {
+    expect(modelDisplayName(model)).toBe(expected);
   });
 });
 
