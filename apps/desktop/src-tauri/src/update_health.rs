@@ -11,8 +11,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 /// Failed attempts in a row before the window says this copy cannot update
-/// itself. With a check at launch and every `UPDATE_CHECK_INTERVAL`, three is
-/// at least half a day of failing, longer than any one bad release or outage.
+/// itself. An attempt runs at every launch and every `UPDATE_CHECK_INTERVAL`
+/// after it, so this counts attempts, not time: three quick restarts during a
+/// short outage can reach it, and the next successful check takes it down.
 pub const FAILED_ATTEMPTS_BEFORE_NOTICE: u32 = 3;
 
 /// How one update attempt ended.
@@ -156,6 +157,37 @@ mod tests {
         for error in errors {
             assert_eq!(UpdateOutcome::of_error(&error), Failed, "{error}");
         }
+    }
+
+    /// A real `reqwest` answer, so the test rests on reqwest's own idea of a
+    /// connect error rather than on one built by hand.
+    fn reqwest_error(url: String) -> tauri_plugin_updater::Error {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime builds");
+        let error = runtime
+            .block_on(updater_reqwest::Client::new().get(url).send())
+            .expect_err("the request fails");
+        tauri_plugin_updater::Error::Reqwest(error)
+    }
+
+    #[test]
+    fn a_host_that_refuses_the_connection_reads_as_unreachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("port binds");
+        let closed_port = listener.local_addr().expect("port has an address").port();
+        drop(listener);
+
+        let error = reqwest_error(format!("http://127.0.0.1:{closed_port}/latest.json"));
+
+        assert_eq!(UpdateOutcome::of_error(&error), Unreachable, "{error}");
+    }
+
+    #[test]
+    fn a_request_error_that_is_not_about_reaching_the_host_counts_as_a_failure() {
+        let error = reqwest_error("not a url".to_string());
+
+        assert_eq!(UpdateOutcome::of_error(&error), Failed, "{error}");
     }
 
     #[test]
