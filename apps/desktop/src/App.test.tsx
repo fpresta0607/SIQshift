@@ -810,6 +810,33 @@ describe("a copy that cannot update itself", () => {
     await waitFor(() => expect(screen.queryByTestId("update-failing")).not.toBeInTheDocument());
   });
 
+  it("reads only once subscribed, and lets a change heard first outrank the read", async () => {
+    // Arrange
+    let announce: ((isFailing: boolean) => void) | undefined;
+    let subscribed: ((stop: () => void) => void) | undefined;
+    let answerRead: ((isFailing: boolean) => void) | undefined;
+    const updateIsFailing = vi.fn().mockImplementation(() => new Promise<boolean>((resolve) => { answerRead = resolve; }));
+    const bridge = bridgeFor({
+      updateIsFailing,
+      onUpdateFailing: vi.fn().mockImplementation((handler: (isFailing: boolean) => void) => {
+        announce = handler;
+        return new Promise<() => void>((resolve) => { subscribed = resolve; });
+      }),
+    });
+    render(<App bridge={bridge} />);
+    await screen.findByRole("button", { name: "Settings" });
+    expect(updateIsFailing).not.toHaveBeenCalled();
+
+    // Act
+    await act(async () => subscribed?.(() => undefined));
+    act(() => announce?.(true));
+    await act(async () => answerRead?.(false));
+
+    // Assert
+    expect(updateIsFailing).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("update-failing")).toBeInTheDocument();
+  });
+
   it.each([
     ["a copy that updates", { updateIsFailing: vi.fn().mockResolvedValue(false) }],
     ["a host that cannot say", { updateIsFailing: vi.fn().mockRejectedValue({ kind: "unknown", message: "Unavailable" }) }],

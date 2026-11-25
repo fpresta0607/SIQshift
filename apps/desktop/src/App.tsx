@@ -391,24 +391,34 @@ export const App = ({ bridge = defaultBridge }: AppProps) => {
   }, [bridge]);
 
   // Read at launch, because a run of failed updates outlives a restart, then
-  // kept current as each update check starts or ends that run.
+  // kept current as each update check starts or ends that run. The read waits
+  // for the subscription, so a change made between the two is still heard, and
+  // an event that arrives first outranks the read's older answer.
   useEffect(() => {
     let active = true;
+    let hasHeardChange = false;
     let unlisten: (() => void) | undefined;
+    const readCurrent = () => {
+      void bridge.updateIsFailing().then(
+        (next) => {
+          if (active && mounted.current && !hasHeardChange) setIsUpdateFailing(next);
+        },
+        () => undefined,
+      );
+    };
     void bridge.onUpdateFailing((next) => {
+      hasHeardChange = true;
       if (active && mounted.current) setIsUpdateFailing(next);
     }).then(
       (stop) => {
-        if (active) unlisten = stop;
-        else stop();
+        if (!active) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+        readCurrent();
       },
-      () => undefined,
-    );
-    void bridge.updateIsFailing().then(
-      (next) => {
-        if (active && mounted.current) setIsUpdateFailing(next);
-      },
-      () => undefined,
+      readCurrent,
     );
     return () => {
       active = false;
