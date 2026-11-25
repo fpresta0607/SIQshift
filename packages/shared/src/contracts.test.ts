@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import { agentRuntimeIds } from "./agent-runtimes.js";
 import {
   activitySegmentBatchRequestSchema,
+  appVersionSchema,
   agentMergeRequestSchema,
+  deviceListFiltersSchema,
+  deviceSchema,
   agentPatchRequestSchema,
   agentPaystubFiltersSchema,
   agentPaystubResponseSchema,
@@ -1441,5 +1444,27 @@ describe("agent shifts contracts", () => {
     { field: "a person's tokens out", patch: { people: [{ owner: { id: ids.user, name: "Alex" }, agentSeconds: 60, shiftCount: 1, tokens: { tokensIn: 0, tokensOut: -1, tokens: 0 } }] } },
   ])("refuses a negative count in $field", ({ patch }) => {
     expect(() => agentShiftsResponseSchema.parse({ ...shiftsResponse, ...patch })).toThrow();
+  });
+});
+
+describe("device contracts", () => {
+  it.each(["0.2.7", "1.0.0-beta.1", "10.20.30+build.5"])("accepts the app version %s", (version) => {
+    expect(appVersionSchema.parse(version)).toBe(version);
+  });
+
+  it.each(["", "v0.2.7", "0.2", "0.2.7 ", `1.0.0-${"a".repeat(59)}`])("rejects the app version %j", (version) => {
+    expect(appVersionSchema.safeParse(version).success).toBe(false);
+  });
+
+  it("describes a device whose build is too old to report a version", () => {
+    const device = { id: ids.user, appVersion: null, lastSeenAt: "2026-08-06T14:00:00.000Z" };
+
+    expect(deviceSchema.parse(device)).toEqual(device);
+  });
+
+  it("refuses a device filter that names something other than a user id", () => {
+    expect(deviceListFiltersSchema.parse({})).toEqual({});
+    expect(deviceListFiltersSchema.safeParse({ userId: "nobody" }).success).toBe(false);
+    expect(deviceListFiltersSchema.safeParse({ extra: 1 }).success).toBe(false);
   });
 });

@@ -359,6 +359,9 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-runtimes .tv-row:first-child { border-top: 0; }
 .tv-runtimes .agent-mark { width: 28px; height: 28px; }
 
+.tv-machines .tv-row { grid-template-columns: minmax(0, 1fr); min-height: 44px; }
+.tv-machines .tv-row:first-child { border-top: 0; }
+
 .tv-live h4 .live-pulse { width: 8px; height: 8px; }
 .tv-live .live-sessions { margin: 0; }
 .tv-live .live-sessions-empty { margin: 4px 0 0; }

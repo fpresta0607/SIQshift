@@ -1,4 +1,4 @@
-import { projectCreateRequestSchema, repositoryChoiceListResponseSchema } from "@siqshift/shared";
+import { deviceListResponseSchema, projectCreateRequestSchema, repositoryChoiceListResponseSchema } from "@siqshift/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { ClientError, createClient } from "./client.js";
@@ -276,6 +276,34 @@ describe("web client", () => {
 
     expect(repositoryChoiceListResponseSchema.parse(response)).toEqual(listed);
     expect(fetchMock.mock.calls.some(([url]) => String(url) === `${apiBaseUrl}/projects/repositories`)).toBe(true);
+  });
+
+  it.each([
+    [undefined, "/devices"],
+    ["00000000-0000-4000-8000-000000000002", "/devices?userId=00000000-0000-4000-8000-000000000002"],
+  ])("reads machines for %s from %s", async (userId, path) => {
+    // Arrange
+    const listed = { devices: [{ id: "00000000-0000-4000-8000-000000000801", appVersion: null, lastSeenAt: "2026-08-06T15:00:00.000Z" }] };
+    const { client, fetchMock } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse(listed)
+    ));
+
+    // Act
+    const response = await client.devices(userId);
+
+    // Assert
+    expect(deviceListResponseSchema.parse(response)).toEqual(listed);
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === `${apiBaseUrl}${path}`)).toBe(true);
+  });
+
+  it("reports a teammate's machines the server refuses as an authorization failure", async () => {
+    // Arrange
+    const { client } = clientWith(async (url) => (
+      url.endsWith("/token") ? jsonResponse({ token: "jwt" }) : jsonResponse({ error: { message: "Only an administrator can read a teammate's machines." } }, 403)
+    ));
+
+    // Act and assert
+    await expect(client.devices("00000000-0000-4000-8000-000000000002")).rejects.toMatchObject({ kind: "auth" });
   });
 
   it("puts up the viewer's picture as raw bytes with one PUT and reads the new version back", async () => {

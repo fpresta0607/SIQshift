@@ -261,6 +261,7 @@ function clientFor(overrides: Partial<Client> = {}): Client {
     agentShifts: vi.fn().mockResolvedValue(agentShiftsResponse),
     agentShiftRows: vi.fn().mockImplementation((query: string = "") => Promise.resolve(agentShiftRowsFor(query))),
     liveAgentSessions: vi.fn().mockResolvedValue({ people: [] }),
+    devices: vi.fn().mockResolvedValue({ devices: [] }),
     uploadPicture: vi.fn().mockResolvedValue({ user: self }),
     removePicture: vi.fn().mockResolvedValue({ user: self }),
     // No fixture names a picture, so nothing asks for one unless a test does.
@@ -708,6 +709,97 @@ describe("dashboard", () => {
     expect(apps.getByText("Claude Code")).toBeInTheDocument();
     expect(apps.getByText("VS Code")).toBeInTheDocument();
   });
+
+describe("a person's machines", () => {
+  const machine = (id: number, appVersion: string | null, lastSeenAt: string) => ({
+    id: `00000000-0000-4000-8000-0000000008${String(id).padStart(2, "0")}`,
+    appVersion,
+    lastSeenAt,
+  });
+  const samMachines = {
+    devices: [
+      machine(1, "0.2.7", "2026-08-06T15:00:00.000Z"),
+      machine(2, "0.2.5", "2026-08-01T09:30:00.000Z"),
+      machine(3, null, "2026-07-02T09:30:00.000Z"),
+    ],
+  };
+  const adminSelf = { ...self, role: "admin" as const };
+
+  it("shows an admin each build a picked teammate's machines last ran, an old one included", async () => {
+    // Arrange
+    const devices = vi.fn().mockResolvedValue(samMachines);
+    const person = await signIn(clientFor({ devices, me: vi.fn().mockResolvedValue({ user: adminSelf }) }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("table", { name: "People" });
+    expect(stats.queryByRole("region", { name: "Machines" })).toBeNull();
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    const machines = within(await stats.findByRole("region", { name: "Machines" }));
+
+    // Assert
+    const rows = await machines.findAllByRole("listitem");
+    expect(rows.map((row) => row.firstElementChild?.firstElementChild?.textContent)).toEqual([
+      "SIQshift 0.2.7",
+      "SIQshift 0.2.5",
+      "A build too old to say its version",
+    ]);
+    expect(rows[0]).toHaveTextContent(/Last seen Aug \d+, /);
+    expect(devices).toHaveBeenCalledWith("u1");
+  });
+
+  it("asks a member for nothing about a teammate's machines and draws no card", async () => {
+    // Arrange
+    const devices = vi.fn().mockResolvedValue(samMachines);
+    const person = await signIn(clientFor({ devices }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("table", { name: "People" });
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    await stats.findByLabelText("Totals for Sam");
+
+    // Assert
+    expect(stats.queryByRole("region", { name: "Machines" })).toBeNull();
+    expect(devices).not.toHaveBeenCalled();
+  });
+
+  it("lets a member see their own machines, and says so when none has uploaded", async () => {
+    // Arrange
+    const devices = vi.fn().mockResolvedValue({ devices: [] });
+    const person = await signIn(clientFor({ devices }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("table", { name: "People" });
+
+    // Act
+    await pickPerson(person, stats, "Alex");
+    const machines = within(await stats.findByRole("region", { name: "Machines" }));
+
+    // Assert
+    expect(await machines.findByText("No desktop app has uploaded from this person yet.")).toBeInTheDocument();
+    expect(devices).toHaveBeenCalledWith(undefined);
+  });
+
+  it.each([
+    ["the server is unavailable", new ClientError("transient", "The server is unavailable. Try again shortly.")],
+    ["the server refuses a role that changed since sign-in", new ClientError("auth", "Only a workspace administrator can read a teammate's devices.")],
+  ])("says the machines could not be loaded, and keeps the session, when %s", async (_case, failure) => {
+    // Arrange
+    const devices = vi.fn().mockRejectedValue(failure);
+    const person = await signIn(clientFor({ devices, me: vi.fn().mockResolvedValue({ user: adminSelf }) }));
+    const stats = await openAllStats(person);
+    await stats.findByRole("table", { name: "People" });
+
+    // Act
+    await pickPerson(person, stats, "Sam");
+    const machines = within(await stats.findByRole("region", { name: "Machines" }));
+
+    // Assert
+    expect(await machines.findByText("Could not load this person's machines.")).toBeInTheDocument();
+    expect(machines.queryByText("No desktop app has uploaded from this person yet.")).toBeNull();
+    expect(stats.getByRole("table", { name: "People" })).toBeInTheDocument();
+  });
+});
 
   it("shows the invite code and copies it on request", async () => {
     const person = await signIn(clientFor());
@@ -1199,6 +1291,7 @@ describe("dashboard", () => {
     // Identity is keyed on the repository and the repository is named by its
     // remote, so the remote leaves the machine too and the sentence says so.
     expect(kept).toHaveTextContent("origin remote URL with any embedded credentials removed");
+    expect(kept).toHaveTextContent("Which version of SIQshift this computer runs, shown only to you and your workspace's admins.");
     const never = within(dialog).getByRole("heading", { name: "SIQshift never writes down" }).nextElementSibling;
     expect(never).toHaveTextContent("Not one keystroke.");
     // The remote is a repository name, not browsing, and the never-list says so

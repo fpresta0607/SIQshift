@@ -8,6 +8,7 @@ import {
   agents,
   agentSessions,
   agentUsage,
+  devices,
   organizationAdminClaims,
   organizations,
   projectMemberships,
@@ -39,6 +40,8 @@ import {
   SessionRepositoryError,
   type ActivitySegmentInsert,
   type ActivitySegmentRepository,
+  type DeviceRecord,
+  type DeviceRepository,
   type AgentIntervalRecord,
   type AgentSessionEndShift,
   type AgentRecord,
@@ -1377,6 +1380,46 @@ export class DrizzleReportRepository implements ReportRepository {
       if (totalRows > BigInt(maxRows)) return { summary };
       return { summary, rows: await this.rowsFor(db, subject, query, { limit: maxRows + 1, offset: 0 }) };
     });
+  }
+}
+
+export class DrizzleDeviceRepository implements DeviceRepository {
+  public constructor(private readonly db: DatabaseConnection["db"]) {}
+
+  public async recordSeen(input: {
+    organizationId: string;
+    userId: string;
+    deviceIds: readonly string[];
+    appVersion: string | null;
+    seenAt: Date;
+  }): Promise<void> {
+    if (input.deviceIds.length === 0) return;
+    await this.db
+      .insert(devices)
+      .values(input.deviceIds.map((id) => ({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        id,
+        appVersion: input.appVersion,
+        lastSeenAt: input.seenAt,
+      })))
+      .onConflictDoUpdate({
+        target: [devices.organizationId, devices.userId, devices.id],
+        set: {
+          appVersion: sql`excluded.app_version`,
+          lastSeenAt: sql`excluded.last_seen_at`,
+          updatedAt: sql`now()`,
+        },
+        setWhere: sql`${devices.lastSeenAt} <= excluded.last_seen_at`,
+      });
+  }
+
+  public async listForUser(organizationId: string, userId: string): Promise<DeviceRecord[]> {
+    return this.db
+      .select({ id: devices.id, appVersion: devices.appVersion, lastSeenAt: devices.lastSeenAt })
+      .from(devices)
+      .where(and(eq(devices.organizationId, organizationId), eq(devices.userId, userId)))
+      .orderBy(desc(devices.lastSeenAt), asc(devices.id));
   }
 }
 

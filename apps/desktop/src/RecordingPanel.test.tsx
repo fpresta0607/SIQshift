@@ -249,6 +249,7 @@ describe("RecordingPanel", () => {
     // folder included, and who can see it.
     expect(kept).toHaveTextContent("title, commit id, and repository folder of each commit");
     expect(kept).toHaveTextContent("shown only to you and your workspace's admins");
+    expect(kept).toHaveTextContent("Which version of SIQshift this computer runs, shown only to you and your workspace's admins.");
     expect(kept).not.toHaveTextContent(/press start/i);
 
     const never = within(panel).getByRole("heading", { name: "SIQshift never writes down" }).nextElementSibling;
