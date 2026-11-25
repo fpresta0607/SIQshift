@@ -3434,7 +3434,7 @@ describe("the home page's example", () => {
     const board = within(preview.getByRole("table", { name: "People" }));
     for (const row of board.getAllByRole("row").slice(1)) {
       expect(row.querySelectorAll("td.is-tokens .tv-cell-line")).toHaveLength(2);
-      expect(row).toHaveTextContent(/[\d.]+[kMB]? in[\d.]+[kMB]? out/);
+      expect(row).toHaveTextContent(/[\d.]+[kMB]? in [\d.]+[kMB]? out/);
       expect(row.querySelector(".project-icon")).toBeNull();
     }
   });
