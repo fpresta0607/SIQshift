@@ -77,15 +77,18 @@ integration("stored devices", () => {
 
   it("records several devices in one call and lists the most recently seen first", async () => {
     const userId = await member();
-    const [older, newer] = [randomUUID(), randomUUID()];
+    // The older device has the lower id and is stored first, so a heap scan, a
+    // primary-key scan and an ascending sort all list it first.
+    const [older, newer] = [randomUUID(), randomUUID()].sort();
 
-    await devices.recordSeen({ organizationId, userId, deviceIds: [older], appVersion: "0.2.6", seenAt: first });
-    await devices.recordSeen({ organizationId, userId, deviceIds: [newer, older], appVersion: "0.2.7", seenAt: third });
+    await devices.recordSeen({ organizationId, userId, deviceIds: [older, newer], appVersion: "0.2.6", seenAt: first });
+    await devices.recordSeen({ organizationId, userId, deviceIds: [newer], appVersion: "0.2.7", seenAt: third });
     await devices.recordSeen({ organizationId, userId, deviceIds: [], appVersion: "0.2.7", seenAt: third });
 
-    const listed = await devices.listForUser(organizationId, userId);
-    expect(listed.map((device) => device.id).sort()).toEqual([older, newer].sort());
-    expect(listed.every((device) => device.appVersion === "0.2.7" && device.lastSeenAt.getTime() === third.getTime())).toBe(true);
+    await expect(devices.listForUser(organizationId, userId)).resolves.toEqual([
+      { id: newer, appVersion: "0.2.7", lastSeenAt: third },
+      { id: older, appVersion: "0.2.6", lastSeenAt: first },
+    ]);
   });
 
   it("keeps one machine signed in under two accounts as one row each", async () => {
