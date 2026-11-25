@@ -198,7 +198,7 @@ test.describe("a connected agent's row on the desktop", () => {
 test.describe("an agent's name beside its plan dial on the desktop", () => {
   test("gives way in the dial's text before the row overflows at 400px", async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 600 });
-    await openAgentRow(page, { detail: "siqshift, precisiondocs-ai", plan: "Copilot Business Enterprise Unlimited" });
+    await openAgentRow(page, { detail: "siqshift, atlas-portal-app", plan: "Copilot Business Enterprise Unlimited" });
 
     expect(await clippedCells(page, ".meter-name")).toEqual([]);
     const overflow = await page.locator(".meter-row").first()
@@ -211,7 +211,7 @@ test.describe("an agent's name beside its plan dial on the desktop", () => {
       test(`shows a long label whole at ${width}px ${duration === undefined ? "with no duration" : "with a duration"}`, async ({ page }) => {
         await page.setViewportSize({ width, height: 600 });
         await openAgentRow(page, {
-          detail: "siqshift, precisiondocs-ai, pocket-piggies",
+          detail: "siqshift, atlas-portal-app, pocket-piggies",
           ...(duration === undefined ? {} : { duration }),
         });
 
