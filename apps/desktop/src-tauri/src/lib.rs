@@ -1293,8 +1293,12 @@ pub fn run() {
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
-            let client = ApiClient::new(auth_base_url(), api_base_url())
-                .map_err(|error| std::io::Error::other(error.message))?;
+            let client = ApiClient::new(
+                auth_base_url(),
+                api_base_url(),
+                app.package_info().version.to_string(),
+            )
+            .map_err(|error| std::io::Error::other(error.message))?;
             let recovery = Arc::new(Mutex::new(load_recovery_from_disk(&recovery_path)));
 
             let monitor = monitor::Monitor::new(monitor::MonitorConfig {

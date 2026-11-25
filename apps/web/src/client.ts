@@ -1,6 +1,7 @@
 import type {
   AgentShiftRowsResponse,
   AgentShiftsResponse,
+  DeviceListResponse,
   LiveAgentSessionsResponse,
   MeResponse,
   MeStatsResponse,
@@ -338,6 +339,10 @@ export function createClient(config: ClientConfig) {
       const response = await apiRequest(`/users/${userId}/picture?v=${encodeURIComponent(version)}`);
       return new Uint8Array(await response.arrayBuffer());
     },
+
+    /** The caller's machines and the build each last uploaded from; a teammate's by id, which only an administrator may read. */
+    devices: (userId?: string) =>
+      json<DeviceListResponse>(userId === undefined ? "/devices" : `/devices?userId=${encodeURIComponent(userId)}`),
 
     /** One member's breakdown; `userId` in the query names a teammate. */
     meStats: (query = "") => json<MeStatsResponse>(`/me/stats${query}`),

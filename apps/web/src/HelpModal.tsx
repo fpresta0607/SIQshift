@@ -16,6 +16,7 @@ const KEPT = [
   "When an AI coding tool starts, is still working, and finishes, which folder it worked in, and - when that folder is in a git repository - that repository's root and its origin remote URL with any embedded credentials removed, which is what names the repository it worked in.",
   "For AI coding shifts in a git repo: the branch name, and the title, commit id, and repository folder of each commit made during the shift, checked later on this machine, read-only. The repository folder is shown only to you and your workspace's admins.",
   "For AI coding shifts that keep a session log: the number of tokens used and which model the tool ran, read from that log on this computer. The numbers and the model name only.",
+  "Which version of SIQshift this computer runs, shown only to you and your workspace's admins.",
 ];
 
 const NEVER = [

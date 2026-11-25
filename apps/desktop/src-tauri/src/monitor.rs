@@ -4610,6 +4610,7 @@ mod tests {
         let client = ApiClient::new(
             "http://127.0.0.1:9/auth".to_string(),
             "http://127.0.0.1:9".to_string(),
+            "0.0.0-test".to_string(),
         )
         .expect("client builds");
         let monitor = Monitor::new(MonitorConfig {
@@ -4646,6 +4647,7 @@ mod tests {
             client: ApiClient::new(
                 "http://127.0.0.1:9/auth".to_string(),
                 "http://127.0.0.1:9".to_string(),
+                "0.0.0-test".to_string(),
             )
             .expect("client builds"),
             settings_path: dir.join("settings.json"),
@@ -4781,6 +4783,7 @@ mod tests {
         let client = ApiClient::new(
             "http://127.0.0.1:9/auth".to_string(),
             "http://127.0.0.1:9".to_string(),
+            "0.0.0-test".to_string(),
         )
         .expect("client builds");
         let monitor = Monitor::new(MonitorConfig {
@@ -4818,6 +4821,7 @@ mod tests {
         let client = ApiClient::new(
             "http://127.0.0.1:9/auth".to_string(),
             "http://127.0.0.1:9".to_string(),
+            "0.0.0-test".to_string(),
         )
         .expect("client builds");
         let monitor = Monitor::new(MonitorConfig {

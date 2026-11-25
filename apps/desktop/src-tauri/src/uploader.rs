@@ -909,10 +909,13 @@ mod tests {
             .unwrap_or(0)
     }
 
+    const TEST_APP_VERSION: &str = "4.5.6-test";
+
     fn stub_client(port: u16) -> ApiClient {
         ApiClient::new(
             format!("http://127.0.0.1:{port}/auth"),
             format!("http://127.0.0.1:{port}"),
+            TEST_APP_VERSION.to_string(),
         )
         .expect("the stub client builds")
     }
@@ -965,6 +968,28 @@ mod tests {
         let (pending, _) =
             spool::read_pending_lines::<SegmentRecord>(&path).expect("the spool reads");
         assert!(pending.is_empty(), "an accepted batch leaves the spool");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The API records which build each device last uploaded from, and reads
+    /// it off the segment upload.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_segment_upload_carries_the_app_version_header() {
+        let dir = temp_dir("app-version");
+        let path = dir.join("segments-spool.jsonl");
+        spool_one_segment(&path);
+
+        let (port, server) = stub_server(200, r#"{"accepted":1,"rejected":[]}"#).await;
+        upload_segments(&stub_client(port), "token", &path).await;
+
+        let request = server.await.expect("the stub finishes");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains(&format!("x-siqshift-app-version: {TEST_APP_VERSION}")),
+            "the upload names the build that sent it: {request}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

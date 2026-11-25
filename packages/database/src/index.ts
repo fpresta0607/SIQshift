@@ -9,6 +9,7 @@ export {
   agentSessions,
   agentSessionStatus,
   agentUsage,
+  devices,
   organizationAdminClaims,
   organizations,
   projectMemberships,

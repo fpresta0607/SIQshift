@@ -204,7 +204,7 @@ Each time total carries one plain note saying what it counts.
 Active time is "minutes at the computer".
 Agent time is "every agent added up, so ten agents for an hour count ten hours".
 The page reads All projects, so it draws no list of projects and no project beside a person.
-A person also gets the one card only a person has: the apps their time went to.
+A person also gets the cards only a person has: the apps their time went to and, on the web dashboard for the viewer's own machines or for an admin, **Machines**, the build each of their machines last uploaded from and when it was last seen.
 The board itself stays the whole team's, because it is the picker, and ranks by active time, agent time or tokens.
 Its Tokens column states each person's tokens in and out on two lines, from the `people` rows of `/reports/agent-shifts`, with no total line, and a dash for someone whose agents reported none.
 Ranking by tokens still follows each person's total, and the bar under the figure is that person's share of the largest total.
@@ -581,6 +581,7 @@ in a git repo — the branch name, and the title, commit id and repository path 
 captured once the shift ends (see *Roster: agents as identities*). When an AI coding tool keeps a
 session log on this computer, SIQshift reads the token counters and the model name from that log —
 the numbers and names only, never the prompt or response text — and reports them with the shift.
+The desktop app also sends which version of SIQshift it is, shown only to the owning user and org admins.
 A working directory can contain a user name, so both it and a repository path are shown only to
 the owning user and org admins, and are redacted from logs.
 
@@ -692,8 +693,9 @@ organization are derived from verified claims, never from the request body.
 | `DELETE` | `/projects/:id` | delete (reassign its sessions or delete them with it); admin-only |
 | `POST` | `/sessions/observed` | batch upload of finished sessions, idempotent on the client-generated `clientId` |
 | `POST` | `/sessions`, `/sessions/:id/stop`, `GET /sessions/current` | **deprecated** manual timer; kept so older installed builds can finish their work |
-| `POST` | `/activity/segments` | batch upload of activity segments |
+| `POST` | `/activity/segments` | batch upload of activity segments; the `x-siqshift-app-version` header names the build that sent it, and is optional so builds from before it still upload |
 | `POST` | `/agent-sessions` | batch upload of agent lifecycle events |
+| `GET` | `/devices` | the caller's machines and the build each last uploaded from, the most recently seen first; `?userId=` reads a teammate's, admin-only (`403` for a member) |
 | `GET` `POST` `PATCH` `DELETE` | `/path-mappings`, `/path-mappings/:id` | map a path prefix to a project |
 | `GET` | `/reports`, `/reports/leaderboard`, `/reports/agents`, `/reports/agent-shifts`, `/reports/export.csv` | organization reporting |
 | `GET` | `/reports/workspace` | the caller's workspace in one read, every sum made on the server: team totals, the hourly graph, projects, agent runtimes, and the members ranked as the leaderboard ranks them; takes the leaderboard's range and scope only |

@@ -5,6 +5,7 @@ import {
   formatHumanDuration,
   projectAppearance,
   type AgentShiftsResponse,
+  type Device,
   type LiveAgentSessionsResponse,
   type MeResponse,
   type MeStatsResponse,
@@ -166,6 +167,7 @@ export const App = ({ client }: AppProps) => {
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [organization, setOrganization] = useState<Organization | undefined>();
   const [selfId, setSelfId] = useState<string | undefined>();
+  const [selfRole, setSelfRole] = useState<MeResponse["user"]["role"] | undefined>();
   const [selfName, setSelfName] = useState<string | undefined>();
   /// Names the viewer's own picture: null without one, undefined until /me answers.
   const [selfPictureVersion, setSelfPictureVersion] = useState<string | null | undefined>();
@@ -188,6 +190,9 @@ export const App = ({ client }: AppProps) => {
   const [member, setMember] = useState<{ id: string; name: string } | undefined>();
   const [memberStats, setMemberStats] = useState<MeStatsResponse | undefined>();
   const [memberFailed, setMemberFailed] = useState(false);
+  /// The picked person's machines, tagged with whose they are so a late or
+  /// stale read is never drawn under another name.
+  const [memberMachines, setMemberMachines] = useState<{ userId: string; devices: readonly Device[] | undefined; isFailed: boolean } | undefined>();
   /// The home screen's own reading: today, for the signed-in viewer, over
   /// whichever project the filing header is pointed at. It keeps its own copy
   /// so opening a teammate's month in All stats never rewrites the day the
@@ -313,6 +318,7 @@ export const App = ({ client }: AppProps) => {
         if (organizationResult.status === "fulfilled") setOrganization(organizationResult.value.organization);
         if (meResult.status === "fulfilled") {
           setSelfId(meResult.value.user.id);
+          setSelfRole(meResult.value.user.role);
           setSelfName(meResult.value.user.name);
           setSelfPictureVersion(meResult.value.user.pictureVersion ?? null);
         }
@@ -463,6 +469,30 @@ export const App = ({ client }: AppProps) => {
       cancelled = true;
     };
   }, [client, signedIn, preferencesReady, allStatsOpen, statsQuery, subjectId, statsScopeParams, expireSession]);
+
+  // Which build each of the subject's machines last ran. The server refuses a
+  // teammate's list to anyone but an administrator, so a member is never asked
+  // and no card is drawn for them. A refusal here is never read as a lapsed
+  // session: the client files a 403 as "auth", and a role that changed since
+  // /me answered must cost this card, not the sign-in. A session that really
+  // lapsed is caught by the subject's other reads.
+  const mayReadMachines = subjectId !== undefined && (subjectId === selfId || selfRole === "admin");
+  useEffect(() => {
+    if (!signedIn || !preferencesReady || !allStatsOpen || subjectId === undefined || !mayReadMachines) return undefined;
+    let cancelled = false;
+    setMemberMachines(undefined);
+    client.devices(subjectId === selfId ? undefined : subjectId).then(
+      (result) => {
+        if (!cancelled) setMemberMachines({ userId: subjectId, devices: result.devices, isFailed: false });
+      },
+      () => {
+        if (!cancelled) setMemberMachines({ userId: subjectId, devices: undefined, isFailed: true });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, signedIn, preferencesReady, allStatsOpen, subjectId, selfId, mayReadMachines]);
 
   // The agents' read - tokens, the token chart, the agents and the repos -
   // for the same person and range. It is blanked when the question changes,
@@ -629,6 +659,7 @@ export const App = ({ client }: AppProps) => {
     setMember(undefined);
     setMemberStats(undefined);
     setMemberFailed(false);
+    setMemberMachines(undefined);
     setAgentShifts(undefined);
     setAgentShiftsFailed(false);
     setBoardTokens(undefined);
@@ -645,6 +676,7 @@ export const App = ({ client }: AppProps) => {
     setJustSignedUp(false);
     setOrganization(undefined);
     setSelfId(undefined);
+    setSelfRole(undefined);
     setSelfName(undefined);
     setSelfPictureVersion(undefined);
     setProjects([]);
@@ -1258,6 +1290,9 @@ export const App = ({ client }: AppProps) => {
                       : liveSessions.people.filter((person) => person.owner.id === subjectId),
                     isFailed: liveSessionsFailed,
                   }}
+                  machines={mayReadMachines
+                    ? memberMachines?.userId === subjectId ? memberMachines : { devices: undefined, isFailed: false }
+                    : undefined}
                 />
               )}
 

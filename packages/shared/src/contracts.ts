@@ -563,6 +563,35 @@ export const activitySegmentBatchResponseSchema = z
   })
   .strict();
 
+/**
+ * The header every desktop request carries, naming the build that sent it. A
+ * header rather than a body field because the body schemas are strict: a newer
+ * desktop against an older API would otherwise have every upload refused.
+ * Builds that predate it send none.
+ */
+export const APP_VERSION_HEADER = "x-siqshift-app-version";
+export const appVersionSchema = z.string().max(64).regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/);
+
+/** One of a member's machines, as its segment uploads last described it. */
+export const deviceSchema = z
+  .object({
+    id: idSchema,
+    /** The build the machine last uploaded from; null for one too old to say. */
+    appVersion: appVersionSchema.nullable(),
+    lastSeenAt: timestampSchema,
+  })
+  .strict();
+
+export const deviceListFiltersSchema = z
+  .object({
+    /** A teammate, which only an administrator may read; absent means the caller. */
+    userId: idSchema.optional(),
+  })
+  .strict();
+
+/** The member's machines, the most recently seen first. */
+export const deviceListResponseSchema = z.object({ devices: z.array(deviceSchema) }).strict();
+
 export const agentEventKindValues = ["started", "ended", "heartbeat"] as const;
 export const agentEventKindSchema = z.enum(agentEventKindValues);
 
@@ -1537,6 +1566,9 @@ export type ActivitySegmentBatchRequest = z.infer<typeof activitySegmentBatchReq
 export type ActivitySegmentBatchResponse = z.infer<typeof activitySegmentBatchResponseSchema>;
 export type ActivitySegmentKind = z.infer<typeof activitySegmentKindSchema>;
 export type ActivitySegmentUpload = z.infer<typeof activitySegmentUploadSchema>;
+export type Device = z.infer<typeof deviceSchema>;
+export type DeviceListFilters = z.infer<typeof deviceListFiltersSchema>;
+export type DeviceListResponse = z.infer<typeof deviceListResponseSchema>;
 export type AgentEventKind = z.infer<typeof agentEventKindSchema>;
 export type AgentSessionState = z.infer<typeof agentSessionStateSchema>;
 export type AgentSessionEvent = z.infer<typeof agentSessionEventSchema>;

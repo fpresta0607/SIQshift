@@ -24,6 +24,7 @@ import type {
   AgentRepository,
   AgentSessionRepository,
   AgentUsageRepository,
+  DeviceRepository,
   PathMappingRepository,
   PictureRepository,
   ProjectRepository,
@@ -37,6 +38,7 @@ import { createActivityRoutes } from "./routes/activity.js";
 import { createAgentRoutes } from "./routes/agents.js";
 import { createAgentSessionRoutes } from "./routes/agent-sessions.js";
 import { createAgentUsageRoutes } from "./routes/agent-usage.js";
+import { createDeviceRoutes } from "./routes/devices.js";
 import { createMeStatsRoutes } from "./routes/me-stats.js";
 import { createPathMappingRoutes } from "./routes/path-mappings.js";
 import { createPictureRoutes } from "./routes/pictures.js";
@@ -74,6 +76,7 @@ export interface CreateAppDependencies {
   reportRepository?: ReportRepository;
   sessionRepository?: SessionRepository;
   activitySegmentRepository?: ActivitySegmentRepository;
+  deviceRepository?: DeviceRepository;
   agentSessionRepository?: AgentSessionRepository;
   agentRepository?: AgentRepository;
   shiftCommitRepository?: ShiftCommitRepository;
@@ -414,12 +417,17 @@ export function createApp(dependencies: CreateAppDependencies): Hono<ApiEnvironm
   if (dependencies.activitySegmentRepository !== undefined) {
     const activityService = createActivityService({
       segments: dependencies.activitySegmentRepository,
+      ...(dependencies.deviceRepository === undefined ? {} : { devices: dependencies.deviceRepository }),
       ...(onUploaded === undefined ? {} : { onUploaded }),
       clock,
     });
     app.use("/activity", authenticate);
     app.use("/activity/*", authenticate);
     app.route("/activity", createActivityRoutes(activityService));
+  }
+  if (dependencies.deviceRepository !== undefined) {
+    app.use("/devices", authenticate);
+    app.route("/devices", createDeviceRoutes(dependencies.deviceRepository));
   }
   if (dependencies.agentSessionRepository !== undefined) {
     if (dependencies.pathMappingRepository === undefined || dependencies.sessionRepository === undefined) {
