@@ -169,8 +169,8 @@ select:disabled { opacity: .55; }
 .update-banner { margin: 0; border: 1px solid rgba(0, 229, 155, .35); border-radius: 6px; padding: 8px 10px; background: rgba(0, 229, 155, .08); color: #8ff0cd; font-size: .81rem; text-align: left; }
 .sync-banner button { min-height: 31px; border: 0; background: transparent; color: var(--accent-blue); padding: 2px; text-decoration: underline; text-underline-offset: 3px; text-transform: none; letter-spacing: normal; }
 
-.translocation-notice { margin: 13px 0 0; border-left: 3px solid var(--red); padding: 8px 10px; background: rgba(221, 93, 79, .11); color: #ffb4aa; font-size: .83rem; text-align: left; }
-.screen > .translocation-notice { margin: 0; }
+.translocation-notice, .update-failing-notice { margin: 13px 0 0; border-left: 3px solid var(--red); padding: 8px 10px; background: rgba(221, 93, 79, .11); color: #ffb4aa; font-size: .83rem; text-align: left; }
+.screen > .translocation-notice, .screen > .update-failing-notice { margin: 0; }
 
 .form-error { margin: 13px 0 0; border-left: 3px solid var(--red); padding: 8px 10px; background: rgba(221, 93, 79, .11); color: #ffb4aa; font-size: .83rem; text-align: left; }
 

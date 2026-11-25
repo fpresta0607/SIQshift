@@ -28,6 +28,7 @@ mod permissions;
 mod quota;
 mod recovery;
 mod shift_commits;
+mod update_health;
 mod uploader;
 // Shared with the `siqshift-hook` binary; the uploader drains it from here.
 pub mod spool;
@@ -36,8 +37,8 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use tauri::{
@@ -54,6 +55,7 @@ use api::{
 };
 use monitor::{MonitorSettings, MonitorStatus, SettingsPatch};
 use recovery::RecoveryState;
+use update_health::{UpdateHealth, UpdateOutcome};
 
 const KEYRING_SERVICE: &str = "siqshift";
 const KEYRING_ACCOUNT: &str = "neon-auth-session";
@@ -156,6 +158,10 @@ pub struct AppState {
     /// those CLIs already keep on this machine. Never uploaded, never on the
     /// critical path: the command answers from cache and refreshes behind it.
     quota: quota::QuotaMonitor,
+    /// Whether update attempts keep failing, kept beside the other app data
+    /// so the run of failures survives a restart.
+    update_health: std::sync::Mutex<UpdateHealth>,
+    update_health_path: PathBuf,
 }
 
 impl AppState {
@@ -951,37 +957,40 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 /// How often the app looks for a new build after the launch check. Six hours
 /// keeps a machine that is never restarted current without making the release
-/// host answer on a loop.
+/// host answer on a loop. It is wall-clock time: see `wait_for_next_update_check`.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3_600);
 
-/// Looks for a newer build and installs it, returning whether one was staged.
+/// How often the wait for the next update check reads the wall clock.
+const UPDATE_WAIT_TICK: Duration = Duration::from_secs(5 * 60);
+
+/// Looks for a newer build and installs it, returning how the attempt ended.
 ///
-/// Silence is the whole contract here. A laptop on a plane, a blocked release
-/// host, a half-written manifest: none of that is the person's problem, and
-/// none of it may interrupt recording. Every failure path logs and returns,
-/// because the next check is at most `UPDATE_CHECK_INTERVAL` away.
+/// One failure is silent. A laptop on a plane, a blocked release host, a
+/// half-written manifest: none of that is the person's problem, and none of it
+/// may interrupt recording, so every failure path logs and returns, because the
+/// next check is at most `UPDATE_CHECK_INTERVAL` away. Only a run of failures
+/// reaches the window, through `record_update_outcome`.
 ///
 /// On Windows the NSIS installer replaces the app in place and Tauri restarts
 /// it, so the download happens quietly in the background and only the final
 /// swap is visible. On a Mac the new bundle replaces the old one on disk and
 /// `restart_into_staged_update` relaunches into it.
-async fn install_available_update(handle: &tauri::AppHandle) -> bool {
+async fn install_available_update(handle: &tauri::AppHandle) -> UpdateOutcome {
     use tauri_plugin_updater::UpdaterExt;
 
     let updater = match handle.updater() {
         Ok(updater) => updater,
         Err(error) => {
             eprintln!("siqshift: the updater is unavailable: {error}");
-            return false;
+            return UpdateOutcome::Failed;
         }
     };
     let update = match updater.check().await {
         Ok(Some(update)) => update,
-        // No update, or the host could not be reached. Both are ordinary.
-        Ok(None) => return false,
+        Ok(None) => return UpdateOutcome::UpToDate,
         Err(error) => {
             eprintln!("siqshift: could not check for an update: {error}");
-            return false;
+            return UpdateOutcome::of_error(&error);
         }
     };
 
@@ -992,12 +1001,74 @@ async fn install_available_update(handle: &tauri::AppHandle) -> bool {
     match update.download_and_install(|_, _| {}, || {}).await {
         Ok(()) => {
             eprintln!("siqshift: staged update {}", update.version);
-            true
+            UpdateOutcome::Staged
         }
         Err(error) => {
             eprintln!("siqshift: could not install the update: {error}");
-            false
+            UpdateOutcome::of_error(&error)
         }
+    }
+}
+
+/// Folds one attempt into the run of failures, keeps it on disk, and tells the
+/// window when this copy starts or stops being unable to update itself.
+fn record_update_outcome(handle: &tauri::AppHandle, outcome: UpdateOutcome) {
+    let state = handle.state::<AppState>();
+    let mut health = state
+        .update_health
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let was_failing = health.is_failing();
+    health.record(outcome);
+    if let Err(error) = health.save(&state.update_health_path) {
+        eprintln!("siqshift: could not record the update attempt: {error}");
+    }
+    let is_failing = health.is_failing();
+    if is_failing != was_failing {
+        let _ = handle.emit("update-failing", is_failing);
+    }
+}
+
+/// Whether this copy has failed to update itself too many times in a row,
+/// which the window answers with one notice to install the newest build by hand.
+#[tauri::command]
+fn update_is_failing(state: State<'_, AppState>) -> bool {
+    state
+        .update_health
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_failing()
+}
+
+/// Whether `interval` has passed since a wait began, by the wall clock or by
+/// the time the process was awake, whichever is further. On macOS the clock
+/// tokio's timers run on stops while the Mac sleeps, so a Mac that mostly
+/// sleeps took days to wait six hours on it; the awake time still ends a wait
+/// whose wall clock was set back.
+fn update_wait_is_over(
+    started_at: SystemTime,
+    now: SystemTime,
+    awake: Duration,
+    interval: Duration,
+) -> bool {
+    awake >= interval
+        || now
+            .duration_since(started_at)
+            .is_ok_and(|elapsed| elapsed >= interval)
+}
+
+/// Waits `UPDATE_CHECK_INTERVAL` of wall-clock time, reading the clock every
+/// `UPDATE_WAIT_TICK` so a wake from sleep is noticed within one tick.
+async fn wait_for_next_update_check() {
+    let started_at = SystemTime::now();
+    let awake_since = Instant::now();
+    while !update_wait_is_over(
+        started_at,
+        SystemTime::now(),
+        awake_since.elapsed(),
+        UPDATE_CHECK_INTERVAL,
+    ) {
+        tokio::time::sleep(UPDATE_WAIT_TICK).await;
     }
 }
 
@@ -1121,12 +1192,14 @@ fn spawn_update_checks(handle: tauri::AppHandle) {
             // and checking again from a process that is on its way out would
             // only race the installer. On Windows the installer restarts the
             // app; a Mac restarts itself into the new build.
-            if install_available_update(&handle).await {
+            let outcome = install_available_update(&handle).await;
+            record_update_outcome(&handle, outcome);
+            if outcome == UpdateOutcome::Staged {
                 #[cfg(target_os = "macos")]
                 restart_into_staged_update(&handle).await;
                 return;
             }
-            tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+            wait_for_next_update_check().await;
         }
     });
 }
@@ -1238,12 +1311,15 @@ pub fn run() {
             });
 
             let browser_auto_install = monitor.settings().browser_auto_install;
+            let update_health_path = data_dir.join("update-health.json");
             app.manage(AppState {
                 client,
                 recovery,
                 recovery_path: Mutex::new(recovery_path),
                 monitor,
                 quota: quota::QuotaMonitor::new(),
+                update_health: std::sync::Mutex::new(UpdateHealth::load(&update_health_path)),
+                update_health_path,
             });
             // After the state exists: a Mac restarting into a staged update
             // reads the monitor from it.
@@ -1299,6 +1375,7 @@ pub fn run() {
             browser_open_store,
             permissions_status,
             app_is_translocated,
+            update_is_failing,
             permission_request,
             permission_decline,
             permission_open_settings,
@@ -1502,6 +1579,44 @@ mod tests {
         assert!(second_launch_surfaces_window(&[
             "--some-other-flag".to_string()
         ]));
+    }
+
+    #[test]
+    fn an_update_wait_ends_on_the_wall_clock_even_while_the_process_slept() {
+        let started_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let hour = Duration::from_secs(3_600);
+        let cases = [
+            (
+                "awake and on the wall clock short of it",
+                started_at + hour,
+                hour,
+                false,
+            ),
+            (
+                "a Mac asleep for most of the wait",
+                started_at + 7 * hour,
+                hour,
+                true,
+            ),
+            (
+                "awake the whole interval",
+                started_at + 6 * hour,
+                6 * hour,
+                true,
+            ),
+            ("a wall clock set back", started_at - hour, 6 * hour, true),
+            (
+                "a wall clock set back and awake briefly",
+                started_at - hour,
+                hour,
+                false,
+            ),
+        ];
+        for (case, now, awake, expected) in cases {
+            let is_over = update_wait_is_over(started_at, now, awake, UPDATE_CHECK_INTERVAL);
+
+            assert_eq!(is_over, expected, "{case}");
+        }
     }
 
     #[test]

@@ -807,6 +807,29 @@ describe("defaultBridge", () => {
     await expect(answer).rejects.toMatchObject({ kind: "unknown" });
   });
 
+  it.each([true, false])("reads whether the copy's updates keep failing as %s", async (isFailing) => {
+    // Arrange
+    invoke.mockResolvedValueOnce(isFailing);
+
+    // Act
+    const answer = await defaultBridge.updateIsFailing();
+
+    // Assert
+    expect(answer).toBe(isFailing);
+    expect(invoke.mock.calls.at(-1)).toEqual(["update_is_failing", undefined]);
+  });
+
+  it("rejects an update-failing answer that is not a boolean", async () => {
+    // Arrange
+    invoke.mockResolvedValueOnce("yes");
+
+    // Act
+    const answer = defaultBridge.updateIsFailing();
+
+    // Assert
+    await expect(answer).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("decodes the macOS permissions and names the permission on every action", async () => {
     // Arrange
     invoke.mockResolvedValueOnce([

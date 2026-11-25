@@ -878,8 +878,12 @@ release build. The console window that once opened beside the app on Windows
 has been fixed.
 
 **Windows auto-update.** Once a build carrying the updater is installed, it
-checks the `unsigned-latest` manifest at launch and every six hours, installs
-a newer build quietly, and restarts. A build installed *before* the updater
+checks the `unsigned-latest` manifest at launch and every six hours of
+wall-clock time (time asleep counts), installs a newer build quietly, and
+restarts. A copy whose check or install fails three times in a row with the
+release host reachable says in its window that it cannot update itself and
+to install the newest build from the site; the next successful check takes
+that notice down. A build installed *before* the updater
 shipped cannot update itself (its binary has no updater in it), so install
 this build once by hand and every build after it is automatic. Installing a
 release over a test build moves it onto releases, with no uninstall needed.

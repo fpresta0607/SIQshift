@@ -267,6 +267,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   permissionDecline: vi.fn().mockResolvedValue([]),
   permissionOpenSettings: vi.fn().mockResolvedValue(undefined),
   appIsTranslocated: vi.fn().mockResolvedValue(false),
+  updateIsFailing: vi.fn().mockResolvedValue(false),
   sessionSelectProject: vi.fn().mockResolvedValue(status),
   hookRegister: vi.fn().mockResolvedValue({ status: "registered", configPath: "C:/Users/dev/.claude/settings.json" }),
   monitorSetEnabled: vi.fn().mockResolvedValue(settings),
@@ -293,6 +294,7 @@ const bridgeFor = (overrides: Partial<TimerBridge> = {}): TimerBridge => ({
   appIcons: vi.fn().mockResolvedValue({}),
   quotaStatus: vi.fn().mockResolvedValue({ status: "ready", checkedAt: null, detail: null, providers: [] }),
   onUpdateAvailable: vi.fn().mockResolvedValue(() => undefined),
+  onUpdateFailing: vi.fn().mockResolvedValue(() => undefined),
   ...overrides,
 });
 
@@ -747,6 +749,111 @@ describe("a launch from a temporary App Translocation copy", () => {
     // Assert
     expect(appIsTranslocated).toHaveBeenCalled();
     expect(screen.queryByTestId("move-to-applications")).not.toBeInTheDocument();
+  });
+});
+
+describe("a copy that cannot update itself", () => {
+  it.each([
+    ["the sign-in screen", { kind: "signed-out" } as const],
+    ["the main screen", account],
+  ])("tells the person on %s to install the newest build by hand", async (_screen, snapshot) => {
+    // Arrange
+    const bridge = bridgeFor({ bootstrap: vi.fn().mockResolvedValue(snapshot), updateIsFailing: vi.fn().mockResolvedValue(true) });
+
+    // Act
+    render(<App bridge={bridge} />);
+
+    // Assert
+    const notice = await screen.findByTestId("update-failing");
+    expect(notice).toHaveTextContent("SIQshift can't update itself");
+    expect(notice).toHaveTextContent("Download the newest version from siqshift.siqstack.com and run the installer.");
+    expect(screen.getAllByTestId("update-failing")).toHaveLength(1);
+  });
+
+  it("tells a Mac to open the new build from Applications", async () => {
+    // Arrange
+    const userAgent = vi.spyOn(navigator, "userAgent", "get")
+      .mockReturnValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+
+    // Act
+    render(<App bridge={bridgeFor({ updateIsFailing: vi.fn().mockResolvedValue(true) })} />);
+
+    // Assert
+    const notice = await screen.findByTestId("update-failing");
+    expect(notice).toHaveTextContent("drag it into your Applications folder in Finder, and open it from there.");
+    userAgent.mockRestore();
+  });
+
+  it("turns the notice on and off as update checks start and end a run of failures", async () => {
+    // Arrange
+    let announce: ((isFailing: boolean) => void) | undefined;
+    const bridge = bridgeFor({
+      onUpdateFailing: vi.fn().mockImplementation(async (handler: (isFailing: boolean) => void) => {
+        announce = handler;
+        return () => undefined;
+      }),
+    });
+    render(<App bridge={bridge} />);
+    await screen.findByRole("button", { name: "Settings" });
+    expect(screen.queryByTestId("update-failing")).not.toBeInTheDocument();
+
+    // Act
+    act(() => announce?.(true));
+
+    // Assert
+    expect(await screen.findByTestId("update-failing")).toBeInTheDocument();
+
+    // Act
+    act(() => announce?.(false));
+
+    // Assert
+    await waitFor(() => expect(screen.queryByTestId("update-failing")).not.toBeInTheDocument());
+  });
+
+  it("reads only once subscribed, and lets a change heard first outrank the read", async () => {
+    // Arrange
+    let announce: ((isFailing: boolean) => void) | undefined;
+    let subscribed: ((stop: () => void) => void) | undefined;
+    let answerRead: ((isFailing: boolean) => void) | undefined;
+    const updateIsFailing = vi.fn().mockImplementation(() => new Promise<boolean>((resolve) => { answerRead = resolve; }));
+    const bridge = bridgeFor({
+      updateIsFailing,
+      onUpdateFailing: vi.fn().mockImplementation((handler: (isFailing: boolean) => void) => {
+        announce = handler;
+        return new Promise<() => void>((resolve) => { subscribed = resolve; });
+      }),
+    });
+    render(<App bridge={bridge} />);
+    await screen.findByRole("button", { name: "Settings" });
+    expect(updateIsFailing).not.toHaveBeenCalled();
+
+    // Act
+    await act(async () => subscribed?.(() => undefined));
+    act(() => announce?.(true));
+    await act(async () => answerRead?.(false));
+
+    // Assert
+    expect(updateIsFailing).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("update-failing")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["a copy that updates", { updateIsFailing: vi.fn().mockResolvedValue(false) }],
+    ["a host that cannot say", { updateIsFailing: vi.fn().mockRejectedValue({ kind: "unknown", message: "Unavailable" }) }],
+    [
+      "a translocated copy, whose own notice says how to install it",
+      { updateIsFailing: vi.fn().mockResolvedValue(true), appIsTranslocated: vi.fn().mockResolvedValue(true) },
+    ],
+  ])("says nothing about updating for %s", async (_case, overrides) => {
+    // Arrange
+    render(<App bridge={bridgeFor(overrides)} />);
+
+    // Act
+    await screen.findByTestId("elapsed-time");
+
+    // Assert
+    await waitFor(() => expect(overrides.updateIsFailing).toHaveBeenCalled());
+    expect(screen.queryByTestId("update-failing")).not.toBeInTheDocument();
   });
 });
 
