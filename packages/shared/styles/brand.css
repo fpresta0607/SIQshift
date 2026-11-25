@@ -113,10 +113,10 @@ button:disabled { opacity: .55; cursor: default; }
    right-aligned duration - so a column of them lines up whatever each row is
    about.
 
-   The name is the only thing that gives way when the row is narrow: the third
-   cell's 6rem floor is what the quota dial needs to say its plan and its reset
-   time beside the face, and a bar narrower than that draws a small row's share
-   as a dot rather than a measure.
+   A name is never cut short: one that does not fit wraps and the row grows.
+   The third cell's 6rem floor is what the quota dial needs to say its plan and
+   its reset time beside the face, and a bar narrower than that draws a small
+   row's share as a dot rather than a measure.
 
    Every row is its own grid, so the columns only line up while all four tracks
    compute to the same numbers in each. That is why the duration is a fixed
@@ -138,10 +138,15 @@ button:disabled { opacity: .55; cursor: default; }
   font-size: .84rem;
 }
 /* A row with nothing for its duration cell - an agent that is connected but
-   has no minutes of its own - lets its measure run on into that cell, so the
-   plan dial says its reset whole instead of stopping at an empty column. */
-.meter-row > :nth-child(3):last-child { grid-column: 3 / -1; }
-.meter-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   has no minutes of its own - has that cell to flex into. Its name starts as
+   wide as the shared name track (its minimum below restates that), so a name
+   that fits leaves the measure in line with the other rows'; a longer one
+   pushes the measure along before it wraps, and the measure takes the rest, so
+   the plan dial says its reset whole. */
+.meter-row:has(> :nth-child(3):last-child) {
+  grid-template-columns: 18px minmax(min((100% - 18px - 30px - 5rem) * 2 / 3, 100% - 18px - 30px - 11rem), max-content) minmax(min-content, 1fr);
+}
+.meter-name { min-width: 0; overflow-wrap: anywhere; }
 /* The subtitle after the `·`: which folder an agent session is working in, or
    how much of a codebase's decided work held. */
 .meter-detail { color: var(--text-secondary); font-size: .78rem; }
