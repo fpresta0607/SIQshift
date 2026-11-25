@@ -241,7 +241,7 @@ select:disabled { opacity: .55; }
    `columns` fills the first column top to bottom before it starts the second,
    so the heaviest-first sort still reads straight down. A .meter-row is itself
    a four-column grid, and 20rem is the narrowest column that still leaves the
-   name its 10rem, the bar something to draw in and the duration a single line;
+   name room to read, the bar something to draw in and the duration a single line;
    under twice that plus the gap the panel simply gets one column, as it does
    once the window is resized narrow. */
 .meter-list { columns: 20rem 2; column-gap: 20px; margin: 0; padding: 0; list-style: none; }
@@ -253,6 +253,10 @@ select:disabled { opacity: .55; }
 .meter-apps { margin-top: 10px; border-top: 1px solid rgba(163, 179, 194, 0.12); padding-top: 8px; }
 /* An agent's row trades the share bar for its plan dial, in the same cell. */
 .meter-row .quota { min-width: 0; justify-items: start; }
+/* With no duration beside it the dial has room to say itself whole, so a long
+   name wraps rather than squeezing it. The cap is what the narrowest window
+   leaves after the name track: past it the dial's own text gives way. */
+.meter-row > .quota:last-child .quota-trigger { width: max-content; max-width: 11rem; }
 /* Keeps a plain app's name aligned with a runtime's, which carries a mark. */
 .app-mark { display: block; flex: none; width: 18px; height: 18px; border-radius: 4px; }
 .app-mark.is-plain { background: rgba(163, 179, 194, 0.14); }
