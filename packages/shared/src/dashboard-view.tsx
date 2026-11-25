@@ -345,7 +345,7 @@ export const DashboardView = ({
                               className="is-tokens"
                               title={`${formatCount(person.tokens.tokens)} tokens: ${formatCount(person.tokens.tokensIn)} in, ${formatCount(person.tokens.tokensOut)} out`}
                             >
-                              <span className="tv-cell-line">{formatTokens(person.tokens.tokensIn)} in</span>
+                              <span className="tv-cell-line">{formatTokens(person.tokens.tokensIn)} in</span>{" "}
                               <span className="tv-cell-line">{formatTokens(person.tokens.tokensOut)} out</span>
                               <span className="tv-cell-bar" aria-hidden="true" style={share(person.tokens.tokens, mostTokens)} />
                             </td>

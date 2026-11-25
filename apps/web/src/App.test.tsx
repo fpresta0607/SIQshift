@@ -571,7 +571,7 @@ describe("dashboard", () => {
     const board = within(await stats.findByRole("table", { name: "People" }));
     await board.findByRole("columnheader", { name: "Tokens" });
     const rows = () => board.getAllByRole("row").slice(1).map((row) => row.textContent);
-    expect(rows()).toEqual(["1SSam2h 14m3h 00m-", "2AAlexYou1h 00m0s1.1M in100k out"]);
+    expect(rows()).toEqual(["1SSam2h 14m3h 00m-", "2AAlexYou1h 00m0s1.1M in 100k out"]);
     // Assert: the cell's bold value is two lines, in then out, with no total line.
     const tokensCell = board.getByText("1.1M in").closest("td")!;
     expect([...tokensCell.querySelectorAll(".tv-cell-line")].map((line) => line.textContent)).toEqual(["1.1M in", "100k out"]);
@@ -582,7 +582,7 @@ describe("dashboard", () => {
     await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
 
     // Assert: the reporter ranks above the person with no report.
-    expect(rows()).toEqual(["1AAlexYou1h 00m0s1.1M in100k out", "2SSam2h 14m3h 00m-"]);
+    expect(rows()).toEqual(["1AAlexYou1h 00m0s1.1M in 100k out", "2SSam2h 14m3h 00m-"]);
   });
 
   it("ranks the board by each person's total tokens and sizes the bar by it, not by the in or out line", async () => {
@@ -607,9 +607,9 @@ describe("dashboard", () => {
     // Assert
     const [alex, sam] = board.getAllByRole("row").slice(1);
     expect(alex).toHaveTextContent(/^1AAlexYou/);
-    expect(alex).toHaveTextContent("100k in900k out");
+    expect(alex).toHaveTextContent("100k in 900k out");
     expect(sam).toHaveTextContent(/^2SSam/);
-    expect(sam).toHaveTextContent("600k in100k out");
+    expect(sam).toHaveTextContent("600k in 100k out");
     const share = (row: HTMLElement) => row.querySelector<HTMLElement>("td.is-tokens .tv-cell-bar")?.style.getPropertyValue("--share");
     expect([share(alex!), share(sam!)]).toEqual(["100%", "70%"]);
   });
@@ -632,7 +632,7 @@ describe("dashboard", () => {
     const rows = () => table().getAllByRole("row").slice(1).map((row) => row.textContent);
     await within(await stats.findByRole("table", { name: "People" })).findByRole("columnheader", { name: "Tokens" });
     await person.selectOptions(stats.getByRole("combobox", { name: /Rank by/ }), "By tokens");
-    const tokensOrder = ["1AAlexYou1h 00m0s1.1M in100k out", "2SSam2h 14m3h 00m-"];
+    const tokensOrder = ["1AAlexYou1h 00m0s1.1M in 100k out", "2SSam2h 14m3h 00m-"];
     expect(rows()).toEqual(tokensOrder);
 
     // Act

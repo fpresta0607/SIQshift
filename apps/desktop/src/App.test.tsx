@@ -1485,7 +1485,7 @@ describe("the team board", () => {
     expect(graph.querySelector('[data-series="agent"]')).not.toBeNull();
     expect(graph.querySelector('[data-series="active"]')).not.toBeNull();
     const [, first, second] = within(view.getByRole("table", { name: "People" })).getAllByRole("row");
-    expect(first).toHaveTextContent(/^1SSam1h 56m1h 00m1.2M in300k out$/);
+    expect(first).toHaveTextContent(/^1SSam1h 56m1h 00m1.2M in 300k out$/);
     expect(second).toHaveTextContent(/^2TUTimer UserYou1h 00m30m-$/);
     expect(view.getByRole("combobox", { name: /Rank by/ })).toHaveDisplayValue("By active time");
     // Every list at once, with no switch between them, and no list of projects.
@@ -1829,7 +1829,7 @@ describe("the team board", () => {
     const panel = await openAgentsPage(person);
     const rows = () => within(within(panel).getByRole("table", { name: "People" })).getAllByRole("row").slice(1).map((row) => row.textContent);
     await person.selectOptions(within(panel).getByRole("combobox", { name: /Rank by/ }), "By tokens");
-    const tokensOrder = ["1TUTimer UserYou1h 00m30m1.8M in200k out", "2SSam1h 56m1h 00m1.2M in300k out"];
+    const tokensOrder = ["1TUTimer UserYou1h 00m30m1.8M in 200k out", "2SSam1h 56m1h 00m1.2M in 300k out"];
     expect(rows()).toEqual(tokensOrder);
 
     // Act
