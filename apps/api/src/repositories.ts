@@ -391,6 +391,31 @@ export interface ActivitySegmentInsert {
   receivedAt: Date;
 }
 
+/** One of a member's machines, as its uploads last described it. */
+export interface DeviceRecord {
+  id: string;
+  /** Null for a build too old to send its version. */
+  appVersion: string | null;
+  lastSeenAt: Date;
+}
+
+export interface DeviceRepository {
+  /**
+   * Notes that these devices uploaded for this member at `seenAt`, with the
+   * version each reported. The newest report wins: a late upload carrying an
+   * older `seenAt` leaves the row as it is.
+   */
+  recordSeen(input: {
+    organizationId: string;
+    userId: string;
+    deviceIds: readonly string[];
+    appVersion: string | null;
+    seenAt: Date;
+  }): Promise<void>;
+  /** The member's devices, most recently seen first. */
+  listForUser(organizationId: string, userId: string): Promise<DeviceRecord[]>;
+}
+
 export interface ActivitySegmentRepository {
   /** Inserts segments, ignoring rows whose client id was already uploaded, so replays are safe. */
   insertBatch(segments: ActivitySegmentInsert[]): Promise<void>;

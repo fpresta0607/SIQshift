@@ -9,6 +9,7 @@ import {
   integer,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -300,6 +301,32 @@ export const activitySegments = pgTable(
     // The retention sweep deletes a whole organization's expired segments at
     // once, so it needs a range over startedAt that does not lead on the user.
     index("activity_segments_organization_started_at_idx").on(table.organizationId, table.startedAt),
+  ],
+);
+
+// The machines a member uploads from, and the desktop build each last said it
+// was. One row per (member, device id): the id is minted by the desktop and is
+// the same value activity_segments.device_id holds, and one machine signed in
+// under two accounts is two rows because each account's upload names it. Null
+// is a build too old to send a version.
+export const devices = pgTable(
+  "devices",
+  {
+    organizationId: uuid("organization_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    id: uuid("id").notNull(),
+    appVersion: text("app_version"),
+    lastSeenAt: timestamp("last_seen_at", { mode: "date", withTimezone: true }).notNull(),
+    ...auditColumns,
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.userId, table.id], name: "devices_pkey" }),
+    foreignKey({
+      columns: [table.organizationId, table.userId],
+      foreignColumns: [users.organizationId, users.id],
+      name: "devices_organization_user_fk",
+    }).onDelete("cascade"),
+    check("devices_app_version_length_valid", sql`${table.appVersion} is null or char_length(${table.appVersion}) <= 64`),
   ],
 );
 

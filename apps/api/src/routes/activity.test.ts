@@ -1,8 +1,9 @@
+import { APP_VERSION_HEADER } from "@siqshift/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { createApp } from "../app.js";
 import { parseEnv } from "../env.js";
-import type { ActivitySegmentInsert, ActivitySegmentRepository } from "../repositories.js";
+import type { ActivitySegmentInsert, ActivitySegmentRepository, DeviceRecord, DeviceRepository } from "../repositories.js";
 import { createTestAuth } from "../test-tokens.js";
 
 const ids = {
@@ -46,13 +47,28 @@ class MemorySegments implements ActivitySegmentRepository {
   }
 }
 
-function createTestApp(segments = new MemorySegments()) {
+class MemoryDevices implements DeviceRepository {
+  public readonly records = new Map<string, DeviceRecord>();
+
+  public async recordSeen(input: Parameters<DeviceRepository["recordSeen"]>[0]): Promise<void> {
+    for (const id of input.deviceIds) {
+      this.records.set(`${input.organizationId}/${input.userId}/${id}`, { id, appVersion: input.appVersion, lastSeenAt: input.seenAt });
+    }
+  }
+
+  public async listForUser(): Promise<DeviceRecord[]> {
+    return [...this.records.values()];
+  }
+}
+
+function createTestApp(segments = new MemorySegments(), devices = new MemoryDevices()) {
   return createApp({
     config,
     keys,
     accounts: { resolve: async (identity) => users[identity.authUserId as keyof typeof users] },
     clock: () => new Date("2026-08-06T14:00:00.000Z"),
     activitySegmentRepository: segments,
+    deviceRepository: devices,
   });
 }
 
@@ -131,5 +147,53 @@ describe("activity segment routes", () => {
     await expect(other.json()).resolves.toEqual({ accepted: 1, rejected: [] });
     expect(segments.records).toHaveLength(2);
     expect(segments.records[1]).toMatchObject({ organizationId: ids.otherOrganization, userId: ids.otherUser });
+  });
+
+  it("records the version the header names against the uploading device", async () => {
+    const devices = new MemoryDevices();
+    const app = createTestApp(new MemorySegments(), devices);
+
+    const response = await app.request("http://api.test/activity/segments", {
+      method: "POST",
+      headers: { authorization: bearerHeader, "content-type": "application/json", [APP_VERSION_HEADER]: "0.2.7" },
+      body: JSON.stringify({ segments: [segment()] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect([...devices.records.values()]).toEqual([
+      { id: ids.device, appVersion: "0.2.7", lastSeenAt: new Date("2026-08-06T14:00:00.000Z") },
+    ]);
+  });
+
+  it("still accepts an upload from a build that sends no version header, recording the device with none", async () => {
+    const devices = new MemoryDevices();
+    const app = createTestApp(new MemorySegments(), devices);
+
+    const response = await app.request("http://api.test/activity/segments", {
+      method: "POST",
+      headers: { authorization: bearerHeader, "content-type": "application/json" },
+      body: JSON.stringify({ segments: [segment()] }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ accepted: 1, rejected: [] });
+    expect([...devices.records.values()]).toMatchObject([{ id: ids.device, appVersion: null }]);
+  });
+
+  it.each(["", "v0.2.7", "0.2", "x".repeat(65)])("refuses the malformed version header %j and stores nothing", async (value) => {
+    const segments = new MemorySegments();
+    const devices = new MemoryDevices();
+    const app = createTestApp(segments, devices);
+
+    const response = await app.request("http://api.test/activity/segments", {
+      method: "POST",
+      headers: { authorization: bearerHeader, "content-type": "application/json", [APP_VERSION_HEADER]: value },
+      body: JSON.stringify({ segments: [segment()] }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "validation_error" } });
+    expect(segments.records).toHaveLength(0);
+    expect(devices.records.size).toBe(0);
   });
 });

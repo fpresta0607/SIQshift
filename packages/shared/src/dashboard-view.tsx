@@ -2,6 +2,7 @@ import { useId, type CSSProperties } from "react";
 
 import { AgentRuntimeIcon } from "./agent-marks.js";
 import { AppMark } from "./app-mark.js";
+import type { Device } from "./contracts.js";
 import { agentRuntimeLabel } from "./agent-runtimes.js";
 import { formatCount, formatTokens } from "./format.js";
 import { MemberAvatar } from "./member-avatar.js";
@@ -11,6 +12,7 @@ import { formatHumanDuration } from "./time.js";
 import {
   LiveSessions,
   ShiftGroups,
+  shiftClock,
   type AppRow,
   type ChartHourlyBucket,
   type LivePersonGroup,
@@ -151,6 +153,8 @@ export type DashboardViewProps = {
   boardNotes: readonly string[];
   /** Who is running an agent now, already narrowed to the subject; absent where nothing reads it. */
   live?: { people: readonly LivePersonGroup[] | undefined; isFailed: boolean } | undefined;
+  /** The subject's machines and the build each last uploaded from, the most recently seen first; absent where nothing reads them, which draws no card. */
+  machines?: { devices: readonly Device[] | undefined; isFailed: boolean } | undefined;
   /** The OS icon for an app by any of its recorded names; absent where the host has no icons, as in a browser. */
   appIconOf?: ((processNames: readonly string[]) => string | undefined) | undefined;
 };
@@ -199,6 +203,7 @@ export const DashboardView = ({
   onSelectPerson,
   boardNotes,
   live,
+  machines,
   appIconOf,
 }: DashboardViewProps) => {
   const chartTitleId = useId();
@@ -207,6 +212,7 @@ export const DashboardView = ({
   const runtimesTitleId = useId();
   const reposTitleId = useId();
   const liveTitleId = useId();
+  const machinesTitleId = useId();
 
   const time = typeof timeRead === "object" ? timeRead : undefined;
   const timeFailure = typeof timeRead === "string" ? timeRead : undefined;
@@ -475,6 +481,32 @@ export const DashboardView = ({
                 <p className="subtle" role="status">Checking what is running…</p>
               ) : (
                 <LiveSessions people={live.people} pictureOf={(id) => people.find((person) => person.id === id)?.picture ?? (subject?.id === id ? subject.picture : undefined)} />
+              )}
+            </section>
+          )}
+
+          {machines !== undefined && subject !== undefined && (
+            <section className="tv-card tv-machines" aria-labelledby={machinesTitleId}>
+              <div className="tv-card-head">
+                <h4 id={machinesTitleId}>Machines</h4>
+              </div>
+              {machines.isFailed ? (
+                <p className="subtle">Could not load this person's machines.</p>
+              ) : machines.devices === undefined ? (
+                <p className="subtle" role="status">Checking their machines…</p>
+              ) : machines.devices.length === 0 ? (
+                <p className="subtle">No desktop app has uploaded from this person yet.</p>
+              ) : (
+                <ul>
+                  {machines.devices.map((device) => (
+                    <li key={device.id} className="tv-row">
+                      <span className="tv-name">
+                        <span>{device.appVersion === null ? "A build too old to say its version" : `SIQshift ${device.appVersion}`}</span>
+                        <span className="tv-sub">Last seen {shiftClock(device.lastSeenAt)}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </section>
           )}

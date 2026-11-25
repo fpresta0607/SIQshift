@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AuthenticatedSubject } from "../auth.js";
-import type { ActivitySegmentInsert, ActivitySegmentRepository } from "../repositories.js";
+import type { ActivitySegmentInsert, ActivitySegmentRepository, DeviceRepository } from "../repositories.js";
 import { createActivityService, type ActivitySegmentInput } from "./activity.js";
 import { RETENTION_WINDOW_MS } from "./utc-days.js";
 
@@ -28,6 +28,18 @@ class MemorySegments implements ActivitySegmentRepository {
   }
 }
 
+class MemoryDevices implements DeviceRepository {
+  public readonly seen: Parameters<DeviceRepository["recordSeen"]>[0][] = [];
+
+  public async recordSeen(input: Parameters<DeviceRepository["recordSeen"]>[0]): Promise<void> {
+    this.seen.push(input);
+  }
+
+  public async listForUser(): Promise<never[]> {
+    return [];
+  }
+}
+
 function segment(overrides: Partial<ActivitySegmentInput> = {}): ActivitySegmentInput {
   return {
     clientId: crypto.randomUUID(),
@@ -49,7 +61,7 @@ describe("activity service", () => {
     const { segments, service } = createService();
     const input = segment({ processName: "Code.exe" });
 
-    await expect(service.upload(subject, [input])).resolves.toEqual({ accepted: 1, rejected: [] });
+    await expect(service.upload(subject, [input], null)).resolves.toEqual({ accepted: 1, rejected: [] });
     expect(segments.records).toHaveLength(1);
     expect(segments.records[0]).toMatchObject({
       organizationId: ids.organization,
@@ -78,7 +90,7 @@ describe("activity service", () => {
       endedAt: new Date(oldest.getTime() - 1),
     });
 
-    const result = await service.upload(subject, [inside, outside]);
+    const result = await service.upload(subject, [inside, outside], null);
 
     expect(result.accepted).toBe(1);
     expect(result.rejected).toEqual([
@@ -91,8 +103,8 @@ describe("activity service", () => {
     const { segments, service } = createService();
     const input = segment();
 
-    await service.upload(subject, [input]);
-    await expect(service.upload(subject, [input])).resolves.toEqual({ accepted: 1, rejected: [] });
+    await service.upload(subject, [input], null);
+    await expect(service.upload(subject, [input], null)).resolves.toEqual({ accepted: 1, rejected: [] });
     expect(segments.records).toHaveLength(1);
   });
 
@@ -111,7 +123,7 @@ describe("activity service", () => {
     const broken = segment({ startedAt: new Date("not-a-date") });
     const good = segment();
 
-    const result = await service.upload(subject, [inverted, equal, future, tolerated, tooLong, ancient, broken, good]);
+    const result = await service.upload(subject, [inverted, equal, future, tolerated, tooLong, ancient, broken, good], null);
 
     expect(result.accepted).toBe(2);
     expect(result.rejected).toEqual([
@@ -136,7 +148,7 @@ describe("activity service", () => {
     const ancient = segment({ startedAt: new Date("0001-01-01T00:00:00.000Z"), endedAt: new Date("0001-01-02T00:00:00.000Z") });
     const good = segment();
 
-    await service.upload(subject, [ancient, good]);
+    await service.upload(subject, [ancient, good], null);
 
     expect(named).toEqual([good.startedAt, good.endedAt]);
   });
@@ -144,10 +156,42 @@ describe("activity service", () => {
   it("scopes rows to the uploading subject", async () => {
     const { segments, service } = createService();
     const other: AuthenticatedSubject = { organizationId: ids.organization, userId: ids.otherUser, role: "member" };
-    await service.upload(subject, [segment()]);
-    await service.upload(other, [segment()]);
+    await service.upload(subject, [segment()], null);
+    await service.upload(other, [segment()], null);
 
     expect(segments.records[0]).toMatchObject({ userId: ids.user });
     expect(segments.records[1]).toMatchObject({ userId: ids.otherUser });
+  });
+
+  it("records each distinct device in the request, refused segments included, with the build and the clock", async () => {
+    const segments = new MemorySegments();
+    const devices = new MemoryDevices();
+    const service = createActivityService({ segments, devices, clock: () => now });
+    const otherDevice = "8b1c7e51-3b09-44d4-ae55-21790ae019a4";
+    const refusedDevice = "7b1c7e51-3b09-44d4-ae55-21790ae019a4";
+
+    await service.upload(subject, [
+      segment(),
+      segment(),
+      segment({ deviceId: otherDevice }),
+      segment({ deviceId: refusedDevice, endedAt: new Date("2026-08-06T12:00:00.000Z") }),
+    ], "0.2.7");
+
+    expect(devices.seen).toEqual([{
+      organizationId: ids.organization,
+      userId: ids.user,
+      deviceIds: [ids.device, otherDevice, refusedDevice],
+      appVersion: "0.2.7",
+      seenAt: now,
+    }]);
+  });
+
+  it("records a device with no version when the upload names none", async () => {
+    const devices = new MemoryDevices();
+    const service = createActivityService({ segments: new MemorySegments(), devices, clock: () => now });
+
+    await service.upload(subject, [segment()], null);
+
+    expect(devices.seen[0]).toMatchObject({ deviceIds: [ids.device], appVersion: null });
   });
 });

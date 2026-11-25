@@ -1,7 +1,7 @@
 import type { ActivitySegmentBatchResponse, ActivitySegmentKind } from "@siqshift/shared";
 
 import type { AuthenticatedSubject } from "../auth.js";
-import type { ActivitySegmentInsert, ActivitySegmentRepository } from "../repositories.js";
+import type { ActivitySegmentInsert, ActivitySegmentRepository, DeviceRepository } from "../repositories.js";
 import { RETENTION_WINDOW_MS } from "./utc-days.js";
 
 const futureEndToleranceMs = 30_000;
@@ -18,6 +18,7 @@ export interface ActivitySegmentInput {
 
 export interface ActivityServiceDependencies {
   segments: ActivitySegmentRepository;
+  devices?: DeviceRepository;
   /**
    * Called with the instants a successful upload touched, so the finished UTC
    * days among them can be folded.
@@ -32,7 +33,12 @@ export interface ActivityServiceDependencies {
 }
 
 export interface ActivityService {
-  upload(subject: AuthenticatedSubject, segments: ActivitySegmentInput[]): Promise<ActivitySegmentBatchResponse>;
+  /** `appVersion` is the build that sent the batch; null for one too old to say. */
+  upload(
+    subject: AuthenticatedSubject,
+    segments: ActivitySegmentInput[],
+    appVersion: string | null,
+  ): Promise<ActivitySegmentBatchResponse>;
 }
 
 function rejectionReason(segment: ActivitySegmentInput, now: Date): string | null {
@@ -50,7 +56,11 @@ export function createActivityService(dependencies: ActivityServiceDependencies)
   const clock = dependencies.clock ?? (() => new Date());
 
   return {
-    async upload(subject: AuthenticatedSubject, segments: ActivitySegmentInput[]): Promise<ActivitySegmentBatchResponse> {
+    async upload(
+      subject: AuthenticatedSubject,
+      segments: ActivitySegmentInput[],
+      appVersion: string | null,
+    ): Promise<ActivitySegmentBatchResponse> {
       const now = clock();
       const valid: ActivitySegmentInsert[] = [];
       const rejected: ActivitySegmentBatchResponse["rejected"] = [];
@@ -74,6 +84,14 @@ export function createActivityService(dependencies: ActivityServiceDependencies)
       }
       // Replayed client ids are ignored by the repository, so a replay counts as accepted.
       await dependencies.segments.insertBatch(valid);
+      // Every segment names its machine, rejected ones included: they still prove it uploaded.
+      await dependencies.devices?.recordSeen({
+        organizationId: subject.organizationId,
+        userId: subject.userId,
+        deviceIds: [...new Set(segments.map((segment) => segment.deviceId))],
+        appVersion,
+        seenAt: now,
+      });
       await dependencies.onUploaded?.(subject, valid.flatMap((segment) => [segment.startedAt, segment.endedAt]));
       return { accepted: valid.length, rejected };
     },

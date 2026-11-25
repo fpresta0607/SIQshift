@@ -902,6 +902,10 @@ fn session_cookie_value(headers: &reqwest::header::HeaderMap) -> ApiResult<Strin
     ))
 }
 
+/// Names the build on every request so the API can record which version a device
+/// last uploaded from.
+const APP_VERSION_HEADER: &str = "x-siqshift-app-version";
+
 /// Talks to both services. `auth_base_url` is the Neon Auth base URL; `api_base_url`
 /// is the SIQshift API. Cheap to clone: the inner HTTP client is reference-counted.
 #[derive(Clone)]
@@ -915,8 +919,19 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn new(auth_base_url: String, api_base_url: String) -> ApiResult<Self> {
+    pub fn new(
+        auth_base_url: String,
+        api_base_url: String,
+        app_version: String,
+    ) -> ApiResult<Self> {
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            APP_VERSION_HEADER,
+            reqwest::header::HeaderValue::from_str(&app_version)
+                .map_err(|_| BridgeError::unknown("The app version is not a valid header."))?,
+        );
         let http = reqwest::Client::builder()
+            .default_headers(default_headers)
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|_| BridgeError::unknown("Could not start the network client."))?;
@@ -2213,6 +2228,7 @@ mod tests {
         let client = ApiClient::new(
             "https://auth.test/neondb/auth/".to_string(),
             "https://api.test/".to_string(),
+            "0.0.0-test".to_string(),
         )
         .expect("client builds");
 
@@ -2471,6 +2487,7 @@ mod tests {
         let client = ApiClient::new(
             format!("http://127.0.0.1:{port}/auth"),
             format!("http://127.0.0.1:{port}"),
+            "0.0.0-test".to_string(),
         )
         .expect("the stub client builds");
         let cursor = AgentShiftCursor {
@@ -2868,6 +2885,7 @@ mod tests {
         let client = ApiClient::new(
             format!("http://127.0.0.1:{port}/auth"),
             format!("http://127.0.0.1:{port}"),
+            "0.0.0-test".to_string(),
         )
         .expect("the stub client builds");
         (client, served)
