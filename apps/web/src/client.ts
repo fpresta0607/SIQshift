@@ -299,8 +299,19 @@ export function createClient(config: ClientConfig) {
     /** One group's shifts, a page at a time; the query names the group and the page. */
     agentShiftRows: (query = "") => json<AgentShiftRowsResponse>(`/reports/agent-shifts/rows${query}`),
 
-    /** Who is running an agent right now, grouped by person; the scope narrows the live view. */
-    liveAgentSessions: (query = "") => json<LiveAgentSessionsResponse>(`/reports/agent-sessions/live${query}`),
+    /**
+     * Who is running an agent right now, grouped by person; the scope narrows the live view.
+     * A server from before sessions said working or waiting sends no state, read here as none said.
+     */
+    async liveAgentSessions(query = ""): Promise<LiveAgentSessionsResponse> {
+      const response = await json<LiveAgentSessionsResponse>(`/reports/agent-sessions/live${query}`);
+      return {
+        people: response.people.map((person) => ({
+          ...person,
+          sessions: person.sessions.map((session) => ({ ...session, state: session.state ?? null })),
+        })),
+      };
+    },
 
     /** The caller's workspace for the team view, every total added up on the server. */
     workspace: (query = "") => json<WorkspaceReportResponse>(`/reports/workspace${query}`),

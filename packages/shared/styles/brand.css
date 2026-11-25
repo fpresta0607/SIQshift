@@ -156,7 +156,6 @@ button:disabled { opacity: .55; cursor: default; }
 .project-dot { width: 10px; height: 10px; margin: 0 auto; border-radius: 50%; background: var(--accent-green); }
 /* A project's icon tile, sized by where it sits. */
 .project-icon { display: block; flex: none; width: 28px; height: 28px; }
-.tv-sub .project-icon { width: 14px; height: 14px; }
 .app-name .project-icon { width: 20px; height: 20px; }
 .manage-name .project-icon { width: 32px; height: 32px; }
 
@@ -270,7 +269,7 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-days .ghost[aria-pressed="true"] { border-color: var(--glass-border-hover); color: var(--mint); }
 .tv-days-note { flex-basis: 100%; margin: 0; color: var(--text-secondary); font-size: .74rem; }
 
-.tv-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tv-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .tv-total { min-width: 0; border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 10px 14px 11px; background: rgba(3, 5, 10, .5); }
 .tv-total dt { color: var(--text-secondary); font-size: .76rem; font-weight: 500; }
 .tv-total dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-top: 2px; }
@@ -310,7 +309,6 @@ button:disabled { opacity: .55; cursor: default; }
 .member-avatar { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--mint) 14%, transparent); color: var(--mint); font-size: .66rem; font-weight: 650; object-fit: cover; }
 .member-avatar.blue { background: #85c6ff20; color: #85c6ff; }
 .member-avatar.purple { background: #c6a1f420; color: #c6a1f4; }
-.tv-live .live-person { align-items: center; }
 .tv-live .live-person .member-avatar { width: 24px; height: 24px; font-size: .56rem; }
 
 /* The People board is a table, so its columns are the table's own. */
@@ -327,7 +325,7 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-people td.is-agent .tv-cell-bar::before { background: var(--accent-green); opacity: .8; }
 .tv-people td.is-tokens { color: var(--chart-token-in); }
 .tv-people td.is-tokens .tv-cell-bar::before { background: var(--chart-token-in); opacity: .8; }
-.tv-cell-sub { display: block; color: var(--text-secondary); font-size: .66rem; }
+.tv-cell-line { display: block; }
 /* The People board's ranking, as quiet as the card notes beside it. */
 .board-sort select { border: 0; padding: 2px 0; background: transparent; background-image: none; color: var(--text-secondary); font-size: .8rem; cursor: pointer; }
 .board-sort select:hover { color: #ffffff; }
@@ -365,8 +363,28 @@ button:disabled { opacity: .55; cursor: default; }
 .tv-live .live-sessions { margin: 0; }
 .tv-live .live-sessions-empty { margin: 4px 0 0; }
 
-/* What recorded time holds beyond active time, under the totals it explains. */
-.tv .tv-totals-note { margin-top: -6px; color: var(--text-secondary); font-size: .76rem; line-height: 1.5; }
+/* Live now: each runtime's sessions are tiles in a grid that wraps to the width.
+   Nothing in a tile is cut short, so a long name wraps instead of being clipped. */
+.live-sessions { display: grid; gap: 16px; margin: 0 0 14px; }
+.live-sessions-empty { margin: 0 0 14px; }
+.live-person { display: grid; gap: 10px; min-width: 0; }
+.live-person-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: .84rem; font-weight: 650; overflow-wrap: anywhere; }
+.live-runtime { display: grid; gap: 8px; min-width: 0; }
+.live-runtime-head { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-secondary); font-size: .74rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.live-runtime-count { border: 1px solid var(--glass-border); border-radius: 999px; padding: 0 7px; font-size: .68rem; font-variant-numeric: tabular-nums; letter-spacing: normal; }
+.live-tile-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 11.5rem), 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.live-tile { display: grid; align-content: start; gap: 3px; min-width: 0; border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 10px 12px; background: rgba(3, 5, 10, .5); overflow-wrap: anywhere; }
+.live-tile-codebase { font-size: .88rem; font-weight: 650; }
+.live-tile-model { color: var(--text-secondary); font-size: .78rem; }
+.live-tile-facts { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; margin-top: 4px; color: var(--text-secondary); font-size: .74rem; font-variant-numeric: tabular-nums; }
+.live-tile-state { display: inline-flex; align-items: center; gap: 6px; }
+.live-tile-state.is-working { color: var(--mint); }
+.live-pulse, .live-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.live-pulse { background: var(--mint); animation: live-pulse 2.4s ease-in-out infinite; }
+.live-dot { background: var(--text-secondary); }
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-pulse { animation: none; } }
+
 /* Whom the page answers for once a person is picked, and the way back to everyone. */
 .tv-subject { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .tv-subject .member-avatar { width: 28px; height: 28px; font-size: .6rem; }

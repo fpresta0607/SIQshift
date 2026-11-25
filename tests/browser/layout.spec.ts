@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openAgentRow, openAgentsGroup, openClockCard, openPersonDashboard, openTodayCard } from "./harness.js";
+import { openAgentRow, openAgentsGroup, openClockCard, openLiveNow, openPersonDashboard, openTodayCard } from "./harness.js";
 
 /** Every `.meter-row`'s box, plus the boxes of the four cells inside it. */
 const rowBoxes = (page: import("@playwright/test").Page) =>
@@ -374,28 +374,26 @@ for (const app of ["desktop", "web"] as const) {
 
 for (const app of ["desktop", "web"] as const) {
   test.describe(`the dashboard answering for one person in ${app}`, () => {
-    // The page's own arithmetic, drawn: the recorded total, the sentence
-    // saying what the rest of it was, and two lists that both close on it.
-    // The sentence is the first line on the page long enough to need
+    // The Agent time note is the first line on the page long enough to need
     // somewhere to wrap, and it wraps inside the overlay, which is narrower
     // than the page around it.
-    test("wraps the recorded sentence and keeps every duration inside the overlay at phone width", async ({ page }) => {
+    test("wraps the agent time note and keeps every duration inside the overlay at phone width", async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 844 });
       await openPersonDashboard(page, app);
 
       const measured = await page.evaluate(() => {
         const modal = document.querySelector<HTMLElement>(".modal")!;
-        const note = document.querySelector<HTMLElement>(".tv-totals-note")!;
+        const note = document.querySelector<HTMLElement>(".tv-total:last-child small")!;
         return {
           viewport: document.documentElement.clientWidth,
           documentScrollWidth: document.documentElement.scrollWidth,
           modalClientWidth: modal.clientWidth,
           modalScrollWidth: modal.scrollWidth,
           noteRight: Math.round(note.getBoundingClientRect().right),
-          // A one-line sentence at this width would mean it did not wrap,
-          // which at 390px means it went somewhere off screen instead.
-          noteLines: Math.round(note.getBoundingClientRect().height
-            / Number.parseFloat(getComputedStyle(note).lineHeight)),
+          // A note no taller than one line at this width would mean it did
+          // not wrap, which at 390px means it went somewhere off screen.
+          noteHeight: Math.round(note.getBoundingClientRect().height),
+          noteFontSize: Number.parseFloat(getComputedStyle(note).fontSize),
           durationRights: [...document.querySelectorAll<HTMLElement>(".tv-meter-list .meter-duration")]
             .map((cell) => Math.round(cell.getBoundingClientRect().right)),
           // A phone spends the row on the name, so the share bars step aside.
@@ -409,10 +407,8 @@ for (const app of ["desktop", "web"] as const) {
       expect(measured.documentScrollWidth).toBeLessThanOrEqual(measured.viewport);
       expect(measured.modalScrollWidth).toBe(measured.modalClientWidth);
       expect(measured.noteRight).toBeLessThanOrEqual(measured.viewport);
-      expect(measured.noteLines).toBeGreaterThan(1);
-      // Quiet time is a row like any other, so its duration stays on screen
-      // with the rest of them.
-      expect(measured.durationRights).toHaveLength(5);
+      expect(measured.noteHeight).toBeGreaterThan(measured.noteFontSize * 2);
+      expect(measured.durationRights).toHaveLength(2);
       for (const right of measured.durationRights) {
         expect(right).toBeLessThanOrEqual(measured.viewport);
       }
@@ -420,17 +416,62 @@ for (const app of ["desktop", "web"] as const) {
       expect(measured.nameWidth).toBeGreaterThan(120);
     });
 
-    test("keeps the projects' and apps' durations on one scan line at desktop width", async ({ page }) => {
+    test("keeps the apps' durations on one scan line at desktop width", async ({ page }) => {
       await page.setViewportSize({ width: 1000, height: 900 });
       await openPersonDashboard(page, app);
 
       const rights = await page.locator(".tv-meter-list .meter-duration")
         .evaluateAll((cells) => cells.map((cell) => Math.round(cell.getBoundingClientRect().right)));
-      // The project list and the app list are read against one another, so
-      // their durations end on the same x - a project total and an app total
-      // that do not line up read as two different measurements.
-      expect(rights).toHaveLength(5);
+      // The app rows are read against one another, so their durations end
+      // on the same x.
+      expect(rights).toHaveLength(2);
       expect(new Set(rights).size).toBe(1);
+    });
+  });
+}
+
+for (const app of ["desktop", "web"] as const) {
+  test.describe(`the Live now card in ${app}`, () => {
+    test("wraps a long codebase name inside its tile at phone width instead of cutting it short", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openLiveNow(page, app);
+
+      const measured = await page.evaluate(() => {
+        const tiles = [...document.querySelectorAll<HTMLElement>(".live-tile")];
+        const texts = [...document.querySelectorAll<HTMLElement>(".live-sessions *")];
+        const longName = document.querySelector<HTMLElement>(".live-tile-codebase")!;
+        return {
+          viewport: document.documentElement.clientWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          tileRights: tiles.map((tile) => Math.round(tile.getBoundingClientRect().right)),
+          // A tile whose text overflows its own box was clipped or spilled.
+          overflowing: tiles.filter((tile) => tile.scrollWidth > tile.clientWidth).length,
+          ellipsised: texts.filter((text) => getComputedStyle(text).textOverflow === "ellipsis").length,
+          unwrappable: texts.filter((text) => getComputedStyle(text).whiteSpace === "nowrap").length,
+          // The name is taller than a line, so it wrapped rather than ran on.
+          longNameHeight: Math.round(longName.getBoundingClientRect().height),
+          longNameFontSize: Number.parseFloat(getComputedStyle(longName).fontSize),
+        };
+      });
+
+      expect(measured.documentScrollWidth).toBeLessThanOrEqual(measured.viewport);
+      for (const right of measured.tileRights) {
+        expect(right).toBeLessThanOrEqual(measured.viewport);
+      }
+      expect(measured.overflowing).toBe(0);
+      expect(measured.ellipsised).toBe(0);
+      expect(measured.unwrappable).toBe(0);
+      expect(measured.longNameHeight).toBeGreaterThan(measured.longNameFontSize * 1.5);
+    });
+
+    test("sets tiles side by side once the window has room", async ({ page }) => {
+      await page.setViewportSize({ width: 1000, height: 900 });
+      await openLiveNow(page, app);
+
+      const tops = await page.locator(".live-runtime").first().locator(".live-tile")
+        .evaluateAll((tiles) => tiles.map((tile) => Math.round(tile.getBoundingClientRect().top)));
+      expect(tops).toHaveLength(3);
+      expect(new Set(tops).size).toBe(1);
     });
   });
 }

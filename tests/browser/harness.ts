@@ -48,9 +48,9 @@ const stylesheet = (app: "desktop" | "web"): string =>
 async function applyStylesheet(page: Page, app: "desktop" | "web", ...containers: readonly string[]): Promise<void> {
   await page.addStyleTag({ content: stylesheet(app) });
   for (const container of containers) {
-    const display = await page.locator(container).evaluate((element) => getComputedStyle(element).display);
-    if (display !== "grid") {
-      throw new Error(`${container} is not laid out by the ${app} stylesheet: display is "${display}", not "grid"`);
+    const displays = await page.locator(container).evaluateAll((elements) => elements.map((element) => getComputedStyle(element).display));
+    if (displays.length === 0 || displays.some((display) => display !== "grid")) {
+      throw new Error(`${container} is not laid out by the ${app} stylesheet: display is ${JSON.stringify(displays)}, not "grid"`);
     }
   }
 }
@@ -278,11 +278,9 @@ export async function openAgentsGroup(page: Page, app: "desktop" | "web"): Promi
 
 /**
  * The dashboard answering for one person, in the markup `DashboardView` draws:
- * whom it answers for, the four totals with the sentence that says what
- * recorded time is made of, then the person's projects and apps, which both
- * close on that recorded total.
+ * whom it answers for, the three totals, then the person's apps.
  *
- * The sentence is the longest line the page draws and it lives in the
+ * The Agent time note is the longest line the page draws and it lives in the
  * narrowest container the apps have - the overlay - so a phone is where it
  * runs out of room first. Each app's overlay is its own, so the page is
  * rendered under each app's sheet.
@@ -291,17 +289,9 @@ export async function openPersonDashboard(page: Page, app: "desktop" | "web"): P
   const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
   const total = (label: string, value: string, note: string): string =>
     `<div class="tv-total"><dt>${label}</dt><dd><b>${value}</b><small>${note}</small></dd></div>`;
-  const projectRow = (label: string, share: number, duration: string): string => `
-    <li class="meter-row">
-      <span class="project-icon" aria-hidden="true"></span>
-      <span class="meter-name">${label}</span>
-      <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
-      <span class="meter-duration">${duration}</span>
-    </li>`;
-  const quietMark = `<svg class="app-mark quiet-mark" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><path d="M12 4.3A6 6 0 1 0 14.64 11.55A4.5 4.5 0 0 1 12 4.3Z" fill="currentColor" /></svg>`;
   const appRow = (label: string, share: number, duration: string): string => `
     <li class="meter-row">
-      ${label === "Quiet time" ? quietMark : `<span class="app-mark app-letter" data-tone="slate" aria-hidden="true">${label.charAt(0)}</span>`}
+      <span class="app-mark app-letter" data-tone="slate" aria-hidden="true">${label.charAt(0)}</span>
       <span class="meter-name">${label}</span>
       <span class="meter-bar" aria-hidden="true" style="--share: ${share}%"></span>
       <span class="meter-duration">${duration}</span>
@@ -315,31 +305,68 @@ export async function openPersonDashboard(page: Page, app: "desktop" | "web"): P
       </div>
       <dl class="tv-totals" aria-label="Totals for Alex Morgan">
         ${total("Tokens", "1.3M", "1.2M in · 82k out")}
-        ${total("Active time", "1h 19m", "at the computer")}
-        ${total("Agent time", "2h 10m", "agents running")}
-        ${total("Recorded time", "2h 47m", "whole sessions")}
+        ${total("Active time", "1h 19m", "minutes at the computer")}
+        ${total("Agent time", "2h 10m", "every agent added up, so ten agents for an hour count ten hours")}
       </dl>
-      <p class="tv-totals-note">Recorded: 1h 28m of it away from the keyboard, 43m of that with an agent running.</p>
       <div class="tv-grid">
         <div class="tv-stack"></div>
         <div class="tv-stack">
-          <section class="tv-card tv-list">
-            <div class="tv-card-head"><h4>Projects</h4><span class="tv-card-note">Recorded time</span></div>
-            <ul class="tv-meter-list">
-              ${projectRow("Atlas Portal", 100, "2h 25m")}
-              ${projectRow("General", 15, "22m")}
-            </ul>
-          </section>
           <section class="tv-card tv-list tv-apps">
             <div class="tv-card-head"><h4>Apps</h4><span class="tv-card-note">Time in front</span></div>
             <ul class="tv-meter-list">
               ${appRow("Windows Terminal", 44, "41m")}
               ${appRow("Google Chrome", 35, "33m")}
-              ${appRow("Quiet time", 100, "1h 33m")}
             </ul>
           </section>
         </div>
       </div>
     </div></section></div></main>`);
   await applyStylesheet(page, app, ".modal-overlay", ".tv", ".tv-totals", ".tv-grid");
+}
+
+/** One session tile on the Live now card, in the markup `LiveSessionTile` draws. */
+const liveTile = (codebase: string, model: string, running: string, state: "Working" | "Waiting"): string => `
+  <li class="live-tile">
+    <span class="live-tile-codebase">${codebase}</span>
+    <span class="live-tile-model">${model}</span>
+    <span class="live-tile-facts">
+      <span class="live-tile-running">Running ${running}</span>
+      <span class="live-tile-state is-${state.toLowerCase()}"><span class="${state === "Working" ? "live-pulse" : "live-dot"}" aria-hidden="true"></span>${state}</span>
+    </span>
+  </li>`;
+
+/**
+ * The Live now card for one person, in the markup `LiveSessions` draws.
+ *
+ * The first tile carries a codebase name with no break in it, longer than a
+ * phone is wide, the case an ellipsis used to hide and a tile now has to wrap.
+ */
+export async function openLiveNow(page: Page, app: "desktop" | "web"): Promise<void> {
+  const shell = app === "desktop" ? `<main class="app-shell">` : `<main class="shell">`;
+  await page.setContent(`
+    ${shell}<div class="modal-overlay"><section class="today-card card modal"><div class="tv">
+      <div class="tv-page">
+        <section class="tv-card tv-live">
+          <div class="tv-card-head"><h4><span class="live-pulse" aria-hidden="true"></span>Live now</h4><span class="tv-card-note">5 running</span></div>
+          <section class="live-sessions" data-testid="live-sessions">
+            <section class="live-runtime">
+              <h5 class="live-runtime-head">Claude Code <span class="live-runtime-count">3</span></h5>
+              <ul class="live-tile-list">
+                ${liveTile("Anunbrokencodebasenamelongerthanaphoneiswideandwithnohyphenstobreakat", "Opus 5.5", "3h 05m", "Working")}
+                ${liveTile("Code Goblins", "Sonnet 5.5", "12m", "Waiting")}
+                ${liveTile("SIQshift", "Opus 5.5", "50s", "Working")}
+              </ul>
+            </section>
+            <section class="live-runtime">
+              <h5 class="live-runtime-head">Codex <span class="live-runtime-count">2</span></h5>
+              <ul class="live-tile-list">
+                ${liveTile("Quartermaster", "GPT 5.6 Sol", "45m", "Working")}
+                ${liveTile("No codebase", "GPT 5.6 Sol", "2m", "Waiting")}
+              </ul>
+            </section>
+          </section>
+        </section>
+      </div>
+    </div></section></div></main>`);
+  await applyStylesheet(page, app, ".modal-overlay", ".tv", ".live-sessions", ".live-tile-list");
 }
