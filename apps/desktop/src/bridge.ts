@@ -352,13 +352,18 @@ export type AgentShiftsRuntime = {
 };
 
 /// One agent session running right now, as the live view reads it. The
-/// description is the server's own sentence, composed once from captured
-/// facts; the webview renders it verbatim and never re-derives it.
+/// description is the server's own sentence, kept for an older build's sake
+/// and no longer drawn: the tile composes itself from the facts beside it.
+/// A host too old to send a fact decodes it as null.
 export type LiveAgentSessionRow = {
   id: string;
   source: string;
   description: string;
   repo: string | null;
+  project: { id: string; name: string } | null;
+  model: string | null;
+  startedAt: string | null;
+  state: "working" | "waiting" | null;
 };
 
 /// One person's running sessions. Only people with at least one arrive, so
@@ -1157,9 +1162,9 @@ export const decodeAgentShiftRows =(value: unknown): AgentShiftRows => {
   };
 };
 
-/// Only the fields the live row renders; the rest of the session is the API's
-/// business. An absent people list decodes to none, never a crash: the
-/// deployed API can be older than this build.
+/// Only the fields the live tile renders; the rest of the session is the API's
+/// business. An absent people list decodes to none, never a crash, and an
+/// absent fact decodes to null: the deployed API can be older than this build.
 export const decodeLiveAgentSessions = (value: unknown): LiveAgentSessions => {
   const candidate = record(value);
   return {
@@ -1170,11 +1175,16 @@ export const decodeLiveAgentSessions = (value: unknown): LiveAgentSessions => {
         owner: { id: uuid(owner.id), name: string(owner.name) },
         sessions: (Array.isArray(person.sessions) ? person.sessions : []).map((row) => {
           const session = record(row);
+          const project = session.project === undefined || session.project === null ? null : record(session.project);
           return {
             id: uuid(session.id),
             source: string(session.source),
             description: string(session.description),
             repo: stringOrNull(session.repo ?? null),
+            project: project === null ? null : { id: uuid(project.id), name: string(project.name) },
+            model: stringOrNull(session.model ?? null),
+            startedAt: timestampOrNull(session.startedAt ?? null),
+            state: session.state === "working" || session.state === "waiting" ? session.state : null,
           };
         }),
       };
